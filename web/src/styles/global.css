@@ -1,0 +1,237 @@
+:root {
+  --bg: #f4f6f9;
+  --surface: #ffffff;
+  --border: #e2e6ec;
+  --text: #1a2233;
+  --text-muted: #6b7280;
+  --primary: #2563eb;
+  --primary-dark: #1e40af;
+  --success: #059669;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --radius: 10px;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+a { color: var(--primary); text-decoration: none; }
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+}
+.btn:hover { border-color: var(--primary); color: var(--primary); }
+.btn-primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+.btn-primary:hover { background: var(--primary-dark); color: #fff; }
+.btn-danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.app-shell { display: flex; min-height: 100vh; }
+/* The sidebar is an off-canvas overlay drawer at EVERY screen width (not just mobile): hidden by
+   default (translateX(-100%)), toggled via the hamburger button in the topbar, and auto-closed by
+   StaffLayout on navigation, on backdrop click, or on clicking anywhere in the main content area.
+   Because it's position: fixed it's taken out of the .app-shell flex flow entirely, so .main
+   always fills the full width underneath/behind it - it overlays on top rather than pushing
+   content over, which is also what makes "click the page to close it" work everywhere. */
+.sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 240px;
+  max-width: 80vw;
+  height: 100vh;
+  background: #101828;
+  color: #e5e7eb;
+  padding: 20px 12px;
+  transform: translateX(-100%);
+  transition: transform 0.25s ease;
+  z-index: 110;
+  overflow-y: auto;
+  box-shadow: 2px 0 24px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+}
+.sidebar.open { transform: translateX(0); }
+.sidebar h1 { font-size: 18px; color: #fff; margin: 0 0 4px 12px; }
+.sidebar .sub { font-size: 12px; color: #9ca3af; margin: 0 0 20px 12px; }
+.sidebar nav a {
+  display: block;
+  padding: 9px 12px;
+  border-radius: 8px;
+  color: #cbd5e1;
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+.sidebar nav a:hover, .sidebar nav a.active { background: #1e293b; color: #fff; }
+
+/* Pinned to the bottom of the sidebar regardless of how many nav links are above it, since
+   .sidebar is a column flexbox - see the "Logout" entry rendered by StaffLayout. */
+.sidebar-footer { margin-top: auto; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.12); }
+.sidebar-footer .logout-link {
+  display: block;
+  padding: 9px 12px;
+  border-radius: 8px;
+  color: #fca5a5;
+  font-size: 14px;
+}
+.sidebar-footer .logout-link:hover { background: #1e293b; color: #fecaca; }
+
+/* Hamburger toggle in the topbar - always visible now that the sidebar is a drawer at every
+   width, not just on narrow screens. */
+.hamburger-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 18px;
+  line-height: 1;
+  padding: 6px 10px;
+  color: var(--text);
+}
+
+/* The page shifts over to make room for the drawer instead of the drawer overlaying on top of it
+   - .sidebar-open is added to .main whenever the sidebar is open (see StaffLayout). The
+   min(240px, 80vw) mirrors the sidebar's own width/max-width exactly, so the gap this opens up on
+   the left always matches how wide the drawer actually rendered, even on a very narrow screen. */
+.main { flex: 1; min-width: 0; overflow-x: hidden; transition: margin-left 0.25s ease; }
+.main.sidebar-open { margin-left: min(240px, 80vw); }
+.topbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 14px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Navbar profile: click-to-open dropdown showing full login details + a Sign out action,
+   instead of the old plain name/role text with a separate always-visible button.
+   margin-left: auto (rather than relying on .topbar's justify-content) keeps this pinned to the
+   far right of the navbar even when it's the only visible flex item - e.g. once the hamburger
+   button is the sole thing to its left, "space-between" with just one remaining item would have
+   collapsed it to the LEFT edge instead, which is the misplaced-profile bug this replaces. */
+.profile-menu { position: relative; margin-left: auto; }
+.profile-trigger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: none;
+  border: none;
+  padding: 4px;
+  border-radius: 8px;
+}
+.profile-trigger:hover { background: var(--bg); }
+.profile-caret { font-size: 10px; color: var(--text-muted); }
+.profile-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 260px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12);
+  padding: 14px;
+  z-index: 40;
+  text-align: left;
+}
+.profile-dropdown-header { padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px solid var(--border); }
+.profile-details { margin: 0 0 14px; font-size: 13px; }
+.profile-details dt { color: var(--text-muted); margin-top: 6px; }
+.profile-details dd { margin: 0; font-weight: 500; }
+.content { padding: 24px; max-width: 1400px; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+  margin-bottom: 16px;
+  /* Any table wider than its card (BAPL's 7-column preview, Reports, etc.) now scrolls inside
+     the card instead of stretching .content past the viewport and forcing the whole page to
+     scroll sideways - that page-wide horizontal scrollbar is the other half of what was reported. */
+  overflow-x: auto;
+}
+.card h2, .card h3 { margin-top: 0; }
+
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 20px; }
+.kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+.kpi .value { font-size: 26px; font-weight: 700; }
+.kpi .label { font-size: 13px; color: var(--text-muted); }
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { text-align: left; padding: 10px 12px; border-bottom: 2px solid var(--border); color: var(--text-muted); font-weight: 600; font-size: 12px; text-transform: uppercase; white-space: nowrap; }
+td { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+tr:hover td { background: #fafbfc; }
+
+/* Narrow viewports (tablet/phone-width browser windows): the sidebar drawer itself already works
+   the same as desktop (see .sidebar/.sidebar.open above) - these are just the remaining
+   size-specific tweaks: a tighter drawer padding, content/grids dropping to one column, and the
+   profile dropdown staying on-screen instead of overflowing past the right edge. */
+@media (max-width: 860px) {
+  .app-shell { flex-direction: column; }
+  .sidebar { padding: 12px; }
+  .sidebar h1, .sidebar .sub { margin-left: 4px; }
+  .sidebar nav a { white-space: normal; }
+  .content { padding: 16px; }
+  .kpi-grid, .form-row { grid-template-columns: 1fr; }
+  .profile-dropdown { right: -12px; }
+}
+
+.badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: #eef2ff; color: var(--primary); }
+.badge-success { background: #ecfdf5; color: var(--success); }
+.badge-warning { background: #fffbeb; color: var(--warning); }
+.badge-danger { background: #fef2f2; color: var(--danger); }
+.badge-muted { background: #f3f4f6; color: var(--text-muted); }
+
+input, select, textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: inherit;
+}
+label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; color: var(--text-muted); }
+.field { margin-bottom: 14px; }
+.form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
+
+.center-screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); }
+.login-card { background: var(--surface); border-radius: 16px; padding: 40px; width: 380px; box-shadow: 0 10px 30px rgba(0,0,0,0.06); text-align: center; }
+
+.stepper { display: flex; gap: 8px; margin-bottom: 20px; }
+.stepper .step { flex: 1; padding: 8px; text-align: center; border-radius: 8px; background: #f3f4f6; font-size: 13px; font-weight: 600; color: var(--text-muted); }
+.stepper .step.active { background: var(--primary); color: #fff; }
+.stepper .step.done { background: #ecfdf5; color: var(--success); }
+
+.timeline { list-style: none; padding: 0; margin: 0; }
+.timeline li { padding: 10px 0 10px 20px; border-left: 2px solid var(--border); position: relative; }
+.timeline li::before { content: ''; position: absolute; left: -6px; top: 14px; width: 10px; height: 10px; border-radius: 50%; background: var(--primary); }
+.timeline li:last-child { border-left-color: transparent; }
+
+.error-text { color: var(--danger); font-size: 13px; margin-top: 6px; }
+.muted { color: var(--text-muted); font-size: 13px; }

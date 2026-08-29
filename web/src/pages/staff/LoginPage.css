@@ -1,0 +1,235 @@
+/* BGauss JobCardScanner - Staff / Dealer login screen.
+   Two panels: a branded hero (left, hidden on narrow screens) and the sign-in card (right).
+   Palette: navy (#0b1220 / #101828) + BGauss volt-green (#8ef542) accents, matching the rest
+   of the staff app's sidebar (see styles/global.css .sidebar). */
+
+.jcs-login-screen {
+  min-height: 100vh;
+  display: flex;
+  background: #0b1220;
+}
+
+/* ---------------- Hero (branding) panel ---------------- */
+.jcs-login-hero {
+  flex: 1.1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 56px 64px;
+  background:
+    radial-gradient(circle at 15% 15%, rgba(142, 245, 66, 0.16), transparent 45%),
+    radial-gradient(circle at 85% 80%, rgba(37, 99, 235, 0.25), transparent 50%),
+    linear-gradient(160deg, #0b1220 0%, #101828 55%, #0b1220 100%);
+  color: #e5e7eb;
+  position: relative;
+  overflow: hidden;
+}
+
+.jcs-hero-logo {
+  height: 42px;
+  width: auto;
+  max-width: 220px;
+  object-fit: contain;
+  margin-bottom: 28px;
+  /* Most logo PNGs ship on a transparent or white background - this keeps a dark logo
+     legible against the navy hero panel. Remove this line if your BGauss_Logo.png is
+     already designed for a dark background (e.g. a white/light wordmark). */
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.35));
+}
+
+.jcs-login-hero h2 {
+  font-size: 30px;
+  line-height: 1.25;
+  margin: 0 0 14px;
+  max-width: 460px;
+  color: #fff;
+}
+.jcs-login-hero p {
+  font-size: 15px;
+  line-height: 1.6;
+  color: #9ca3af;
+  max-width: 420px;
+  margin: 0;
+}
+
+.jcs-hero-scooter {
+  margin-top: 48px;
+  width: min(360px, 80%);
+  height: auto;
+  object-fit: contain;
+  animation: jcs-float 4.5s ease-in-out infinite;
+}
+@keyframes jcs-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+/* ---------------- Sign-in panel ---------------- */
+.jcs-login-panel {
+  flex: 1;
+  min-width: 380px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f4f6f9;
+  padding: 24px;
+}
+
+.jcs-login-card {
+  width: 100%;
+  max-width: 400px;
+  background: #fff;
+  border-radius: 16px;
+  padding: 32px 30px 26px;
+  box-shadow: 0 20px 50px -20px rgba(11, 18, 32, 0.35);
+}
+
+.jcs-brand-mobile {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  font-weight: 800;
+  font-size: 18px;
+  color: #101828;
+  margin-bottom: 20px;
+}
+.jcs-brand-mobile img {
+  height: 28px;
+  width: auto;
+  object-fit: contain;
+}
+
+.jcs-tabs {
+  display: flex;
+  background: #f1f3f7;
+  border-radius: 10px;
+  padding: 4px;
+  margin-bottom: 22px;
+}
+.jcs-tab {
+  flex: 1;
+  border: none;
+  background: transparent;
+  padding: 9px 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #6b7280;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.jcs-tab.active {
+  background: #101828;
+  color: #8ef542;
+}
+
+.jcs-mode-copy {
+  font-size: 13px;
+  color: #6b7280;
+  margin: 0 0 18px;
+  line-height: 1.5;
+}
+
+.jcs-field {
+  display: block;
+  margin-bottom: 14px;
+}
+.jcs-field span {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 5px;
+}
+.jcs-field input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: 1px solid #e2e6ec;
+  font-size: 14px;
+  background: #fbfcfe;
+}
+.jcs-field input:focus {
+  outline: none;
+  border-color: #8ef542;
+  box-shadow: 0 0 0 3px rgba(142, 245, 66, 0.25);
+}
+
+.jcs-submit {
+  width: 100%;
+  justify-content: center;
+  margin-top: 4px;
+  background: #101828;
+  border-color: #101828;
+}
+.jcs-submit:hover:not(:disabled) { background: #1e293b; border-color: #1e293b; }
+
+.jcs-link-btn {
+  display: block;
+  width: 100%;
+  text-align: center;
+  background: none;
+  border: none;
+  color: #2563eb;
+  font-size: 13px;
+  margin-top: 14px;
+  padding: 4px;
+  cursor: pointer;
+}
+.jcs-link-btn:hover { text-decoration: underline; }
+
+.jcs-ms-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 11px 16px;
+  border-radius: 9px;
+  border: 1px solid #d0d5dd;
+  background: #fff;
+  color: #1a2233;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.jcs-ms-btn:hover { border-color: #101828; background: #f9fafb; }
+
+.jcs-info-text {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #ecfdf3;
+  color: #065f46;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.jcs-dev-note {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 12.5px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+.jcs-dev-note code {
+  display: block;
+  margin-top: 4px;
+  font-size: 11.5px;
+}
+
+.jcs-portal-hint {
+  margin-top: 20px;
+  text-align: center;
+  font-size: 12.5px;
+}
+
+/* ---------------- Responsive ---------------- */
+@media (max-width: 900px) {
+  .jcs-login-hero { display: none; }
+  .jcs-login-panel { flex: 1; background: #0b1220; }
+  .jcs-brand-mobile { display: flex; }
+}
