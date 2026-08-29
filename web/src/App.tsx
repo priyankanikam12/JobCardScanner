@@ -8,6 +8,7 @@ import { DashboardPage } from './pages/staff/DashboardPage'
 import { JobCardsListPage } from './pages/staff/JobCardsListPage'
 import { JobCardWizardPage } from './pages/staff/JobCardWizardPage'
 import { JobCardDetailPage } from './pages/staff/JobCardDetailPage'
+import { BaplJobCardDetailPage } from './pages/staff/BaplJobCardDetailPage'
 import { PartsPage } from './pages/staff/PartsPage'
 import { AdminUsersPage } from './pages/staff/AdminUsersPage'
 import { AdminWorkflowPage } from './pages/staff/AdminWorkflowPage'
@@ -44,6 +45,11 @@ export default function App() {
         <Route path="/jobcards" element={<JobCardsListPage />} />
         <Route path="/jobcards/new" element={<JobCardWizardPage />} />
         <Route path="/jobcards/:id" element={<JobCardDetailPage />} />
+        {/* Read-only view for a BAPL DMS-sourced row on the /jobcards list - see
+            JobCardsListPage.tsx and BaplJobCardDetailPage.tsx's doc comment. A distinct 2-segment
+            path, so it never collides with /jobcards/:id above (React Router matches by segment
+            count/specificity, not just prefix). */}
+        <Route path="/jobcards/bapl/:jobCardHeaderId" element={<BaplJobCardDetailPage />} />
         <Route path="/parts" element={<PartsPage />} />
         <Route path="/reports" element={<ReportsPage />} />
         <Route

@@ -17,8 +17,13 @@ QuestPDF.Settings.License = LicenseType.Community;
 // ---------------------------------------------------------------------
 // Database
 // ---------------------------------------------------------------------
+// EnableRetryOnFailure: your RDS connection occasionally drops mid-query ("An existing connection
+// was forcibly closed by the remote host" / SQL error 10054 - a transient network blip, not a bug
+// in a query) which otherwise surfaces as a raw 500 on whatever request happened to be running.
+// This makes EF Core transparently retry a handful of times before giving up.
 builder.Services.AddDbContext<JobCardScannerDbContext>(opt =>
-    opt.UseSqlServer(builder.Configuration.GetConnectionString("JobCardScannerDb")));
+    opt.UseSqlServer(builder.Configuration.GetConnectionString("JobCardScannerDb"),
+        sql => sql.EnableRetryOnFailure(maxRetryCount: 5, maxRetryDelay: TimeSpan.FromSeconds(10), errorNumbersToAdd: null)));
 
 // ---------------------------------------------------------------------
 // Authentication: two independent bearer schemes.
@@ -163,6 +168,14 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 app.UseCors("AppCors");
+
+// Serves job card photos uploaded via POST /api/jobcards/{id}/photos/upload (JobCardsController)
+// from wwwroot/uploads/... at the matching /uploads/... URL. No [Authorize] on static files
+// themselves (ASP.NET Core static file middleware doesn't support that) - the file names are
+// unguessable GUIDs, same tradeoff as most "public CDN link" photo storage.
+Directory.CreateDirectory(Path.Combine(app.Environment.ContentRootPath, "wwwroot", "uploads", "jobcard-photos"));
+app.UseStaticFiles();
+
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();

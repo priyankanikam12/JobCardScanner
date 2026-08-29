@@ -118,53 +118,6 @@ export interface BaplDmsVehicleLookup {
   durationType?: string | null
   expireWarrantyDate?: string | null
   isSold: boolean
-  // Added when the lookup was rewritten to source from BAPL DMS's ChassisDetails/LedgerMaster
-  // vehicle master (see BaplDmsService.LookupVehicleAsync) - customer city, the LedgerMaster.Id
-  // this customer is known by in BAPL DMS (used for the job card write-back), and the workshop
-  // location (LocationMaster.Loccode) this chassis is registered against.
-  customerCity?: string | null
-  customerLedgerId?: number | null
-  locationCode?: string | null
-  dealerCode?: string | null
-}
-
-/// One active "W" series workshop location from BAPL DMS's own LocationMaster.
-export interface BaplDmsWorkshop {
-  locCode: string
-  locName: string
-  city: string
-  state: string
-  dealerCode: string
-}
-
-export interface BaplDmsJobType {
-  id: number
-  name: string
-}
-
-export interface BaplDmsServiceHead {
-  id: number
-  jobTypeId: number
-  name: string
-}
-
-export interface BaplDmsServiceType {
-  id: number
-  serviceHeadId: number
-  name: string
-}
-
-export interface BaplDmsComplaint {
-  id: number
-  name: string
-  groupName?: number | null
-}
-
-/// One row from BAPL DMS's JobSource master (Walk In / RSA / Mega Camp / ...) - replaces the
-/// wizard's old hardcoded WalkIn/PickupAndDrop/Breakdown/Scheduled/Online "Source" dropdown.
-export interface BaplDmsJobSource {
-  id: number
-  name: string
 }
 
 export interface CurrentUser {
@@ -242,9 +195,6 @@ export interface JobCardSummary {
   technicianName?: string
   createdAt?: string | null
   expectedDeliveryAt?: string | null
-  /** Number of photos on this job card - null for a BaplDms row (photos are a JobCardScanner-only
-   * concept). */
-  photoCount?: number | null
   /** JobCardScanner's own record, or a read-only row blended in from BAPL DMS's own job card
    * history (see GET /api/jobcards - JobCardsController.List). BaplDms rows have no JobCardScanner
    * id to navigate to, so the list page shows them without a detail link. */
@@ -356,16 +306,6 @@ export interface JobCardDetail extends Omit<JobCardSummary, 'customerName' | 've
   baplSupervisorName?: string | null
   baplTechnicianName?: string | null
   baplManualJobNo?: string | null
-  // Write-back result (see BaplDmsService.CreateJobCardAsync) - baplSyncWarning is only ever
-  // present on the POST /api/jobcards response right after creation, not on later GETs.
-  baplServiceHeadName?: string | null
-  baplServiceTypeName?: string | null
-  baplJobSourceName?: string | null
-  baplServiceLocationCode?: string | null
-  baplJobCardHeaderId?: number | null
-  baplSyncStatus?: string | null
-  baplSyncError?: string | null
-  baplSyncWarning?: string | null
   customer?: Customer
   vehicle?: Vehicle
   dealer?: { id: string; name: string; code: string } | null

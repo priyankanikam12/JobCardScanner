@@ -55,6 +55,15 @@ public class Dealer
     /// JobCardScanner doesn't have BAPL's employee master, so there's nothing to resolve it against
     /// yet.</summary>
     [MaxLength(30)] public string? AssignedRepCode { get; set; }
+    /// <summary>BAPL DMS's own Dealercode (DealerMaster.Dealercode in the separate BAPLDMSvad
+    /// database - see Services/BaplDmsService.cs), captured when this dealer is resolved via the
+    /// Job Card Wizard's "search BAPL Dealer/Workshop" picker. Deliberately a SEPARATE field from
+    /// <see cref="Code"/> (which for BaplImport-sourced dealers holds BAPL ERP's CustomerCode from
+    /// a different database/schema - see BaplDealerService.cs) - the two code spaces aren't
+    /// guaranteed to match, so this app never assumes one implies the other. Null until a
+    /// BAPL-DMS-sourced lookup has resolved this dealer at least once; used to scope chassis/reg-no
+    /// vehicle auto-fill lookups (BaplDmsController.VehicleLookup) to this dealer's own inventory.</summary>
+    [MaxLength(30)] public string? BaplDmsDealerCode { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public ICollection<User> Users { get; set; } = new List<User>();
@@ -127,8 +136,21 @@ public class Vehicle
     [MaxLength(50)] public string? BatteryNo { get; set; }
     [MaxLength(50)] public string? MotorNo { get; set; }
     [MaxLength(50)] public string? SerialNo { get; set; }
+    /// <summary>Controller/converter/charger serial numbers - added alongside BatteryNo/MotorNo
+    /// above specifically so a BAPL DMS chassis/reg-no lookup (BaplDmsService.LookupVehicleAsync)
+    /// can auto-fill everything it returns for this vehicle, not just the two fields this model
+    /// already tracked. Optional/nullable since a manually-added vehicle (not sourced from BAPL
+    /// DMS) has no reason to fill these in.</summary>
+    [MaxLength(50)] public string? ControllerNo { get; set; }
+    [MaxLength(50)] public string? ConverterNo { get; set; }
+    [MaxLength(50)] public string? ChargerNo { get; set; }
     public DateOnly? PurchaseDate { get; set; }
     public DateOnly? LastServiceDate { get; set; }
+    /// <summary>From BAPL DMS's VehicleSaleBillDetail.InsExpDate / ModelwiseServiceSchedule-derived
+    /// due date (see BaplDmsService) - purely informational fields carried over on auto-fill, not
+    /// computed or enforced by this app.</summary>
+    public DateOnly? InsuranceExpiry { get; set; }
+    public DateOnly? NextServiceDueDate { get; set; }
     public double Odometer { get; set; }
     [MaxLength(60)] public string? ErpVehicleId { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

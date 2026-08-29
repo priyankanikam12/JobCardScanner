@@ -15,6 +15,12 @@ const COLOR_MAP: Record<string, string> = {
   Requested: 'badge',
   Issued: 'badge-success',
   Returned: 'badge-muted',
+  // BAPL DMS's own computed job card statuses (see BaplDmsService.SearchJobCardsAsync/
+  // GetJobCardByIdAsync's JobStatus CASE expression).
+  Complete: 'badge-success',
+  'Material Transfer': 'badge-warning',
+  'FFIR Created': 'badge-warning',
+  'FFIR Closed': 'badge-muted',
 }
 
 export function StatusBadge({ status }: { status: string }) {

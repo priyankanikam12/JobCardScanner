@@ -22,10 +22,14 @@ public class JobCardsController : ControllerBase
     private readonly INotificationClient _notifications;
     private readonly IOtpService _otp;
     private readonly IAuditLogService _audit;
+    private readonly IWebHostEnvironment _env;
+    private readonly IBaplDmsService _baplDms;
+    private readonly ILogger<JobCardsController> _logger;
 
     public JobCardsController(
         JobCardScannerDbContext db, ICurrentUserService currentUser, IJobCardNumberingService numbering,
-        IErpClient erp, INotificationClient notifications, IOtpService otp, IAuditLogService audit)
+        IErpClient erp, INotificationClient notifications, IOtpService otp, IAuditLogService audit,
+        IWebHostEnvironment env, IBaplDmsService baplDms, ILogger<JobCardsController> logger)
     {
         _db = db;
         _currentUser = currentUser;
@@ -34,6 +38,9 @@ public class JobCardsController : ControllerBase
         _notifications = notifications;
         _otp = otp;
         _audit = audit;
+        _env = env;
+        _baplDms = baplDms;
+        _logger = logger;
     }
 
     // ---------------- List / search / global search ----------------
@@ -42,7 +49,7 @@ public class JobCardsController : ControllerBase
     {
         var query = _db.JobCards.AsNoTracking()
             .Include(j => j.Customer).Include(j => j.Vehicle).Include(j => j.CurrentStage)
-            .Include(j => j.ServiceAdvisor).Include(j => j.AssignedTechnician)
+            .Include(j => j.ServiceAdvisor).Include(j => j.AssignedTechnician).Include(j => j.Photos)
             .AsQueryable();
 
         var effectiveDealerId = dealerId ?? (_currentUser.Role is StaffRole.CorporateAdmin or StaffRole.SystemAdmin ? null : _currentUser.DealerId);
@@ -56,7 +63,51 @@ public class JobCardsController : ControllerBase
             query = query.Where(j => j.JobCardNumber.Contains(q) || j.Customer!.Name.Contains(q) || j.Customer!.Mobile.Contains(q) || (j.Vehicle!.RegNo != null && j.Vehicle.RegNo.Contains(q)));
 
         var results = await query.OrderByDescending(j => j.CreatedAt).Take(200).ToListAsync();
-        return Ok(results.Select(Summarize));
+        var localRows = results.Select(j => (SortKey: j.CreatedAt, Row: Summarize(j)));
+
+        // ---------------- Blend in BAPL DMS's own job cards ----------------
+        // Only when the filters in play are ones BAPL DMS rows can actually satisfy: status,
+        // technicianId, and stageKey are all JobCardScanner-specific concepts (BAPL DMS's JobStatus
+        // vocabulary - "Open", "Material Transfer", ... - doesn't map onto JobCardStatus, and BAPL
+        // DMS has no concept of a JobCardScanner technician/stage at all), so any of those filters
+        // being set means "only show me JobCardScanner's own job cards" rather than trying to guess
+        // a mapping. q (job card #/customer/reg no.) and status-less/technician-less/stage-less
+        // browsing both work fine against BAPL DMS too.
+        var baplRows = Enumerable.Empty<(DateTime SortKey, object Row)>();
+        string? baplDmsWarning = null;
+        if (!status.HasValue && !technicianId.HasValue && string.IsNullOrWhiteSpace(stageKey))
+        {
+            string? baplDealerCode = null;
+            var canSearchBapl = true;
+            if (effectiveDealerId.HasValue)
+            {
+                baplDealerCode = await _db.Dealers.AsNoTracking().Where(d => d.Id == effectiveDealerId).Select(d => d.BaplDmsDealerCode).FirstOrDefaultAsync();
+                // This dealer has no known BAPL DMS dealer code (never resolved via the Job Card
+                // Wizard's dealer picker) - searching BAPL DMS unscoped would leak every other
+                // dealer's job cards into this one dealer's list, so skip it entirely rather than
+                // guess. Not an error - most dealers simply may not be linked yet.
+                canSearchBapl = !string.IsNullOrWhiteSpace(baplDealerCode);
+            }
+
+            if (canSearchBapl)
+            {
+                try
+                {
+                    var hits = await _baplDms.SearchJobCardsAsync(q, baplDealerCode, 50, HttpContext.RequestAborted);
+                    baplRows = hits.Select(r => (
+                        SortKey: r.JobInDate?.ToDateTime(TimeOnly.MinValue) ?? DateTime.MinValue,
+                        Row: SummarizeBapl(r)));
+                }
+                catch (InvalidOperationException ex)
+                {
+                    _logger.LogWarning(ex, "Could not blend BAPL DMS job cards into the /jobcards list");
+                    baplDmsWarning = "Could not reach BAPL DMS right now - showing JobCardScanner's own job cards only.";
+                }
+            }
+        }
+
+        var merged = localRows.Concat(baplRows).OrderByDescending(x => x.SortKey).Take(200).Select(x => x.Row).ToList();
+        return Ok(new { items = merged, baplDmsWarning });
     }
 
     [HttpGet("{id:guid}")]
@@ -92,6 +143,19 @@ public class JobCardsController : ControllerBase
             ExpectedDeliveryAt = req.ExpectedDeliveryAt,
             ServiceAdvisorId = req.ServiceAdvisorId ?? _currentUser.UserId,
             CustomerConsentNotes = req.CustomerConsentNotes,
+            BaplJobType = req.BaplJobType,
+            BaplServiceLocation = req.BaplServiceLocation,
+            BaplSupervisorName = req.BaplSupervisorName,
+            BaplTechnicianName = req.BaplTechnicianName,
+            BaplManualJobNo = req.BaplManualJobNo,
+            BaplJobTypeId = req.BaplJobTypeId,
+            BaplServiceHeadId = req.BaplServiceHeadId,
+            BaplServiceHeadName = req.BaplServiceHeadName,
+            BaplServiceTypeId = req.BaplServiceTypeId,
+            BaplServiceTypeName = req.BaplServiceTypeName,
+            BaplServiceLocationCode = req.BaplServiceLocationCode,
+            BaplJobSourceId = req.BaplJobSourceId,
+            BaplJobSourceName = req.BaplJobSourceName,
             Status = JobCardStatus.Open,
             CurrentStageId = firstStage?.Id,
             CreatedById = _currentUser.UserId,
@@ -116,8 +180,71 @@ public class JobCardsController : ControllerBase
                 $"Hi {customer.Name}, your job card {jobCard.JobCardNumber} has been created. Track: /track/{jobCard.TrackingToken}",
                 templateKey: "JobCardOpened", jobCardId: jobCard.Id, customerId: customer.Id);
 
+        // ---------------- Best-effort write-back into BAPL DMS's own database ----------------
+        // Only attempted when there's actually somewhere to write to (this dealer has a resolved
+        // BaplDmsDealerCode) and the wizard captured the full JobType/ServiceHead/ServiceType
+        // cascade a BAPL DMS JobCardHeader row requires. A failure here NEVER rolls back or fails
+        // this request - the local job card above is already committed and is the source of truth;
+        // this is purely "also try to mirror it into BAPL DMS", surfaced as baplSyncWarning on an
+        // otherwise-200 response so the wizard can tell the user without blocking them.
+        string? baplSyncWarning = null;
+        if (req.BaplJobTypeId.HasValue && req.BaplServiceHeadId.HasValue && req.BaplServiceTypeId.HasValue)
+        {
+            var baplDealerCode = await _db.Dealers.AsNoTracking().Where(d => d.Id == req.DealerId).Select(d => d.BaplDmsDealerCode).FirstOrDefaultAsync();
+            if (!string.IsNullOrWhiteSpace(baplDealerCode))
+            {
+                try
+                {
+                    var result = await _baplDms.CreateJobCardAsync(new BaplDmsCreateJobCardRequest(
+                        DealerCode: baplDealerCode,
+                        JobTypeId: req.BaplJobTypeId.Value,
+                        ServiceHeadId: req.BaplServiceHeadId.Value,
+                        ServiceHeadName: req.BaplServiceHeadName ?? "",
+                        ServiceTypeId: req.BaplServiceTypeId.Value,
+                        ServiceTypeName: req.BaplServiceTypeName ?? "",
+                        ServiceLocationCode: req.BaplServiceLocationCode,
+                        ChassisNo: vehicle.Vin ?? "",
+                        RegisterNo: vehicle.RegNo,
+                        ModelName: vehicle.Model,
+                        VehicleKms: (int)req.OdometerAtCheckIn,
+                        Supervisor: req.BaplSupervisorName,
+                        Technician: req.BaplTechnicianName,
+                        ManualJobNo: req.BaplManualJobNo,
+                        CustomerName: customer?.Name,
+                        CustomerMobile: customer?.Mobile,
+                        CustomerLedgerId: req.BaplCustomerLedgerId,
+                        MotorNo: vehicle.MotorNo,
+                        BatteryNo: vehicle.BatteryNo,
+                        ControllerNo: vehicle.ControllerNo,
+                        ConverterNo: vehicle.ConverterNo,
+                        ChargerNo: vehicle.ChargerNo,
+                        SaleDate: null,
+                        InsuranceExpDate: vehicle.InsuranceExpiry,
+                        NextServiceDueDate: vehicle.NextServiceDueDate,
+                        ExpectedDeliveryAt: req.ExpectedDeliveryAt,
+                        Complaints: req.Complaints.Select(c => c.Description).ToList(),
+                        CreatedBy: $"JobCardScanner:{_currentUser.UserId}",
+                        JobSourceId: req.BaplJobSourceId),
+                        HttpContext.RequestAborted);
+
+                    jobCard.BaplJobCardHeaderId = result.JobCardHeaderId;
+                    jobCard.BaplSyncStatus = "Synced";
+                    jobCard.BaplSyncError = null;
+                    await _db.SaveChangesAsync();
+                }
+                catch (InvalidOperationException ex)
+                {
+                    _logger.LogWarning(ex, "Could not sync job card {JobCardId} into BAPL DMS", jobCard.Id);
+                    jobCard.BaplSyncStatus = "Failed";
+                    jobCard.BaplSyncError = ex.Message.Length > 1000 ? ex.Message[..1000] : ex.Message;
+                    await _db.SaveChangesAsync();
+                    baplSyncWarning = $"Job card {jobCard.JobCardNumber} was created, but syncing it into BAPL DMS's own database failed: {ex.Message}";
+                }
+            }
+        }
+
         var full = await FullQuery().FirstAsync(j => j.Id == jobCard.Id);
-        return CreatedAtAction(nameof(Get), new { id = jobCard.Id }, Detail(full));
+        return CreatedAtAction(nameof(Get), new { id = jobCard.Id }, Detail(full, baplSyncWarning));
     }
 
     // ---------------- Assignment / priority / ETA ----------------
@@ -179,6 +306,60 @@ public class JobCardsController : ControllerBase
     {
         if (!await _db.JobCards.AnyAsync(j => j.Id == id)) return NotFound();
         var photo = new JobCardPhoto { JobCardId = id, Stage = req.Stage, Url = req.Url, Caption = req.Caption, UploadedById = _currentUser.UserId };
+        _db.JobCardPhotos.Add(photo);
+        await _db.SaveChangesAsync();
+        return Ok(photo);
+    }
+
+    private static readonly string[] AllowedPhotoContentTypes = { "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif" };
+
+    /// <summary>
+    /// POST /api/jobcards/{id}/photos/upload - the real "capture and upload" behind the Job Card
+    /// Detail page's Photos card (unlike AddPhoto above, which only ever stored a caller-supplied
+    /// Url and had no upload/storage behind it anywhere in this codebase). Accepts a single image
+    /// file plus the optional GPS coordinates the browser's Geolocation API captured at the same
+    /// moment, stores the file on local disk under wwwroot/uploads/jobcard-photos/{jobCardId}/, and
+    /// records a JobCardPhoto row pointing at the resulting static URL. 20 MB cap matches the
+    /// [RequestSizeLimit] below - comfortably above a typical phone-camera JPEG.
+    /// </summary>
+    [HttpPost("{id:guid}/photos/upload")]
+    [Authorize(Policy = Policies.ServiceAdvisorUp)]
+    [RequestSizeLimit(20_000_000)]
+    public async Task<IActionResult> UploadPhoto(Guid id, [FromForm] UploadPhotoForm form)
+    {
+        if (!await _db.JobCards.AnyAsync(j => j.Id == id)) return NotFound();
+        if (form.File is null || form.File.Length == 0) return BadRequest(new { message = "A photo file is required." });
+        if (!AllowedPhotoContentTypes.Contains(form.File.ContentType, StringComparer.OrdinalIgnoreCase))
+            return BadRequest(new { message = $"Unsupported file type '{form.File.ContentType}'. Upload a photo (JPEG, PNG, WEBP, or HEIC)." });
+
+        var ext = Path.GetExtension(form.File.FileName);
+        if (string.IsNullOrWhiteSpace(ext) || ext.Length > 10) ext = ".jpg";
+        var fileName = $"{Guid.NewGuid():N}{ext}";
+        var webRoot = _env.WebRootPath ?? Path.Combine(_env.ContentRootPath, "wwwroot");
+        var relativeDir = Path.Combine("uploads", "jobcard-photos", id.ToString());
+        var absoluteDir = Path.Combine(webRoot, relativeDir);
+        Directory.CreateDirectory(absoluteDir);
+
+        var absolutePath = Path.Combine(absoluteDir, fileName);
+        await using (var stream = System.IO.File.Create(absolutePath))
+        {
+            await form.File.CopyToAsync(stream);
+        }
+
+        // Served by app.UseStaticFiles() in Program.cs - a relative path so the frontend prefixes
+        // it with the same VITE_API_BASE_URL it already uses for every other API call.
+        var url = "/" + relativeDir.Replace(Path.DirectorySeparatorChar, '/') + "/" + fileName;
+
+        var photo = new JobCardPhoto
+        {
+            JobCardId = id,
+            Stage = form.Stage,
+            Url = url,
+            Caption = form.Caption,
+            Latitude = form.Latitude,
+            Longitude = form.Longitude,
+            UploadedById = _currentUser.UserId,
+        };
         _db.JobCardPhotos.Add(photo);
         await _db.SaveChangesAsync();
         return Ok(photo);
@@ -313,9 +494,37 @@ public class JobCardsController : ControllerBase
         TechnicianName = j.AssignedTechnician?.Name,
         j.CreatedAt,
         j.ExpectedDeliveryAt,
+        PhotoCount = j.Photos.Count,
+        Source = "JobCardScanner",
     };
 
-    private static object Detail(JobCard j) => new
+    /// <summary>Shapes a BAPL DMS job card row (see BaplDmsService.SearchJobCardsAsync) into the
+    /// same field names as Summarize() above so the /jobcards list page can render both kinds of
+    /// row through one table - Source distinguishes them (BaplDms rows have no JobCardScanner Id,
+    /// so the frontend must not try to link to a Job Card Detail page for one). Fields
+    /// JobCardScanner tracks but BAPL DMS's own job card doesn't (ServiceType/Priority/StageLabel/
+    /// ExpectedDeliveryAt) come through null rather than guessed.</summary>
+    private static object SummarizeBapl(BaplDmsJobCardListRow r) => new
+    {
+        Id = $"bapl-{r.JobCardHeaderId}",
+        JobCardNumber = $"{r.JobPrefix}{r.JobNo}".Trim(),
+        Status = string.IsNullOrWhiteSpace(r.JobStatus) ? "Unknown" : r.JobStatus,
+        ServiceType = (string?)null,
+        Priority = (string?)null,
+        CustomerName = r.CustomerName,
+        CustomerMobile = r.CustomerMobile,
+        VehicleModel = r.ModelName,
+        VehicleRegNo = string.IsNullOrWhiteSpace(r.RegisterNo) ? r.ChassisNo : r.RegisterNo,
+        StageLabel = (string?)null,
+        ServiceAdvisorName = r.Supervisor,
+        TechnicianName = r.Technician,
+        CreatedAt = r.JobInDate?.ToDateTime(TimeOnly.MinValue) ?? (DateTime?)null,
+        ExpectedDeliveryAt = (DateTime?)null,
+        PhotoCount = (int?)null,
+        Source = "BaplDms",
+    };
+
+    private static object Detail(JobCard j, string? baplSyncWarning = null) => new
     {
         j.Id,
         j.JobCardNumber,
@@ -330,6 +539,19 @@ public class JobCardsController : ControllerBase
         j.ClosedAt,
         j.TrackingToken,
         j.CreatedAt,
+        j.BaplJobType,
+        j.BaplServiceLocation,
+        j.BaplSupervisorName,
+        j.BaplTechnicianName,
+        j.BaplManualJobNo,
+        j.BaplServiceHeadName,
+        j.BaplServiceTypeName,
+        j.BaplJobSourceName,
+        j.BaplServiceLocationCode,
+        j.BaplJobCardHeaderId,
+        j.BaplSyncStatus,
+        j.BaplSyncError,
+        BaplSyncWarning = baplSyncWarning,
         Customer = j.Customer,
         Vehicle = j.Vehicle,
         Dealer = j.Dealer is null ? null : new { j.Dealer.Id, j.Dealer.Name, j.Dealer.Code },

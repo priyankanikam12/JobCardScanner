@@ -1,27 +1,56 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
 :root {
-  --bg: #f4f6f9;
+  --bg: #f4f6fb;
   --surface: #ffffff;
-  --border: #e2e6ec;
+  --border: #e4e8f0;
   --text: #1a2233;
   --text-muted: #6b7280;
   --primary: #2563eb;
   --primary-dark: #1e40af;
+  --primary-soft: #eef4ff;
   --success: #059669;
+  --success-soft: #ecfdf5;
   --warning: #d97706;
+  --warning-soft: #fffbeb;
   --danger: #dc2626;
-  --radius: 10px;
-  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --danger-soft: #fef2f2;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-md: 0 4px 16px rgba(16, 24, 40, 0.08);
+  --shadow-lg: 0 12px 32px rgba(16, 24, 40, 0.12);
+  /* A small rotating set of accent colors for KPI tiles/icon badges - keeps a busy dashboard
+     visually distinguishable at a glance without hand-picking a color per metric. */
+  --accent-1: #2563eb; --accent-1-soft: #eef4ff;
+  --accent-2: #059669; --accent-2-soft: #ecfdf5;
+  --accent-3: #d97706; --accent-3-soft: #fffbeb;
+  --accent-4: #7c3aed; --accent-4-soft: #f3eefe;
+  --accent-5: #db2777; --accent-5-soft: #fdf0f6;
+  --accent-6: #0891b2; --accent-6-soft: #ecfeff;
+  font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
 }
 
 * { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
 
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
+h1, h2, h3, h4 { font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 22px; }
+h3 { font-size: 16px; }
+
 a { color: var(--primary); text-decoration: none; }
+a:hover { text-decoration: underline; }
 
 button {
   font-family: inherit;
@@ -32,20 +61,26 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 16px;
-  border-radius: var(--radius);
+  padding: 9px 16px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease, transform 0.05s ease;
 }
-.btn:hover { border-color: var(--primary); color: var(--primary); }
+.btn:hover { border-color: var(--primary); color: var(--primary); box-shadow: var(--shadow-md); }
+.btn:active { transform: translateY(1px); }
 .btn-primary { background: var(--primary); color: #fff; border-color: var(--primary); }
-.btn-primary:hover { background: var(--primary-dark); color: #fff; }
+.btn-primary:hover { background: var(--primary-dark); border-color: var(--primary-dark); color: #fff; }
 .btn-danger { background: var(--danger); color: #fff; border-color: var(--danger); }
-.btn-sm { padding: 4px 10px; font-size: 12px; }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-danger:hover { background: #b91c1c; border-color: #b91c1c; color: #fff; }
+.btn-sm { padding: 5px 11px; font-size: 12px; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
+.btn:disabled:hover { border-color: var(--border); color: var(--text); transform: none; }
+.btn-primary:disabled:hover { background: var(--primary); border-color: var(--primary); color: #fff; }
 
 .app-shell { display: flex; min-height: 100vh; }
 /* The sidebar is an off-canvas overlay drawer at EVERY screen width (not just mobile): hidden by
@@ -169,8 +204,10 @@ button {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 18px;
+  padding: 20px;
   margin-bottom: 16px;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.15s ease;
   /* Any table wider than its card (BAPL's 7-column preview, Reports, etc.) now scrolls inside
      the card instead of stretching .content past the viewport and forcing the whole page to
      scroll sideways - that page-wide horizontal scrollbar is the other half of what was reported. */
@@ -178,15 +215,40 @@ button {
 }
 .card h2, .card h3 { margin-top: 0; }
 
-.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 20px; }
-.kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
-.kpi .value { font-size: 26px; font-weight: 700; }
-.kpi .label { font-size: 13px; color: var(--text-muted); }
+/* Attractive KPI tiles - an icon in a soft colored badge, a large bold value, a muted label below.
+   Six accent variants (kpi-a1..a6) cycle through the palette above so a dashboard full of tiles
+   reads as distinct at a glance without hand-picking a color per metric; apply kpi-aN to the
+   ".kpi" element itself. Cards lift slightly on hover to feel tactile even though most tiles
+   aren't clickable - a subtle cue that this is a live, current-data surface. */
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 20px; }
+.kpi {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+.kpi:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); }
+.kpi .kpi-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; border-radius: 10px; font-size: 19px; margin-bottom: 12px;
+  background: var(--accent-1-soft); color: var(--accent-1);
+}
+.kpi .value { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.15; }
+.kpi .label { font-size: 13px; color: var(--text-muted); margin-top: 2px; }
+.kpi-a1 .kpi-icon { background: var(--accent-1-soft); color: var(--accent-1); }
+.kpi-a2 .kpi-icon { background: var(--accent-2-soft); color: var(--accent-2); }
+.kpi-a3 .kpi-icon { background: var(--accent-3-soft); color: var(--accent-3); }
+.kpi-a4 .kpi-icon { background: var(--accent-4-soft); color: var(--accent-4); }
+.kpi-a5 .kpi-icon { background: var(--accent-5-soft); color: var(--accent-5); }
+.kpi-a6 .kpi-icon { background: var(--accent-6-soft); color: var(--accent-6); }
 
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
-th { text-align: left; padding: 10px 12px; border-bottom: 2px solid var(--border); color: var(--text-muted); font-weight: 600; font-size: 12px; text-transform: uppercase; white-space: nowrap; }
-td { padding: 10px 12px; border-bottom: 1px solid var(--border); }
-tr:hover td { background: #fafbfc; }
+th { text-align: left; padding: 11px 12px; border-bottom: 2px solid var(--border); color: var(--text-muted); font-weight: 700; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap; }
+td { padding: 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: #f8fafc; }
 
 /* Narrow viewports (tablet/phone-width browser windows): the sidebar drawer itself already works
    the same as desktop (see .sidebar/.sidebar.open above) - these are just the remaining
@@ -198,35 +260,54 @@ tr:hover td { background: #fafbfc; }
   .sidebar h1, .sidebar .sub { margin-left: 4px; }
   .sidebar nav a { white-space: normal; }
   .content { padding: 16px; }
-  .kpi-grid, .form-row { grid-template-columns: 1fr; }
+  .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+  .form-row { grid-template-columns: 1fr; }
   .profile-dropdown { right: -12px; }
 }
 
-.badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: #eef2ff; color: var(--primary); }
-.badge-success { background: #ecfdf5; color: var(--success); }
-.badge-warning { background: #fffbeb; color: var(--warning); }
-.badge-danger { background: #fef2f2; color: var(--danger); }
+/* Phones: two KPI columns still cramps a long label/value pair, and .card's 20px padding eats
+   too much of a ~360-400px viewport - both drop further here. */
+@media (max-width: 480px) {
+  .content { padding: 12px; }
+  .card { padding: 14px; }
+  .kpi-grid { grid-template-columns: 1fr; }
+  h2 { font-size: 19px; }
+}
+
+.badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--primary-soft); color: var(--primary); white-space: nowrap; }
+.badge-success { background: var(--success-soft); color: var(--success); }
+.badge-warning { background: var(--warning-soft); color: var(--warning); }
+.badge-danger { background: var(--danger-soft); color: var(--danger); }
 .badge-muted { background: #f3f4f6; color: var(--text-muted); }
 
 input, select, textarea {
   width: 100%;
-  padding: 8px 10px;
+  padding: 9px 11px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   font-size: 14px;
   font-family: inherit;
+  background: var(--surface);
+  color: var(--text);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+input:disabled, select:disabled, textarea:disabled { background: #f3f4f6; color: var(--text-muted); cursor: not-allowed; }
 label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; color: var(--text-muted); }
 .field { margin-bottom: 14px; }
 .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
 
 .center-screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); }
-.login-card { background: var(--surface); border-radius: 16px; padding: 40px; width: 380px; box-shadow: 0 10px 30px rgba(0,0,0,0.06); text-align: center; }
+.login-card { background: var(--surface); border-radius: 16px; padding: 40px; width: 380px; box-shadow: var(--shadow-lg); text-align: center; }
 
-.stepper { display: flex; gap: 8px; margin-bottom: 20px; }
-.stepper .step { flex: 1; padding: 8px; text-align: center; border-radius: 8px; background: #f3f4f6; font-size: 13px; font-weight: 600; color: var(--text-muted); }
-.stepper .step.active { background: var(--primary); color: #fff; }
-.stepper .step.done { background: #ecfdf5; color: var(--success); }
+.stepper { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+.stepper .step { flex: 1; min-width: 120px; padding: 9px 8px; text-align: center; border-radius: var(--radius-sm); background: #eef1f6; font-size: 13px; font-weight: 600; color: var(--text-muted); transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease; }
+.stepper .step.active { background: var(--primary); color: #fff; box-shadow: var(--shadow-md); }
+.stepper .step.done { background: var(--success-soft); color: var(--success); }
 
 .timeline { list-style: none; padding: 0; margin: 0; }
 .timeline li { padding: 10px 0 10px 20px; border-left: 2px solid var(--border); position: relative; }

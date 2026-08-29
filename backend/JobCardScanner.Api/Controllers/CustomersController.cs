@@ -30,9 +30,15 @@ public class CustomersController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(q) || q.Length < 3) return Ok(Array.Empty<object>());
 
+        // Mobile/name, plus registration no. and chassis no. (Vehicle.Vin) - the latter two so
+        // "Find or add customer" can also be searched by the vehicle's identifiers, not just the
+        // owner's - the local half of the "search by chassis no., registration no." requirement;
+        // BaplDmsController.VehicleLookup covers the case where the vehicle isn't in this database
+        // yet at all.
         var customers = await _db.Customers.AsNoTracking()
             .Include(c => c.Vehicles)
-            .Where(c => c.Mobile.Contains(q) || c.Name.Contains(q) || c.Vehicles.Any(v => v.RegNo != null && v.RegNo.Contains(q)))
+            .Where(c => c.Mobile.Contains(q) || c.Name.Contains(q)
+                || c.Vehicles.Any(v => (v.RegNo != null && v.RegNo.Contains(q)) || (v.Vin != null && v.Vin.Contains(q))))
             .Take(20)
             .ToListAsync();
 
@@ -80,10 +86,27 @@ public class CustomersController : ControllerBase
             BatteryNo = req.BatteryNo,
             MotorNo = req.MotorNo,
             SerialNo = req.SerialNo,
+            ControllerNo = req.ControllerNo,
+            ConverterNo = req.ConverterNo,
+            ChargerNo = req.ChargerNo,
             PurchaseDate = req.PurchaseDate,
+            InsuranceExpiry = req.InsuranceExpiry,
+            NextServiceDueDate = req.NextServiceDueDate,
             Odometer = req.Odometer,
         };
         _db.Vehicles.Add(vehicle);
+
+        // Only when the vehicle step was auto-filled from a BAPL DMS lookup that actually returned
+        // warranty info - a manually-added vehicle has none of this, so nothing extra is created.
+        if (req.WarrantyExpiryDate.HasValue || req.WarrantyOdoReading.HasValue)
+        {
+            vehicle.Warranty = new Warranty
+            {
+                ExpiryDate = req.WarrantyExpiryDate,
+                CoverageKm = (double)(req.WarrantyOdoReading ?? 0),
+            };
+        }
+
         await _db.SaveChangesAsync();
         return Ok(vehicle);
     }

@@ -4,7 +4,12 @@ import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
 import { StatusBadge } from '../../components/StatusBadge'
 import { WorkflowTimeline } from '../../components/WorkflowTimeline'
-import type { JobCardDetail, WorkflowStage } from '../../types'
+import type { BaplDmsJobCardHistory, JobCardDetail, PhotoStage, WorkflowStage } from '../../types'
+
+// Photo URLs come back from the API as a relative path (e.g. "/uploads/jobcard-photos/.../x.jpg" -
+// see JobCardsController.UploadPhoto), same origin as the API itself, not the frontend dev server.
+const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL
+const photoSrc = (url: string) => (url.startsWith('http') ? url : `${API_BASE_URL}${url}`)
 
 export function JobCardDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -56,6 +61,33 @@ export function JobCardDetailPage() {
           <p><strong>{jc.customer?.name}</strong><br />{jc.customer?.mobile}</p>
           <p>{jc.vehicle?.model} {jc.vehicle?.variant}<br />Reg: {jc.vehicle?.regNo} | Odometer: {jc.odometerAtCheckIn} km</p>
           <p className="muted">Tracking link: /track/{jc.trackingToken}</p>
+          {(jc.baplJobType || jc.baplServiceLocation || jc.baplSupervisorName || jc.baplTechnicianName || jc.baplManualJobNo) && (
+            <p className="muted" style={{ marginTop: 8 }}>
+              <span style={{ background: '#1c64f2', color: '#fff', fontSize: 11, fontWeight: 600, padding: '1px 6px', borderRadius: 999, marginRight: 6 }}>
+                BAPL DMS
+              </span>
+              {[
+                jc.baplJobType && `Job Type: ${jc.baplJobType}`,
+                jc.baplServiceHeadName && `Service Head: ${jc.baplServiceHeadName}`,
+                jc.baplServiceTypeName && `Service Type: ${jc.baplServiceTypeName}`,
+                jc.baplJobSourceName && `Source: ${jc.baplJobSourceName}`,
+                jc.baplServiceLocation && `Location: ${jc.baplServiceLocation}`,
+                jc.baplSupervisorName && `Supervisor: ${jc.baplSupervisorName}`,
+                jc.baplTechnicianName && `Technician: ${jc.baplTechnicianName}`,
+                jc.baplManualJobNo && `Manual Job No.: ${jc.baplManualJobNo}`,
+              ].filter(Boolean).join(' · ')}
+            </p>
+          )}
+          {jc.baplSyncStatus === 'Synced' && jc.baplJobCardHeaderId && (
+            <p className="muted" style={{ marginTop: 4 }}>
+              ✅ Synced to BAPL DMS as <a href={`/jobcards/bapl/${jc.baplJobCardHeaderId}`}>job card #{jc.baplJobCardHeaderId}</a>.
+            </p>
+          )}
+          {jc.baplSyncStatus === 'Failed' && (
+            <p className="error-text" style={{ marginTop: 4 }}>
+              ⚠ Not yet synced to BAPL DMS{jc.baplSyncError ? `: ${jc.baplSyncError}` : '.'}
+            </p>
+          )}
         </div>
 
         <div className="card">
@@ -68,13 +100,176 @@ export function JobCardDetailPage() {
         <UpdateWorkflowStageCard jc={jc} stages={stages} busy={busy} run={run} canAssignTechnician={hasRole('WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin')} />
       )}
 
+      <BaplServiceHistoryCard chassisNo={jc.vehicle?.vin} dealerCode={jc.dealer?.code} />
+
       <ComplaintsCard jc={jc} run={run} />
+      <PhotosCard jc={jc} run={run} />
       <WorklogCard jc={jc} run={run} profileId={profile?.id} />
       {hasRole('WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && <QcCard jc={jc} run={run} />}
       <EstimatesCard jc={jc} run={run} />
       <PartsCard jc={jc} run={run} />
       {hasRole('Cashier', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && <InvoiceCard jc={jc} run={run} />}
       <ClosureCard jc={jc} run={run} />
+    </div>
+  )
+}
+
+/** BAPL DMS's own service/job-card history for this vehicle's chassis (GET
+ * /api/bapl-dms/service-history) - a read-only reference panel, separate from JobCardScanner's own
+ * records above it, per the explicit answer to "what should the BAPL DMS sync show on this page":
+ * "BAPL DMS's own service/job-card history for this chassis". Silently shows nothing if the
+ * vehicle has no VIN/chassis on file yet, or if BAPL DMS has never seen this chassis - only a real
+ * BAPL DMS problem (502) surfaces as an error, since "no history" is an entirely normal outcome for
+ * a brand new vehicle. */
+function BaplServiceHistoryCard({ chassisNo, dealerCode }: { chassisNo?: string | null; dealerCode?: string | null }) {
+  const [rows, setRows] = useState<BaplDmsJobCardHistory[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setRows(null)
+    setError(null)
+    if (!chassisNo) return
+    staffApi.get<BaplDmsJobCardHistory[]>('/api/bapl-dms/service-history', { params: { chassisNo, dealerCode: dealerCode || undefined } })
+      .then(({ data }) => setRows(data))
+      .catch((err) => {
+        const msg = err?.response?.data?.message
+        // A 502 here is a real BAPL DMS problem; anything else (404/network hiccup) just means
+        // "nothing to show", which is normal and not worth alarming the service advisor over.
+        if (err?.response?.status === 502) setError(msg ?? 'Could not reach BAPL DMS.')
+        setRows([])
+      })
+  }, [chassisNo, dealerCode])
+
+  if (!chassisNo) return null
+
+  return (
+    <div className="card">
+      <h3>BAPL DMS Service History</h3>
+      {error && <p className="muted">{error}</p>}
+      {rows === null && !error && <p className="muted">Loading…</p>}
+      {rows !== null && rows.length === 0 && !error && <p className="muted">No prior BAPL DMS job cards found for this chassis.</p>}
+      {rows !== null && rows.length > 0 && (
+        <table>
+          <thead>
+            <tr><th>Job No.</th><th>Date</th><th>Status</th><th>Inward Type</th><th>Km</th><th>Complaints</th><th>Supervisor / Technician</th><th>Invoice No.</th></tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.jobCardHeaderId}>
+                <td>{r.jobPrefix}{r.jobNo}</td>
+                <td>{r.jobInDate ? new Date(r.jobInDate).toLocaleDateString() : '-'}</td>
+                <td>{r.jobStatus ?? '-'}</td>
+                <td>{r.inwardType ?? '-'}</td>
+                <td>{r.vehicleKms ?? '-'}</td>
+                <td>{r.complaints ?? '-'}</td>
+                <td>{r.supervisor ?? '-'} / {r.technician ?? '-'}</td>
+                <td>{r.invoiceNo ?? '-'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  )
+}
+
+/** Photo capture + upload, added to the Job Card Detail page (not the wizard - see the explicit
+ * "On the Job Card Detail page only, after creation" answer). Captures the browser's GPS location
+ * (Geolocation API) at the same moment a photo is picked, so the two travel together to
+ * POST /api/jobcards/{id}/photos/upload as one multipart/form-data request; location is best-effort
+ * and the upload still proceeds without it (denied permission, no GPS fix, desktop browser, etc). */
+function PhotosCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => void }) {
+  const [stage, setStage] = useState<PhotoStage>('CheckIn')
+  const [caption, setCaption] = useState('')
+  const [uploading, setUploading] = useState(false)
+  const [locationNote, setLocationNote] = useState<string | null>(null)
+
+  const getLocation = (): Promise<GeolocationPosition | null> =>
+    new Promise((resolve) => {
+      if (!('geolocation' in navigator)) { resolve(null); return }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve(pos),
+        () => resolve(null), // permission denied / unavailable - upload proceeds without coordinates
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 60_000 },
+      )
+    })
+
+  const onFileChosen = async (file: File | undefined) => {
+    if (!file) return
+    setUploading(true)
+    setLocationNote('Getting location…')
+    try {
+      const pos = await getLocation()
+      setLocationNote(pos ? `Location captured (±${Math.round(pos.coords.accuracy)}m)` : 'Location unavailable - uploading without it')
+
+      const form = new FormData()
+      form.append('File', file)
+      form.append('Stage', stage)
+      if (caption) form.append('Caption', caption)
+      if (pos) {
+        form.append('Latitude', String(pos.coords.latitude))
+        form.append('Longitude', String(pos.coords.longitude))
+      }
+
+      await run(() => staffApi.post(`/api/jobcards/${jc.id}/photos/upload`, form, { headers: { 'Content-Type': 'multipart/form-data' } }), 'Photo uploaded.')
+      setCaption('')
+    } finally {
+      setUploading(false)
+      setLocationNote(null)
+    }
+  }
+
+  const stages: PhotoStage[] = ['CheckIn', 'Inspection', 'Repair', 'Qc', 'Delivery']
+
+  return (
+    <div className="card">
+      <h3>Photos</h3>
+      <div className="form-row">
+        <div className="field">
+          <label>Stage</label>
+          <select disabled={uploading} value={stage} onChange={(e) => setStage(e.target.value as PhotoStage)}>
+            {stages.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>Caption (optional)</label>
+          <input disabled={uploading} value={caption} onChange={(e) => setCaption(e.target.value)} placeholder="e.g. Left mirror scratch" />
+        </div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        {/* capture="environment" hints the rear camera on a phone; still falls back to a normal
+           file picker on desktop, where "capture" is simply ignored. */}
+        <label className="btn btn-sm btn-primary" style={{ cursor: uploading ? 'default' : 'pointer', opacity: uploading ? 0.6 : 1 }}>
+          {uploading ? 'Uploading…' : 'Take / Upload Photo'}
+          <input
+            type="file"
+            accept="image/*"
+            capture="environment"
+            disabled={uploading}
+            style={{ display: 'none' }}
+            onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; onFileChosen(f) }}
+          />
+        </label>
+        {locationNote && <span className="muted">{locationNote}</span>}
+      </div>
+
+      {jc.photos.length > 0 && (
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 16 }}>
+          {jc.photos.map((p) => (
+            <div key={p.id} style={{ width: 160 }}>
+              <a href={photoSrc(p.url)} target="_blank" rel="noreferrer">
+                <img src={photoSrc(p.url)} alt={p.caption ?? p.stage} style={{ width: '100%', height: 120, objectFit: 'cover', borderRadius: 6, border: '1px solid #ddd' }} />
+              </a>
+              <p className="muted" style={{ margin: '4px 0 0', fontSize: 12 }}>
+                {p.stage}{p.caption ? ` · ${p.caption}` : ''}
+                {p.latitude != null && p.longitude != null && (
+                  <><br /><a href={`https://maps.google.com/?q=${p.latitude},${p.longitude}`} target="_blank" rel="noreferrer">📍 {p.latitude.toFixed(5)}, {p.longitude.toFixed(5)}</a></>
+                )}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
