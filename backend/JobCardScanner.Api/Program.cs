@@ -166,7 +166,16 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
+// Plain-HTTP-on-a-bare-public-IP deployments (no domain, no TLS cert) have nothing to redirect
+// TO - UseHttpsRedirection() would 307 every request to an https:// origin with no binding,
+// which just breaks the site. Guarded by config instead of deleted outright so the normal
+// https-domain deployment path (see deploy/DEPLOYMENT_GUIDE.md) keeps this on by default.
+// Set "DisableHttpsRedirection": true in appsettings.Production.json for a plain-IP deployment -
+// see deploy/DEPLOYMENT_GUIDE_PUBLIC_IP.md.
+if (!builder.Configuration.GetValue<bool>("DisableHttpsRedirection"))
+{
+    app.UseHttpsRedirection();
+}
 app.UseCors("AppCors");
 
 // Serves job card photos uploaded via POST /api/jobcards/{id}/photos/upload (JobCardsController)
@@ -179,6 +188,15 @@ app.UseStaticFiles();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+
+// Lets this same app also host the built React SPA straight out of wwwroot (see
+// deploy/DEPLOYMENT_GUIDE_PUBLIC_IP.md's "single site, no domain" deployment: `npm run build`'s
+// dist/ output copied into wwwroot alongside the API). MapControllers above already claims every
+// /api/... route, so this fallback only ever fires for whatever's left over - a direct link or a
+// refresh on a client-side route like /jobcards/123 - and hands it index.html so React Router
+// can take over, instead of IIS/Kestrel returning a raw 404. Harmless no-op in local dev, where
+// wwwroot/index.html doesn't exist (the Vite dev server owns the frontend there instead).
+app.MapFallbackToFile("index.html");
 
 // Create the schema and seed demo data automatically on startup in Development, so
 // `dotnet run` against a fresh local SQL Server produces a ready-to-use JobCardScanner

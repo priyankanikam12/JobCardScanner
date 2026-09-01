@@ -4,6 +4,8 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { apiClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { Badge } from '../components/Badge'
+import { PartSuggestionSection } from '../components/PartSuggestionSection'
+import { LabourSuggestionSection } from '../components/LabourSuggestionSection'
 import type { JobCardDetail, WorkflowStage } from '../types'
 import type { RootStackParamList } from '../navigation/RootNavigator'
 
@@ -80,6 +82,9 @@ export function JobCardDetailScreen({ route }: Props) {
         <Text style={styles.cardTitle}>Complaints</Text>
         {jc.complaints.map((c) => <Text key={c.id}>- {c.description}</Text>)}
       </View>
+
+      <PartSuggestionSection jc={jc} onChanged={load} />
+      <LabourSuggestionSection jc={jc} onChanged={load} />
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Work Timer</Text>
