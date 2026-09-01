@@ -64,7 +64,6 @@ export function ForceChangePasswordPage() {
       <div className="jcs-login-hero">
         <img src={bgaussLogo} alt="BGauss" className="jcs-hero-logo" />
         <h2>EV Two-Wheeler Workshop Management</h2>
-        <p>Job cards, estimates, parts, invoicing and reporting for every BGauss service workshop - in one place.</p>
         <img src={scootyImg} alt="" aria-hidden="true" className="jcs-hero-scooter" />
       </div>
 
