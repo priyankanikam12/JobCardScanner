@@ -149,7 +149,15 @@ export function LoginPage() {
               <button
                 type="button"
                 className="jcs-ms-btn"
-                onClick={() => instance.loginRedirect(apiLoginRequest)}
+                onClick={() => {
+                  // On a plain-HTTP deployment (no Web Crypto `subtle` API - see main.tsx's
+                  // bootstrap() comment) this throws instead of redirecting. Catch it here so
+                  // the click gives a clear on-page message instead of an uncaught console error
+                  // with no visible feedback.
+                  instance.loginRedirect(apiLoginRequest).catch(() => {
+                    setError('Microsoft sign-in needs this site running over HTTPS - use the Dealer / Workshop tab for now.')
+                  })
+                }}
               >
                 <MicrosoftLogo />
                 Continue with Microsoft
