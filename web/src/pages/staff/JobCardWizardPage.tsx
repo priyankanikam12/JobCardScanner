@@ -36,6 +36,281 @@ function mapBaplJobSourceToSource(baplJobSourceName: string): JobCardSource {
   return 'WalkIn'
 }
 
+/** "YYYY-MM-DDTHH:mm" in the browser's local time, for a datetime-local input's default value -
+ * used so "Expected delivery" defaults to today rather than starting blank. */
+function nowForDatetimeLocalInput(): string {
+  const d = new Date()
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset())
+  return d.toISOString().slice(0, 16)
+}
+
+const dash = (v: unknown) => (v !== null && v !== undefined && String(v).trim() !== '' ? String(v) : '-')
+const fmtDatePrint = (v?: string | null) => {
+  if (!v) return '-'
+  const d = new Date(v)
+  return Number.isNaN(d.getTime()) ? '-' : d.toLocaleDateString('en-GB')
+}
+
+/**
+ * Builds a print preview matching the real BAPL DMS "Job Card + Gate Pass" paper layout, field for
+ * field: a Job Card page (company/dealer header, Job Details/Customer Details/Vehicle Details/
+ * Battery Details panels, Customer Voice & Complaints, Observation/Supervisor Comment/Remarks,
+ * signatures) followed by a torn-off Gate Pass page, applied to whatever this wizard has captured so
+ * far (this runs from the Review & Create step, before the job card - and BAPL DMS's own Job No./
+ * Invoice No - actually exist, so those show "-" here; the real numbers appear once the job card is
+ * created). Fields BAPL DMS's own print shows that JobCardScanner genuinely has nowhere to source
+ * (GST No., Alt. Mobile, customer State, OEM Model, and every Battery Details test reading except
+ * Controller No. Make) print as "-" rather than being guessed.
+ */
+function buildJobCardPrintHtml(d: {
+  dealerName?: string | null
+  dealerCode?: string | null
+  location?: string | null
+  jobinDate: string
+  jobtype?: string | null
+  jobsource?: string | null
+  serviceHead?: string | null
+  serviceType?: string | null
+  estdelDate?: string | null
+  vehiclekms?: number | null
+  manualjobNo?: string | null
+  supervisor?: string | null
+  technician?: string | null
+  customerName?: string | null
+  customerMobile?: string | null
+  address?: string | null
+  city?: string | null
+  chassisNo?: string | null
+  batteryNo?: string | null
+  chargerNo?: string | null
+  controllerNo?: string | null
+  registerNo?: string | null
+  modelName?: string | null
+  colour?: string | null
+  saleDate?: string | null
+  insuranceExpiry?: string | null
+  complaints: string[]
+}): string {
+  const complaintRows = d.complaints.length
+    ? d.complaints.map((c, i) => `
+        <tr>
+          <td class="tc">${i + 1}</td>
+          <td>-</td>
+          <td>-</td>
+          <td>${c}</td>
+        </tr>`).join('')
+    : `<tr><td colspan="4" class="tc muted">No complaints recorded</td></tr>`
+
+  // The real paper form shows the delivery time as a full "HH:MM:SS.fffffff"-style stamp (e.g.
+  // "20:20:00.0000000"); the wizard only ever captures a datetime-local value (minute precision),
+  // so this pads seconds/fractional-seconds as zero rather than fabricating precision that was
+  // never entered.
+  const deliveryTimeMatch = d.estdelDate ? /T(\d{2}):(\d{2})/.exec(d.estdelDate) : null
+  const deliveryTime = deliveryTimeMatch ? `${deliveryTimeMatch[1]}:${deliveryTimeMatch[2]}:00.0000000` : '-'
+
+  const printDate = fmtDatePrint(d.jobinDate)
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Job Card Preview</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#111;background:#fff;padding:10mm 12mm}
+.doc-head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2.5px solid #1a4f8b;padding-bottom:7px;margin-bottom:8px}
+.co-name{font-size:15px;font-weight:bold;color:#1a4f8b;letter-spacing:.2px}
+.co-sub{font-size:9px;color:#555;margin-top:3px}
+.doc-right{text-align:right}
+.doc-title{font-size:15px;font-weight:bold;color:#1a4f8b;letter-spacing:.5px;margin-bottom:5px}
+.doc-right table{margin-left:auto;border-collapse:collapse;font-size:9.5px;color:#333}
+.doc-right td{padding:1.5px 3px}
+.doc-right td.lbl{color:#666;text-align:right;padding-right:5px}
+.doc-right td.val{font-weight:bold}
+.sec{border:1px solid #c8c8c8;border-radius:2px;margin-bottom:6px;page-break-inside:avoid}
+.sec-title{background:#e8e8e8;color:#333;font-size:8.5px;font-weight:bold;letter-spacing:.9px;text-transform:uppercase;padding:4px 8px;border-bottom:1px solid #c8c8c8}
+.row2{display:flex;gap:6px;margin-bottom:6px;align-items:flex-start}
+.row2>.sec{flex:1;margin-bottom:0}
+.kv{width:100%;border-collapse:collapse}
+.kv tr{border-bottom:1px solid #eaeaea}
+.kv tr:last-child{border-bottom:none}
+.kv td{padding:3.5px 8px;vertical-align:top;line-height:1.45}
+.kv td.k{width:46%;font-size:9px;color:#555;white-space:nowrap}
+.kv td.v{font-size:10px;font-weight:bold;word-break:break-word}
+.split{display:flex}
+.split .col{flex:1;border-right:1px solid #e0e0e0}
+.split .col:last-child{border-right:none}
+.cpl{width:100%;border-collapse:collapse;font-size:10px}
+.cpl thead tr{background:#eef2f9}
+.cpl th{padding:5px 8px;text-align:left;font-size:8.5px;font-weight:bold;color:#1a4f8b;border-bottom:1px solid #c8c8c8;white-space:nowrap}
+.cpl td{padding:4.5px 8px;border-bottom:1px solid #eaeaea;vertical-align:top;line-height:1.4}
+.cpl tbody tr:last-child td{border-bottom:none}
+.obs-strip{border:1px solid #c8c8c8;border-radius:2px;padding:0;margin-bottom:6px;display:flex;page-break-inside:avoid}
+.obs-item{flex:1;padding:6px 10px;border-right:1px solid #e0e0e0}
+.obs-item:last-child{border-right:none}
+.obs-lbl{display:block;font-size:8px;font-weight:bold;color:#333;background:#e8e8e8;text-transform:uppercase;letter-spacing:.5px;padding:3px 6px;margin:-6px -10px 6px -10px}
+.obs-val{font-size:10px;line-height:1.5;min-height:28px;display:block}
+.sigs{display:flex;justify-content:space-around;align-items:flex-end;margin-top:24px;margin-bottom:10px;padding:0 20px;page-break-inside:avoid}
+.sig{width:28%;text-align:center}
+.sig-space{height:40px}
+.sig-line{border-top:1px solid #333;margin:0 10px}
+.sig-label{font-size:9px;color:#333;padding-top:5px;font-weight:bold;letter-spacing:.3px}
+.tc{text-align:center}
+.muted{color:#999;font-style:italic}
+.tear-line{display:flex;align-items:center;margin:14px 0;gap:8px;page-break-inside:avoid}
+.tear-line-border{flex:1;border-top:1.5px dashed #888}
+.tear-line-label{font-size:8.5px;color:#888;white-space:nowrap;letter-spacing:.5px;display:flex;align-items:center;gap:4px}
+.tear-scissors{font-size:12px;color:#888;transform:rotate(90deg);display:inline-block}
+.gp-section{page-break-before:always;page-break-inside:avoid}
+.gp-heading{text-align:center;font-size:13px;font-weight:bold;color:#1a4f8b;letter-spacing:1px;text-transform:uppercase;padding:6px 0 10px;margin-bottom:10px;border-bottom:1px solid #ccc}
+.gp-sigs{display:flex;justify-content:space-between;align-items:flex-end;padding:0 10px;margin-bottom:12px}
+.gp-sig-box{width:220px;text-align:center}
+.gp-sig-space{height:40px}
+.gp-sig-line{border-top:1px solid #333;margin:0 10px}
+.gp-sig-label{font-size:10px;color:#333;padding-top:5px;font-weight:bold;letter-spacing:.3px}
+.gp-tbl{width:100%;border-collapse:collapse;font-size:11px}
+.gp-tbl td{padding:7px 10px;border:1px solid #ddd;vertical-align:middle;line-height:1.5}
+.gp-tbl td.gl{color:#555;font-size:9.5px;white-space:nowrap;background:#f8f9fb;width:20%}
+.gp-tbl td.gv{font-size:11px;font-weight:bold;word-break:break-word}
+.gp-sigs-bottom{display:flex;justify-content:space-between;align-items:flex-end;padding:0 10px;margin-top:20px}
+@media print{body{padding:0}@page{size:A4;margin:10mm 12mm}.sec,.obs-strip,.row2,.sigs,.tear-line,.gp-section{page-break-inside:avoid}}
+</style>
+</head>
+<body>
+<div class="page1">
+<div class="doc-head">
+  <div>
+    <div class="co-name">${dash(d.dealerName)}</div>
+    <div class="co-sub">Dealer Code: ${dash(d.dealerCode)} &nbsp;|&nbsp; ${dash(d.dealerName)}</div>
+  </div>
+  <div class="doc-right">
+    <div class="doc-title">JOB CARD</div>
+    <table>
+      <tr><td class="lbl">Invoice No:</td><td class="val">-</td></tr>
+      <tr><td class="lbl">Job No:</td><td class="val">- (assigned on creation) &nbsp; Date: ${printDate}</td></tr>
+    </table>
+  </div>
+</div>
+<div class="row2">
+  <div class="sec">
+    <div class="sec-title">Job Details</div>
+    <div class="split">
+      <div class="col">
+        <table class="kv">
+          <tr><td class="k">Job Type</td><td class="v">${dash(d.jobtype)}</td></tr>
+          <tr><td class="k">Job Source</td><td class="v">${dash(d.jobsource)}</td></tr>
+          <tr><td class="k">Service Head</td><td class="v">${dash(d.serviceHead)}</td></tr>
+          <tr><td class="k">Service Type</td><td class="v">${dash(d.serviceType)}</td></tr>
+          <tr><td class="k">Est. Delivery</td><td class="v">${fmtDatePrint(d.estdelDate)}</td></tr>
+        </table>
+      </div>
+      <div class="col">
+        <table class="kv">
+          <tr><td class="k">Vehicle Kms</td><td class="v">${dash(d.vehiclekms)}</td></tr>
+          <tr><td class="k">Manual Job No</td><td class="v">${dash(d.manualjobNo)}</td></tr>
+          <tr><td class="k">Supervisor</td><td class="v">${dash(d.supervisor)}</td></tr>
+          <tr><td class="k">Technician</td><td class="v">${dash(d.technician)}</td></tr>
+          <tr><td class="k">Delivery Time</td><td class="v">${deliveryTime}</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="sec">
+    <div class="sec-title">Customer Details</div>
+    <table class="kv">
+      <tr><td class="k">Customer Name</td><td class="v">${dash(d.customerName)}</td></tr>
+      <tr><td class="k">Address</td><td class="v">${dash(d.address)}</td></tr>
+      <tr><td class="k">City &amp; Pin</td><td class="v">${dash(d.city)}</td></tr>
+      <tr><td class="k">State</td><td class="v">-</td></tr>
+      <tr><td class="k">GST No.</td><td class="v">-</td></tr>
+      <tr><td class="k">Mobile</td><td class="v">${dash(d.customerMobile)}</td></tr>
+      <tr><td class="k">Alt. Mobile</td><td class="v">-</td></tr>
+    </table>
+  </div>
+</div>
+<div class="row2">
+  <div class="sec">
+    <div class="sec-title">Vehicle Details</div>
+    <table class="kv">
+      <tr><td class="k">Chassis No</td><td class="v">${dash(d.chassisNo)}</td></tr>
+      <tr><td class="k">Battery No</td><td class="v">${dash(d.batteryNo)}</td></tr>
+      <tr><td class="k">Charger No</td><td class="v">${dash(d.chargerNo)}</td></tr>
+      <tr><td class="k">Controller No</td><td class="v">${dash(d.controllerNo)}</td></tr>
+      <tr><td class="k">Register No</td><td class="v">${dash(d.registerNo)}</td></tr>
+      <tr><td class="k">Model</td><td class="v">${dash(d.modelName)}</td></tr>
+      <tr><td class="k">OEM Model</td><td class="v">-</td></tr>
+      <tr><td class="k">Colour</td><td class="v">${dash(d.colour)}</td></tr>
+      <tr><td class="k">Sale Date</td><td class="v">${fmtDatePrint(d.saleDate)}</td></tr>
+      <tr><td class="k">Insurance Exp.</td><td class="v">${fmtDatePrint(d.insuranceExpiry)}</td></tr>
+    </table>
+  </div>
+  <div class="sec">
+    <div class="sec-title">Battery Details</div>
+    <table class="kv">
+      <tr><td class="k">Battery Make</td><td class="v">-</td></tr>
+      <tr><td class="k">Battery Serial No(s)</td><td class="v">-</td></tr>
+      <tr><td class="k">Voltage at Full Charge (OCV)</td><td class="v">-</td></tr>
+      <tr><td class="k">Voltage at Full Charge (CCV)</td><td class="v">-</td></tr>
+      <tr><td class="k">Voltage at Discharge</td><td class="v">-</td></tr>
+      <tr><td class="k">Capacity (AH)</td><td class="v">-</td></tr>
+      <tr><td class="k">Battery Set Voltage</td><td class="v">-</td></tr>
+      <tr><td class="k">Motor Drawing (No Load)</td><td class="v">-</td></tr>
+      <tr><td class="k">Controller No. Make</td><td class="v">${dash(d.controllerNo)}</td></tr>
+      <tr><td class="k">Battery Chemical</td><td class="v">-</td></tr>
+      <tr><td class="k">Battery Capacity</td><td class="v">-</td></tr>
+    </table>
+  </div>
+</div>
+<div class="sec">
+  <div class="sec-title">Customer Voice &amp; Complaints</div>
+  <table class="cpl">
+    <thead><tr><th style="width:36px">Sr</th><th style="width:24%">Customer Voice</th><th style="width:24%">Code</th><th>Complaint</th></tr></thead>
+    <tbody>${complaintRows}</tbody>
+  </table>
+</div>
+<div class="obs-strip">
+  <div class="obs-item"><span class="obs-lbl">Observation</span><span class="obs-val">-</span></div>
+  <div class="obs-item"><span class="obs-lbl">Supervisor Comment</span><span class="obs-val">-</span></div>
+  <div class="obs-item"><span class="obs-lbl">Remarks</span><span class="obs-val">-</span></div>
+</div>
+<div class="sigs">
+  <div class="sig"><div class="sig-space"></div><div class="sig-line"></div><div class="sig-label">Technician</div></div>
+  <div class="sig"><div class="sig-space"></div><div class="sig-line"></div><div class="sig-label">Supervisor / Advisor</div></div>
+  <div class="sig"><div class="sig-space"></div><div class="sig-line"></div><div class="sig-label">Customer</div></div>
+</div>
+<div class="tear-line">
+  <div class="tear-line-border"></div>
+  <div class="tear-line-label"><span class="tear-scissors">&#9988;</span> TEAR HERE <span class="tear-scissors">&#9988;</span></div>
+  <div class="tear-line-border"></div>
+</div>
+</div>
+<div class="page2 gp-section">
+  <div class="gp-heading">Gate Pass</div>
+  <div class="gp-sigs">
+    <div class="gp-sig-box"><div class="gp-sig-space"></div><div class="gp-sig-line"></div><div class="gp-sig-label">Supervisor / Advisor</div></div>
+    <div class="gp-sig-box"><div class="gp-sig-space"></div><div class="gp-sig-line"></div><div class="gp-sig-label">Customer</div></div>
+  </div>
+  <table class="gp-tbl">
+    <tr>
+      <td class="gl">Customer Name</td><td class="gv">${dash(d.customerName)}</td>
+      <td class="gl">Job Date</td><td class="gv">${printDate}</td>
+      <td class="gl">Job No</td><td class="gv">-</td>
+    </tr>
+    <tr>
+      <td class="gl">Vehicle No.</td><td class="gv">${dash(d.registerNo)}</td>
+      <td class="gl">Chassis No.</td><td class="gv">${dash(d.chassisNo)}</td>
+      <td class="gl"></td><td class="gv"></td>
+    </tr>
+  </table>
+  <div class="gp-sigs-bottom">
+    <div class="gp-sig-box"><div class="gp-sig-space"></div><div class="gp-sig-line"></div><div class="gp-sig-label">Supervisor / Advisor</div></div>
+    <div class="gp-sig-box"><div class="gp-sig-space"></div><div class="gp-sig-line"></div><div class="gp-sig-label">Customer</div></div>
+  </div>
+</div>
+</body>
+</html>`
+}
+
 export function JobCardWizardPage() {
   const { profile } = useStaffAuth()
   const navigate = useNavigate()
@@ -114,16 +389,15 @@ export function JobCardWizardPage() {
   }
 
   // Step 1: customer
-  const [searchQ, setSearchQ] = useState('')
-  const [results, setResults] = useState<Customer[]>([])
   const [customer, setCustomer] = useState<Customer | null>(null)
   const [newCustomer, setNewCustomer] = useState({ name: '', mobile: '', email: '', city: '', address: '' })
 
-  // "Find or add customer" by chassis no. / registration no. - auto-fetches everything BAPL DMS
-  // knows about that vehicle (Controllers/BaplDmsController.cs's vehicle-lookup, ported from BAPL
-  // DMS's own onChassisChange()/GetAllInspectedLotChassisAsync) and uses it to pre-fill both the
-  // "register a new customer" fields below AND the vehicle step that follows - baplVehicleHit is
-  // read again in step 2 for that.
+  // "(Registered customer Details)" - by chassis no. / registration no. - auto-fetches everything
+  // BAPL DMS knows about that vehicle (Controllers/BaplDmsController.cs's vehicle-lookup, ported
+  // from BAPL DMS's own onChassisChange()/GetAllInspectedLotChassisAsync) and uses it to pre-fill
+  // both the "register a new customer" fields below AND the vehicle step that follows -
+  // baplVehicleHit is read again in step 2 for that. The old "search by mobile number or name"
+  // field is commented out below per your request - chassis/reg no. search is the only lookup left.
   const [chassisOrRegQ, setChassisOrRegQ] = useState('')
   const [vehicleLookupLoading, setVehicleLookupLoading] = useState(false)
   const [vehicleLookupError, setVehicleLookupError] = useState<string | null>(null)
@@ -151,6 +425,8 @@ export function JobCardWizardPage() {
         name: data.customerName || c.name,
         mobile: data.customerMobile ? data.customerMobile.replace(/\D/g, '').slice(0, 10) : c.mobile,
         city: data.customerCity || c.city,
+        email: data.customerEmail || c.email,
+        address: data.customerAddress || c.address,
       }))
     } catch (err: unknown) {
       const response = (err as { response?: { status?: number; data?: { message?: string } } })?.response
@@ -170,8 +446,17 @@ export function JobCardWizardPage() {
   // Model -> Variant is a dependent dropdown (see data/vehicleCatalog.ts): picking a model
   // narrows the Variant list down to just that model's variants, and changing the model clears
   // whatever variant was previously selected so an invalid model/variant pairing can't be sent.
+  // Only used for a fully manual vehicle (no BAPL DMS hit) - see usingBaplVehicle below.
   const [selectedModelId, setSelectedModelId] = useState<number | null>(null)
   const availableVariants = variantsForModel(selectedModelId)
+  // True whenever a BAPL DMS chassis/reg-no hit exists - whether its fields are still locked or
+  // "Edit anyway" has unlocked them. BAPL DMS doesn't split Model/Variant into two fields the way
+  // JobCardScanner's own catalog does (it's one combined ItemName), so once a hit exists, Model is
+  // always a plain text field and Variant is never shown again, even after "Edit anyway" - only
+  // Model/Reg No/VIN reappear as editable.
+  const usingBaplVehicle = !!baplVehicleHit
+  const previousOdometer = baplVehicleHit?.vehiclePrevKms ?? null
+  const odometerValid = newVehicle.odometer > 0 && (previousOdometer == null || newVehicle.odometer > previousOdometer)
 
   // Pre-fill the "add a new vehicle" form the moment a BAPL DMS hit exists, so a customer created
   // from a chassis/reg-no search (above) lands on step 2 with everything already typed in. BAPL DMS
@@ -197,11 +482,13 @@ export function JobCardWizardPage() {
   const [serviceType, setServiceType] = useState<ServiceType>('PaidService')
   const [source, setSource] = useState<JobCardSource>('WalkIn')
   const [priority, setPriority] = useState<JobCardPriority>('Normal')
-  const [odometerAtCheckIn, setOdometerAtCheckIn] = useState(0)
   const [batteryLevel, setBatteryLevel] = useState<number | ''>('')
-  const [expectedDeliveryAt, setExpectedDeliveryAt] = useState('')
+  const [expectedDeliveryAt, setExpectedDeliveryAt] = useState(nowForDatetimeLocalInput)
   const [consentNotes, setConsentNotes] = useState('')
-  const [complaints, setComplaints] = useState<string[]>([''])
+  // Populated only from the BAPL DMS ComplaintMaster dropdown now (see addComplaintFromDropdown) -
+  // the old free-text "+ Add complaint" flow is gone per your request, so this never starts with a
+  // blank placeholder entry any more.
+  const [complaints, setComplaints] = useState<string[]>([])
   // BAPL-DMS-style fields, captured alongside JobCardScanner's own Service Type/Source/Priority
   // above. Job Type -> Service Head -> Service Type is a live cascade straight off BAPL DMS's own
   // JobType/ServiceHead/ServiceType master tables (Controllers/BaplDmsController.cs) - picking a
@@ -238,6 +525,15 @@ export function JobCardWizardPage() {
 
   const [baplSyncWarning, setBaplSyncWarning] = useState<string | null>(null)
 
+  // Every field in the "Job Card fields" (BAPL DMS) panel is now required, per your request -
+  // "Continue to Review" stays disabled until all of them are filled in, so a job card can no
+  // longer reach Review with a half-filled BAPL DMS section.
+  const serviceDetailsValid = !!(
+    selectedJobTypeId && selectedServiceHeadId && selectedServiceTypeId &&
+    selectedWorkshopLocCode && baplSupervisorName.trim() && baplTechnicianName.trim() &&
+    baplManualJobNo.trim() && selectedJobSourceId
+  )
+
   // Job Type/JobSource masters + Complaint master are all small, session-wide lists - fetched once
   // each, not re-fetched per wizard step.
   useEffect(() => {
@@ -253,15 +549,45 @@ export function JobCardWizardPage() {
   }, [])
 
   useEffect(() => {
+    // Clear whatever Service Location was previously selected (manually or auto-defaulted) any
+    // time the dealer itself changes - a workshop code from one dealer's W-series is meaningless
+    // once effectiveDealerId points at a different dealer (only relevant for Corporate/System
+    // Admin, who can switch dealers via the picker above; for a dealer-scoped login this only
+    // ever runs once, on mount). Without this reset, the "default to W1" effect below would never
+    // re-fire on a dealer switch, since it only defaults when the field is still empty.
+    setSelectedWorkshopLocCode('')
+    setBaplServiceLocation('')
     if (!effectiveDealerId) { setWorkshops([]); return }
     staffApi.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: effectiveDealerId } })
       .then(({ data }) => setWorkshops(data))
       .catch(() => setWorkshops([]))
   }, [effectiveDealerId])
 
+  // Default the Service Location to this dealer's own W-series, lowest number first (W1 if it
+  // has one, else W2, and so on) - per your request, so a Service Location is already picked as
+  // soon as the dealer/workshop list resolves, instead of starting blank until step 2. Only fires
+  // when nothing is selected yet, so it never overrides a manual pick (onWorkshopChange below) or
+  // - since that effect runs after this one and always re-sets on a match - the more specific
+  // auto-fill from a chassis/reg-no BAPL DMS hit right below.
+  useEffect(() => {
+    if (selectedWorkshopLocCode || workshops.length === 0) return
+    const bySeries = [...workshops].sort((a, b) => {
+      const na = Number(/W(\d+)$/i.exec(a.locCode)?.[1] ?? Number.MAX_SAFE_INTEGER)
+      const nb = Number(/W(\d+)$/i.exec(b.locCode)?.[1] ?? Number.MAX_SAFE_INTEGER)
+      return na - nb
+    })
+    const def = bySeries[0]
+    if (def) {
+      setSelectedWorkshopLocCode(def.locCode)
+      setBaplServiceLocation(def.locName)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workshops])
+
   // Pre-select the Service Location once BAPL DMS told us which workshop this chassis is
   // registered against (ChassisDetails.LocationCode via the chassis/reg-no lookup), once that
-  // dealer's workshop list has actually loaded.
+  // dealer's workshop list has actually loaded. Runs after the W1-default effect above and always
+  // re-sets on a match, so a specific chassis-linked workshop still wins over the plain default.
   useEffect(() => {
     if (!baplVehicleHit?.locationCode || workshops.length === 0) return
     const match = workshops.find((w) => w.locCode === baplVehicleHit.locationCode)
@@ -312,24 +638,22 @@ export function JobCardWizardPage() {
     setBaplServiceLocation(workshops.find((w) => w.locCode === locCode)?.locName ?? '')
   }
 
+  // Dropdown-only now (multi-select by repeated Add clicks) - the old manual "+ Add complaint"
+  // free-text flow is gone per your request.
   const addComplaintFromDropdown = () => {
     if (!selectedComplaintId) return
     const picked = complaintOptions.find((c) => String(c.id) === selectedComplaintId)
     if (!picked) return
-    setComplaints((prev) => {
-      const blanks = prev.filter((c) => !c.trim())
-      const filled = prev.filter((c) => c.trim())
-      return [...filled, picked.name, ...blanks]
-    })
+    if (!complaints.includes(picked.name)) setComplaints((prev) => [...prev, picked.name])
     setSelectedComplaintId('')
   }
+  const removeComplaint = (name: string) => setComplaints((prev) => prev.filter((c) => c !== name))
 
   // Photos captured BEFORE the job card exists (Review & Create step, ahead of the "Create Job
   // Card" button) - kept as in-memory File objects with a local object-URL preview until the job
   // card is actually created, since POST /api/jobcards/{id}/photos/upload needs a real job card id
   // that doesn't exist yet at this point in the wizard. submit() below uploads each one right after
-  // creation succeeds. This is in addition to, not instead of, the Photos card already on the Job
-  // Card Detail page - that one stays for photos added after the fact (repairs, QC, delivery, ...).
+  // creation succeeds. Now REQUIRED (at least one) per your request - previously optional.
   type PendingPhoto = { id: string; file: File; previewUrl: string; caption: string; stage: PhotoStage; latitude?: number; longitude?: number }
   const [pendingPhotos, setPendingPhotos] = useState<PendingPhoto[]>([])
   const [capturingPhoto, setCapturingPhoto] = useState(false)
@@ -353,8 +677,17 @@ export function JobCardWizardPage() {
       navigator.geolocation.getCurrentPosition((pos) => resolve(pos), () => resolve(null), { enableHighAccuracy: true, timeout: 8000, maximumAge: 60_000 })
     })
 
+  // 1 GB per-photo cap (raised from an implicit "whatever the backend allowed" - see
+  // JobCardsController.UploadPhoto's [RequestSizeLimit(1_000_000_000)]) per your request.
+  const MAX_PHOTO_BYTES = 1_000_000_000
+
   const addPendingPhoto = async (file: File | undefined) => {
     if (!file) return
+    if (file.size > MAX_PHOTO_BYTES) {
+      setPhotoLocationNote(null)
+      setError(`"${file.name}" is larger than 1 GB - pick a smaller file.`)
+      return
+    }
     setCapturingPhoto(true)
     setPhotoLocationNote('Getting location…')
     try {
@@ -381,12 +714,6 @@ export function JobCardWizardPage() {
       if (found) URL.revokeObjectURL(found.previewUrl)
       return prev.filter((p) => p.id !== id)
     })
-  }
-
-  const searchCustomers = async () => {
-    if (searchQ.length < 3) return
-    const { data } = await staffApi.get<Customer[]>('/api/customers/search', { params: { q: searchQ } })
-    setResults(data)
   }
 
   const createCustomer = async () => {
@@ -422,13 +749,13 @@ export function JobCardWizardPage() {
       warrantyExpiryDate: dateOnly(baplVehicleHit?.expireWarrantyDate),
     })
     setVehicle(data)
-    setOdometerAtCheckIn(data.odometer)
     setStep(2)
   }
 
   const submit = async () => {
     if (!customer || !vehicle) return
     if (!effectiveDealerId) { setError('Select a dealer/workshop before creating the job card.'); return }
+    if (pendingPhotos.length === 0) { setError('At least one photo is required before creating the job card.'); return }
     setSubmitting(true)
     setError(null)
     setPhotoUploadWarning(null)
@@ -441,7 +768,7 @@ export function JobCardWizardPage() {
         serviceType,
         source,
         priority,
-        odometerAtCheckIn,
+        odometerAtCheckIn: vehicle.odometer,
         batteryLevelAtCheckIn: batteryLevel === '' ? null : batteryLevel,
         expectedDeliveryAt: expectedDeliveryAt || null,
         serviceAdvisorId: profile?.id,
@@ -509,6 +836,45 @@ export function JobCardWizardPage() {
     }
   }
 
+  const printPreview = () => {
+    const win = window.open('', '_blank', 'width=900,height=650')
+    if (!win) { setError('Please allow popups to print the job card.'); return }
+    const html = buildJobCardPrintHtml({
+      dealerName: dealers.find((d) => d.id === effectiveDealerId)?.name ?? profile?.dealerName,
+      dealerCode: dealers.find((d) => d.id === effectiveDealerId)?.code ?? baplVehicleHit?.dealerCode,
+      location: baplServiceLocation,
+      jobinDate: new Date().toISOString(),
+      jobtype: baplJobType,
+      jobsource: jobSources.find((s) => s.id === selectedJobSourceId)?.name,
+      serviceHead: serviceHeads.find((h) => h.id === selectedServiceHeadId)?.name,
+      serviceType: serviceTypes.find((t) => t.id === selectedServiceTypeId)?.name,
+      estdelDate: expectedDeliveryAt,
+      vehiclekms: vehicle?.odometer,
+      manualjobNo: baplManualJobNo,
+      supervisor: baplSupervisorName,
+      technician: baplTechnicianName,
+      customerName: customer?.name,
+      customerMobile: customer?.mobile,
+      address: customer?.address,
+      city: customer?.city,
+      chassisNo: vehicle?.vin,
+      batteryNo: vehicle?.batteryNo,
+      chargerNo: vehicle?.chargerNo,
+      controllerNo: vehicle?.controllerNo,
+      registerNo: vehicle?.regNo,
+      modelName: vehicle?.model,
+      colour: vehicle?.color,
+      saleDate: baplVehicleHit?.saleDate,
+      insuranceExpiry: vehicle?.insuranceExpiry ?? baplVehicleHit?.insuranceExpDate,
+      complaints: complaints.filter((c) => c.trim()),
+    })
+    win.document.open()
+    win.document.write(html)
+    win.document.close()
+    win.focus()
+    win.onload = () => win.print()
+  }
+
   return (
     <div>
       <h2>New Job Card</h2>
@@ -522,7 +888,7 @@ export function JobCardWizardPage() {
         <div className="card">
           {needsDealerPicker && (
             <div className="field" style={{ marginBottom: 16 }}>
-              <label>Dealer / Workshop</label>
+              <label>Dealer WorkShop Location</label>
               <select value={selectedDealerId} onChange={(e) => setSelectedDealerId(e.target.value)}>
                 <option value="">Select the dealer/workshop this job card is for…</option>
                 {dealers.map((d) => (
@@ -538,7 +904,7 @@ export function JobCardWizardPage() {
                   value={dealerSearchQ}
                   onChange={(e) => setDealerSearchQ(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && searchBaplDealers()}
-                  placeholder="Search Dealer / Workshop (BAPL DMS) by name or code…"
+                  placeholder="Search Dealer WorkShop Location (BAPL DMS) by name or code…"
                 />
                 <button className="btn" onClick={searchBaplDealers} disabled={dealerSearchQ.trim().length < 2}>Search</button>
               </div>
@@ -564,22 +930,24 @@ export function JobCardWizardPage() {
               )}
             </div>
           )}
-          <h3>Find or add customer</h3>
-          <div className="field">
+          <h3>(Registered customer Details)</h3>
+          {/* "Search by mobile number or name" commented out per your request - chassis/reg no.
+             search (below) is now the only way to look up a customer here. */}
+          {/* <div className="field">
             <label>Search by mobile number or name</label>
             <div style={{ display: 'flex', gap: 8 }}>
               <input value={searchQ} onChange={(e) => setSearchQ(e.target.value)} placeholder="98765xxxxx" />
               <button className="btn" onClick={searchCustomers}>Search</button>
             </div>
-          </div>
+          </div> */}
           <div className="field">
-            <label>Or search by chassis no. / registration no. / mobile no. (auto-fetches customer &amp; vehicle details from BAPL DMS)</label>
+            <label>Search by chassis no. / registration no.</label>
             <div style={{ display: 'flex', gap: 8 }}>
               <input
                 value={chassisOrRegQ}
                 onChange={(e) => setChassisOrRegQ(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && lookupByChassisOrReg()}
-                placeholder="Chassis no., registration no., or mobile no."
+                placeholder="Chassis no. or registration no."
               />
               <button className="btn" onClick={lookupByChassisOrReg} disabled={vehicleLookupLoading || !chassisOrRegQ.trim()}>
                 {vehicleLookupLoading ? 'Searching…' : 'Search'}
@@ -595,24 +963,10 @@ export function JobCardWizardPage() {
               </p>
             )}
           </div>
-          {results.length > 0 && (
-            <table>
-              <thead><tr><th>Name</th><th>Mobile</th><th>City</th><th></th></tr></thead>
-              <tbody>
-                {results.map((c) => (
-                  <tr key={c.id}>
-                    <td>{c.name}</td><td>{c.mobile}</td><td>{c.city}</td>
-                    <td><button className="btn btn-sm btn-primary" onClick={() => { setCustomer(c); setBaplVehicleHit(null); setStep(1) }}>Select</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-
           <h3 style={{ marginTop: 24 }}>Or register a new customer</h3>
           {customerFieldsLocked && (
             <p className="muted" style={{ marginTop: -4, marginBottom: 12 }}>
-              🔒 Name and Mobile were auto-fetched from BAPL DMS and are locked to prevent accidental changes.{' '}
+              🔒 Name, Mobile, Email, City and Address were auto-fetched from BAPL DMS and are locked to prevent accidental changes.{' '}
               <a href="#" onClick={(e) => { e.preventDefault(); setUnlockCustomerFields(true) }}>Edit anyway</a>
             </p>
           )}
@@ -632,8 +986,9 @@ export function JobCardWizardPage() {
                 onChange={(e) => setNewCustomer({ ...newCustomer, mobile: e.target.value.replace(/\D/g, '').slice(0, 10) })}
               />
             </div>
-            <div className="field"><label>Email</label><input value={newCustomer.email} onChange={(e) => setNewCustomer({ ...newCustomer, email: e.target.value })} /></div>
-            <div className="field"><label>City</label><input value={newCustomer.city} onChange={(e) => setNewCustomer({ ...newCustomer, city: e.target.value })} /></div>
+            <div className="field"><label>Email</label><input value={newCustomer.email} disabled={customerFieldsLocked} onChange={(e) => setNewCustomer({ ...newCustomer, email: e.target.value })} /></div>
+            <div className="field"><label>City</label><input value={newCustomer.city} disabled={customerFieldsLocked} onChange={(e) => setNewCustomer({ ...newCustomer, city: e.target.value })} /></div>
+            <div className="field"><label>Address</label><input value={newCustomer.address} disabled={customerFieldsLocked} onChange={(e) => setNewCustomer({ ...newCustomer, address: e.target.value })} /></div>
           </div>
           {error && <p className="error-text">{error}</p>}
           <button className="btn btn-primary" disabled={!newCustomer.name || newCustomer.mobile.length !== 10 || !effectiveDealerId} onClick={createCustomer}>Create & Continue</button>
@@ -675,7 +1030,7 @@ export function JobCardWizardPage() {
                 {customer.vehicles.map((v) => (
                   <tr key={v.id}>
                     <td>{v.model} {v.variant}</td><td>{v.regNo}</td><td>{v.odometer} km</td>
-                    <td><button className="btn btn-sm btn-primary" onClick={() => { setVehicle(v); setOdometerAtCheckIn(v.odometer); setStep(2) }}>Select</button></td>
+                    <td><button className="btn btn-sm btn-primary" onClick={() => { setVehicle(v); setStep(2) }}>Select</button></td>
                   </tr>
                 ))}
               </tbody>
@@ -684,19 +1039,20 @@ export function JobCardWizardPage() {
           <h3 style={{ marginTop: 24 }}>Or add a new vehicle</h3>
           {vehicleFieldsLocked && (
             <p className="muted" style={{ marginTop: -4, marginBottom: 12 }}>
-              🔒 Model, Variant, Reg No and VIN were auto-fetched from BAPL DMS and are locked to prevent accidental changes.{' '}
+              🔒 Model, Reg No and VIN were auto-fetched from BAPL DMS and are locked to prevent accidental changes.{' '}
               <a href="#" onClick={(e) => { e.preventDefault(); setUnlockVehicleFields(true) }}>Edit anyway</a>
             </p>
           )}
           <div className="form-row">
             <div className="field">
-              <label>Model{vehicleFieldsLocked ? '' : ' & Variant'}</label>
-              {vehicleFieldsLocked ? (
+              <label>Model{usingBaplVehicle ? '' : ' & Variant'}</label>
+              {usingBaplVehicle ? (
                 // BAPL DMS doesn't split Model/Variant into two fields (see the pre-fill effect
-                // above) - a plain disabled text input shows the combined name it sent back,
-                // instead of a <select> that would otherwise appear empty (nothing in the catalog
-                // matches a BAPL ItemName one-for-one).
-                <input value={newVehicle.model} disabled />
+                // above) - a plain text input shows the combined name it sent back (editable once
+                // "Edit anyway" unlocks it), instead of a <select> that would otherwise appear empty
+                // (nothing in the catalog matches a BAPL ItemName one-for-one). The Variant dropdown
+                // never reappears here, even after "Edit anyway" - only Model/Reg No/VIN do.
+                <input value={newVehicle.model} disabled={vehicleFieldsLocked} onChange={(e) => setNewVehicle({ ...newVehicle, model: e.target.value })} />
               ) : (
                 <select
                   value={selectedModelId ?? ''}
@@ -712,7 +1068,7 @@ export function JobCardWizardPage() {
                 </select>
               )}
             </div>
-            {!vehicleFieldsLocked && (
+            {!usingBaplVehicle && (
               <div className="field">
                 <label>Variant</label>
                 <select
@@ -727,12 +1083,18 @@ export function JobCardWizardPage() {
             )}
             <div className="field"><label>Reg No</label><input value={newVehicle.regNo} disabled={vehicleFieldsLocked} onChange={(e) => setNewVehicle({ ...newVehicle, regNo: e.target.value })} /></div>
             <div className="field"><label>VIN</label><input value={newVehicle.vin} disabled={vehicleFieldsLocked} onChange={(e) => setNewVehicle({ ...newVehicle, vin: e.target.value })} /></div>
-            <div className="field"><label>Odometer (km)</label><input type="number" value={newVehicle.odometer} onChange={(e) => setNewVehicle({ ...newVehicle, odometer: Number(e.target.value) })} /></div>
+            <div className="field">
+              <label>Odometer (km) *{previousOdometer != null ? ` (Previous: ${previousOdometer} km)` : ''}</label>
+              <input type="number" value={newVehicle.odometer} onChange={(e) => setNewVehicle({ ...newVehicle, odometer: Number(e.target.value) })} />
+              {previousOdometer != null && newVehicle.odometer > 0 && newVehicle.odometer <= previousOdometer && (
+                <p className="error-text" style={{ margin: '4px 0 0', fontSize: 12 }}>Must be greater than the previous odometer reading ({previousOdometer} km).</p>
+              )}
+            </div>
           </div>
           {error && <p className="error-text">{error}</p>}
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn" onClick={() => setStep(0)}>← Back</button>
-            <button className="btn btn-primary" disabled={!newVehicle.model || !effectiveDealerId} onClick={createVehicle}>Create & Continue</button>
+            <button className="btn btn-primary" disabled={!newVehicle.model || !effectiveDealerId || !odometerValid} onClick={createVehicle}>Create & Continue</button>
           </div>
         </div>
       )}
@@ -749,85 +1111,81 @@ export function JobCardWizardPage() {
               <span style={{ background: '#1c64f2', color: '#fff', fontSize: 12, fontWeight: 600, padding: '2px 8px', borderRadius: 999 }}>
                 BAPL DMS
               </span>
-              <strong style={{ fontSize: 14 }}>Job Card fields (as entered in BAPL DMS)</strong>
+              <strong style={{ fontSize: 14 }}>Job Card fields</strong>
             </div>
             {baplMastersError && <p className="error-text" style={{ marginTop: 0 }}>{baplMastersError}</p>}
             <div className="form-row">
               <div className="field">
-                <label>Job Type</label>
+                <label>Job Type *</label>
                 <select value={selectedJobTypeId ?? ''} onChange={(e) => onJobTypeChange(e.target.value)}>
                   <option value="">Select job type…</option>
                   {jobTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                 </select>
               </div>
               <div className="field">
-                <label>Service Head</label>
+                <label>Service Head *</label>
                 <select value={selectedServiceHeadId ?? ''} disabled={!selectedJobTypeId} onChange={(e) => onServiceHeadChange(e.target.value)}>
                   <option value="">{selectedJobTypeId ? 'Select service head…' : 'Select a job type first'}</option>
                   {serviceHeads.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
                 </select>
               </div>
               <div className="field">
-                <label>Service Type</label>
+                <label>Service Type *</label>
                 <select value={selectedServiceTypeId ?? ''} disabled={!selectedServiceHeadId} onChange={(e) => setSelectedServiceTypeId(e.target.value ? Number(e.target.value) : null)}>
                   <option value="">{selectedServiceHeadId ? 'Select service type…' : 'Select a service head first'}</option>
                   {serviceTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                 </select>
               </div>
+              <div className="field">
+                <label>Priority *</label>
+                <select value={priority} onChange={(e) => setPriority(e.target.value as JobCardPriority)}>
+                  {(['Normal', 'High', 'Urgent'] as JobCardPriority[]).map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
             </div>
             <div className="form-row" style={{ marginBottom: 0 }}>
               <div className="field">
-                <label>Service Location (workshop)</label>
+                <label>Service Location (workshop) *</label>
                 <select value={selectedWorkshopLocCode} disabled={!effectiveDealerId} onChange={(e) => onWorkshopChange(e.target.value)}>
                   <option value="">{workshops.length ? 'Select workshop…' : 'No workshops found for this dealer yet'}</option>
                   {workshops.map((w) => <option key={w.locCode} value={w.locCode}>{w.locName} ({w.locCode})</option>)}
                 </select>
               </div>
               <div className="field">
-                <label>Supervisor</label>
+                <label>Supervisor *</label>
                 <input value={baplSupervisorName} onChange={(e) => setBaplSupervisorName(e.target.value)} placeholder="Supervisor name" />
               </div>
               <div className="field">
-                <label>Technician</label>
+                <label>Technician *</label>
                 <input value={baplTechnicianName} onChange={(e) => setBaplTechnicianName(e.target.value)} placeholder="Technician name" />
               </div>
               <div className="field">
-                <label>Manual Job No.</label>
+                <label>Manual Job No. *</label>
                 <input value={baplManualJobNo} onChange={(e) => setBaplManualJobNo(e.target.value)} placeholder="e.g. 0" />
+              </div>
+              <div className="field">
+                <label>Source *</label>
+                <select value={selectedJobSourceId ?? ''} onChange={(e) => onJobSourceChange(e.target.value)}>
+                  <option value="">Select source…</option>
+                  {jobSources.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
               </div>
             </div>
             <p className="muted" style={{ margin: '8px 0 0', fontSize: 12 }}>
-              {selectedJobTypeId && selectedServiceHeadId && selectedServiceTypeId
-                ? 'Job Type / Service Head / Service Type / Service Location above will be written into BAPL DMS\'s own job card when you create this job card.'
-                : 'Pick Job Type, Service Head and Service Type above to also create this job card in BAPL DMS\'s own database - leave any of them blank to only save it in JobCardScanner.'}
+              All fields above are required - they are what let this job card also be created directly inside BAPL DMS's own database.
             </p>
           </div>
 
-          {/* No separate "Service Type" picker here any more - it was a straight duplicate of the
-             BAPL DMS Service Type dropdown above (JobCardScanner's own ServiceType enum is now
-             auto-derived from whichever Job Type was picked - see mapBaplJobTypeToServiceType).
-             "Source" now comes from BAPL DMS's own JobSource master instead of a hardcoded list. */}
           <div className="form-row">
-            <div className="field">
-              <label>Source</label>
-              <select value={selectedJobSourceId ?? ''} onChange={(e) => onJobSourceChange(e.target.value)}>
-                <option value="">Select source…</option>
-                {jobSources.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
-            </div>
-            <div className="field">
-              <label>Priority</label>
-              <select value={priority} onChange={(e) => setPriority(e.target.value as JobCardPriority)}>
-                {(['Normal', 'High', 'Urgent'] as JobCardPriority[]).map((s) => <option key={s} value={s}>{s}</option>)}
-              </select>
-            </div>
-            <div className="field"><label>Odometer at check-in (km)</label><input type="number" value={odometerAtCheckIn} onChange={(e) => setOdometerAtCheckIn(Number(e.target.value))} /></div>
             <div className="field"><label>Battery level at check-in (%)</label><input type="number" min={0} max={100} value={batteryLevel} onChange={(e) => setBatteryLevel(e.target.value === '' ? '' : Number(e.target.value))} /></div>
             <div className="field"><label>Expected delivery</label><input type="datetime-local" value={expectedDeliveryAt} onChange={(e) => setExpectedDeliveryAt(e.target.value)} /></div>
           </div>
 
           <div className="field">
-            <label>Customer complaints / concerns</label>
+            <label>Customer complaints (Customer Voice)</label>
+            {/* Manual "+ Add complaint" free-text flow removed per your request - the BAPL DMS
+               ComplaintMaster dropdown below is now the only way to add one, and it supports adding
+               several (pick, Add, pick another, Add again). */}
             {complaintOptions.length > 0 && (
               <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
                 <select value={selectedComplaintId} onChange={(e) => setSelectedComplaintId(e.target.value)}>
@@ -837,24 +1195,31 @@ export function JobCardWizardPage() {
                 <button className="btn btn-sm" disabled={!selectedComplaintId} onClick={addComplaintFromDropdown}>Add</button>
               </div>
             )}
-            {complaints.map((c, i) => (
-              <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-                <input value={c} onChange={(e) => setComplaints(complaints.map((x, idx) => (idx === i ? e.target.value : x)))} placeholder="e.g. Unusual noise from rear motor" />
-                <button className="btn btn-sm" onClick={() => setComplaints(complaints.filter((_, idx) => idx !== i))}>Remove</button>
-              </div>
-            ))}
-            <button className="btn btn-sm" onClick={() => setComplaints([...complaints, ''])}>+ Add complaint</button>
+            {complaints.length > 0 ? (
+              <ul style={{ margin: 0, paddingLeft: 20 }}>
+                {complaints.map((c) => (
+                  <li key={c} style={{ marginBottom: 4 }}>
+                    {c} <button className="btn btn-sm" style={{ marginLeft: 8 }} onClick={() => removeComplaint(c)}>Remove</button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="muted" style={{ margin: 0 }}>No complaints added yet.</p>
+            )}
           </div>
 
           <div className="field">
-            <label>Customer consent notes</label>
+            <label>(Customer Voice) notes</label>
             <textarea rows={3} value={consentNotes} onChange={(e) => setConsentNotes(e.target.value)} />
           </div>
 
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn" onClick={() => setStep(1)}>← Back</button>
-            <button className="btn btn-primary" onClick={() => setStep(3)}>Continue to Review</button>
+            <button className="btn btn-primary" disabled={!serviceDetailsValid} onClick={() => setStep(3)}>Continue to Review</button>
           </div>
+          {!serviceDetailsValid && (
+            <p className="muted" style={{ marginTop: 8, fontSize: 12 }}>Fill in every field marked * in "Job Card fields" above to continue.</p>
+          )}
         </div>
       )}
 
@@ -864,7 +1229,7 @@ export function JobCardWizardPage() {
           <p><strong>Customer:</strong> {customer.name} ({customer.mobile})</p>
           <p><strong>Vehicle:</strong> {vehicle.model} {vehicle.variant} - {vehicle.regNo}</p>
           <p><strong>Service:</strong> {baplJobType || serviceType} via {jobSources.find((s) => s.id === selectedJobSourceId)?.name || source}, priority {priority}</p>
-          <p><strong>Complaints:</strong> {complaints.filter((c) => c.trim()).join('; ') || 'None recorded'}</p>
+          <p><strong>Complaints:</strong> {complaints.join('; ') || 'None recorded'}</p>
           {(baplJobType || baplServiceLocation || baplSupervisorName || baplTechnicianName || baplManualJobNo) && (
             <p>
               <strong>BAPL DMS fields:</strong>{' '}
@@ -885,7 +1250,7 @@ export function JobCardWizardPage() {
 
           {!createdJobCard && (
             <div className="field">
-              <label>Photos (optional - captured now, uploaded once the job card is created)</label>
+              <label>Photos (required - captured now, uploaded once the job card is created; up to 1 GB each)</label>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: pendingPhotos.length > 0 ? 12 : 0 }}>
                 <label className="btn btn-sm" style={{ cursor: capturingPhoto ? 'default' : 'pointer', opacity: capturingPhoto ? 0.6 : 1 }}>
                   {capturingPhoto ? 'Adding…' : '📷 Take / Upload Photo'}
@@ -900,6 +1265,7 @@ export function JobCardWizardPage() {
                 </label>
                 {photoLocationNote && <span className="muted">{photoLocationNote}</span>}
               </div>
+              {pendingPhotos.length === 0 && <p className="error-text" style={{ margin: 0, fontSize: 12 }}>At least one photo is required.</p>}
               {pendingPhotos.length > 0 && (
                 <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                   {pendingPhotos.map((p) => (
@@ -940,7 +1306,8 @@ export function JobCardWizardPage() {
           ) : (
             <div style={{ display: 'flex', gap: 8 }}>
               <button className="btn" disabled={submitting} onClick={() => setStep(2)}>← Back</button>
-              <button className="btn btn-primary" disabled={submitting} onClick={submit}>
+              <button className="btn" disabled={submitting} onClick={printPreview}>🖨️ Print</button>
+              <button className="btn btn-primary" disabled={submitting || pendingPhotos.length === 0} onClick={submit}>
                 {submitting ? 'Creating...' : 'Create Job Card'}
               </button>
             </div>

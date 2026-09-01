@@ -38,11 +38,11 @@ export function LoginPage() {
     setError(null)
     setSubmitting(true)
     try {
-      const result = await dealerLogin(email, password)
+      await dealerLogin(email, password)
       await refresh()
-      if (result.mustChangePassword) {
-        setInfo('Signed in. Please set a new password from your profile before continuing - this is your first sign-in.')
-      }
+      // If this account's mustChangePassword flag is set, RequireStaff (guarding /dashboard)
+      // redirects to /change-password itself before rendering anything else - no branching
+      // needed here, just go to the normal destination and let the guard decide.
       navigate('/dashboard', { replace: true })
     } catch (err: unknown) {
       const message =
@@ -105,7 +105,7 @@ export function LoginPage() {
       <div className="jcs-login-hero">
         <img src={bgaussLogo} alt="BGauss" className="jcs-hero-logo" />
         <h2>EV Two-Wheeler Workshop Management</h2>
-        {/* <p>Job cards, estimates, parts, invoicing and reporting for every BGauss service workshop - in one place.</p> */}
+        <p>Job cards, estimates, parts, invoicing and reporting for every BGauss service workshop - in one place.</p>
         <img src={scootyImg} alt="" aria-hidden="true" className="jcs-hero-scooter" />
       </div>
 
@@ -159,10 +159,15 @@ export function LoginPage() {
             <div className="jcs-mode-body">
               {step === 'login' && (
                 <form onSubmit={handleDealerLogin}>
-                  <p className="jcs-mode-copy">For dealer workshop staff signing in with the email &amp; password issued by your admin.</p>
+                  <p className="jcs-mode-copy">For dealer workshop staff signing in with the email/dealer code &amp; password issued by your admin, or your BAPL DMS login.</p>
                   <label className="jcs-field">
-                    <span>Email</span>
-                    <input type="email" required autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@dealer.com" />
+                    <span>Email or Dealer Code</span>
+                    {/* Plain text, not type="email" - a BAPL DMS login can be signed in with a
+                       bare dealer code as its username (e.g. "CUS0486"), same as BAPL DMS's own
+                       site accepts (see DealerAuthController.Login's fallback to
+                       BaplDmsService.VerifyDealerCredentialsAsync) - the browser's built-in email
+                       format validation would otherwise silently block submitting that. */}
+                    <input type="text" required autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@dealer.com or CUS0001" />
                   </label>
                   <label className="jcs-field">
                     <span>Password</span>

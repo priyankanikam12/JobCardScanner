@@ -3,13 +3,80 @@ import { useParams } from 'react-router-dom'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
 import { StatusBadge } from '../../components/StatusBadge'
-import { WorkflowTimeline } from '../../components/WorkflowTimeline'
-import type { BaplDmsJobCardHistory, JobCardDetail, PhotoStage, WorkflowStage } from '../../types'
+import { WorkflowTimeline, type WorkflowTimelineHistoryEntry } from '../../components/WorkflowTimeline'
+import type { BaplDmsJobCardHistory, BaplDmsLabourRow, BaplDmsPartStock, JobCardDetail, PhotoStage, WorkflowStage } from '../../types'
 
 // Photo URLs come back from the API as a relative path (e.g. "/uploads/jobcard-photos/.../x.jpg" -
 // see JobCardsController.UploadPhoto), same origin as the API itself, not the frontend dev server.
 const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL
 const photoSrc = (url: string) => (url.startsWith('http') ? url : `${API_BASE_URL}${url}`)
+
+/** Of the app's 15 workflow stages (see DbSeeder's default template), these 3 are hidden from both
+ * the read-only Workflow Timeline below and the Update Workflow Stage dropdown further down - NOT
+ * removed from the backend, purely a display filter:
+ *  - "job_card_created" is folded into "check_in" as one combined "Vehicle Check-In / Job Card
+ *    Created" step (see buildTimelineStages) - the wizard's new combined check-in flow means these
+ *    are no longer two meaningfully separate moments for a user to see as separate rows.
+ *  - "quality_check" and "rework" are hidden as effectively-unused stubs: grepping both web/src and
+ *    backend/ for each of the 15 stage keys turned up real, stage-specific business logic for only
+ *    "parts_requested", "in_repair" and "ready_for_delivery" (all three used in DashboardController's
+ *    KPI counts) - every other stage, these two included, is referenced nowhere but the seed data
+ *    and the timeline's icon lookup. "rework" doubly so: nothing in this app ever transitions a job
+ *    card into it automatically (no "send back for rework" action exists anywhere), so from the
+ *    UI's perspective it is a pure stub. "quality_check" is hidden for the same "least wired up"
+ *    reason, and now doubly so since the Quality Check panel itself is hidden below (see QcCard's
+ *    usage) - nothing on this page produces or consumes a "quality_check" visit any more either. */
+const HIDDEN_WORKFLOW_STAGE_KEYS = new Set(['job_card_created', 'quality_check', 'rework'])
+const MERGED_CHECKIN_LABEL = 'Vehicle Check-In / Job Card Created'
+
+/** Quality Check panel toggle - see its usage below. A `const false`, not a literal `false`
+ * inline in the JSX: TypeScript's control-flow narrowing of `jc` (JobCardDetail | null -> non-null
+ * further up this file) does not survive an inline `{false && <QcCard jc={jc} .../>}` - a real,
+ * reproducible TS narrowing gap for JSX attributes on the right of a literal-`false` `&&` - so this
+ * named constant is used instead purely to keep the file type-checking cleanly. */
+const SHOW_QUALITY_CHECK_PANEL = false
+
+/** The WorkflowStage list actually shown in the timeline - see HIDDEN_WORKFLOW_STAGE_KEYS. */
+function buildTimelineStages(stages: WorkflowStage[]): WorkflowStage[] {
+  return stages
+    .filter((s) => !HIDDEN_WORKFLOW_STAGE_KEYS.has(s.stageKey))
+    .map((s) => (s.stageKey === 'check_in' ? { ...s, label: MERGED_CHECKIN_LABEL } : s))
+}
+
+/** Stage-history entries for the timeline, with "check_in" and "job_card_created" entries combined
+ * into one - using the earliest enteredAt and latest exitedAt of the two, so the merged step shows
+ * "reached" as soon as either underlying stage's timestamp is set - and "quality_check"/"rework"
+ * entries dropped entirely (see HIDDEN_WORKFLOW_STAGE_KEYS). */
+function buildTimelineHistory(jc: JobCardDetail): WorkflowTimelineHistoryEntry[] {
+  const out: WorkflowTimelineHistoryEntry[] = []
+  let merged: WorkflowTimelineHistoryEntry | null = null
+  for (const h of jc.stageHistory) {
+    const key = h.stage?.stageKey
+    if (key === 'quality_check' || key === 'rework') continue
+    if (key === 'check_in' || key === 'job_card_created') {
+      if (!merged) {
+        merged = { stageLabel: MERGED_CHECKIN_LABEL, enteredAt: h.enteredAt, exitedAt: h.exitedAt }
+        out.push(merged)
+      } else {
+        if (new Date(h.enteredAt).getTime() < new Date(merged.enteredAt).getTime()) merged.enteredAt = h.enteredAt
+        if (h.exitedAt && (!merged.exitedAt || new Date(h.exitedAt).getTime() > new Date(merged.exitedAt).getTime())) merged.exitedAt = h.exitedAt
+      }
+      continue
+    }
+    out.push({ stageLabel: h.stage?.label, enteredAt: h.enteredAt, exitedAt: h.exitedAt })
+  }
+  return out
+}
+
+/** currentStageId to pass to WorkflowTimeline: unchanged unless the job card's real current stage
+ * is one of the hidden ones, in which case this redirects to the nearest earlier stage that IS
+ * still shown (for "job_card_created" that's always "check_in", i.e. the merged step). */
+function resolveTimelineCurrentStageId(stages: WorkflowStage[], currentStage?: WorkflowStage): string | undefined {
+  if (!currentStage) return undefined
+  if (!HIDDEN_WORKFLOW_STAGE_KEYS.has(currentStage.stageKey)) return currentStage.id
+  const visible = stages.filter((s) => !HIDDEN_WORKFLOW_STAGE_KEYS.has(s.stageKey) && s.seq <= currentStage.seq)
+  return visible.sort((a, b) => b.seq - a.seq)[0]?.id
+}
 
 export function JobCardDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -80,7 +147,13 @@ export function JobCardDetailPage() {
           )}
           {jc.baplSyncStatus === 'Synced' && jc.baplJobCardHeaderId && (
             <p className="muted" style={{ marginTop: 4 }}>
-              ✅ Synced to BAPL DMS as <a href={`/jobcards/bapl/${jc.baplJobCardHeaderId}`}>job card #{jc.baplJobCardHeaderId}</a>.
+              {/* Show BAPL DMS's own JobNo (what BAPL DMS's own Job Card List calls "JobNo") - not
+                 baplJobCardHeaderId, which is only JobCardScanner's internal reference to the row
+                 and means nothing to a user looking at BAPL DMS's own screens. */}
+              ✅ Synced to BAPL DMS as{' '}
+              <a href={`/jobcards/bapl/${jc.baplJobCardHeaderId}`}>
+                {jc.baplJobNo != null ? `job card #${jc.baplJobNo}` : 'a job card (BAPL DMS sync pending)'}
+              </a>.
             </p>
           )}
           {jc.baplSyncStatus === 'Failed' && (
@@ -92,7 +165,11 @@ export function JobCardDetailPage() {
 
         <div className="card">
           <h3>Workflow Timeline</h3>
-          <WorkflowTimeline stages={stages} currentStageId={jc.currentStage?.id} history={jc.stageHistory.map((h) => ({ stageLabel: h.stage?.label, enteredAt: h.enteredAt, exitedAt: h.exitedAt }))} />
+          <WorkflowTimeline
+            stages={buildTimelineStages(stages)}
+            currentStageId={resolveTimelineCurrentStageId(stages, jc.currentStage)}
+            history={buildTimelineHistory(jc)}
+          />
         </div>
       </div>
 
@@ -105,10 +182,13 @@ export function JobCardDetailPage() {
       <ComplaintsCard jc={jc} run={run} />
       <PhotosCard jc={jc} run={run} />
       <WorklogCard jc={jc} run={run} profileId={profile?.id} />
-      {hasRole('WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && <QcCard jc={jc} run={run} />}
+      {/* Quality Check panel hidden per request - kept in code (not deleted) in case it's needed
+         again later. QcCard itself is still defined below, just never rendered. */}
+      {SHOW_QUALITY_CHECK_PANEL && hasRole('WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && <QcCard jc={jc} run={run} />}
       <EstimatesCard jc={jc} run={run} />
-      <PartsCard jc={jc} run={run} />
-      {hasRole('Cashier', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && <InvoiceCard jc={jc} run={run} />}
+      <PartSuggestionCard jc={jc} run={run} />
+      <LabourSuggestionCard jc={jc} run={run} />
+      {hasRole('Cashier', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && <InvoiceCard jc={jc} />}
       <ClosureCard jc={jc} run={run} />
     </div>
   )
@@ -288,25 +368,21 @@ function UpdateWorkflowStageCard({
   run: (fn: () => Promise<unknown>, successMsg?: string) => void
   canAssignTechnician: boolean
 }) {
-  const [stageId, setStageId] = useState(jc.currentStage?.id ?? '')
-  const [technicianId, setTechnicianId] = useState(jc.assignedTechnician?.id ?? '')
-  const [technicians, setTechnicians] = useState<{ id: string; name: string }[]>([])
+  // Deliberately starts blank (not pre-filled with the job card's current stage, and not
+  // auto-advanced to whatever's "next") - the advisor picks the new stage explicitly every time.
+  const [stageId, setStageId] = useState('')
+  // Free-text technician name (see JobCard.AssignedTechnicianName) rather than a dropdown bound to
+  // a User id - there's no confirmed technician catalog to pick from, so this is typed in directly
+  // and sent as assignedTechnicianName on the same PUT /api/jobcards/{id} call.
+  const [technicianName, setTechnicianName] = useState(jc.assignedTechnicianName ?? '')
   const [expectedDeliveryAt, setExpectedDeliveryAt] = useState(jc.expectedDeliveryAt ? jc.expectedDeliveryAt.slice(0, 16) : '')
   const [notes, setNotes] = useState('')
 
   useEffect(() => {
-    setStageId(jc.currentStage?.id ?? '')
-    setTechnicianId(jc.assignedTechnician?.id ?? '')
+    setStageId('')
+    setTechnicianName(jc.assignedTechnicianName ?? '')
     setExpectedDeliveryAt(jc.expectedDeliveryAt ? jc.expectedDeliveryAt.slice(0, 16) : '')
-  }, [jc.id, jc.currentStage?.id, jc.assignedTechnician?.id, jc.expectedDeliveryAt])
-
-  useEffect(() => {
-    if (!canAssignTechnician) return
-    staffApi.get('/api/jobcards/technicians', { params: jc.dealer?.id ? { dealerId: jc.dealer.id } : {} })
-      .then(({ data }) => setTechnicians(data))
-      .catch(() => setTechnicians([]))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canAssignTechnician, jc.dealer?.id])
+  }, [jc.id, jc.assignedTechnicianName, jc.expectedDeliveryAt])
 
   const submit = async () => {
     const tasks: Promise<unknown>[] = []
@@ -315,7 +391,7 @@ function UpdateWorkflowStageCard({
     }
     if (canAssignTechnician) {
       tasks.push(staffApi.put(`/api/jobcards/${jc.id}`, {
-        assignedTechnicianId: technicianId || null,
+        assignedTechnicianName: technicianName || null,
         expectedDeliveryAt: expectedDeliveryAt || null,
       }))
     }
@@ -329,17 +405,15 @@ function UpdateWorkflowStageCard({
         <div className="field">
           <label>Stage</label>
           <select disabled={busy} value={stageId} onChange={(e) => setStageId(e.target.value)}>
-            {stages.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+            <option value="" disabled>Select new stage…</option>
+            {stages.filter((s) => !HIDDEN_WORKFLOW_STAGE_KEYS.has(s.stageKey)).map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
           </select>
         </div>
         {canAssignTechnician && (
           <>
             <div className="field">
               <label>Assign Technician</label>
-              <select disabled={busy} value={technicianId} onChange={(e) => setTechnicianId(e.target.value)}>
-                <option value="">Unassigned</option>
-                {technicians.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
+              <input disabled={busy} value={technicianName} onChange={(e) => setTechnicianName(e.target.value)} placeholder="Technician name" />
             </div>
             <div className="field">
               <label>Expected Completion</label>
@@ -438,7 +512,7 @@ function EstimatesCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise
 
   return (
     <div className="card">
-      <h3>Additional Work / Estimates</h3>
+      <h3>Estimates Amount</h3>
       <table>
         <thead><tr><th>Estimate #</th><th>Amount</th><th>Status</th></tr></thead>
         <tbody>{jc.estimates.map((e) => <tr key={e.id}><td>{e.estimateNumber}</td><td>Rs.{e.totalAmount}</td><td><StatusBadge status={e.status} /></td></tr>)}</tbody>
@@ -454,58 +528,301 @@ function EstimatesCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise
   )
 }
 
-function PartsCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>) => void }) {
+/** "Part Suggestion" panel (renamed from "Parts Used" - see JobCardPartSuggestion's doc comment in
+ * types/index.ts). Parts come from BAPL DMS's own PartsInventory for this job card's service
+ * location (GET /api/bapl-dms/parts?locationCode=...), fetched once on mount the same way
+ * BaplServiceHistoryCard above fetches its supplementary data; suggesting one just records an
+ * itemCode + a Paid/U-W status in JobCardScannerDb (POST .../part-suggestions) - nothing is written
+ * back into BAPL DMS itself. Status can be flipped afterwards (PUT .../part-suggestions/{id}). */
+function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => void }) {
+  const [availableParts, setAvailableParts] = useState<BaplDmsPartStock[]>([])
+  const [itemCode, setItemCode] = useState('')
+  const [qty, setQty] = useState<number | ''>('')
+  const [status, setStatus] = useState<'Paid' | 'U/W'>('Paid')
+
+  useEffect(() => {
+    if (!jc.baplServiceLocationCode) { setAvailableParts([]); return }
+    staffApi.get<BaplDmsPartStock[]>('/api/bapl-dms/parts', { params: { locationCode: jc.baplServiceLocationCode } })
+      .then(({ data }) => setAvailableParts(data))
+      .catch(() => setAvailableParts([]))
+  }, [jc.baplServiceLocationCode])
+
+  const addSuggestion = async () => {
+    const selected = availableParts.find((p) => p.itemCode === itemCode)
+    await staffApi.post(`/api/jobcards/${jc.id}/part-suggestions`, {
+      itemCode,
+      availableQtyAtSuggestion: qty === '' ? selected?.availableQty ?? null : qty,
+      status,
+    })
+    setItemCode('')
+    setQty('')
+    setStatus('Paid')
+  }
+
   return (
     <div className="card">
-      <h3>Parts Used</h3>
+      <h3>Part Suggestion</h3>
       <table>
-        <thead><tr><th>Part</th><th>Qty</th><th>Amount</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Item Code</th><th>Available Qty (at suggestion)</th><th>Status</th><th></th></tr></thead>
         <tbody>
-          {jc.parts.map((p) => (
+          {jc.partSuggestions.map((p) => (
             <tr key={p.id}>
-              <td>{p.part?.name}</td><td>{p.quantity}</td><td>Rs.{p.amount}</td><td><StatusBadge status={p.status} /></td>
-              <td>{p.status === 'Requested' && <button className="btn btn-sm" onClick={() => run(() => staffApi.post(`/api/jobcard-parts/${p.id}/issue`))}>Issue</button>}</td>
+              <td>{p.itemCode}</td>
+              <td>{p.availableQtyAtSuggestion ?? '-'}</td>
+              <td><StatusBadge status={p.status} /></td>
+              <td>
+                <button
+                  className="btn btn-sm"
+                  onClick={() => run(() => staffApi.put(`/api/jobcards/part-suggestions/${p.id}`, { status: p.status === 'Paid' ? 'U/W' : 'Paid' }))}
+                >
+                  Mark {p.status === 'Paid' ? 'U/W' : 'Paid'}
+                </button>
+              </td>
             </tr>
           ))}
+          {jc.partSuggestions.length === 0 && (
+            <tr><td colSpan={4} className="muted">No parts suggested yet.</td></tr>
+          )}
         </tbody>
       </table>
-      <p className="muted">Use the Parts & Inventory page to search the catalog and request a part against this job card.</p>
+
+      <h4>Suggest a part (from BAPL DMS PartsInventory)</h4>
+      {!jc.baplServiceLocationCode && <p className="muted">No BAPL DMS service location on this job card - part list unavailable.</p>}
+      <div className="form-row">
+        <div className="field">
+          <label>Item Code</label>
+          <select
+            value={itemCode}
+            onChange={(e) => {
+              setItemCode(e.target.value)
+              const p = availableParts.find((x) => x.itemCode === e.target.value)
+              setQty(p ? p.availableQty : '')
+            }}
+          >
+            <option value="">Select item…</option>
+            {availableParts.map((p) => <option key={p.itemCode} value={p.itemCode}>{p.itemCode} (avail. {p.availableQty})</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>Available Qty</label>
+          <input type="number" value={qty} onChange={(e) => setQty(e.target.value === '' ? '' : Number(e.target.value))} />
+        </div>
+        <div className="field">
+          <label>Status</label>
+          <select value={status} onChange={(e) => setStatus(e.target.value as 'Paid' | 'U/W')}>
+            <option value="Paid">Paid</option>
+            <option value="U/W">U/W</option>
+          </select>
+        </div>
+      </div>
+      <button className="btn btn-sm btn-primary" disabled={!itemCode} onClick={() => run(addSuggestion, 'Part suggestion added.')}>Add Suggestion</button>
     </div>
   )
 }
 
-function InvoiceCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>) => void }) {
-  // jc.invoice comes from GET /api/jobcards/{id} (see JobCardsController.Detail) - without this,
-  // the button below stayed visible even after an invoice had already been generated (e.g. a page
-  // reload, or a second click before the list refreshed), and clicking it again always failed
-  // with 409 "An invoice already exists for this job card." with no indication why.
-  if (jc.invoice) {
-    const invoiceId = jc.invoice.id
-    // Can't just point an <a href> at the API URL - GET /api/invoices/{id}/pdf requires the same
-    // Bearer token every other staffApi call carries (see api/client.ts's interceptor), which a
-    // plain anchor navigation never sends, so that would 401 instead of downloading anything.
-    const downloadPdf = async () => {
-      const { data } = await staffApi.get(`/api/invoices/${invoiceId}/pdf`, { responseType: 'blob' })
-      const url = URL.createObjectURL(data as Blob)
-      window.open(url, '_blank')
-      setTimeout(() => URL.revokeObjectURL(url), 60_000)
-    }
-    return (
-      <div className="card">
-        <h3>Invoice</h3>
-        <p><strong>{jc.invoice.invoiceNumber}</strong> &middot; Rs.{jc.invoice.totalAmount.toFixed(2)} &middot; <StatusBadge status={jc.invoice.status} /></p>
-        <button className="btn btn-sm" onClick={downloadPdf}>Download PDF</button>
+/** "Labour Suggestion" panel (see JobCard.LabourSuggestions) - mirrors PartSuggestionCard above,
+ * but pulling from BAPL DMS's own LabourMaster (rate card) instead of PartsInventory. Defaults the
+ * candidate list to this job card's own already-selected Job Type/Service Head/Service Type
+ * cascade (jc.baplJobTypeId/baplServiceHeadId/baplServiceTypeId, set on the wizard), combined with
+ * a free-text search box - see BaplDmsLabourRow's doc comment on the backend for why both matter
+ * (most existing LabourMaster rows have no cascade mapping yet, so cascade-only would hide them).
+ * Description/HSN/GST/Rate are snapshotted from whichever row is picked, not re-editable once
+ * added (Rate especially - see JobCardLabourSuggestion's doc comment); Quantity and Issue Type
+ * (free text, not a fixed dropdown) can be edited after the fact. */
+// Issue Type is a fixed Paid / Under Warranty choice, not free text - matches how the workshop
+// actually bills labour (paid work vs. work covered by the vehicle's warranty).
+const LABOUR_ISSUE_TYPES = ['Paid', 'U/W'] as const
+
+function LabourSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => void }) {
+  const [rows, setRows] = useState<BaplDmsLabourRow[]>([])
+  const [q, setQ] = useState('')
+  // Tracks the selected LabourMaster row by its own unique int id, NOT by LabourCode - real
+  // LabourMaster data has the same LabourCode repeated across several rows for different
+  // CityTier/oemmodelname scoping (e.g. "SF0M001" appears 4 times), so keying/looking up by
+  // LabourCode both broke React's key uniqueness and silently resolved to the wrong row's
+  // rate/HSN/GST (always the first match) regardless of which option was actually picked.
+  const [selectedId, setSelectedId] = useState('')
+  const [qty, setQty] = useState<number>(1)
+  const [issueType, setIssueType] = useState('')
+  const [editing, setEditing] = useState<{ id: string; qty: number; issueType: string } | null>(null)
+
+  useEffect(() => {
+    const params: Record<string, string | number> = {}
+    if (jc.baplJobTypeId) params.jobTypeId = jc.baplJobTypeId
+    if (jc.baplServiceHeadId) params.serviceHeadId = jc.baplServiceHeadId
+    if (jc.baplServiceTypeId) params.serviceTypeId = jc.baplServiceTypeId
+    if (q.trim()) params.q = q.trim()
+    staffApi.get<BaplDmsLabourRow[]>('/api/bapl-dms/labour', { params })
+      .then(({ data }) => setRows(data))
+      .catch(() => setRows([]))
+  }, [jc.baplJobTypeId, jc.baplServiceHeadId, jc.baplServiceTypeId, q])
+
+  const selected = rows.find((r) => String(r.id) === selectedId)
+
+  const addSuggestion = async () => {
+    if (!selected) return
+    await staffApi.post(`/api/jobcards/${jc.id}/labour-suggestions`, {
+      labourCode: selected.labourCode,
+      labourDescription: selected?.labourDescription ?? null,
+      hsnCode: selected?.hsnCode ?? null,
+      sgst: selected?.sgst ?? null,
+      cgst: selected?.cgst ?? null,
+      igst: selected?.igst ?? null,
+      rateAtSuggestion: selected?.labourRate ?? null,
+      quantity: qty || 1,
+      issueType: issueType.trim() || null,
+    })
+    setSelectedId('')
+    setQty(1)
+    setIssueType('')
+  }
+
+  const saveEdit = async () => {
+    if (!editing) return
+    await staffApi.put(`/api/jobcards/labour-suggestions/${editing.id}`, {
+      quantity: editing.qty || 1,
+      issueType: editing.issueType.trim() || null,
+    })
+    setEditing(null)
+  }
+
+  return (
+    <div className="card">
+      <h3>Labour Suggestion</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Labour Code</th><th>Description</th><th>Qty</th><th>Rate</th><th>HSN</th>
+            <th>SGST</th><th>CGST</th><th>IGST</th><th>Issue Type</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {jc.labourSuggestions.map((l) =>
+            editing?.id === l.id ? (
+              <tr key={l.id}>
+                <td>{l.labourCode}</td>
+                <td>{l.labourDescription ?? '-'}</td>
+                <td><input type="number" min={1} value={editing.qty} onChange={(e) => setEditing({ ...editing, qty: Number(e.target.value) })} style={{ width: '4rem' }} /></td>
+                <td>{l.rateAtSuggestion ?? '-'}</td>
+                <td>{l.hsnCode ?? '-'}</td>
+                <td>{l.sgst ?? '-'}</td>
+                <td>{l.cgst ?? '-'}</td>
+                <td>{l.igst ?? '-'}</td>
+                <td>
+                  <select value={editing.issueType} onChange={(e) => setEditing({ ...editing, issueType: e.target.value })}>
+                    <option value="">Select…</option>
+                    {LABOUR_ISSUE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </td>
+                <td>
+                  <button className="btn btn-sm btn-primary" onClick={() => run(saveEdit)}>Save</button>{' '}
+                  <button className="btn btn-sm" onClick={() => setEditing(null)}>Cancel</button>
+                </td>
+              </tr>
+            ) : (
+              <tr key={l.id}>
+                <td>{l.labourCode}</td>
+                <td>{l.labourDescription ?? '-'}</td>
+                <td>{l.quantity}</td>
+                <td>{l.rateAtSuggestion ?? '-'}</td>
+                <td>{l.hsnCode ?? '-'}</td>
+                <td>{l.sgst ?? '-'}</td>
+                <td>{l.cgst ?? '-'}</td>
+                <td>{l.igst ?? '-'}</td>
+                <td>{l.issueType ?? '-'}</td>
+                <td>
+                  <button className="btn btn-sm" onClick={() => setEditing({ id: l.id, qty: l.quantity, issueType: l.issueType ?? '' })}>Edit</button>{' '}
+                  <button className="btn btn-sm" onClick={() => run(() => staffApi.delete(`/api/jobcards/labour-suggestions/${l.id}`))}>Remove</button>
+                </td>
+              </tr>
+            )
+          )}
+          {jc.labourSuggestions.length === 0 && (
+            <tr><td colSpan={10} className="muted">No labour suggested yet.</td></tr>
+          )}
+        </tbody>
+      </table>
+
+      <h4>Suggest labour (from BAPL DMS LabourMaster)</h4>
+      <div className="form-row">
+        <div className="field">
+          <label>Search</label>
+          <input type="text" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Labour code or description…" />
+        </div>
+        <div className="field">
+          <label>Labour Code</label>
+          <select value={selectedId} onChange={(e) => setSelectedId(e.target.value)}>
+            <option value="">Select labour…</option>
+            {rows.map((r) => (
+              <option key={r.id} value={String(r.id)}>
+                {r.labourCode} - {r.labourDescription ?? 'No description'} (₹{r.labourRate ?? '-'})
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="field">
+          <label>Qty</label>
+          <input type="number" min={1} value={qty} onChange={(e) => setQty(Number(e.target.value))} style={{ width: '4rem' }} />
+        </div>
+        <div className="field">
+          <label>Issue Type</label>
+          <select value={issueType} onChange={(e) => setIssueType(e.target.value)}>
+            <option value="">Select…</option>
+            {LABOUR_ISSUE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
       </div>
-    )
+      {selected && (
+        <p className="muted">
+          Rate ₹{selected.labourRate ?? '-'} · HSN {selected.hsnCode ?? '-'} · SGST {selected.sgst ?? '-'} · CGST {selected.cgst ?? '-'} · IGST {selected.igst ?? '-'}
+        </p>
+      )}
+      <button className="btn btn-sm btn-primary" disabled={!selectedId} onClick={() => run(addSuggestion, 'Labour suggestion added.')}>Add Suggestion</button>
+    </div>
+  )
+}
+
+/** "Download Invoice from DMS" (replaces the old local Generate-Invoice/Download-PDF flow - BAPL
+ * DMS's own repair bill is now the source of truth for a job card's invoice). Streams the PDF
+ * through staffApi so the same Bearer token every other call on this page carries is attached (see
+ * api/client.ts's interceptor) - a plain <a href> pointed at the API would 401 instead of
+ * downloading anything - then hands the blob to the browser via a temporary <a download> element. */
+function InvoiceCard({ jc }: { jc: JobCardDetail }) {
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const download = async () => {
+    setBusy(true)
+    setNotice(null)
+    setError(null)
+    try {
+      const { data } = await staffApi.get(`/api/jobcards/${jc.id}/invoice-pdf`, { responseType: 'blob' })
+      const url = URL.createObjectURL(data as Blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `invoice-${jc.baplJobNo ?? jc.id}.pdf`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } })?.response?.status
+      if (status === 404) setNotice('No repair bill saved in BAPL DMS for this job yet.')
+      else setError('Could not download the invoice from BAPL DMS. Please try again.')
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
     <div className="card">
       <h3>Invoice</h3>
-      <button className="btn btn-primary btn-sm" onClick={() => run(() => staffApi.post(`/api/jobcards/${jc.id}/invoice`, { discountAmount: 0, cgstAmount: 0, sgstAmount: 0, igstAmount: 0 }))}>
-        Generate Invoice
+      <button className="btn btn-primary btn-sm" disabled={busy} onClick={download}>
+        {busy ? 'Downloading…' : 'Download Invoice from DMS'}
       </button>
-      <p className="muted">Once generated, download it here or from the Reports page.</p>
+      {notice && <p className="muted" style={{ marginTop: 8 }}>{notice}</p>}
+      {error && <p className="error-text" style={{ marginTop: 8 }}>{error}</p>}
     </div>
   )
 }

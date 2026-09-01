@@ -28,6 +28,8 @@ public class JobCardScannerDbContext : DbContext
 
     public DbSet<PartMaster> PartMasters => Set<PartMaster>();
     public DbSet<JobCardPart> JobCardParts => Set<JobCardPart>();
+    public DbSet<JobCardPartSuggestion> JobCardPartSuggestions => Set<JobCardPartSuggestion>();
+    public DbSet<JobCardLabourSuggestion> JobCardLabourSuggestions => Set<JobCardLabourSuggestion>();
 
     public DbSet<Invoice> Invoices => Set<Invoice>();
 
@@ -185,6 +187,18 @@ public class JobCardScannerDbContext : DbContext
             e.HasOne(x => x.RequestedBy).WithMany().HasForeignKey(x => x.RequestedById);
             e.HasOne(x => x.IssuedBy).WithMany().HasForeignKey(x => x.IssuedById);
             e.Property(x => x.Status).HasConversion<string>().HasMaxLength(20);
+        });
+
+        b.Entity<JobCardPartSuggestion>(e =>
+        {
+            e.HasOne(x => x.JobCard).WithMany(j => j.PartSuggestions).HasForeignKey(x => x.JobCardId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.SuggestedBy).WithMany().HasForeignKey(x => x.SuggestedById);
+        });
+
+        b.Entity<JobCardLabourSuggestion>(e =>
+        {
+            e.HasOne(x => x.JobCard).WithMany(j => j.LabourSuggestions).HasForeignKey(x => x.JobCardId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.SuggestedBy).WithMany().HasForeignKey(x => x.SuggestedById);
         });
 
         // ----- Invoice -----

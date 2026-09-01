@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.Data.SqlClient;
 
 namespace JobCardScanner.Api.Services;
@@ -47,7 +48,16 @@ public record BaplDmsVehicleRow(
     /// <summary>BAPL DMS's LocationMaster.Loccode this vehicle/chassis is registered against
     /// (ChassisDetails.LocationCode) - used to pre-select the Service Location dropdown.</summary>
     string? LocationCode = null,
-    string? DealerCode = null);
+    string? DealerCode = null,
+    /// <summary>Best-effort LedgerMaster.Address/Email for the "(Registered customer Details)"
+    /// panel - UNLIKE the other columns in this record, "Address"/"Email" are NOT confirmed via a
+    /// `SELECT *` you ran against LedgerMaster (only LedgerName/MobileNumber/City/Id are). Fetched
+    /// in a separate best-effort query (see LookupVehicleAsync) that's allowed to fail silently -
+    /// if these column names turn out to be wrong, these two fields simply stay null instead of
+    /// breaking the vehicle lookup that already works. Run `SELECT TOP 3 * FROM LedgerMaster` and
+    /// tell me the real column names if these keep coming back empty.</summary>
+    string? CustomerAddress = null,
+    string? CustomerEmail = null);
 
 /// <summary>One workshop/service location row from BAPL DMS's own LocationMaster - filtered to the
 /// "W" series (Loccode ending in W&lt;digits&gt;, e.g. "CUS0435W1") per your own workshops, as
@@ -118,7 +128,13 @@ public record BaplDmsCreateJobCardRequest(
     /// <summary>BAPL DMS's own JobSource.Id (Walk In/RSA/Mega Camp/...), replacing the previously
     /// hardcoded 1 ("Walk In") written to JobCardHeader.JobSource. Still defaults to 1 when not
     /// supplied, so existing callers keep working unchanged.</summary>
-    int? JobSourceId = null);
+    int? JobSourceId = null,
+    /// <summary>JobCardScanner's own Normal/High/Urgent priority, written to a NEW Priority column
+    /// on BAPL DMS's own JobCardHeader (see add-bapldms-jobcardheader-priority-column.sql). This
+    /// column did NOT exist before - if that migration hasn't been run against BAPLDMSvad yet, the
+    /// insert below will fail with "Invalid column name 'Priority'" and this whole write-back will
+    /// report as Failed (non-blocking - the local job card still saves either way) until it's run.</summary>
+    string? Priority = null);
 
 /// <summary>Result of a successful BAPL DMS job card insert - JobCardHeaderId lets JobCardScanner's
 /// own JobCard row remember which BAPL DMS record it created (JobCard.BaplJobCardHeaderId), so the
@@ -182,6 +198,159 @@ public record BaplDmsJobCardDetailRow(
     string? ConverterNo,
     string? ChargerNo,
     string? Complaints);
+
+/// <summary>One repair bill row from BAPL DMS's own RepairBillHeader, scoped to one JobCardHeaderId
+/// - for the Job Card Detail page's "Download Invoice from DMS" panel. Deliberately narrow: Id/
+/// RepairbillStatus/TotalNetAmount/JobId are the only RepairBillHeader columns already confirmed
+/// safe (they're used unchanged in SearchJobCardsAsync/GetJobCardByIdAsync's JobStatus CASE
+/// expression) - a "Bill No." column (item.billNo in your pasted repair-bill-list.ts) was NOT
+/// independently confirmed, so it's deliberately left out rather than guessed.</summary>
+public record BaplDmsRepairBillRow(int Id, string? RepairBillStatus, decimal? TotalNetAmount);
+
+/// <summary>One item's available stock at one workshop location, from BAPL DMS's own PartsInventory
+/// - for the Job Card Detail page's "Part Suggestion" panel (and now the general Parts &amp;
+/// Inventory catalog - see PartsController.Search). CONFIRMED business rule (you ran
+/// `SELECT * FROM PartsInventory` and shared the full column list plus three real rows): each
+/// physical batch of an item accumulates transaction rows (TransType 'P' purchase-in / 'S' sale-out,
+/// each carrying that batch's BatchOpeningQty/BatchTransQty/BatchClosingQty), and exactly one row
+/// per batch is marked FinalStockFlag = 'Y' - the batch's current/latest state. Example confirmed
+/// from your data: item 22GE370010AS at CUS0435W1 has a 'P' row (closing qty 1, Flag 'N' - since a
+/// later row supersedes it) followed by an 'S' row (closing qty 0, Flag 'Y') - so its real available
+/// qty is correctly 0 (sold out), which HAVING SUM(...) > 0 below excludes entirely, exactly as it
+/// should. Summing BatchClosingQty across every Flag='Y' row per ItemCode (one such row per batch)
+/// therefore gives the item's true total remaining stock across all its batches at that location.</summary>
+public record BaplDmsPartStockRow(string ItemCode, int AvailableQty);
+
+/// <summary>One labour rate-card row from BAPL DMS's own LabourMaster, for the Job Card Detail
+/// page's "Labour Suggestion" panel - mirrors BaplDmsPartStockRow's role for Part Suggestion.
+/// CONFIRMED schema (you ran `SELECT * FROM LabourMaster` and shared the full column list plus
+/// real rows): LabourCode/LabourDescription/LabourRate/Sgst/Cgst/Igst/HsnCode/Category all
+/// populated on every row; JobTypeId/ServiceHeadId/ServiceTypeId (LabourMaster's own
+/// Jobtype/ServiceHead/ServiceType columns) are the SAME master ids as JobCard's own
+/// BaplJobTypeId/BaplServiceHeadId/BaplServiceTypeId (confirmed by matching values, e.g. a row with
+/// Jobtype=3/ServiceHead=3/ServiceType=3) - but are NULL on most existing rows (BAPL DMS's own data
+/// hasn't mapped every labour code to the cascade yet), so GetLabourAsync's cascade filter only
+/// EXCLUDES a row that has a value there AND it doesn't match the requested id - a row with NULL
+/// Jobtype/ServiceHead/ServiceType always passes through regardless of the cascade, since most of
+/// LabourMaster is unmapped and hiding it by default made the panel look empty. Always combined
+/// with (not replaced by) the free-text search on top. IsActive
+/// mirrors LabourMaster's own isLabourActive column, which is NULL (not 0) on many legacy rows -
+/// treated as active (not excluded) since NULL here means "never explicitly deactivated", not
+/// "inactive".</summary>
+public record BaplDmsLabourRow(
+    int Id,
+    string LabourCode,
+    string? LabourDescription,
+    string? HsnCode,
+    decimal? Sgst,
+    decimal? Cgst,
+    decimal? Igst,
+    decimal? LabourRate,
+    string? Category,
+    int? JobTypeId,
+    int? ServiceHeadId,
+    int? ServiceTypeId,
+    string? OemModelName);
+
+/// <summary>Full RepairBillHeader row for one BAPL DMS job (RepairBillHeader.JobId), for the
+/// "Download Invoice from DMS" PDF (see InvoicePdfService.BuildInvoicePdfAsync). Wider than the
+/// existing <see cref="BaplDmsRepairBillRow"/> (which only exposes Id/RepairbillStatus/
+/// TotalNetAmount for the repair-bill-list panel) - every column here (LocationCode, Prefix,
+/// BillNo, BillType, JobId, CustomerLedgerId, TotalDiscount, TotalTaxableAmount, TotalNetAmount,
+/// AmountReceived, RepairbillStatus, Id) comes from the RepairBillHeader schema you pasted directly
+/// from your own EF Core model - trusted, not guessed. See GetRepairBillHeaderDetailAsync.</summary>
+public record BaplDmsRepairBillHeaderDetail(
+    int Id,
+    int JobId,
+    string? LocationCode,
+    string? Prefix,
+    int? BillNo,
+    string? BillType,
+    int? CustomerLedgerId,
+    decimal? TotalDiscount,
+    decimal? TotalTaxableAmount,
+    decimal? TotalNetAmount,
+    decimal? AmountReceived,
+    string? RepairBillStatus);
+
+/// <summary>One RepairBillDetail line (a part OR a labour charge - see ItemType/Part*/Labour*
+/// columns) for one RepairBillHeader, for the "Download Invoice from DMS" PDF's line-items table.
+/// Every column here comes from the RepairBillDetail schema pasted directly from your own EF Core
+/// model - trusted, not guessed. Deliberately does NOT carry the row's own Id/RepairBillId (those
+/// weren't in the confirmed column list you pasted, and aren't needed - InvoicePdfService numbers
+/// rows 1..n itself for the "Sr" column). ItemType's own convention (what value means "this is a
+/// part" vs "this is labour") was NOT confirmed anywhere in this codebase, so
+/// InvoicePdfService.ClassifyLine does NOT trust it blindly - it infers part-vs-labour from
+/// whichever of PartItemId/LabourMasterId is actually populated instead, and only falls back to
+/// ItemType's text (if it looks like a real label, not a numeric code) as a tie-breaker.</summary>
+public record BaplDmsRepairBillDetailRow(
+    int? MaterialId,
+    int? LabourMasterId,
+    int? PartWiseLabourId,
+    int? PartItemId,
+    string? ItemType,
+    decimal? LabourQty,
+    decimal? PartQty,
+    decimal? LabourRate,
+    decimal? PartRate,
+    decimal? DiscountValue,
+    decimal? LabourDiscount,
+    decimal? PartDiscount,
+    string? DiscountType,
+    decimal? Igstamount,
+    decimal? Cgstamount,
+    decimal? Sgstamount,
+    int? IssutypeId,
+    decimal? LabourTaxblAmount,
+    decimal? PartTaxblAmount,
+    decimal? LabourNetAmount,
+    decimal? PartNetAmount,
+    decimal? TotalTaxPer);
+
+/// <summary>Customer/ledger detail for the invoice PDF's "Customer Details" panel, by
+/// LedgerMaster.Id (RepairBillHeader.CustomerLedgerId). Name/Mobile/City are the same confirmed
+/// LedgerMaster/Cities columns LookupVehicleAsync already uses; Address/Email reuse that same
+/// method's already-proven best-effort guess (see its doc comment); State/Gstin are a NEW,
+/// separately isolated best-effort guess - LedgerMaster was never confirmed to carry either column,
+/// so if this query throws (wrong column name), State/Gstin simply come back null and the PDF
+/// prints "-" for both instead of failing to render at all. See GetCustomerLedgerDetailAsync.</summary>
+public record BaplDmsCustomerLedgerDetail(
+    int LedgerId,
+    string? Name,
+    string? Mobile,
+    string? City,
+    string? Address,
+    string? Email,
+    string? State,
+    string? Gstin);
+
+/// <summary>Result of a successful BAPL DMS credential check against BAPL DMS's own AspNetUsers
+/// (standard ASP.NET Core Identity table) - see VerifyDealerCredentialsAsync. Deliberately narrow:
+/// just enough to auto-provision/reuse a local Users row for the dealer-login fallback in
+/// DealerAuthController.Login, never the password hash itself.
+/// DealerCode is a CONFIRMED custom column on this AspNetUsers table (you ran
+/// `SELECT TOP 3 * FROM AspNetUsers` and shared it - e.g. "CUS0001") - BAPL DMS's own DealerMaster
+/// dealer code this login belongs to. It's null for some rows (e.g. internal BAPL staff accounts
+/// with no dealer of their own), in which case DealerAuthController.Login can't resolve a Dealer
+/// and falls back to its inactive/pending-assignment safety net.
+/// IsBgEmployeeRole is true when this AspNetUsers row carries BAPL DMS's own "Employee" role
+/// (AspNetUserRoles/AspNetRoles - confirmed via your AspNetRoles dump). BAPL DMS's own
+/// AuthController.Login branches on exactly this role: an "Employee" account's dealer scope comes
+/// from BgEmployeeMaster/EmployeeMaster (by email, possibly MULTIPLE comma-separated dealer codes),
+/// never from this row's own DealerCode column - see ResolveEmployeeDealerScopeAsync.
+/// DealerAuthController.Login checks this flag first and, when true, ignores DealerCode entirely
+/// in favor of that lookup.</summary>
+public record BaplDmsDealerCredential(string Email, string? UserName, string? Phone, string? DealerCode, bool IsBgEmployeeRole);
+
+/// <summary>Result of resolving a BAPL DMS "Employee"-role AspNetUsers row to its dealer scope, via
+/// BgEmployeeMaster (checked first) or EmployeeMaster (fallback) - mirrors BAPL DMS's own
+/// AuthController.ResolveEmployeeLoginInfo (you pasted its real source). Found=false means neither
+/// table has a row for this email at all (BAPL DMS's own login would also reject this). IsActive
+/// mirrors that row's own IsActive column - an inactive BG employee is rejected the same way BAPL
+/// DMS's own login rejects them. DealerCodes is BgEmployeeMaster.DealerCode split on commas (can be
+/// 0, 1, or several codes - e.g. "CUS0347,CUS0440" for a regional/zone employee covering multiple
+/// dealers) or EmployeeMaster's single DealerCode wrapped in a 1-item list.</summary>
+public record BaplDmsEmployeeScope(bool Found, bool IsActive, IReadOnlyList<string> DealerCodes);
 
 public record BaplDmsJobCardHistoryRow(
     int JobCardHeaderId,
@@ -297,7 +466,107 @@ public interface IBaplDmsService
     /// repository code, not independently confirmed against a live insert.
     /// </summary>
     Task<BaplDmsCreateJobCardResult> CreateJobCardAsync(BaplDmsCreateJobCardRequest req, CancellationToken ct = default);
+
+    /// <summary>Repair bill(s) BAPL DMS has for this job card (RepairBillHeader.JobId), for the
+    /// "Download Invoice from DMS" panel on the Job Card Detail page. Empty list is normal (no bill
+    /// raised yet); throws <see cref="InvalidOperationException"/> on a real failure.</summary>
+    Task<IReadOnlyList<BaplDmsRepairBillRow>> GetRepairBillsForJobAsync(int jobCardHeaderId, CancellationToken ct = default);
+
+    /// <summary>Available stock per item at one workshop location, from BAPL DMS's own
+    /// PartsInventory - for the "Part Suggestion" panel and the general Parts &amp; Inventory
+    /// catalog page. See <see cref="BaplDmsPartStockRow"/>'s doc comment for the (now confirmed via
+    /// a live SELECT *) "available" rule this uses.</summary>
+    Task<IReadOnlyList<BaplDmsPartStockRow>> GetPartsInventoryAsync(string locationCode, CancellationToken ct = default);
+
+    /// <summary>Active labour rate-card rows from BAPL DMS's own LabourMaster, for the "Labour
+    /// Suggestion" panel - see BaplDmsLabourRow's doc comment for the confirmed schema and the
+    /// cascade-id/NULL-handling caveats. jobTypeId/serviceHeadId/serviceTypeId are each optional and,
+    /// when given, EXCLUDE only a row that has a value there AND it doesn't match - a row with NULL
+    /// Jobtype/ServiceHead/ServiceType always passes through (most of LabourMaster is unmapped to
+    /// the cascade, so a strict filter would hide nearly everything); q (optional) further narrows
+    /// by LabourCode/LabourDescription substring, combined with (not replacing) the cascade filter.
+    /// All null/empty -> every active labour row, capped at 500 like SearchAspNetUsersAsync. Throws
+    /// <see cref="InvalidOperationException"/> on a real failure (confirmed schema, so a failure
+    /// here is real, not "table doesn't exist" - same reasoning as GetPartsInventoryAsync).</summary>
+    Task<IReadOnlyList<BaplDmsLabourRow>> GetLabourAsync(int? jobTypeId, int? serviceHeadId, int? serviceTypeId, string? q, CancellationToken ct = default);
+
+    /// <summary>Most recent (non-deleted) RepairBillHeader row for one BAPL DMS job card, for the
+    /// "Download Invoice from DMS" PDF (see InvoicePdfService.BuildInvoicePdfAsync). Returns null
+    /// for a genuine "no repair bill raised yet for this job" (normal - most open job cards have
+    /// none); throws <see cref="InvalidOperationException"/> on a real failure, same as
+    /// GetRepairBillsForJobAsync above (RepairBillHeader is confirmed schema, so a failure here is
+    /// real, not "table doesn't exist").</summary>
+    Task<BaplDmsRepairBillHeaderDetail?> GetRepairBillHeaderDetailAsync(int jobCardHeaderId, CancellationToken ct = default);
+
+    /// <summary>Every RepairBillDetail line (parts + labour) for one RepairBillHeader.Id, in
+    /// insertion order, for the invoice PDF's line-items table. Empty list is normal (a saved bill
+    /// with no lines yet); throws <see cref="InvalidOperationException"/> on a real failure
+    /// (confirmed schema).</summary>
+    Task<IReadOnlyList<BaplDmsRepairBillDetailRow>> GetRepairBillDetailLinesAsync(int repairBillId, CancellationToken ct = default);
+
+    /// <summary>Customer/ledger detail (name/mobile/address/city/state/GSTIN) by LedgerMaster.Id,
+    /// for the invoice PDF's "Customer Details" panel. See <see cref="BaplDmsCustomerLedgerDetail"/>'s
+    /// doc comment for which columns are confirmed vs. best-effort. Returns null only if the ledger
+    /// row itself can't be found or the confirmed part of the query fails - State/Gstin missing on
+    /// an otherwise-found row just come back null, they never cause this to return null.</summary>
+    Task<BaplDmsCustomerLedgerDetail?> GetCustomerLedgerDetailAsync(int ledgerId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Best-effort write of one job-card photo into BAPL DMS's own database (a brand-new table,
+    /// dbo.JobCardScannerMedia - see add-bapldms-jobcard-media-table.sql - since no existing BAPL
+    /// DMS media/photo table is confirmed anywhere in this codebase). Called ONLY after
+    /// JobCardScanner's own local photo upload has already succeeded (see
+    /// JobCardsController.UploadPhoto) and is purely additive - failure here must never surface as
+    /// anything other than a caught, logged warning, so this throws
+    /// <see cref="InvalidOperationException"/> on failure exactly like every other write in this
+    /// file, leaving it entirely up to the caller to catch-and-ignore (which UploadPhoto does).
+    /// </summary>
+    Task SaveJobCardPhotoAsync(int jobId, string fileName, string? contentType, string? stage, string? caption, byte[] bytes, CancellationToken ct = default);
+
+    /// <summary>
+    /// Verifies an email+password against BAPL DMS's own AspNetUsers (standard ASP.NET Core
+    /// Identity table, in the same BAPLDMSvad database) - the fallback path in
+    /// DealerAuthController.Login when JobCardScanner's own local Users lookup fails. Column names
+    /// (Id/Email/UserName/PasswordHash/PhoneNumber/NormalizedEmail) are framework-standard ASP.NET
+    /// Core Identity defaults, not guessed; DealerCode is a confirmed custom column on this same
+    /// table (via a live SELECT * you ran) that DealerAuthController.Login uses to resolve/assign
+    /// the right local Dealer automatically. This still NEVER throws (unlike every other method
+    /// in this interface): a login endpoint must degrade to "wrong password" on ANY unexpected
+    /// failure here (network blip, BAPL DMS down, a real schema surprise), never crash the whole
+    /// sign-in flow. Returns null for "no such user", "wrong password", or any failure alike -
+    /// DealerAuthController.Login treats all three the same way (falls through to its existing
+    /// Unauthorized response) since a login endpoint should never reveal which one occurred anyway.
+    /// </summary>
+    Task<BaplDmsDealerCredential?> VerifyDealerCredentialsAsync(string email, string password, CancellationToken ct = default);
+
+    /// <summary>
+    /// For a BAPL DMS "Employee"-role login (see BaplDmsDealerCredential.IsBgEmployeeRole) - resolves
+    /// its dealer scope via BgEmployeeMaster (checked first, by EmailId) then EmployeeMaster
+    /// (fallback, by EmailId), mirroring BAPL DMS's own AuthController.ResolveEmployeeLoginInfo.
+    /// Like VerifyDealerCredentialsAsync, this NEVER throws - a login-path failure here degrades to
+    /// Found=false (treated the same as "no such employee row") rather than crashing sign-in.
+    /// </summary>
+    Task<BaplDmsEmployeeScope> ResolveEmployeeDealerScopeAsync(string email, CancellationToken ct = default);
+
+    /// <summary>
+    /// Browses BAPL DMS's own AspNetUsers (same table VerifyDealerCredentialsAsync checks a single
+    /// row of) - backs Admin -&gt; Users' "BAPL DMS Logins" panel, so an admin can see every
+    /// dealer/workshop login BAPL DMS knows about (and its DealerCode) without pasting SQL dumps
+    /// back and forth. PasswordHash/SecurityStamp/ConcurrencyStamp are deliberately never selected -
+    /// this is a read-only directory browse, not a credential surface. q (optional) filters by
+    /// Email/UserName/DealerCode substring; omit to list everyone, capped at 500 rows like
+    /// AdminDirectoryController's Azure AD equivalent. Throws <see cref="InvalidOperationException"/>
+    /// on a real failure (unlike VerifyDealerCredentialsAsync, this is an admin browse, not a login
+    /// path, so a real problem should surface as a 502, not be silently swallowed).
+    /// </summary>
+    Task<IReadOnlyList<BaplDmsAspNetUserRow>> SearchAspNetUsersAsync(string? q, CancellationToken ct = default);
 }
+
+/// <summary>One row of BAPL DMS's own AspNetUsers, for the admin "BAPL DMS Logins" browse panel -
+/// see IBaplDmsService.SearchAspNetUsersAsync. Same confirmed columns as
+/// VerifyDealerCredentialsAsync's query, minus PasswordHash (never surfaced outside that one
+/// verification method).</summary>
+public record BaplDmsAspNetUserRow(string Id, string Email, string? UserName, string? PhoneNumber, string? DealerCode, bool LockoutEnabled, bool EmailConfirmed);
 
 /// <summary>
 /// Reads BAPL's own Dealer Management System (DMS) database - a separate SQL Server/database from
@@ -489,6 +758,33 @@ public class BaplDmsService : IBaplDmsService
             _logger.LogInformation(ex, "BAPL DMS job-card-history enrichment skipped for chassis {ChassisNo}", chassisNo);
         }
 
+        // ----- ENRICHMENT 2: LedgerMaster.Address/Email for this customer, for the "(Registered
+        // customer Details)" panel (per your request to show Name/Mobile/Address/Email/City after a
+        // chassis/reg-no lookup). "Address"/"Email" are GUESSED column names - not confirmed via a
+        // SELECT * the way LedgerName/MobileNumber/City were - so this is a separate, independently
+        // best-effort query: if the guess is wrong it's logged and swallowed, exactly like the
+        // history enrichment above, rather than breaking the (already-working) primary lookup. -----
+        string? customerAddress = null, customerEmail = null;
+        if (customerLedgerId.HasValue)
+        {
+            try
+            {
+                const string ledgerSql = "SELECT Address, Email FROM [dbo].[LedgerMaster] WHERE Id = @id";
+                await using var cmd = new SqlCommand(ledgerSql, conn) { CommandTimeout = 30 };
+                cmd.Parameters.AddWithValue("@id", customerLedgerId.Value);
+                await using var rdr = await cmd.ExecuteReaderAsync(ct);
+                if (await rdr.ReadAsync(ct))
+                {
+                    customerAddress = rdr["Address"] as string;
+                    customerEmail = rdr["Email"] as string;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogInformation(ex, "BAPL DMS LedgerMaster Address/Email enrichment skipped for ledger {LedgerId} (unconfirmed column names)", customerLedgerId);
+            }
+        }
+
         return new BaplDmsVehicleRow(
             chassisNo!,
             regNo,
@@ -509,7 +805,9 @@ public class BaplDmsService : IBaplDmsService
             CustomerCity: customerCity,
             CustomerLedgerId: customerLedgerId,
             LocationCode: locationCode,
-            DealerCode: foundDealerCode);
+            DealerCode: foundDealerCode,
+            CustomerAddress: customerAddress,
+            CustomerEmail: customerEmail);
     }
 
     public async Task<IReadOnlyList<BaplDmsJobCardHistoryRow>> GetServiceHistoryAsync(string chassisNo, string? dealerCode, CancellationToken ct = default)
@@ -923,11 +1221,11 @@ public class BaplDmsService : IBaplDmsService
                 INSERT INTO [dbo].[JobCardHeader]
                     (Jobtype, DealerCode, Chassisno, Vehiclekms, Servicehead, Servicetype, Serviceloc,
                      InwardType, Jobprefix, JobinDate, JobinTime, JobNo, ManualjobNo, EstdelDate, EstdelTime,
-                     JobSource, Supervisor, Technician, IsDelete, CreatedBy, CreatedDate)
+                     JobSource, Supervisor, Technician, Priority, IsDelete, CreatedBy, CreatedDate)
                 VALUES
                     (@jobType, @dealerCode, @chassisNo, @vehicleKms, @serviceHead, @serviceType, @serviceLoc,
                      @inwardType, @jobPrefix, @jobinDate, @jobinTime, @jobNo, @manualJobNo, @estDelDate, @estDelTime,
-                     @jobSource, @supervisor, @technician, 0, @createdBy, @createdDate);
+                     @jobSource, @supervisor, @technician, @priority, 0, @createdBy, @createdDate);
                 SELECT CAST(SCOPE_IDENTITY() AS int);";
             await using (var cmd = new SqlCommand(insertHeaderSql, conn, tx))
             {
@@ -949,6 +1247,7 @@ public class BaplDmsService : IBaplDmsService
                 cmd.Parameters.AddWithValue("@jobSource", req.JobSourceId ?? 1);
                 cmd.Parameters.AddWithValue("@supervisor", (object?)req.Supervisor ?? DBNull.Value);
                 cmd.Parameters.AddWithValue("@technician", (object?)req.Technician ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("@priority", (object?)req.Priority ?? DBNull.Value);
                 cmd.Parameters.AddWithValue("@createdBy", req.CreatedBy);
                 cmd.Parameters.AddWithValue("@createdDate", now);
                 headerId = (int)(await cmd.ExecuteScalarAsync(ct))!;
@@ -1021,6 +1320,544 @@ public class BaplDmsService : IBaplDmsService
             _logger.LogWarning(ex, "Could not create BAPL DMS job card for chassis {ChassisNo}/dealer {DealerCode}", req.ChassisNo, req.DealerCode);
             throw new InvalidOperationException($"Could not create the job card in BAPL DMS: {ex.Message}", ex);
         }
+    }
+
+    public async Task<IReadOnlyList<BaplDmsRepairBillRow>> GetRepairBillsForJobAsync(int jobCardHeaderId, CancellationToken ct = default)
+    {
+        const string sql = @"
+            SELECT Id, RepairbillStatus, TotalNetAmount
+            FROM [dbo].[RepairBillHeader]
+            WHERE JobId = @jobId
+            ORDER BY Id DESC";
+        var results = new List<BaplDmsRepairBillRow>();
+        try
+        {
+            await using var conn = new SqlConnection(ConnStr);
+            await conn.OpenAsync(ct);
+            await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+            cmd.Parameters.AddWithValue("@jobId", jobCardHeaderId);
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            while (await rdr.ReadAsync(ct))
+                results.Add(new BaplDmsRepairBillRow((int)rdr["Id"], rdr["RepairbillStatus"] as string, rdr["TotalNetAmount"] as decimal?));
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Could not read BAPL DMS's repair bills for job card {jobCardHeaderId}: {ex.Message}", ex);
+        }
+        return results;
+    }
+
+    public async Task<IReadOnlyList<BaplDmsPartStockRow>> GetPartsInventoryAsync(string locationCode, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(locationCode)) return Array.Empty<BaplDmsPartStockRow>();
+
+        // See BaplDmsPartStockRow's doc comment - CONFIRMED rule: FinalStockFlag = 'Y' marks each
+        // batch's current transaction row, summed by ItemCode. Only items with a positive remaining
+        // balance are worth suggesting.
+        const string sql = @"
+            SELECT ItemCode, SUM(BatchClosingQty) AS AvailableQty
+            FROM [dbo].[PartsInventory]
+            WHERE DealerLocation = @loc AND FinalStockFlag = 'Y'
+            GROUP BY ItemCode
+            HAVING SUM(BatchClosingQty) > 0
+            ORDER BY ItemCode";
+        var results = new List<BaplDmsPartStockRow>();
+        try
+        {
+            await using var conn = new SqlConnection(ConnStr);
+            await conn.OpenAsync(ct);
+            await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+            cmd.Parameters.AddWithValue("@loc", locationCode.Trim());
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            while (await rdr.ReadAsync(ct))
+                results.Add(new BaplDmsPartStockRow(rdr["ItemCode"] as string ?? "", Convert.ToInt32(rdr["AvailableQty"])));
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Could not read BAPL DMS's parts inventory (PartsInventory) for location '{locationCode}': {ex.Message}", ex);
+        }
+        return results;
+    }
+
+    /// <summary>See IBaplDmsService.GetLabourAsync's doc comment.</summary>
+    public async Task<IReadOnlyList<BaplDmsLabourRow>> GetLabourAsync(int? jobTypeId, int? serviceHeadId, int? serviceTypeId, string? q, CancellationToken ct = default)
+    {
+        // isLabourActive is NULL (not 0) on many legacy rows - treated as active.
+        //
+        // FIXED: cascade ids used to be a strict `Jobtype = @jobTypeId` AND filter, which - given a
+        // live SELECT * you shared - excludes almost every row in your LabourMaster: only a
+        // handful of rows have Jobtype/ServiceHead/ServiceType populated at all (e.g. Id 162 has
+        // 3/3/3), the rest are NULL there (never mapped to the cascade). A strict AND meant picking
+        // any job card with a Job Type set hid nearly the entire rate card - exactly the "Labour
+        // Suggestion already there in LabourMaster... why not showing" you ran into. Now a row with
+        // NULL Jobtype/ServiceHead/ServiceType is ALWAYS included regardless of the job card's own
+        // cascade (can't tell if it's relevant, so default to showing it) - the cascade id only
+        // EXCLUDES a row that has a value there AND it doesn't match, e.g. a row explicitly mapped
+        // to a different Job Type is correctly hidden, but the many unmapped legacy rows always
+        // show. q (free-text) still narrows further on top of this, same as before.
+        const string sql = @"
+            SELECT TOP 500 Id, LabourCode, LabourDescription, HSNCode, SGST, CGST, IGST, LabourRate,
+                   Category, Jobtype, ServiceHead, ServiceType, oemmodelname
+            FROM [dbo].[LabourMaster]
+            WHERE (isLabourActive IS NULL OR isLabourActive = 1)
+              AND (@jobTypeId IS NULL OR Jobtype IS NULL OR Jobtype = @jobTypeId)
+              AND (@serviceHeadId IS NULL OR ServiceHead IS NULL OR ServiceHead = @serviceHeadId)
+              AND (@serviceTypeId IS NULL OR ServiceType IS NULL OR ServiceType = @serviceTypeId)
+              AND (@qLike IS NULL OR LabourCode LIKE @qLike OR LabourDescription LIKE @qLike)
+            ORDER BY LabourDescription";
+
+        var results = new List<BaplDmsLabourRow>();
+        try
+        {
+            await using var conn = new SqlConnection(ConnStr);
+            await conn.OpenAsync(ct);
+            await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+            cmd.Parameters.AddWithValue("@jobTypeId", (object?)jobTypeId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@serviceHeadId", (object?)serviceHeadId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@serviceTypeId", (object?)serviceTypeId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@qLike", string.IsNullOrWhiteSpace(q) ? (object)DBNull.Value : $"%{q.Trim()}%");
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            while (await rdr.ReadAsync(ct))
+            {
+                results.Add(new BaplDmsLabourRow(
+                    Convert.ToInt32(rdr["Id"]),
+                    rdr["LabourCode"] as string ?? "",
+                    rdr["LabourDescription"] as string,
+                    rdr["HSNCode"] as string,
+                    ToNullableDecimal(rdr["SGST"]),
+                    ToNullableDecimal(rdr["CGST"]),
+                    ToNullableDecimal(rdr["IGST"]),
+                    ToNullableDecimal(rdr["LabourRate"]),
+                    rdr["Category"] as string,
+                    ToNullableInt(rdr["Jobtype"]),
+                    ToNullableInt(rdr["ServiceHead"]),
+                    ToNullableInt(rdr["ServiceType"]),
+                    rdr["oemmodelname"] as string));
+            }
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Could not read BAPL DMS's labour rate card (LabourMaster): {ex.Message}", ex);
+        }
+        return results;
+    }
+
+    public async Task<BaplDmsRepairBillHeaderDetail?> GetRepairBillHeaderDetailAsync(int jobCardHeaderId, CancellationToken ct = default)
+    {
+        const string sql = @"
+            SELECT TOP 1
+                Id, JobId, LocationCode, Prefix, BillNo, BillType, CustomerLedgerId,
+                TotalDiscount, TotalTaxableAmount, TotalNetAmount, AmountReceived, RepairbillStatus
+            FROM [dbo].[RepairBillHeader]
+            WHERE JobId = @jobId AND ISNULL(IsDelete, 0) = 0
+            ORDER BY Id DESC";
+        try
+        {
+            await using var conn = new SqlConnection(ConnStr);
+            await conn.OpenAsync(ct);
+            await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+            cmd.Parameters.AddWithValue("@jobId", jobCardHeaderId);
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            if (!await rdr.ReadAsync(ct)) return null;
+
+            return new BaplDmsRepairBillHeaderDetail(
+                (int)rdr["Id"],
+                (int)rdr["JobId"],
+                rdr["LocationCode"] as string,
+                rdr["Prefix"] as string,
+                rdr["BillNo"] as int?,
+                rdr["BillType"] as string,
+                rdr["CustomerLedgerId"] as int?,
+                rdr["TotalDiscount"] as decimal?,
+                rdr["TotalTaxableAmount"] as decimal?,
+                rdr["TotalNetAmount"] as decimal?,
+                rdr["AmountReceived"] as decimal?,
+                rdr["RepairbillStatus"] as string);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Could not read BAPL DMS's repair bill header for job card {jobCardHeaderId}: {ex.Message}", ex);
+        }
+    }
+
+    public async Task<IReadOnlyList<BaplDmsRepairBillDetailRow>> GetRepairBillDetailLinesAsync(int repairBillId, CancellationToken ct = default)
+    {
+        const string sql = @"
+            SELECT
+                MaterialId, LabourMasterId, PartWiseLabourId, PartItemId, ItemType,
+                LabourQty, PartQty, LabourRate, PartRate, DiscountValue, LabourDiscount, PartDiscount, DiscountType,
+                Igstamount, Cgstamount, Sgstamount, IssutypeId, LabourTaxblAmount, PartTaxblAmount,
+                LabourNetAmount, PartNetAmount, TotalTaxPer
+            FROM [dbo].[RepairBillDetail]
+            WHERE RepairBillId = @id";
+        var results = new List<BaplDmsRepairBillDetailRow>();
+        try
+        {
+            await using var conn = new SqlConnection(ConnStr);
+            await conn.OpenAsync(ct);
+            await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+            cmd.Parameters.AddWithValue("@id", repairBillId);
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            while (await rdr.ReadAsync(ct))
+            {
+                results.Add(new BaplDmsRepairBillDetailRow(
+                    rdr["MaterialId"] as int?,
+                    rdr["LabourMasterId"] as int?,
+                    rdr["PartWiseLabourId"] as int?,
+                    rdr["PartItemId"] as int?,
+                    rdr["ItemType"]?.ToString(),
+                    rdr["LabourQty"] as decimal?,
+                    rdr["PartQty"] as decimal?,
+                    rdr["LabourRate"] as decimal?,
+                    rdr["PartRate"] as decimal?,
+                    rdr["DiscountValue"] as decimal?,
+                    rdr["LabourDiscount"] as decimal?,
+                    rdr["PartDiscount"] as decimal?,
+                    rdr["DiscountType"]?.ToString(),
+                    rdr["Igstamount"] as decimal?,
+                    rdr["Cgstamount"] as decimal?,
+                    rdr["Sgstamount"] as decimal?,
+                    rdr["IssutypeId"] as int?,
+                    rdr["LabourTaxblAmount"] as decimal?,
+                    rdr["PartTaxblAmount"] as decimal?,
+                    rdr["LabourNetAmount"] as decimal?,
+                    rdr["PartNetAmount"] as decimal?,
+                    rdr["TotalTaxPer"] as decimal?));
+            }
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Could not read BAPL DMS's repair bill lines for bill {repairBillId}: {ex.Message}", ex);
+        }
+        return results;
+    }
+
+    public async Task<BaplDmsCustomerLedgerDetail?> GetCustomerLedgerDetailAsync(int ledgerId, CancellationToken ct = default)
+    {
+        // PRIMARY: same confirmed LedgerMaster/Cities columns LookupVehicleAsync already uses.
+        const string primarySql = @"
+            SELECT TOP 1 lg.Id, lg.LedgerName, lg.MobileNumber, cty.city_name
+            FROM [dbo].[LedgerMaster] lg
+            LEFT JOIN [dbo].[Cities] cty ON lg.City = cty.city_id
+            WHERE lg.Id = @id";
+
+        string? name = null, mobile = null, city = null;
+        try
+        {
+            await using var conn = new SqlConnection(ConnStr);
+            await conn.OpenAsync(ct);
+
+            await using (var cmd = new SqlCommand(primarySql, conn) { CommandTimeout = 30 })
+            {
+                cmd.Parameters.AddWithValue("@id", ledgerId);
+                await using var rdr = await cmd.ExecuteReaderAsync(ct);
+                if (!await rdr.ReadAsync(ct)) return null;
+                name = rdr["LedgerName"] as string;
+                mobile = rdr["MobileNumber"] as string;
+                city = rdr["city_name"] as string;
+            }
+
+            // ENRICHMENT 1: Address/Email - the same already-proven best-effort guess
+            // LookupVehicleAsync uses (see its doc comment) - isolated so a wrong guess here still
+            // leaves Name/Mobile/City intact.
+            string? address = null, email = null;
+            try
+            {
+                const string addrSql = "SELECT Address, Email FROM [dbo].[LedgerMaster] WHERE Id = @id";
+                await using var cmd = new SqlCommand(addrSql, conn) { CommandTimeout = 30 };
+                cmd.Parameters.AddWithValue("@id", ledgerId);
+                await using var rdr = await cmd.ExecuteReaderAsync(ct);
+                if (await rdr.ReadAsync(ct))
+                {
+                    address = rdr["Address"] as string;
+                    email = rdr["Email"] as string;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogInformation(ex, "BAPL DMS LedgerMaster Address/Email enrichment skipped for invoice ledger {LedgerId}", ledgerId);
+            }
+
+            // ENRICHMENT 2: State/Gstin - a NEW guess (never confirmed against a live SELECT *),
+            // isolated from everything above so a wrong column name here only means the invoice
+            // prints "-" for State/GSTIN, nothing else.
+            string? state = null, gstin = null;
+            try
+            {
+                const string stateGstSql = "SELECT State, Gstin FROM [dbo].[LedgerMaster] WHERE Id = @id";
+                await using var cmd = new SqlCommand(stateGstSql, conn) { CommandTimeout = 30 };
+                cmd.Parameters.AddWithValue("@id", ledgerId);
+                await using var rdr = await cmd.ExecuteReaderAsync(ct);
+                if (await rdr.ReadAsync(ct))
+                {
+                    state = rdr["State"] as string;
+                    gstin = rdr["Gstin"] as string;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogInformation(ex, "BAPL DMS LedgerMaster State/Gstin lookup skipped for invoice ledger {LedgerId} (unconfirmed column names)", ledgerId);
+            }
+
+            return new BaplDmsCustomerLedgerDetail(ledgerId, name, mobile, city, address, email, state, gstin);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Could not read BAPL DMS's customer ledger {ledgerId}: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// See add-bapldms-jobcard-media-table.sql - a NEW, JobCardScanner-owned table in BAPLDMSvad
+    /// (never an existing BAPL DMS table, since none was confirmed to hold photos anywhere in this
+    /// codebase). Best-effort only: JobCardsController.UploadPhoto calls this AFTER its own local
+    /// save already succeeded, and catches whatever this throws without letting it affect the HTTP
+    /// response.
+    /// </summary>
+    public async Task SaveJobCardPhotoAsync(int jobId, string fileName, string? contentType, string? stage, string? caption, byte[] bytes, CancellationToken ct = default)
+    {
+        const string sql = @"
+            INSERT INTO [dbo].[JobCardScannerMedia]
+                (Id, JobId, FileName, ContentType, Stage, Caption, PhotoBytes, UploadedAtUtc)
+            VALUES
+                (@id, @jobId, @fileName, @contentType, @stage, @caption, @bytes, SYSUTCDATETIME())";
+        try
+        {
+            await using var conn = new SqlConnection(ConnStr);
+            await conn.OpenAsync(ct);
+            await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+            cmd.Parameters.AddWithValue("@id", Guid.NewGuid());
+            cmd.Parameters.AddWithValue("@jobId", jobId);
+            cmd.Parameters.AddWithValue("@fileName", (object?)fileName ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@contentType", (object?)contentType ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@stage", (object?)stage ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@caption", (object?)caption ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@bytes", bytes);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Could not write job card photo into BAPL DMS (dbo.JobCardScannerMedia) for job {jobId}: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// See IBaplDmsService.VerifyDealerCredentialsAsync's doc comment - this NEVER throws past the
+    /// caller (unlike every other method in this class): a login endpoint must degrade to "not
+    /// found" on any unexpected failure, not surface a 500.
+    ///
+    /// Matches by NormalizedUserName OR NormalizedEmail - confirmed against BAPL DMS's own real
+    /// AuthController.Login source (you pasted it), which does
+    /// <c>_userManager.FindByNameAsync(x) ?? _userManager.FindByEmailAsync(x)</c>. Several AspNetUsers
+    /// rows have a UserName that isn't their Email at all (e.g. "CUS0486" with email
+    /// naveenbijliride@gmail.com) - BAPL DMS's own login screen accepts either, so whoever owns that
+    /// account may only know "CUS0486" as their sign-in, not the email behind it. Matching email-only
+    /// (the original version of this query) would silently 401 that person even with the exact right
+    /// password. TOP 1 with an OR is a safe stand-in for BAPL DMS's try-username-then-email order:
+    /// a real account's UserName and Email don't collide with a DIFFERENT account's Email/UserName in
+    /// practice, since AspNetUsers enforces both as unique on their own.
+    /// </summary>
+    public async Task<BaplDmsDealerCredential?> VerifyDealerCredentialsAsync(string emailOrUserName, string password, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(emailOrUserName) || string.IsNullOrWhiteSpace(password)) return null;
+
+        const string sql = @"
+            SELECT TOP 1 Id, Email, UserName, PasswordHash, PhoneNumber, DealerCode
+            FROM [dbo].[AspNetUsers]
+            WHERE NormalizedUserName = @id OR NormalizedEmail = @id";
+
+        try
+        {
+            string userId;
+            string? actualEmail, userName, phone, dealerCode;
+
+            await using (var conn = new SqlConnection(ConnStr))
+            {
+                await conn.OpenAsync(ct);
+                await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+                cmd.Parameters.AddWithValue("@id", emailOrUserName.Trim().ToUpperInvariant());
+                await using var rdr = await cmd.ExecuteReaderAsync(ct);
+                if (!await rdr.ReadAsync(ct)) return null;
+
+                var storedHash = rdr["PasswordHash"] as string;
+                userId = (string)rdr["Id"];
+                actualEmail = rdr["Email"] as string;
+                userName = rdr["UserName"] as string;
+                phone = rdr["PhoneNumber"] as string;
+                dealerCode = rdr["DealerCode"] as string;
+
+                if (string.IsNullOrWhiteSpace(storedHash)) return null;
+
+                var hasher = new PasswordHasher<IdentityUser>();
+                var result = hasher.VerifyHashedPassword(new IdentityUser(), storedHash, password);
+                if (result != PasswordVerificationResult.Success && result != PasswordVerificationResult.SuccessRehashNeeded)
+                    return null;
+
+                // Second query, same connection/row, isolated in its own try/catch below - whether
+                // this account carries BAPL DMS's own "Employee" role (AspNetUserRoles/AspNetRoles,
+                // confirmed via your AspNetRoles dump). A schema surprise here must never turn an
+                // otherwise-successful password check into a failed login, so IsBgEmployeeRole just
+                // defaults to false (treated as the simple single-DealerCode case) if this throws.
+                var isBgEmployeeRole = false;
+                try
+                {
+                    const string roleSql = @"
+                        SELECT COUNT(1)
+                        FROM [dbo].[AspNetUserRoles] ur
+                        JOIN [dbo].[AspNetRoles] r ON r.Id = ur.RoleId
+                        WHERE ur.UserId = @userId AND r.Name = 'Employee'";
+                    await using var roleCmd = new SqlCommand(roleSql, conn) { CommandTimeout = 30 };
+                    roleCmd.Parameters.AddWithValue("@userId", userId);
+                    var count = await roleCmd.ExecuteScalarAsync(ct);
+                    isBgEmployeeRole = count is int n && n > 0;
+                }
+                catch (Exception roleEx)
+                {
+                    _logger.LogWarning(roleEx, "BAPL DMS Employee-role check failed/unavailable for {EmailOrUserName}, defaulting to false", emailOrUserName);
+                }
+
+                // actualEmail comes from the matched row's own Email column, which every AspNetUsers
+                // row has populated (confirmed - none of yours are blank) - this only falls back to
+                // whatever was typed in if that ever isn't true, and only when it actually looks like
+                // an email, since the typed value may have been a bare UserName (e.g. "CUS0486") that
+                // would be the wrong thing to store as this person's JobCardScanner login email.
+                var resolvedEmail = !string.IsNullOrWhiteSpace(actualEmail) ? actualEmail
+                    : emailOrUserName.Trim().Contains('@') ? emailOrUserName.Trim()
+                    : null;
+                if (resolvedEmail is null) return null; // no usable email anywhere - can't provision a JobCardScanner login without one
+
+                return new BaplDmsDealerCredential(
+                    resolvedEmail,
+                    userName,
+                    phone,
+                    string.IsNullOrWhiteSpace(dealerCode) ? null : dealerCode.Trim(),
+                    isBgEmployeeRole);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Deliberately swallowed (logged only) - see this method's doc comment on the interface:
+            // a login flow must never crash because BAPL DMS's AspNetUsers schema surprised us.
+            _logger.LogWarning(ex, "BAPL DMS dealer credential check failed/unavailable for {EmailOrUserName}", emailOrUserName);
+            return null;
+        }
+    }
+
+    /// <summary>See IBaplDmsService.ResolveEmployeeDealerScopeAsync's doc comment. Checks
+    /// BgEmployeeMaster first (confirmed schema - you ran `SELECT TOP 3 * FROM BgEmployeeMaster`),
+    /// falling back to EmployeeMaster (a separate table per BAPL DMS's own EmployeeMasterRepo.cs,
+    /// NOT independently confirmed via a live SELECT - a schema surprise there is swallowed exactly
+    /// like the primary lookup, both degrade to Found=false rather than throwing) only when
+    /// BgEmployeeMaster has no matching row at all.</summary>
+    public async Task<BaplDmsEmployeeScope> ResolveEmployeeDealerScopeAsync(string email, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(email)) return new BaplDmsEmployeeScope(false, false, Array.Empty<string>());
+
+        try
+        {
+            await using var conn = new SqlConnection(ConnStr);
+            await conn.OpenAsync(ct);
+
+            const string bgSql = @"
+                SELECT TOP 1 IsActive, DealerCode
+                FROM [dbo].[BgEmployeeMaster]
+                WHERE EmailId = @email OR Email = @email";
+            await using (var bgCmd = new SqlCommand(bgSql, conn) { CommandTimeout = 30 })
+            {
+                bgCmd.Parameters.AddWithValue("@email", email.Trim());
+                await using var rdr = await bgCmd.ExecuteReaderAsync(ct);
+                if (await rdr.ReadAsync(ct))
+                {
+                    var isActive = rdr["IsActive"] is bool b && b;
+                    var raw = rdr["DealerCode"] as string;
+                    var codes = SplitDealerCodes(raw);
+                    return new BaplDmsEmployeeScope(true, isActive, codes);
+                }
+            }
+
+            try
+            {
+                const string empSql = @"
+                    SELECT TOP 1 DealerCode
+                    FROM [dbo].[EmployeeMaster]
+                    WHERE EmailId = @email";
+                await using var empCmd = new SqlCommand(empSql, conn) { CommandTimeout = 30 };
+                empCmd.Parameters.AddWithValue("@email", email.Trim());
+                await using var rdr = await empCmd.ExecuteReaderAsync(ct);
+                if (await rdr.ReadAsync(ct))
+                {
+                    var raw = rdr["DealerCode"] as string;
+                    // EmployeeMaster has no IsActive column confirmed - treat "row exists" as active,
+                    // same as BAPL DMS's own EmployeeMasterRepo fallback implicitly does.
+                    return new BaplDmsEmployeeScope(true, true, SplitDealerCodes(raw));
+                }
+            }
+            catch (Exception empEx)
+            {
+                _logger.LogWarning(empEx, "BAPL DMS EmployeeMaster fallback lookup failed/unavailable for {Email}", email);
+            }
+
+            return new BaplDmsEmployeeScope(false, false, Array.Empty<string>());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "BAPL DMS employee dealer-scope resolution failed/unavailable for {Email}", email);
+            return new BaplDmsEmployeeScope(false, false, Array.Empty<string>());
+        }
+    }
+
+    /// <summary>Reads a nullable numeric column (decimal/float/real/int - LabourMaster's exact
+    /// underlying SQL type for SGST/CGST/IGST/LabourRate isn't pinned down, only that its values are
+    /// numeric, e.g. 9.00/53.333333) as decimal, without the `as decimal?` cast operator's failure
+    /// mode of silently returning null for a boxed value that isn't EXACTLY System.Decimal (e.g. a
+    /// boxed double from a float/real column) - Convert.ToDecimal handles any numeric type.</summary>
+    private static decimal? ToNullableDecimal(object val) => val is DBNull ? null : Convert.ToDecimal(val);
+
+    private static int? ToNullableInt(object val) => val is DBNull ? null : Convert.ToInt32(val);
+
+    private static IReadOnlyList<string> SplitDealerCodes(string? raw) =>
+        string.IsNullOrWhiteSpace(raw)
+            ? Array.Empty<string>()
+            : raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(c => c.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+    /// <summary>See IBaplDmsService.SearchAspNetUsersAsync's doc comment.</summary>
+    public async Task<IReadOnlyList<BaplDmsAspNetUserRow>> SearchAspNetUsersAsync(string? q, CancellationToken ct = default)
+    {
+        const string sql = @"
+            SELECT TOP 500 Id, Email, UserName, PhoneNumber, DealerCode, LockoutEnabled, EmailConfirmed
+            FROM [dbo].[AspNetUsers]
+            WHERE (@qLike IS NULL OR Email LIKE @qLike OR UserName LIKE @qLike OR DealerCode LIKE @qLike)
+            ORDER BY Email";
+
+        var results = new List<BaplDmsAspNetUserRow>();
+        try
+        {
+            await using var conn = new SqlConnection(ConnStr);
+            await conn.OpenAsync(ct);
+            await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+            cmd.Parameters.AddWithValue("@qLike", string.IsNullOrWhiteSpace(q) ? (object)DBNull.Value : $"%{q.Trim()}%");
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            while (await rdr.ReadAsync(ct))
+            {
+                results.Add(new BaplDmsAspNetUserRow(
+                    rdr["Id"] as string ?? "",
+                    rdr["Email"] as string ?? "",
+                    rdr["UserName"] as string,
+                    rdr["PhoneNumber"] as string,
+                    rdr["DealerCode"] as string,
+                    rdr["LockoutEnabled"] is bool le && le,
+                    rdr["EmailConfirmed"] is bool ec && ec));
+            }
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Could not read BAPL DMS's AspNetUsers: {ex.Message}", ex);
+        }
+
+        return results;
     }
 
     private static DateOnly? ToDateOnly(object? value) =>

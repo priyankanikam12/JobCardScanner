@@ -38,6 +38,12 @@
 
     <!-- QR code generation for job card tracking links -->
     <PackageReference Include="QRCoder" Version="1.6.0" />
+
+    <!-- PasswordHasher<TUser>/IdentityUser, for verifying ASP.NET Core Identity password hashes
+         stored in BAPL DMS's own AspNetUsers table (see BaplDmsService.VerifyDealerCredentialsAsync).
+         This project does not use ASP.NET Core Identity for its own accounts (see Auth/PasswordHasher.cs),
+         so only the core Identity primitives are referenced, not EF/Stores/UI. -->
+    <PackageReference Include="Microsoft.Extensions.Identity.Core" Version="8.0.10" />
   </ItemGroup>
 
 </Project>

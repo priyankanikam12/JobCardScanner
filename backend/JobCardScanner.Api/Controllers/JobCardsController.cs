@@ -24,12 +24,13 @@ public class JobCardsController : ControllerBase
     private readonly IAuditLogService _audit;
     private readonly IWebHostEnvironment _env;
     private readonly IBaplDmsService _baplDms;
+    private readonly IInvoicePdfService _invoicePdf;
     private readonly ILogger<JobCardsController> _logger;
 
     public JobCardsController(
         JobCardScannerDbContext db, ICurrentUserService currentUser, IJobCardNumberingService numbering,
         IErpClient erp, INotificationClient notifications, IOtpService otp, IAuditLogService audit,
-        IWebHostEnvironment env, IBaplDmsService baplDms, ILogger<JobCardsController> logger)
+        IWebHostEnvironment env, IBaplDmsService baplDms, IInvoicePdfService invoicePdf, ILogger<JobCardsController> logger)
     {
         _db = db;
         _currentUser = currentUser;
@@ -40,6 +41,7 @@ public class JobCardsController : ControllerBase
         _audit = audit;
         _env = env;
         _baplDms = baplDms;
+        _invoicePdf = invoicePdf;
         _logger = logger;
     }
 
@@ -52,8 +54,31 @@ public class JobCardsController : ControllerBase
             .Include(j => j.ServiceAdvisor).Include(j => j.AssignedTechnician).Include(j => j.Photos)
             .AsQueryable();
 
-        var effectiveDealerId = dealerId ?? (_currentUser.Role is StaffRole.CorporateAdmin or StaffRole.SystemAdmin ? null : _currentUser.DealerId);
-        if (effectiveDealerId.HasValue) query = query.Where(j => j.DealerId == effectiveDealerId);
+        // Two bugs fixed here (found while chasing "dealer login sees every dealer's job cards"):
+        //   1) `dealerId` from the query string used to win for EVERYONE, including a plain
+        //      dealer-scoped user - so ?dealerId=<some other dealer's guid> could page around a
+        //      dealer's own scope and see a different dealer's job cards. Now only
+        //      Corporate/SystemAdmin (who already see every dealer by default) can use it to narrow
+        //      to one dealer - anyone else's `dealerId` query param is ignored outright.
+        //   2) When a non-Corporate/SystemAdmin user's own DealerId was unresolved (Guid? null -
+        //      can happen for an account created before DealerAuthController's pending-assignment
+        //      safety net existed, e.g. a manually-added Admin -> Users row with no dealer picked),
+        //      `effectiveDealerId.HasValue` was false, so the `if` below never ran at all - no WHERE
+        //      clause applied, silently returning every dealer's job cards instead of none. Now the
+        //      dealer filter is ALWAYS applied for a non-Corporate/SystemAdmin caller: when their own
+        //      DealerId is null, `j.DealerId == (Guid?)null` matches zero rows (DealerId is a
+        //      non-nullable Guid column on JobCard) rather than skipping the filter - a safe "show
+        //      nothing" default instead of an accidental "show everything" leak.
+        var isOrgWideRole = _currentUser.Role is StaffRole.CorporateAdmin or StaffRole.SystemAdmin;
+        if (isOrgWideRole)
+        {
+            if (dealerId.HasValue) query = query.Where(j => j.DealerId == dealerId);
+        }
+        else
+        {
+            query = query.Where(j => j.DealerId == _currentUser.DealerId);
+        }
+        var effectiveDealerId = isOrgWideRole ? dealerId : _currentUser.DealerId;
         if (status.HasValue) query = query.Where(j => j.Status == status);
         if (technicianId.HasValue) query = query.Where(j => j.AssignedTechnicianId == technicianId);
         // Lets the Dealer Dashboard's Quick Links ("Waiting for Parts", "Ready for Pickup") deep-link
@@ -115,6 +140,37 @@ public class JobCardsController : ControllerBase
     {
         var jc = await FullQuery().FirstOrDefaultAsync(j => j.Id == id);
         return jc is null ? NotFound() : Ok(Detail(jc));
+    }
+
+    /// <summary>
+    /// GET /api/jobcards/{id}/invoice-pdf - "Download Invoice from DMS": renders BAPL DMS's own
+    /// repair bill (RepairBillHeader/RepairBillDetail, read live) for this job card as a GST tax
+    /// invoice PDF matching BAPL DMS's own layout - see IInvoicePdfService.BuildInvoicePdfAsync.
+    /// Same [Authorize(Policy = Policies.Staff)] as this controller's other GET endpoints (Get()
+    /// above, List()) - no stricter policy needed, viewing an invoice PDF isn't a more sensitive
+    /// operation than viewing the job card itself. 404 covers both "no such job card" and "nothing
+    /// to download yet" (never synced to BAPL DMS, or synced but no repair bill raised there yet) -
+    /// both are normal, everyday states, not errors. A real BAPL DMS problem (bad connection/schema
+    /// drift) surfaces as 502 with the underlying message, same convention as BaplDmsController.
+    /// </summary>
+    [HttpGet("{id:guid}/invoice-pdf")]
+    public async Task<IActionResult> InvoicePdf(Guid id)
+    {
+        byte[]? bytes;
+        try
+        {
+            bytes = await _invoicePdf.BuildInvoicePdfAsync(id, HttpContext.RequestAborted);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Could not build the BAPL DMS invoice PDF for job card {JobCardId}", id);
+            return StatusCode(502, new { message = ex.Message });
+        }
+        if (bytes is null) return NotFound();
+
+        var jobCardNumber = await _db.JobCards.AsNoTracking().Where(j => j.Id == id).Select(j => j.JobCardNumber).FirstOrDefaultAsync();
+        var fileNamePart = string.IsNullOrWhiteSpace(jobCardNumber) ? id.ToString() : jobCardNumber;
+        return File(bytes, "application/pdf", $"invoice-{fileNamePart}.pdf");
     }
 
     // ---------------- Job Card Opening Wizard: finalize ----------------
@@ -224,10 +280,15 @@ public class JobCardsController : ControllerBase
                         ExpectedDeliveryAt: req.ExpectedDeliveryAt,
                         Complaints: req.Complaints.Select(c => c.Description).ToList(),
                         CreatedBy: $"JobCardScanner:{_currentUser.UserId}",
-                        JobSourceId: req.BaplJobSourceId),
+                        JobSourceId: req.BaplJobSourceId,
+                        Priority: req.Priority.ToString()),
                         HttpContext.RequestAborted);
 
                     jobCard.BaplJobCardHeaderId = result.JobCardHeaderId;
+                    // BAPL DMS's own Job Card List shows this JobNo (e.g. "22"), not the internal
+                    // JobCardHeaderId (e.g. "70") - kept separate so the Detail page can show staff
+                    // the number they actually recognize from BAPL DMS's own screen.
+                    jobCard.BaplJobNo = result.JobNo;
                     jobCard.BaplSyncStatus = "Synced";
                     jobCard.BaplSyncError = null;
                     await _db.SaveChangesAsync();
@@ -256,6 +317,10 @@ public class JobCardsController : ControllerBase
         if (jc is null) return NotFound();
 
         if (req.AssignedTechnicianId.HasValue) jc.AssignedTechnicianId = req.AssignedTechnicianId;
+        // Free-text technician name (see JobCard.AssignedTechnicianName's doc comment) - the Job
+        // Card Detail page's "Assign Technician" field types a name directly rather than picking
+        // from a User dropdown, since there's no confirmed technician catalog to populate one from.
+        if (req.AssignedTechnicianName is not null) jc.AssignedTechnicianName = string.IsNullOrWhiteSpace(req.AssignedTechnicianName) ? null : req.AssignedTechnicianName.Trim();
         if (req.Priority.HasValue) jc.Priority = req.Priority.Value;
         if (req.ExpectedDeliveryAt.HasValue) jc.ExpectedDeliveryAt = req.ExpectedDeliveryAt;
         jc.UpdatedAt = DateTime.UtcNow;
@@ -280,7 +345,18 @@ public class JobCardsController : ControllerBase
         _db.JobCardStageHistories.Add(new JobCardStageHistory { JobCardId = jc.Id, StageId = stage.Id, ChangedById = _currentUser.UserId, Notes = req.Notes });
         jc.CurrentStageId = stage.Id;
         jc.UpdatedAt = DateTime.UtcNow;
-        if (stage.IsTerminal && jc.Status != JobCardStatus.Closed) jc.Status = JobCardStatus.PendingClosure;
+        // Reaching a terminal stage (the 7-step pipeline's "Invoice Generated" - see
+        // redefine-workflow-stages-to-7-steps.sql) now closes the job card immediately, per explicit
+        // decision: "invoice generated = closed immediately" (skips the separate customer-facing OTP
+        // closure flow below - /closure/otp + /closure/verify - which is still here and still works,
+        // just no longer the only path to Status=Closed). Previously this only set PendingClosure and
+        // left the OTP step as the sole way to actually reach Closed.
+        if (stage.IsTerminal && jc.Status != JobCardStatus.Closed)
+        {
+            jc.Status = JobCardStatus.Closed;
+            jc.ClosedAt = DateTime.UtcNow;
+            jc.ActualDeliveryAt ??= DateTime.UtcNow;
+        }
 
         await _db.SaveChangesAsync();
         await _audit.LogAsync("JobCard.ChangeStage", "JobCard", jc.Id.ToString(), new { stage.StageKey });
@@ -319,15 +395,20 @@ public class JobCardsController : ControllerBase
     /// Url and had no upload/storage behind it anywhere in this codebase). Accepts a single image
     /// file plus the optional GPS coordinates the browser's Geolocation API captured at the same
     /// moment, stores the file on local disk under wwwroot/uploads/jobcard-photos/{jobCardId}/, and
-    /// records a JobCardPhoto row pointing at the resulting static URL. 20 MB cap matches the
-    /// [RequestSizeLimit] below - comfortably above a typical phone-camera JPEG.
+    /// records a JobCardPhoto row pointing at the resulting static URL. 1 GB cap matches the
+    /// [RequestSizeLimit] below (raised from the original 20 MB per your request, since the Review
+    /// &amp; Create step's Photos section is now required rather than optional) - Kestrel's own
+    /// default max request body size (~28.6 MB) would otherwise still reject a large upload before
+    /// this action even runs, but [RequestSizeLimit] overrides that per-endpoint limit, which is all
+    /// this app needs since there's no separate reverse proxy/IIS in front of Kestrel here.
     /// </summary>
     [HttpPost("{id:guid}/photos/upload")]
     [Authorize(Policy = Policies.ServiceAdvisorUp)]
-    [RequestSizeLimit(20_000_000)]
+    [RequestSizeLimit(1_000_000_000)]
     public async Task<IActionResult> UploadPhoto(Guid id, [FromForm] UploadPhotoForm form)
     {
-        if (!await _db.JobCards.AnyAsync(j => j.Id == id)) return NotFound();
+        var jobCardForPhoto = await _db.JobCards.FirstOrDefaultAsync(j => j.Id == id);
+        if (jobCardForPhoto is null) return NotFound();
         if (form.File is null || form.File.Length == 0) return BadRequest(new { message = "A photo file is required." });
         if (!AllowedPhotoContentTypes.Contains(form.File.ContentType, StringComparer.OrdinalIgnoreCase))
             return BadRequest(new { message = $"Unsupported file type '{form.File.ContentType}'. Upload a photo (JPEG, PNG, WEBP, or HEIC)." });
@@ -362,6 +443,38 @@ public class JobCardsController : ControllerBase
         };
         _db.JobCardPhotos.Add(photo);
         await _db.SaveChangesAsync();
+
+        // ---------------- Best-effort write-back into BAPL DMS's own database ----------------
+        // Only attempted when this job card actually synced into BAPL DMS (BaplJobCardHeaderId
+        // set). The local save above has ALREADY completed and is never affected by anything below
+        // - this is purely "also try to mirror the photo into BAPL DMS", mirroring the exact
+        // non-blocking write-back pattern JobCardsController.Create() uses for the job card itself.
+        if (jobCardForPhoto.BaplJobCardHeaderId.HasValue)
+        {
+            try
+            {
+                byte[] bytes;
+                await using (var ms = new MemoryStream())
+                {
+                    await form.File.CopyToAsync(ms, HttpContext.RequestAborted);
+                    bytes = ms.ToArray();
+                }
+                await _baplDms.SaveJobCardPhotoAsync(
+                    jobCardForPhoto.BaplJobCardHeaderId.Value,
+                    form.File.FileName ?? fileName,
+                    form.File.ContentType,
+                    form.Stage.ToString(),
+                    form.Caption,
+                    bytes,
+                    HttpContext.RequestAborted);
+            }
+            catch (Exception ex)
+            {
+                // Never lets a BAPL DMS problem affect this already-successful upload response.
+                _logger.LogWarning(ex, "Could not write job card photo {PhotoId} into BAPL DMS for job card {JobCardId}", photo.Id, id);
+            }
+        }
+
         return Ok(photo);
     }
 
@@ -458,9 +571,13 @@ public class JobCardsController : ControllerBase
     [Authorize(Policy = Policies.WorkshopManagerUp)]
     public async Task<IActionResult> Technicians([FromQuery] Guid? dealerId)
     {
-        var effectiveDealerId = dealerId ?? (_currentUser.Role is StaffRole.CorporateAdmin or StaffRole.SystemAdmin ? null : _currentUser.DealerId);
+        // Same fix as List() above's doc comment on this exact bug.
+        var isOrgWideRole = _currentUser.Role is StaffRole.CorporateAdmin or StaffRole.SystemAdmin;
+        var effectiveDealerId = isOrgWideRole ? dealerId : _currentUser.DealerId;
         var q = _db.Users.AsNoTracking().Where(u => u.Role == StaffRole.Technician && u.Active);
-        if (effectiveDealerId.HasValue) q = q.Where(u => u.DealerId == effectiveDealerId);
+        q = isOrgWideRole
+            ? (effectiveDealerId.HasValue ? q.Where(u => u.DealerId == effectiveDealerId) : q)
+            : q.Where(u => u.DealerId == effectiveDealerId);
 
         var technicians = await q.OrderBy(u => u.Name).Select(u => new { u.Id, u.Name }).ToListAsync();
         return Ok(technicians);
@@ -476,6 +593,8 @@ public class JobCardsController : ControllerBase
         .Include(j => j.Worklogs).Include(j => j.QcChecklistItems)
         .Include(j => j.Estimates).ThenInclude(e => e.Lines)
         .Include(j => j.Parts).ThenInclude(p => p.Part)
+        .Include(j => j.PartSuggestions)
+        .Include(j => j.LabourSuggestions)
         .Include(j => j.Invoice);
 
     private static object Summarize(JobCard j) => new
@@ -491,7 +610,7 @@ public class JobCardsController : ControllerBase
         VehicleRegNo = j.Vehicle?.RegNo,
         StageLabel = j.CurrentStage?.Label,
         ServiceAdvisorName = j.ServiceAdvisor?.Name,
-        TechnicianName = j.AssignedTechnician?.Name,
+        TechnicianName = j.AssignedTechnician?.Name ?? j.AssignedTechnicianName,
         j.CreatedAt,
         j.ExpectedDeliveryAt,
         PhotoCount = j.Photos.Count,
@@ -544,11 +663,18 @@ public class JobCardsController : ControllerBase
         j.BaplSupervisorName,
         j.BaplTechnicianName,
         j.BaplManualJobNo,
+        // *Id fields (not just the display-only *Name strings above) are needed so the Labour
+        // Suggestion panel can scope its BAPL DMS LabourMaster search by this job card's own
+        // already-selected Job Type/Service Head/Service Type cascade, same IDs the wizard used.
+        j.BaplJobTypeId,
+        j.BaplServiceHeadId,
         j.BaplServiceHeadName,
+        j.BaplServiceTypeId,
         j.BaplServiceTypeName,
         j.BaplJobSourceName,
         j.BaplServiceLocationCode,
         j.BaplJobCardHeaderId,
+        j.BaplJobNo,
         j.BaplSyncStatus,
         j.BaplSyncError,
         BaplSyncWarning = baplSyncWarning,
@@ -558,6 +684,7 @@ public class JobCardsController : ControllerBase
         CurrentStage = j.CurrentStage,
         ServiceAdvisor = j.ServiceAdvisor is null ? null : new { j.ServiceAdvisor.Id, j.ServiceAdvisor.Name },
         AssignedTechnician = j.AssignedTechnician is null ? null : new { j.AssignedTechnician.Id, j.AssignedTechnician.Name },
+        j.AssignedTechnicianName,
         j.Complaints,
         j.Inspections,
         j.Photos,
@@ -566,6 +693,112 @@ public class JobCardsController : ControllerBase
         j.QcChecklistItems,
         Estimates = j.Estimates,
         Parts = j.Parts,
+        PartSuggestions = j.PartSuggestions,
+        LabourSuggestions = j.LabourSuggestions,
         Invoice = j.Invoice,
     };
+
+    // ---------------- Part Suggestion ("Part Suggestion" panel) ----------------
+    /// <summary>POST /api/jobcards/{id}/part-suggestions - saves one BAPL DMS PartsInventory item
+    /// suggested for this job card, with a Paid/U-W status tracked only in JobCardScannerDb (see
+    /// JobCardPartSuggestion's doc comment - this does not write anything back into BAPL DMS).</summary>
+    [HttpPost("{id:guid}/part-suggestions")]
+    [Authorize(Policy = Policies.ServiceAdvisorUp)]
+    public async Task<IActionResult> AddPartSuggestion(Guid id, AddPartSuggestionRequest req)
+    {
+        if (!await _db.JobCards.AnyAsync(j => j.Id == id)) return NotFound();
+        if (string.IsNullOrWhiteSpace(req.ItemCode)) return BadRequest(new { message = "itemCode is required." });
+        if (req.Status != "Paid" && req.Status != "U/W") return BadRequest(new { message = "status must be 'Paid' or 'U/W'." });
+
+        var suggestion = new JobCardPartSuggestion
+        {
+            JobCardId = id,
+            ItemCode = req.ItemCode.Trim(),
+            AvailableQtyAtSuggestion = req.AvailableQtyAtSuggestion,
+            Status = req.Status,
+            SuggestedById = _currentUser.UserId,
+        };
+        _db.JobCardPartSuggestions.Add(suggestion);
+        await _db.SaveChangesAsync();
+        return Ok(suggestion);
+    }
+
+    /// <summary>PUT /api/jobcards/part-suggestions/{suggestionId} - flips a suggested part between
+    /// Paid and U/W after the fact.</summary>
+    [HttpPut("part-suggestions/{suggestionId:guid}")]
+    [Authorize(Policy = Policies.ServiceAdvisorUp)]
+    public async Task<IActionResult> UpdatePartSuggestionStatus(Guid suggestionId, UpdatePartSuggestionStatusRequest req)
+    {
+        if (req.Status != "Paid" && req.Status != "U/W") return BadRequest(new { message = "status must be 'Paid' or 'U/W'." });
+        var suggestion = await _db.JobCardPartSuggestions.FirstOrDefaultAsync(s => s.Id == suggestionId);
+        if (suggestion is null) return NotFound();
+        suggestion.Status = req.Status;
+        await _db.SaveChangesAsync();
+        return Ok(suggestion);
+    }
+
+    // ---------------- Labour Suggestion ("Labour Suggestion" panel) ----------------
+    /// <summary>POST /api/jobcards/{id}/labour-suggestions - saves one BAPL DMS LabourMaster line
+    /// suggested for this job card. Snapshots Description/HSN/GST/Rate from the request as picked
+    /// on the frontend (same trust level as AddPartSuggestion's AvailableQtyAtSuggestion - this is
+    /// JobCardScanner-only history/reporting, not re-verified against BAPL DMS server-side) - see
+    /// JobCardLabourSuggestion's doc comment. Does not write anything back into BAPL DMS.</summary>
+    [HttpPost("{id:guid}/labour-suggestions")]
+    [Authorize(Policy = Policies.ServiceAdvisorUp)]
+    public async Task<IActionResult> AddLabourSuggestion(Guid id, AddLabourSuggestionRequest req)
+    {
+        if (!await _db.JobCards.AnyAsync(j => j.Id == id)) return NotFound();
+        if (string.IsNullOrWhiteSpace(req.LabourCode)) return BadRequest(new { message = "labourCode is required." });
+        if (req.Quantity < 1) return BadRequest(new { message = "quantity must be at least 1." });
+
+        var suggestion = new JobCardLabourSuggestion
+        {
+            JobCardId = id,
+            LabourCode = req.LabourCode.Trim(),
+            LabourDescription = string.IsNullOrWhiteSpace(req.LabourDescription) ? null : req.LabourDescription.Trim(),
+            HsnCode = string.IsNullOrWhiteSpace(req.HsnCode) ? null : req.HsnCode.Trim(),
+            Sgst = req.Sgst,
+            Cgst = req.Cgst,
+            Igst = req.Igst,
+            RateAtSuggestion = req.RateAtSuggestion,
+            Quantity = req.Quantity,
+            IssueType = string.IsNullOrWhiteSpace(req.IssueType) ? null : req.IssueType.Trim(),
+            SuggestedById = _currentUser.UserId,
+        };
+        _db.JobCardLabourSuggestions.Add(suggestion);
+        await _db.SaveChangesAsync();
+        return Ok(suggestion);
+    }
+
+    /// <summary>PUT /api/jobcards/labour-suggestions/{suggestionId} - edits a suggested labour
+    /// line's Quantity and/or Issue Type after the fact. RateAtSuggestion is deliberately NOT
+    /// editable here (locked from LabourMaster's own rate card at the time it was suggested - see
+    /// JobCardLabourSuggestion's doc comment) - to change the rate, remove this suggestion and
+    /// re-add it from the current LabourMaster list instead.</summary>
+    [HttpPut("labour-suggestions/{suggestionId:guid}")]
+    [Authorize(Policy = Policies.ServiceAdvisorUp)]
+    public async Task<IActionResult> UpdateLabourSuggestion(Guid suggestionId, UpdateLabourSuggestionRequest req)
+    {
+        if (req.Quantity < 1) return BadRequest(new { message = "quantity must be at least 1." });
+        var suggestion = await _db.JobCardLabourSuggestions.FirstOrDefaultAsync(s => s.Id == suggestionId);
+        if (suggestion is null) return NotFound();
+        suggestion.Quantity = req.Quantity;
+        suggestion.IssueType = string.IsNullOrWhiteSpace(req.IssueType) ? null : req.IssueType.Trim();
+        await _db.SaveChangesAsync();
+        return Ok(suggestion);
+    }
+
+    /// <summary>DELETE /api/jobcards/labour-suggestions/{suggestionId} - removes a suggested labour
+    /// line (e.g. added by mistake, or being replaced with a different rate/quantity - see
+    /// UpdateLabourSuggestion's doc comment on why a rate change means remove-and-re-add).</summary>
+    [HttpDelete("labour-suggestions/{suggestionId:guid}")]
+    [Authorize(Policy = Policies.ServiceAdvisorUp)]
+    public async Task<IActionResult> DeleteLabourSuggestion(Guid suggestionId)
+    {
+        var suggestion = await _db.JobCardLabourSuggestions.FirstOrDefaultAsync(s => s.Id == suggestionId);
+        if (suggestion is null) return NotFound();
+        _db.JobCardLabourSuggestions.Remove(suggestion);
+        await _db.SaveChangesAsync();
+        return Ok(new { message = "Removed." });
+    }
 }

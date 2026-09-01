@@ -1,5 +1,5 @@
 // Shared TypeScript types mirroring the backend's C# enums/DTOs (see backend/JobCardScanner.Api/Models).
-
+// web\src\types\types.index.ts
 export type StaffRole =
   | 'ServiceAdvisor'
   | 'WorkshopManager'
@@ -27,6 +27,15 @@ export type EstimateStatus = 'Draft' | 'PendingCustomerApproval' | 'Approved' | 
 export type InvoiceStatus = 'Draft' | 'Generated' | 'Paid' | 'Cancelled'
 export type PaymentMode = 'Cash' | 'Card' | 'Upi' | 'NetBanking' | 'Wallet' | 'Pending'
 export type PhotoStage = 'CheckIn' | 'Inspection' | 'Repair' | 'Qc' | 'Delivery'
+export type JobCardPartSuggestionStatus = 'Paid' | 'UnderWarranty'
+
+export interface JobCardPartSuggestion {
+  id: string
+  itemCode: string
+  locationCode?: string | null
+  status: JobCardPartSuggestionStatus
+  updatedAt: string
+}
 
 export interface Dealer {
   id: string
@@ -321,6 +330,8 @@ export interface JobCardDetail extends Omit<JobCardSummary, 'customerName' | 've
   estimates: Estimate[]
   parts: JobCardPart[]
   invoice?: Invoice | null
+  assignedTechnicianName?: string | null
+  partSuggestions: JobCardPartSuggestion[]
 }
 
 export interface Invoice {

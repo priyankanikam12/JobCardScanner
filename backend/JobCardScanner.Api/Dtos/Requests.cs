@@ -71,7 +71,7 @@ public record CreateJobCardRequest(
     int? BaplJobSourceId = null,
     string? BaplJobSourceName = null);
 
-public record UpdateJobCardRequest(Guid? AssignedTechnicianId, JobCardPriority? Priority, DateTime? ExpectedDeliveryAt);
+public record UpdateJobCardRequest(Guid? AssignedTechnicianId, JobCardPriority? Priority, DateTime? ExpectedDeliveryAt, string? AssignedTechnicianName = null);
 
 public record ChangeStageRequest(Guid StageId, string? Notes);
 
@@ -113,6 +113,25 @@ public record OtpVerifyRequest(Guid OtpRequestId, string Code);
 // ---------------- Parts ----------------
 public record RequestPartRequest(Guid PartId, double Quantity);
 public record IssuePartRequest { }
+
+// ---------------- Part Suggestion ("Part Suggestion" panel - suggested from BAPL DMS's own
+// PartsInventory, status tracked locally only) ----------------
+public record AddPartSuggestionRequest(string ItemCode, int? AvailableQtyAtSuggestion, string Status);
+public record UpdatePartSuggestionStatusRequest(string Status);
+
+// ---------------- Labour Suggestion ("Labour Suggestion" panel - suggested from BAPL DMS's own
+// LabourMaster, Description/HSN/GST/Rate snapshotted locally at suggestion time) ----------------
+public record AddLabourSuggestionRequest(
+    string LabourCode,
+    string? LabourDescription,
+    string? HsnCode,
+    decimal? Sgst,
+    decimal? Cgst,
+    decimal? Igst,
+    decimal? RateAtSuggestion,
+    int Quantity,
+    string? IssueType);
+public record UpdateLabourSuggestionRequest(int Quantity, string? IssueType);
 
 // ---------------- Invoicing ----------------
 public record GenerateInvoiceRequest(decimal DiscountAmount, decimal CgstAmount, decimal SgstAmount, decimal IgstAmount);

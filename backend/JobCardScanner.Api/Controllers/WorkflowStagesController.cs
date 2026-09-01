@@ -30,7 +30,12 @@ public class WorkflowStagesController : ControllerBase
     [HttpGet]
     public async Task<IActionResult> List([FromQuery] Guid? dealerId)
     {
-        var effectiveDealerId = dealerId ?? _currentUser.DealerId;
+        // Lower stakes than JobCardsController.List's own version of this bug (this only exposes a
+        // dealer's custom stage labels/colors, not customer/financial data), but same fix: a
+        // non-Corporate/SystemAdmin caller can't use `dealerId` to look at a different dealer's
+        // stage customization - it's ignored for them, same as every other list endpoint in this app.
+        var isOrgWideRole = _currentUser.Role is StaffRole.CorporateAdmin or StaffRole.SystemAdmin;
+        var effectiveDealerId = isOrgWideRole ? (dealerId ?? _currentUser.DealerId) : _currentUser.DealerId;
         var all = await _db.WorkflowStages.AsNoTracking()
             .Where(s => s.DealerId == null || s.DealerId == effectiveDealerId)
             .ToListAsync();

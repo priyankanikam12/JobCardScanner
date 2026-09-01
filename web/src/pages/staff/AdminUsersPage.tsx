@@ -60,6 +60,27 @@ interface BaplImportResult {
   dealers: { customerCode: string; customerName: string; city: string; state: string; email: string }[]
 }
 
+// One row of BAPL DMS's own AspNetUsers (GET /api/bapl-dms/aspnet-users), cross-referenced
+// server-side against JobCardScannerDb's own Dealers/Users - see BaplDmsController.AspNetUsers's
+// doc comment. Read-only browse: there's no PasswordHash here, and no add/resolve action - it
+// exists purely so an admin can see why a given BAPL DMS login is or isn't working yet (no
+// DealerCode on file, a DealerCode that doesn't resolve to a known local Dealer, or simply never
+// signed in) without pasting SQL dumps back and forth.
+interface BaplAspNetUser {
+  id: string
+  email: string
+  userName?: string | null
+  phoneNumber?: string | null
+  dealerCode?: string | null
+  lockoutEnabled: boolean
+  emailConfirmed: boolean
+  resolvedDealerId?: string | null
+  resolvedDealerName?: string | null
+  provisioned: boolean
+  localActive?: boolean | null
+  localUserId?: string | null
+}
+
 export function AdminUsersPage() {
   const { profile, hasRole } = useStaffAuth()
   const [users, setUsers] = useState<StaffUser[]>([])
@@ -210,6 +231,36 @@ export function AdminUsersPage() {
       loadBaplStatus()
     } catch (err: unknown) { setBaplError(baplErrMessage(err, 'Import failed.')) }
     finally { setBaplLoading(null) }
+  }
+
+  // ---------------- BAPL DMS Logins (browse AspNetUsers) ----------------
+  const [baplUsersQuery, setBaplUsersQuery] = useState('')
+  const [baplUsers, setBaplUsers] = useState<BaplAspNetUser[]>([])
+  const [baplUsersLoading, setBaplUsersLoading] = useState(false)
+  const [baplUsersError, setBaplUsersError] = useState<string | null>(null)
+  const [baplUsersLoaded, setBaplUsersLoaded] = useState(false)
+
+  const loadBaplUsers = async (q: string) => {
+    setBaplUsersLoading(true)
+    setBaplUsersError(null)
+    try {
+      const { data } = await staffApi.get<BaplAspNetUser[]>('/api/bapl-dms/aspnet-users', { params: q ? { q } : {} })
+      setBaplUsers(data)
+      setBaplUsersLoaded(true)
+    } catch (err: unknown) {
+      const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+        ?? 'Could not reach BAPL DMS right now.'
+      setBaplUsersError(message)
+      setBaplUsers([])
+    } finally {
+      setBaplUsersLoading(false)
+    }
+  }
+
+  const baplUsersStatusLabel = (u: BaplAspNetUser) => {
+    if (!u.provisioned) return 'Never signed in here yet'
+    if (u.localActive) return 'Active'
+    return u.resolvedDealerId ? 'Inactive' : 'Inactive - pending dealer assignment'
   }
 
   const create = async () => {
@@ -403,6 +454,59 @@ export function AdminUsersPage() {
               Import More / Refresh
             </button>
           </div>
+        )}
+      </div>
+      )}
+
+      {hasRole('DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
+      <div className="card">
+        <h3>BAPL DMS Logins</h3>
+        <p className="muted">
+          Browses BAPL DMS's own AspNetUsers directly (the same table the "Dealer / Workshop Login"
+          page's BAPL DMS fallback checks) - search by email, username, or dealer code to see
+          whether a login's DealerCode already resolves to a Dealer here, and whether that person
+          has actually signed in yet. Read-only - passwords are never shown or read here; sign-in
+          still only ever happens on the Dealer / Workshop Login page itself with that person's real
+          BAPL DMS password.
+        </p>
+        <div className="form-row">
+          <div className="field" style={{ flex: 1 }}>
+            <label>Search by email, username, or dealer code</label>
+            <input
+              placeholder="e.g. CUS0001 or someone@example.com"
+              value={baplUsersQuery}
+              onChange={(e) => setBaplUsersQuery(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && loadBaplUsers(baplUsersQuery)}
+            />
+          </div>
+          <button className="btn btn-sm" style={{ alignSelf: 'flex-end' }} disabled={baplUsersLoading} onClick={() => loadBaplUsers(baplUsersQuery)}>
+            {baplUsersLoading ? 'Loading…' : baplUsersLoaded ? 'Search' : 'Load BAPL DMS Logins'}
+          </button>
+        </div>
+
+        {baplUsersError && <p className="muted" style={{ color: '#b91c1c' }}>{baplUsersError}</p>}
+
+        {baplUsersLoaded && !baplUsersLoading && !baplUsersError && (
+          <table>
+            <thead>
+              <tr><th>Email</th><th>Username</th><th>Dealer Code</th><th>Resolved Dealer</th><th>Status here</th><th>Locked</th></tr>
+            </thead>
+            <tbody>
+              {baplUsers.map((u) => (
+                <tr key={u.id}>
+                  <td>{u.email}</td>
+                  <td>{u.userName ?? '-'}</td>
+                  <td>{u.dealerCode ?? <span className="muted">none on file</span>}</td>
+                  <td>{u.resolvedDealerName ?? (u.dealerCode ? <span className="muted">not linked yet</span> : '-')}</td>
+                  <td>{baplUsersStatusLabel(u)}</td>
+                  <td>{u.lockoutEnabled ? 'Yes' : 'No'}</td>
+                </tr>
+              ))}
+              {baplUsers.length === 0 && (
+                <tr><td colSpan={6} className="muted">No matches{baplUsersQuery ? ` for "${baplUsersQuery}"` : ''} (up to 500 shown).</td></tr>
+              )}
+            </tbody>
+          </table>
         )}
       </div>
       )}

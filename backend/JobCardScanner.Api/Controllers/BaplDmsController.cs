@@ -298,4 +298,102 @@ public class BaplDmsController : ControllerBase
         try { return Ok(await _baplDms.GetJobSourcesAsync(HttpContext.RequestAborted)); }
         catch (InvalidOperationException ex) { return StatusCode(502, new { message = ex.Message }); }
     }
+
+    /// <summary>GET /api/bapl-dms/repair-bills/{jobCardHeaderId} - repair bill(s) BAPL DMS has for
+    /// one job card, for the Job Card Detail page's "Download Invoice from DMS" panel. Empty array
+    /// is normal (no bill raised for this job yet).</summary>
+    [HttpGet("repair-bills/{jobCardHeaderId:int}")]
+    public async Task<IActionResult> RepairBills(int jobCardHeaderId)
+    {
+        try { return Ok(await _baplDms.GetRepairBillsForJobAsync(jobCardHeaderId, HttpContext.RequestAborted)); }
+        catch (InvalidOperationException ex) { return StatusCode(502, new { message = ex.Message }); }
+    }
+
+    /// <summary>GET /api/bapl-dms/parts?locationCode=... - available stock per item at one workshop
+    /// location (BAPL DMS's own PartsInventory), for the Job Card Detail page's "Part Suggestion"
+    /// panel. See BaplDmsPartStockRow's doc comment for the (best-effort, unconfirmed) "available"
+    /// rule this uses.</summary>
+    [HttpGet("parts")]
+    public async Task<IActionResult> Parts([FromQuery] string locationCode)
+    {
+        if (string.IsNullOrWhiteSpace(locationCode)) return Ok(Array.Empty<BaplDmsPartStockRow>());
+        try { return Ok(await _baplDms.GetPartsInventoryAsync(locationCode, HttpContext.RequestAborted)); }
+        catch (InvalidOperationException ex) { return StatusCode(502, new { message = ex.Message }); }
+    }
+
+    /// <summary>
+    /// GET /api/bapl-dms/labour?jobTypeId=&amp;serviceHeadId=&amp;serviceTypeId=&amp;q=... - backs the
+    /// Job Card Detail page's "Labour Suggestion" panel. All params optional - jobTypeId/
+    /// serviceHeadId/serviceTypeId default the list to the job card's own already-selected cascade
+    /// (see JobCardDetail.baplJobTypeId etc on the frontend), q is a free-text search across
+    /// LabourCode/LabourDescription combined with (not replacing) any cascade filter - see
+    /// BaplDmsLabourRow's doc comment for why both matter (many LabourMaster rows have no cascade
+    /// mapping yet).
+    /// </summary>
+    [HttpGet("labour")]
+    public async Task<IActionResult> Labour([FromQuery] int? jobTypeId, [FromQuery] int? serviceHeadId, [FromQuery] int? serviceTypeId, [FromQuery] string? q)
+    {
+        try { return Ok(await _baplDms.GetLabourAsync(jobTypeId, serviceHeadId, serviceTypeId, q, HttpContext.RequestAborted)); }
+        catch (InvalidOperationException ex) { return StatusCode(502, new { message = ex.Message }); }
+    }
+
+    /// <summary>
+    /// GET /api/bapl-dms/aspnet-users?q=... - backs Admin -&gt; Users' "BAPL DMS Logins" panel: lists
+    /// every dealer/workshop login BAPL DMS's own AspNetUsers table knows about (the same table the
+    /// "Dealer / Workshop Login" fallback checks - see BaplDmsService.VerifyDealerCredentialsAsync),
+    /// cross-referenced against JobCardScannerDb's own Dealers (does this row's DealerCode already
+    /// resolve to a known local Dealer?) and Users (has anyone actually signed in with this email
+    /// yet, and are they active?). Lets an admin see, at a glance, exactly why a given login is or
+    /// isn't working yet - no DealerCode, an unresolved DealerCode, or simply never signed in -
+    /// instead of everyone pasting raw SQL dumps back and forth to figure it out. Read-only:
+    /// PasswordHash is never read (see SearchAspNetUsersAsync) or returned. Admin-gated
+    /// (DealerAdminUp) since this spans every dealer's login accounts, not just one dealer's own -
+    /// same gate as the existing Azure AD directory browse (AdminDirectoryController).
+    /// </summary>
+    [HttpGet("aspnet-users")]
+    [Authorize(Policy = Policies.DealerAdminUp)]
+    public async Task<IActionResult> AspNetUsers([FromQuery] string? q)
+    {
+        IReadOnlyList<BaplDmsAspNetUserRow> rows;
+        try { rows = await _baplDms.SearchAspNetUsersAsync(q, HttpContext.RequestAborted); }
+        catch (InvalidOperationException ex) { return StatusCode(502, new { message = ex.Message }); }
+
+        var codes = rows.Where(r => !string.IsNullOrWhiteSpace(r.DealerCode))
+            .Select(r => r.DealerCode!.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var knownDealers = await _db.Dealers.AsNoTracking()
+            .Where(d => codes.Contains(d.Code) || (d.BaplDmsDealerCode != null && codes.Contains(d.BaplDmsDealerCode)))
+            .Select(d => new { d.Id, d.Name, d.Code, d.BaplDmsDealerCode })
+            .ToListAsync();
+
+        var emails = rows.Where(r => !string.IsNullOrWhiteSpace(r.Email)).Select(r => r.Email.Trim().ToLower()).ToList();
+        var localUsers = await _db.Users.AsNoTracking()
+            .Where(u => u.AuthType == UserAuthType.Local && emails.Contains(u.Email.ToLower()))
+            .ToDictionaryAsync(u => u.Email.ToLower(), u => u);
+
+        var results = rows.Select(r =>
+        {
+            var dealer = string.IsNullOrWhiteSpace(r.DealerCode) ? null
+                : knownDealers.FirstOrDefault(d =>
+                    string.Equals(d.Code, r.DealerCode, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(d.BaplDmsDealerCode, r.DealerCode, StringComparison.OrdinalIgnoreCase));
+            localUsers.TryGetValue(r.Email.Trim().ToLower(), out var local);
+            return new
+            {
+                r.Id,
+                r.Email,
+                r.UserName,
+                r.PhoneNumber,
+                r.DealerCode,
+                r.LockoutEnabled,
+                r.EmailConfirmed,
+                ResolvedDealerId = dealer?.Id,
+                ResolvedDealerName = dealer?.Name,
+                Provisioned = local is not null,
+                LocalActive = local?.Active,
+                LocalUserId = local?.Id,
+            };
+        });
+
+        return Ok(results);
+    }
 }

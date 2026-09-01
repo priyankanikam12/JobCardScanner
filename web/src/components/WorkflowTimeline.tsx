@@ -20,6 +20,12 @@ const STAGE_ICON: Record<string, string> = {
   customer_approval: '✅',
   parts_requested: '📦',
   parts_issued: '📦',
+  // The two new stages in the 7-step pipeline (see redefine-workflow-stages-to-7-steps.sql) -
+  // added alongside the retired keys above rather than replacing them, since old
+  // JobCardStageHistory rows can still reference a retired key and this map should keep resolving
+  // an icon for those, not just the currently-active 7.
+  part_suggestion: '📦',
+  labour_suggestion: '🧰',
   in_repair: '🔧',
   repair_completed: '🛠️',
   quality_check: '🛡️',

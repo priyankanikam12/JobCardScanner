@@ -18,23 +18,61 @@ public class PartsController : ControllerBase
     private readonly JobCardScannerDbContext _db;
     private readonly ICurrentUserService _currentUser;
     private readonly IDmsClient _dms;
+    private readonly IBaplDmsService _baplDms;
     private readonly IAuditLogService _audit;
+    private readonly ILogger<PartsController> _logger;
 
-    public PartsController(JobCardScannerDbContext db, ICurrentUserService currentUser, IDmsClient dms, IAuditLogService audit)
+    public PartsController(JobCardScannerDbContext db, ICurrentUserService currentUser, IDmsClient dms, IBaplDmsService baplDms, IAuditLogService audit, ILogger<PartsController> logger)
     {
         _db = db;
         _currentUser = currentUser;
         _dms = dms;
+        _baplDms = baplDms;
         _audit = audit;
+        _logger = logger;
     }
 
+    /// <summary>
+    /// GET /api/parts?q=...&amp;locationCode=... - the Parts &amp; Inventory catalog page. Always
+    /// searches JobCardScanner's own local PartMaster catalog (unchanged from before); ADDITIONALLY
+    /// searches BAPL DMS's own PartsInventory (see BaplDmsService.GetPartsInventoryAsync) whenever a
+    /// BAPL DMS workshop location code is supplied - unlike PartMaster, PartsInventory is scoped to
+    /// one workshop location (e.g. "CUS0435W1"), not a dealer-wide catalog, so there's no location
+    /// to search without one being given. dmsParts entries carry only ItemCode + AvailableQty (no
+    /// confirmed name/price/category master table exists for BAPL DMS parts anywhere in this
+    /// codebase - see BaplDmsRepairBillDetailRow's doc comment on the same gap) and are NOT tied to
+    /// a local PartMaster.Id, so they can't be "Request"-ed against a job card the way a local part
+    /// can - a job card that needs a specific BAPL DMS item uses the Job Card Detail page's own
+    /// "Part Suggestion" panel instead (POST /api/jobcards/{id}/part-suggestions), which is already
+    /// scoped to that job card's own BaplServiceLocationCode.
+    /// </summary>
     [HttpGet("parts")]
-    public async Task<IActionResult> Search([FromQuery] string? q)
+    public async Task<IActionResult> Search([FromQuery] string? q, [FromQuery] string? locationCode)
     {
         var query = _db.PartMasters.AsNoTracking().AsQueryable();
         if (!string.IsNullOrWhiteSpace(q))
             query = query.Where(p => p.Name.Contains(q) || p.PartNumber.Contains(q) || (p.Category != null && p.Category.Contains(q)));
-        return Ok(await query.OrderBy(p => p.Name).Take(100).ToListAsync());
+        var localParts = await query.OrderBy(p => p.Name).Take(100).ToListAsync();
+
+        IReadOnlyList<BaplDmsPartStockRow> dmsParts = Array.Empty<BaplDmsPartStockRow>();
+        string? dmsWarning = null;
+        if (!string.IsNullOrWhiteSpace(locationCode))
+        {
+            try
+            {
+                var rows = await _baplDms.GetPartsInventoryAsync(locationCode.Trim(), HttpContext.RequestAborted);
+                dmsParts = string.IsNullOrWhiteSpace(q)
+                    ? rows
+                    : rows.Where(r => r.ItemCode.Contains(q.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+            }
+            catch (InvalidOperationException ex)
+            {
+                _logger.LogWarning(ex, "Could not read BAPL DMS parts inventory for location {LocationCode}", locationCode);
+                dmsWarning = "Could not reach BAPL DMS's parts inventory right now - showing JobCardScanner's own catalog only.";
+            }
+        }
+
+        return Ok(new { localParts, dmsParts, dmsWarning });
     }
 
     [HttpGet("parts/{partNumber}/network-availability")]

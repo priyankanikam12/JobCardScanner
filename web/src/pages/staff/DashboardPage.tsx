@@ -32,7 +32,7 @@ const TILES: { key: keyof DashboardKpis; label: string; icon: string }[] = [
 
 const QUICK_LINKS: { label: string; to: string }[] = [
   { label: 'Open Job Cards', to: '/jobcards' },
-  { label: 'Waiting for Parts', to: '/jobcards?stageKey=parts_requested' },
+  { label: 'Waiting for Parts', to: '/jobcards?stageKey=part_suggestion' },
   { label: 'Awaiting Approval', to: '/jobcards?status=PendingCustomerApproval' },
   { label: 'Ready for Pickup', to: '/jobcards?stageKey=ready_for_delivery' },
   { label: 'Reports', to: '/reports' },

@@ -29,11 +29,21 @@ public class DashboardController : ControllerBase
     [HttpGet("kpis")]
     public async Task<IActionResult> Kpis([FromQuery] Guid? dealerId)
     {
+        // Same fix as JobCardsController.List's own doc comment on this exact bug: `dealerId` from
+        // the query string used to win for EVERYONE (a dealer-scoped user could page around their
+        // own scope via ?dealerId=<other dealer>), and when a non-corporate user's own DealerId was
+        // unresolved, effectiveDealerId.HasValue was false so the filter below never ran at all -
+        // showing every dealer's KPIs combined instead of none. Now the dealer filter always applies
+        // for a non-Corporate/SystemAdmin caller (ignoring their own null DealerId, if any, cleanly -
+        // no job card has a null DealerId, so that's a safe "show nothing" default), and `dealerId`
+        // only ever narrows things for Corporate/SystemAdmin.
         var isCorporate = _currentUser.Role is StaffRole.CorporateAdmin or StaffRole.SystemAdmin;
-        var effectiveDealerId = dealerId ?? (isCorporate ? null : _currentUser.DealerId);
+        var effectiveDealerId = isCorporate ? dealerId : _currentUser.DealerId;
 
         var jobCards = _db.JobCards.AsNoTracking().AsQueryable();
-        if (effectiveDealerId.HasValue) jobCards = jobCards.Where(j => j.DealerId == effectiveDealerId);
+        jobCards = isCorporate
+            ? (effectiveDealerId.HasValue ? jobCards.Where(j => j.DealerId == effectiveDealerId) : jobCards)
+            : jobCards.Where(j => j.DealerId == effectiveDealerId);
 
         var monthStart = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1, 0, 0, 0, DateTimeKind.Utc);
         var todayStart = DateTime.UtcNow.Date;
@@ -48,7 +58,11 @@ public class DashboardController : ControllerBase
         // ---- "Dealer Dashboard" tiles (mirrors the workshop's daily ops board) ----
         var vehiclesReceivedToday = await jobCards.CountAsync(j => j.CreatedAt >= todayStart && j.CreatedAt < tomorrowStart);
         var underService = await jobCards.CountAsync(j => j.CurrentStage!.StageKey == "in_repair");
-        var waitingForParts = await jobCards.CountAsync(j => j.CurrentStage!.StageKey == "parts_requested");
+        // "Waiting for Parts" now counts the "Part Suggestion" stage - the 7-step pipeline (see
+        // redefine-workflow-stages-to-7-steps.sql) retired the old "parts_requested" stage key
+        // entirely in favor of "part_suggestion". Field name (waitingForParts) unchanged - only the
+        // underlying StageKey it counts against changed - so the frontend needs no changes.
+        var waitingForParts = await jobCards.CountAsync(j => j.CurrentStage!.StageKey == "part_suggestion");
         var waitingCustomerApproval = pendingApproval;
         var vehiclesReady = await jobCards.CountAsync(j => j.CurrentStage!.StageKey == "ready_for_delivery");
         var vehiclesDeliveredToday = await jobCards.CountAsync(j => j.ActualDeliveryAt >= todayStart && j.ActualDeliveryAt < tomorrowStart);
@@ -60,7 +74,9 @@ public class DashboardController : ControllerBase
         var warrantyJobsOpen = await jobCards.CountAsync(j => j.ServiceType == ServiceType.Warranty && j.Status != JobCardStatus.Closed && j.Status != JobCardStatus.Cancelled);
 
         var invoices = _db.Invoices.AsNoTracking().AsQueryable();
-        if (effectiveDealerId.HasValue) invoices = invoices.Where(i => i.DealerId == effectiveDealerId);
+        invoices = isCorporate
+            ? (effectiveDealerId.HasValue ? invoices.Where(i => i.DealerId == effectiveDealerId) : invoices)
+            : invoices.Where(i => i.DealerId == effectiveDealerId);
         var revenueThisMonth = await invoices.Where(i => i.GeneratedAt >= monthStart).SumAsync(i => (decimal?)i.TotalAmount) ?? 0;
         var revenueToday = await invoices.Where(i => i.GeneratedAt >= todayStart).SumAsync(i => (decimal?)i.TotalAmount) ?? 0;
         var revenuePaidInvoices = await invoices.Where(i => i.Status == InvoiceStatus.Paid).SumAsync(i => (decimal?)i.TotalAmount) ?? 0;

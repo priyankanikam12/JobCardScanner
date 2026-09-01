@@ -126,6 +126,10 @@ export interface BaplDmsVehicleLookup {
   customerLedgerId?: number | null
   locationCode?: string | null
   dealerCode?: string | null
+  // Best-effort LedgerMaster.Address/Email - see BaplDmsVehicleRow's doc comment in
+  // BaplDmsService.cs on why these two specifically are not guaranteed to be populated.
+  customerAddress?: string | null
+  customerEmail?: string | null
 }
 
 /// One active "W" series workshop location from BAPL DMS's own LocationMaster.
@@ -167,6 +171,40 @@ export interface BaplDmsJobSource {
   name: string
 }
 
+/// Available stock for one item at one workshop location, from BAPL DMS's own PartsInventory - see
+/// BaplDmsPartStockRow's doc comment in BaplDmsService.cs for the (now confirmed via a live
+/// SELECT *) "available" rule this uses.
+export interface BaplDmsPartStock {
+  itemCode: string
+  availableQty: number
+}
+
+/// One labour rate-card row from BAPL DMS's own LabourMaster - see BaplDmsLabourRow's doc comment
+/// in BaplDmsService.cs for the confirmed schema and the cascade-id/NULL-handling caveats.
+export interface BaplDmsLabourRow {
+  id: number
+  labourCode: string
+  labourDescription?: string | null
+  hsnCode?: string | null
+  sgst?: number | null
+  cgst?: number | null
+  igst?: number | null
+  labourRate?: number | null
+  category?: string | null
+  jobTypeId?: number | null
+  serviceHeadId?: number | null
+  serviceTypeId?: number | null
+  oemModelName?: string | null
+}
+
+/// One repair bill BAPL DMS has for a job card - for the Detail page's "Download Invoice from DMS"
+/// panel. Deliberately narrow (see BaplDmsRepairBillRow's doc comment).
+export interface BaplDmsRepairBill {
+  id: number
+  repairBillStatus?: string | null
+  totalNetAmount?: number | null
+}
+
 export interface CurrentUser {
   id: string
   name: string
@@ -184,6 +222,7 @@ export interface Customer {
   mobile: string
   email?: string | null
   city?: string | null
+  address?: string | null
   outstandingAmount: number
   vehicles?: Vehicle[]
 }
@@ -335,6 +374,34 @@ export interface JobCardPart {
   status: 'Requested' | 'Issued' | 'Returned' | 'Cancelled'
 }
 
+/// "Part Suggestion" row (renamed from "Parts Used" - see JobCard.PartSuggestions) - a part
+/// suggested from BAPL DMS's own PartsInventory, with a Paid/U-W status tracked only in
+/// JobCardScannerDb for history.
+export interface JobCardPartSuggestion {
+  id: string
+  itemCode: string
+  availableQtyAtSuggestion?: number | null
+  status: 'Paid' | 'U/W'
+  createdAt?: string
+}
+
+/// "Labour Suggestion" row (see JobCard.LabourSuggestions) - a labour line suggested from BAPL
+/// DMS's own LabourMaster, with Description/HSN/GST/Rate snapshotted at suggestion time (not
+/// live-linked) and a free-text Issue Type instead of a fixed status dropdown.
+export interface JobCardLabourSuggestion {
+  id: string
+  labourCode: string
+  labourDescription?: string | null
+  hsnCode?: string | null
+  sgst?: number | null
+  cgst?: number | null
+  igst?: number | null
+  rateAtSuggestion?: number | null
+  quantity: number
+  issueType?: string | null
+  createdAt?: string
+}
+
 export interface PartMaster {
   id: string
   partNumber: string
@@ -358,11 +425,20 @@ export interface JobCardDetail extends Omit<JobCardSummary, 'customerName' | 've
   baplManualJobNo?: string | null
   // Write-back result (see BaplDmsService.CreateJobCardAsync) - baplSyncWarning is only ever
   // present on the POST /api/jobcards response right after creation, not on later GETs.
+  // *Id fields, not just the display-only *Name strings above - needed so the Labour Suggestion
+  // panel can scope its BAPL DMS LabourMaster search by this job card's own already-selected
+  // Job Type/Service Head/Service Type cascade (same ids the wizard used to pick them).
+  baplJobTypeId?: number | null
+  baplServiceHeadId?: number | null
   baplServiceHeadName?: string | null
+  baplServiceTypeId?: number | null
   baplServiceTypeName?: string | null
   baplJobSourceName?: string | null
   baplServiceLocationCode?: string | null
   baplJobCardHeaderId?: number | null
+  /// BAPL DMS's own JobNo (e.g. 22) - what BAPL DMS's own Job Card List shows as "JobNo / JobDate",
+  /// as opposed to baplJobCardHeaderId (e.g. 70, only the internal JobCardHeader.Id).
+  baplJobNo?: number | null
   baplSyncStatus?: string | null
   baplSyncError?: string | null
   baplSyncWarning?: string | null
@@ -372,6 +448,9 @@ export interface JobCardDetail extends Omit<JobCardSummary, 'customerName' | 've
   currentStage?: WorkflowStage
   serviceAdvisor?: { id: string; name: string } | null
   assignedTechnician?: { id: string; name: string } | null
+  /// Free-text "Assign Technician" name (see JobCard.AssignedTechnicianName) - shown/edited instead
+  /// of a User dropdown, since there's no confirmed technician catalog to pick from.
+  assignedTechnicianName?: string | null
   complaints: JobCardComplaint[]
   inspections: JobCardInspection[]
   photos: JobCardPhoto[]
@@ -380,6 +459,8 @@ export interface JobCardDetail extends Omit<JobCardSummary, 'customerName' | 've
   qcChecklistItems: QcChecklistItem[]
   estimates: Estimate[]
   parts: JobCardPart[]
+  partSuggestions: JobCardPartSuggestion[]
+  labourSuggestions: JobCardLabourSuggestion[]
   invoice?: Invoice | null
 }
 

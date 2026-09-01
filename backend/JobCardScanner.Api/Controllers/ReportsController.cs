@@ -51,11 +51,18 @@ public class ReportsController : ControllerBase
     [HttpGet("reports/jobcards/export")]
     public async Task<IActionResult> ExportJobCards([FromQuery] Guid? dealerId, [FromQuery] JobCardStatus? status)
     {
+        // Same fix as JobCardsController.List's doc comment on this exact bug: dealerId from the
+        // query string used to win for everyone, and a non-corporate caller's own null DealerId (if
+        // unresolved) skipped the filter entirely - exporting every dealer's job cards instead of
+        // none. Dealer filter now always applies for a non-Corporate/SystemAdmin caller; dealerId
+        // only narrows things for Corporate/SystemAdmin.
         var isCorporate = _currentUser.Role is StaffRole.CorporateAdmin or StaffRole.SystemAdmin;
-        var effectiveDealerId = dealerId ?? (isCorporate ? null : _currentUser.DealerId);
+        var effectiveDealerId = isCorporate ? dealerId : _currentUser.DealerId;
 
         var query = _db.JobCards.AsNoTracking().Include(j => j.Customer).Include(j => j.Vehicle).Include(j => j.CurrentStage).AsQueryable();
-        if (effectiveDealerId.HasValue) query = query.Where(j => j.DealerId == effectiveDealerId);
+        query = isCorporate
+            ? (effectiveDealerId.HasValue ? query.Where(j => j.DealerId == effectiveDealerId) : query)
+            : query.Where(j => j.DealerId == effectiveDealerId);
         if (status.HasValue) query = query.Where(j => j.Status == status);
 
         var rows = await query.OrderByDescending(j => j.CreatedAt).Take(5000).ToListAsync();
@@ -74,11 +81,14 @@ public class ReportsController : ControllerBase
     [Authorize(Policy = Policies.CashierUp)]
     public async Task<IActionResult> ExportInvoices([FromQuery] Guid? dealerId)
     {
+        // Same fix as ExportJobCards above / JobCardsController.List's doc comment.
         var isCorporate = _currentUser.Role is StaffRole.CorporateAdmin or StaffRole.SystemAdmin;
-        var effectiveDealerId = dealerId ?? (isCorporate ? null : _currentUser.DealerId);
+        var effectiveDealerId = isCorporate ? dealerId : _currentUser.DealerId;
 
         var query = _db.Invoices.AsNoTracking().Include(i => i.Customer).AsQueryable();
-        if (effectiveDealerId.HasValue) query = query.Where(i => i.DealerId == effectiveDealerId);
+        query = isCorporate
+            ? (effectiveDealerId.HasValue ? query.Where(i => i.DealerId == effectiveDealerId) : query)
+            : query.Where(i => i.DealerId == effectiveDealerId);
 
         var rows = await query.OrderByDescending(i => i.CreatedAt).Take(5000).ToListAsync();
         var headers = new[] { "Invoice No", "Customer", "Labour", "Parts", "Discount", "Tax", "Total", "Status", "Payment Mode", "Generated At" };

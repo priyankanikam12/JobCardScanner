@@ -46,24 +46,21 @@ public static class DbSeeder
         });
         await db.SaveChangesAsync();
 
-        // ---------------- Default 15-stage workflow template (DealerId = null => applies to all dealers) ----------------
+        // ---------------- Default 7-stage workflow template (DealerId = null => applies to all
+        // dealers) - see redefine-workflow-stages-to-7-steps.sql for the same redefinition applied
+        // to an already-provisioned database (this seeder only ever runs once, against a brand-new
+        // empty database - see DbSeeder.SeedAsync's early-return above). "Invoice Generated" is the
+        // pipeline's terminal stage: reaching it now closes the job card immediately (see
+        // JobCardsController.ChangeStage's IsTerminal handling), no separate OTP confirmation step.
         var stageDefs = new (string Key, string Label, string Icon, bool Terminal)[]
         {
-            ("check_in", "Vehicle Check-In", "car-front", false),
-            ("job_card_created", "Job Card Created", "file-plus", false),
-            ("inspection", "Vehicle Inspection", "search", false),
-            ("diagnosis", "Diagnosis", "stethoscope", false),
-            ("estimate_prep", "Estimate Preparation", "calculator", false),
-            ("customer_approval", "Customer Approval", "check-circle", false),
-            ("parts_requested", "Parts Requested", "package", false),
-            ("parts_issued", "Parts Issued", "package-check", false),
-            ("in_repair", "In Repair / Service", "wrench", false),
+            ("check_in", "Vehicle Check-In / Job Card Created", "car-front", false),
+            ("in_repair", "Work In Progress", "wrench", false),
+            ("part_suggestion", "Part Suggestion", "package", false),
+            ("labour_suggestion", "Labour Suggestion", "tool", false),
             ("repair_completed", "Repair Completed", "circle-check", false),
-            ("quality_check", "Quality Check", "shield-check", false),
-            ("rework", "Re-Work", "rotate-ccw", false),
             ("ready_for_delivery", "Ready for Delivery", "flag", false),
-            ("invoice_generated", "Invoice Generated", "receipt", false),
-            ("closed", "Closed / Delivered", "circle-check-big", true),
+            ("invoice_generated", "Invoice Generated", "receipt", true),
         };
         var stages = stageDefs.Select((s, i) => new WorkflowStage
         {
