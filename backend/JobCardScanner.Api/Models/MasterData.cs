@@ -113,6 +113,12 @@ public class Customer
     [MaxLength(200)] public string? Email { get; set; }
     [MaxLength(300)] public string? Address { get; set; }
     [MaxLength(100)] public string? City { get; set; }
+    /// <summary>Added for the Job Card Wizard's Review step (bold Name/State/City) - a NEW column
+    /// on an entity that previously had none. Since this app creates its schema with
+    /// Database.EnsureCreatedAsync() (see Program.cs), which does nothing on a database that
+    /// already exists, this column will NOT appear on a production database automatically - see
+    /// deploy/add-customer-state-column.sql for the manual ALTER TABLE to run there.</summary>
+    [MaxLength(100)] public string? State { get; set; }
     public Guid DealerId { get; set; }
     public Dealer? Dealer { get; set; }
     [Column(TypeName = "decimal(12,2)")] public decimal OutstandingAmount { get; set; }

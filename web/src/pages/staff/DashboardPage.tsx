@@ -1,4 +1,3 @@
-// web\src\pages\staff\DashboardPage.tsx
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
@@ -308,3 +307,4 @@ function CorporateDashboard() {
     </div>
   )
 }
+

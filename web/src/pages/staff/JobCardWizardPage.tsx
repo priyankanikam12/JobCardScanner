@@ -1,12 +1,11 @@
-// web\src\pages\staff\JobCardWizardPage.tsx
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
 import type {
   BaplDealerResolveResult, BaplDmsComplaint, BaplDmsDealer, BaplDmsJobSource, BaplDmsJobType,
-  BaplDmsServiceHead, BaplDmsServiceType, BaplDmsVehicleLookup, BaplDmsWorkshop, Customer, Dealer,
-  JobCardPriority, JobCardSource, PhotoStage, ServiceType, Vehicle,
+  BaplDmsServiceHead, BaplDmsServiceType, BaplDmsVehicleLookup, BaplDmsVehicleSuggestion, BaplDmsWorkshop,
+  Customer, Dealer, JobCardPriority, JobCardSource, PhotoStage, ServiceType, Vehicle,
 } from '../../types'
 import { VEHICLE_MODELS, variantsForModel } from '../../data/vehicleCatalog'
 
@@ -60,8 +59,9 @@ const fmtDatePrint = (v?: string | null) => {
  * far (this runs from the Review & Create step, before the job card - and BAPL DMS's own Job No./
  * Invoice No - actually exist, so those show "-" here; the real numbers appear once the job card is
  * created). Fields BAPL DMS's own print shows that JobCardScanner genuinely has nowhere to source
- * (GST No., Alt. Mobile, customer State, OEM Model, and every Battery Details test reading except
- * Controller No. Make) print as "-" rather than being guessed.
+ * (GST No., Alt. Mobile, customer State, OEM Model, and every Battery Details voltage/capacity
+ * test reading - BAPL DMS's ChassisBatteryDetails table doesn't carry those, only serial numbers
+ * and Make/Chemical/Capacity, which this DOES now print) show as "-" rather than being guessed.
  */
 function buildJobCardPrintHtml(d: {
   dealerName?: string | null
@@ -90,6 +90,12 @@ function buildJobCardPrintHtml(d: {
   colour?: string | null
   saleDate?: string | null
   insuranceExpiry?: string | null
+  // Sourced from BAPL DMS's own ChassisBatteryDetails table (see BaplDmsService.LookupVehicleAsync's
+  // ChassisBatteryDetails enrichment) - previously nowhere to source, so the Battery Details panel
+  // printed "-" for all three even when BAPL DMS had them on file.
+  batteryChemical?: string | null
+  batteryCapacity?: string | null
+  batteryMake?: string | null
   complaints: string[]
 }): string {
   const complaintRows = d.complaints.length
@@ -248,8 +254,8 @@ body{font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#111;background
   <div class="sec">
     <div class="sec-title">Battery Details</div>
     <table class="kv">
-      <tr><td class="k">Battery Make</td><td class="v">-</td></tr>
-      <tr><td class="k">Battery Serial No(s)</td><td class="v">-</td></tr>
+      <tr><td class="k">Battery Make</td><td class="v">${dash(d.batteryMake)}</td></tr>
+      <tr><td class="k">Battery Serial No(s)</td><td class="v">${dash(d.batteryNo)}</td></tr>
       <tr><td class="k">Voltage at Full Charge (OCV)</td><td class="v">-</td></tr>
       <tr><td class="k">Voltage at Full Charge (CCV)</td><td class="v">-</td></tr>
       <tr><td class="k">Voltage at Discharge</td><td class="v">-</td></tr>
@@ -257,8 +263,8 @@ body{font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#111;background
       <tr><td class="k">Battery Set Voltage</td><td class="v">-</td></tr>
       <tr><td class="k">Motor Drawing (No Load)</td><td class="v">-</td></tr>
       <tr><td class="k">Controller No. Make</td><td class="v">${dash(d.controllerNo)}</td></tr>
-      <tr><td class="k">Battery Chemical</td><td class="v">-</td></tr>
-      <tr><td class="k">Battery Capacity</td><td class="v">-</td></tr>
+      <tr><td class="k">Battery Chemical</td><td class="v">${dash(d.batteryChemical)}</td></tr>
+      <tr><td class="k">Battery Capacity</td><td class="v">${dash(d.batteryCapacity)}</td></tr>
     </table>
   </div>
 </div>
@@ -391,7 +397,12 @@ export function JobCardWizardPage() {
 
   // Step 1: customer
   const [customer, setCustomer] = useState<Customer | null>(null)
-  const [newCustomer, setNewCustomer] = useState({ name: '', mobile: '', email: '', city: '', address: '' })
+  // state/saleDate: added per Item 3/7 - state is stored on the customer (Customer.State - see
+  // deploy/add-customer-state-column.sql for the manual production migration this needs);
+  // saleDate has nowhere of its own to live on Customer, so it's carried forward and saved as the
+  // vehicle's PurchaseDate at step 2 (see createVehicle) - the same field a BAPL DMS-sourced
+  // saleDate already fills for an auto-fetched vehicle.
+  const [newCustomer, setNewCustomer] = useState({ name: '', mobile: '', email: '', city: '', address: '', state: '', saleDate: '' })
 
   // "(Registered customer Details)" - by chassis no. / registration no. - auto-fetches everything
   // BAPL DMS knows about that vehicle (Controllers/BaplDmsController.cs's vehicle-lookup, ported
@@ -403,6 +414,21 @@ export function JobCardWizardPage() {
   const [vehicleLookupLoading, setVehicleLookupLoading] = useState(false)
   const [vehicleLookupError, setVehicleLookupError] = useState<string | null>(null)
   const [baplVehicleHit, setBaplVehicleHit] = useState<BaplDmsVehicleLookup | null>(null)
+  // Item 2: live search-as-you-type suggestions under the chassis/reg-no box (e.g. typing "P6"
+  // lists every matching ChassisDetails row so the user can pick one, instead of only supporting
+  // Enter/Search for a single exact match). Debounced so it doesn't fire a request per keystroke;
+  // cleared as soon as one is picked or the box is emptied.
+  const [vehicleSuggestions, setVehicleSuggestions] = useState<BaplDmsVehicleSuggestion[]>([])
+  const [showVehicleSuggestions, setShowVehicleSuggestions] = useState(false)
+  useEffect(() => {
+    if (!showVehicleSuggestions || chassisOrRegQ.trim().length < 2) { setVehicleSuggestions([]); return }
+    const handle = setTimeout(() => {
+      staffApi.get<BaplDmsVehicleSuggestion[]>('/api/bapl-dms/vehicle-suggestions', { params: { q: chassisOrRegQ.trim() } })
+        .then(({ data }) => setVehicleSuggestions(data))
+        .catch(() => setVehicleSuggestions([]))
+    }, 300)
+    return () => clearTimeout(handle)
+  }, [chassisOrRegQ, showVehicleSuggestions])
   // Fields pre-filled from a BAPL DMS auto-fetch are locked by default (disabled inputs) so they
   // aren't accidentally overwritten - each section has its own "Edit anyway" escape hatch for the
   // rare case the fetched data is wrong. Resets back to locked whenever a fresh hit comes in.
@@ -411,15 +437,25 @@ export function JobCardWizardPage() {
   const customerFieldsLocked = !!baplVehicleHit && !unlockCustomerFields
   const vehicleFieldsLocked = !!baplVehicleHit && !unlockVehicleFields
 
-  const lookupByChassisOrReg = async () => {
-    if (!chassisOrRegQ.trim()) return
+  const lookupByChassisOrReg = async (valueOverride?: string) => {
+    const value = (valueOverride ?? chassisOrRegQ).trim()
+    if (!value) return
+    setShowVehicleSuggestions(false)
+    setVehicleSuggestions([])
     setVehicleLookupLoading(true)
     setVehicleLookupError(null)
     setBaplVehicleHit(null)
     setUnlockCustomerFields(false)
     setUnlockVehicleFields(false)
     try {
-      const { data } = await staffApi.get<BaplDmsVehicleLookup>('/api/bapl-dms/vehicle-lookup', { params: { value: chassisOrRegQ.trim() } })
+      const { data } = await staffApi.get<BaplDmsVehicleLookup>('/api/bapl-dms/vehicle-lookup', { params: { value } })
+      // Item 3: a hit with no SaleDate on file isn't auto-fetched - alert and leave the customer/
+      // vehicle fields for manual entry instead of pre-filling from an incomplete BAPL DMS record.
+      if (!data.saleDate) {
+        window.alert('Sale date not defined')
+        setVehicleLookupError(`"${value}" was found in BAPL DMS but has no sale date on file - add the customer/vehicle manually below.`)
+        return
+      }
       setBaplVehicleHit(data)
       setNewCustomer((c) => ({
         ...c,
@@ -428,11 +464,16 @@ export function JobCardWizardPage() {
         city: data.customerCity || c.city,
         email: data.customerEmail || c.email,
         address: data.customerAddress || c.address,
+        // Item 3: ChassisDetails.SaleDate is what gated this fetch in the first place (a null one
+        // never reaches here - see the alert above) - show it back in the Sale Date field instead
+        // of leaving it blank for the user to re-type. BAPL DMS returns a full datetime (e.g.
+        // "2026-07-17T15:47:40.203"); the <input type="date"> only wants the date part.
+        saleDate: data.saleDate ? data.saleDate.split('T')[0] : c.saleDate,
       }))
     } catch (err: unknown) {
       const response = (err as { response?: { status?: number; data?: { message?: string } } })?.response
       setVehicleLookupError(response?.status === 404
-        ? `"${chassisOrRegQ.trim()}" wasn't found in BAPL DMS - add the customer/vehicle manually below.`
+        ? `"${value}" wasn't found in BAPL DMS - add the customer/vehicle manually below.`
         : response?.data?.message
           ? `BAPL DMS error: ${response.data.message}`
           : 'Could not reach BAPL DMS right now - add the customer/vehicle manually below.')
@@ -529,10 +570,11 @@ export function JobCardWizardPage() {
   // Every field in the "Job Card fields" (BAPL DMS) panel is now required, per your request -
   // "Continue to Review" stays disabled until all of them are filled in, so a job card can no
   // longer reach Review with a half-filled BAPL DMS section.
+  // Manual Job No. is no longer required (Item 5) - every other BAPL DMS field still is.
   const serviceDetailsValid = !!(
     selectedJobTypeId && selectedServiceHeadId && selectedServiceTypeId &&
     selectedWorkshopLocCode && baplSupervisorName.trim() && baplTechnicianName.trim() &&
-    baplManualJobNo.trim() && selectedJobSourceId
+    selectedJobSourceId
   )
 
   // Job Type/JobSource masters + Complaint master are all small, session-wide lists - fetched once
@@ -736,7 +778,10 @@ export function JobCardWizardPage() {
       ...newVehicle,
       customerId: customer.id,
       dealerId: effectiveDealerId,
-      purchaseDate: dateOnly(baplVehicleHit?.saleDate),
+      // BAPL DMS's own sale date wins when there's an auto-fetched hit; otherwise fall back to
+      // whatever was manually typed into the "Registered Customer" section's Sale Date field
+      // (Item 3) - both ultimately save into the same Vehicle.PurchaseDate column.
+      purchaseDate: baplVehicleHit?.saleDate ? dateOnly(baplVehicleHit.saleDate) : (newCustomer.saleDate || null),
       controllerNo: baplVehicleHit?.controllerNo ?? null,
       converterNo: baplVehicleHit?.converterNo ?? null,
       chargerNo: baplVehicleHit?.chargerNumber ?? null,
@@ -822,14 +867,13 @@ export function JobCardWizardPage() {
           return
         }
       }
-      // A BAPL DMS sync failure (see baplSyncWarning above) never blocks or fails job card
-      // creation - the local job card is already saved - but it's worth pausing on this step to
-      // show the user rather than silently navigating away, same as a photo upload failure.
-      if (data?.baplSyncWarning) {
-        setCreatedJobCard({ id: data.id, jobCardNumber: data.jobCardNumber })
-        return
-      }
-      navigate(`/jobcards/${data.id}`)
+      // Every successful creation stops here now, not just the warning cases above - the Print
+      // button lives in the createdJobCard block below, so jumping straight to navigate() (the
+      // old behavior) skipped that step entirely and the print button never had a chance to show.
+      // The user now always lands on Print + "Continue to Job Card" and picks when to move on.
+      pendingPhotos.forEach((p) => URL.revokeObjectURL(p.previewUrl))
+      setPendingPhotos([])
+      setCreatedJobCard({ id: data.id, jobCardNumber: data.jobCardNumber })
     } catch (err: unknown) {
       setError((err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Failed to create job card.')
     } finally {
@@ -867,6 +911,12 @@ export function JobCardWizardPage() {
       colour: vehicle?.color,
       saleDate: baplVehicleHit?.saleDate,
       insuranceExpiry: vehicle?.insuranceExpiry ?? baplVehicleHit?.insuranceExpDate,
+      // Sourced straight from the chassis/reg-no lookup (baplVehicleHit), not the saved Vehicle -
+      // Battery Make/Chemical/Capacity aren't columns on JobCardScanner's own Vehicle table, so
+      // this reads them from BAPL DMS's ChassisBatteryDetails response still held in wizard state.
+      batteryChemical: baplVehicleHit?.batteryChemical,
+      batteryCapacity: baplVehicleHit?.batteryCapacity,
+      batteryMake: baplVehicleHit?.batteryMake,
       complaints: complaints.filter((c) => c.trim()),
     })
     win.document.open()
@@ -931,7 +981,7 @@ export function JobCardWizardPage() {
               )}
             </div>
           )}
-          <h3>(Registered customer Details)</h3>
+          <h3>Registered customer Details</h3>
           {/* "Search by mobile number or name" commented out per your request - chassis/reg no.
              search (below) is now the only way to look up a customer here. */}
           {/* <div className="field">
@@ -941,33 +991,55 @@ export function JobCardWizardPage() {
               <button className="btn" onClick={searchCustomers}>Search</button>
             </div>
           </div> */}
-          <div className="field">
+          <div className="field" style={{ position: 'relative' }}>
             <label>Search by chassis no. / registration no.</label>
             <div style={{ display: 'flex', gap: 8 }}>
               <input
                 value={chassisOrRegQ}
-                onChange={(e) => setChassisOrRegQ(e.target.value)}
+                onChange={(e) => { setChassisOrRegQ(e.target.value); setShowVehicleSuggestions(true) }}
+                onFocus={() => setShowVehicleSuggestions(true)}
+                onBlur={() => setTimeout(() => setShowVehicleSuggestions(false), 150)}
                 onKeyDown={(e) => e.key === 'Enter' && lookupByChassisOrReg()}
-                placeholder="Chassis no. or registration no."
+                placeholder="Chassis no. or registration no. (e.g. P6)"
+                autoComplete="off"
               />
-              <button className="btn" onClick={lookupByChassisOrReg} disabled={vehicleLookupLoading || !chassisOrRegQ.trim()}>
+              <button className="btn" onClick={() => lookupByChassisOrReg()} disabled={vehicleLookupLoading || !chassisOrRegQ.trim()}>
                 {vehicleLookupLoading ? 'Searching…' : 'Search'}
               </button>
             </div>
+            {showVehicleSuggestions && vehicleSuggestions.length > 0 && (
+              <ul style={{
+                position: 'absolute', zIndex: 10, top: '100%', left: 0, right: 90, marginTop: 2,
+                background: 'var(--card-bg, #fff)', border: '1px solid var(--border)', borderRadius: 8,
+                maxHeight: 220, overflowY: 'auto', listStyle: 'none', padding: 4, boxShadow: '0 6px 18px rgba(0,0,0,.12)',
+              }}>
+                {vehicleSuggestions.map((s) => (
+                  <li key={s.chassisNo}>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      style={{ width: '100%', textAlign: 'left', border: 'none', background: 'transparent', padding: '6px 8px' }}
+                      onMouseDown={(e) => { e.preventDefault(); setChassisOrRegQ(s.chassisNo); lookupByChassisOrReg(s.chassisNo) }}
+                    >
+                      <strong>{s.chassisNo}</strong>{s.regNo ? ` · ${s.regNo}` : ''}{s.modelName ? ` — ${s.modelName}` : ''}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
             {vehicleLookupError && <p className="error-text">{vehicleLookupError}</p>}
             {baplVehicleHit && (
               <p className="muted" style={{ marginTop: 4 }}>
-                Found in BAPL DMS: <strong>{baplVehicleHit.customerName || 'Unknown customer'}</strong>
-                {baplVehicleHit.customerMobile ? ` (${baplVehicleHit.customerMobile})` : ''} - {baplVehicleHit.modelName || 'Model unknown'}
-                {baplVehicleHit.registerNo ? `, ${baplVehicleHit.registerNo}` : ''}. Customer and vehicle details below have been pre-filled -
-                review them, then Create &amp; Continue.
+                Customer Details : customer-{baplVehicleHit.customerName || 'Unknown customer'}
+                {baplVehicleHit.customerMobile ? ` (${baplVehicleHit.customerMobile})` : ''} - model- {baplVehicleHit.modelName || 'Model unknown'}
+                {baplVehicleHit.registerNo ? `, reg no. ${baplVehicleHit.registerNo}.` : '.'}
               </p>
             )}
           </div>
-          <h3 style={{ marginTop: 24 }}>Or register a new customer</h3>
+          <h3 style={{ marginTop: 24 }}>Registered Customer</h3>
           {customerFieldsLocked && (
             <p className="muted" style={{ marginTop: -4, marginBottom: 12 }}>
-              🔒 Name, Mobile, Email, City and Address were auto-fetched from BAPL DMS and are locked to prevent accidental changes.{' '}
+              🔒 Name, Mobile, Email, City and Address were auto-fetched from DMS and are locked to prevent accidental changes.{' '}
               <a href="#" onClick={(e) => { e.preventDefault(); setUnlockCustomerFields(true) }}>Edit anyway</a>
             </p>
           )}
@@ -990,6 +1062,8 @@ export function JobCardWizardPage() {
             <div className="field"><label>Email</label><input value={newCustomer.email} disabled={customerFieldsLocked} onChange={(e) => setNewCustomer({ ...newCustomer, email: e.target.value })} /></div>
             <div className="field"><label>City</label><input value={newCustomer.city} disabled={customerFieldsLocked} onChange={(e) => setNewCustomer({ ...newCustomer, city: e.target.value })} /></div>
             <div className="field"><label>Address</label><input value={newCustomer.address} disabled={customerFieldsLocked} onChange={(e) => setNewCustomer({ ...newCustomer, address: e.target.value })} /></div>
+            <div className="field"><label>State</label><input value={newCustomer.state} disabled={customerFieldsLocked} onChange={(e) => setNewCustomer({ ...newCustomer, state: e.target.value })} /></div>
+            <div className="field"><label>Sale Date</label><input type="date" value={newCustomer.saleDate} disabled={customerFieldsLocked} onChange={(e) => setNewCustomer({ ...newCustomer, saleDate: e.target.value })} /></div>
           </div>
           {error && <p className="error-text">{error}</p>}
           <button className="btn btn-primary" disabled={!newCustomer.name || newCustomer.mobile.length !== 10 || !effectiveDealerId} onClick={createCustomer}>Create & Continue</button>
@@ -1006,7 +1080,7 @@ export function JobCardWizardPage() {
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ background: '#1c64f2', color: '#fff', fontSize: 12, fontWeight: 600, padding: '2px 8px', borderRadius: 999 }}>
-                  BAPL DMS
+                  DMS
                 </span>
                 {baplVehicleHit.vehiclePrevKms != null && (
                   <span style={{ fontWeight: 700, fontSize: 15 }}>
@@ -1015,12 +1089,8 @@ export function JobCardWizardPage() {
                 )}
               </div>
               <p style={{ margin: 0, fontSize: 13, color: '#1e3a5f' }}>
-                Auto-fetched - Battery: <strong>{baplVehicleHit.batteryNumber || '—'}</strong>, Motor: <strong>{baplVehicleHit.motorNo || '—'}</strong>,
-                {' '}Controller: <strong>{baplVehicleHit.controllerNo || '—'}</strong>, Charger: <strong>{baplVehicleHit.chargerNumber || '—'}</strong>
-                {baplVehicleHit.insuranceExpDate ? <>, Insurance till: <strong>{baplVehicleHit.insuranceExpDate.split('T')[0]}</strong></> : ''}
-                {baplVehicleHit.nextServiceDueDate ? <>, Next service due: <strong>{baplVehicleHit.nextServiceDueDate.split('T')[0]}</strong></> : ''}
-                {baplVehicleHit.expireWarrantyDate ? <>, Warranty till: <strong>{baplVehicleHit.expireWarrantyDate.split('T')[0]}</strong></> : ''}
-                . These will be saved with the vehicle.
+                Battery No.: <strong>{baplVehicleHit.batteryNumber || '—'}</strong>, Motor no.: <strong>{baplVehicleHit.motorNo || '—'}</strong>,
+                {' '}Controller no.: <strong>{baplVehicleHit.controllerNo || '—'}</strong>, Charger no.: <strong>{baplVehicleHit.chargerNumber || '—'}</strong>.
               </p>
             </div>
           )}
@@ -1037,7 +1107,6 @@ export function JobCardWizardPage() {
               </tbody>
             </table>
           )}
-          <h3 style={{ marginTop: 24 }}>Or add a new vehicle</h3>
           {vehicleFieldsLocked && (
             <p className="muted" style={{ marginTop: -4, marginBottom: 12 }}>
               🔒 Model, Reg No and VIN were auto-fetched from BAPL DMS and are locked to prevent accidental changes.{' '}
@@ -1110,7 +1179,7 @@ export function JobCardWizardPage() {
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
               <span style={{ background: '#1c64f2', color: '#fff', fontSize: 12, fontWeight: 600, padding: '2px 8px', borderRadius: 999 }}>
-                BAPL DMS
+                DMS
               </span>
               <strong style={{ fontSize: 14 }}>Job Card fields</strong>
             </div>
@@ -1161,7 +1230,7 @@ export function JobCardWizardPage() {
                 <input value={baplTechnicianName} onChange={(e) => setBaplTechnicianName(e.target.value)} placeholder="Technician name" />
               </div>
               <div className="field">
-                <label>Manual Job No. *</label>
+                <label>Manual Job No.</label>
                 <input value={baplManualJobNo} onChange={(e) => setBaplManualJobNo(e.target.value)} placeholder="e.g. 0" />
               </div>
               <div className="field">
@@ -1190,17 +1259,34 @@ export function JobCardWizardPage() {
             {complaintOptions.length > 0 && (
               <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
                 <select value={selectedComplaintId} onChange={(e) => setSelectedComplaintId(e.target.value)}>
-                  <option value="">Pick from BAPL DMS's complaint list…</option>
+                  <option value="">Pick from DMS's complaint list…</option>
                   {complaintOptions.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
-                <button className="btn btn-sm" disabled={!selectedComplaintId} onClick={addComplaintFromDropdown}>Add</button>
+                <button
+                  className="btn btn-sm"
+                  disabled={!selectedComplaintId}
+                  onClick={addComplaintFromDropdown}
+                  style={{ background: '#16a34a', color: '#fff', border: '1px solid #16a34a', fontWeight: 600 }}
+                >
+                  + Add
+                </button>
               </div>
             )}
             {complaints.length > 0 ? (
-              <ul style={{ margin: 0, paddingLeft: 20 }}>
+              <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {complaints.map((c) => (
-                  <li key={c} style={{ marginBottom: 4 }}>
-                    {c} <button className="btn btn-sm" style={{ marginLeft: 8 }} onClick={() => removeComplaint(c)}>Remove</button>
+                  <li key={c} style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+                    background: '#f4f6f8', border: '1px solid var(--border)', borderRadius: 8, padding: '6px 10px',
+                  }}>
+                    <span>{c}</span>
+                    <button
+                      className="btn btn-sm"
+                      style={{ background: 'transparent', color: '#ff0404', border: '1px solid var(--border)' }}
+                      onClick={() => removeComplaint(c)}
+                    >
+                      Remove
+                    </button>
                   </li>
                 ))}
               </ul>
@@ -1227,31 +1313,62 @@ export function JobCardWizardPage() {
       {step === 3 && customer && vehicle && (
         <div className="card">
           <h3>Review</h3>
-          <p><strong>Customer:</strong> {customer.name} ({customer.mobile})</p>
-          <p><strong>Vehicle:</strong> {vehicle.model} {vehicle.variant} - {vehicle.regNo}</p>
+          <p style={{ marginBottom: 2 }}>
+            <strong>Customer</strong> — <strong>Name:</strong> {customer.name} &nbsp; <strong>Mobile:</strong> {customer.mobile}
+            {' '}&nbsp; <strong>State:</strong> {customer.state || '-'} &nbsp; <strong>City:</strong> {customer.city || '-'}
+          </p>
+          <p style={{ marginBottom: 2 }}>
+            <strong>Vehicle</strong> — <strong>Model:</strong> {vehicle.model} {vehicle.variant} &nbsp; <strong>Reg No.:</strong> {vehicle.regNo || '-'}
+            {' '}&nbsp; <strong>KM:</strong> {vehicle.odometer} &nbsp; <strong>Job No.:</strong> {baplManualJobNo || '-'}
+          </p>
           <p><strong>Service:</strong> {baplJobType || serviceType} via {jobSources.find((s) => s.id === selectedJobSourceId)?.name || source}, priority {priority}</p>
           <p><strong>Complaints:</strong> {complaints.join('; ') || 'None recorded'}</p>
           {(baplJobType || baplServiceLocation || baplSupervisorName || baplTechnicianName || baplManualJobNo) && (
             <p>
-              <strong>BAPL DMS fields:</strong>{' '}
-              {[
-                baplJobType && `Job Type: ${baplJobType}`,
-                serviceHeads.find((h) => h.id === selectedServiceHeadId)?.name && `Service Head: ${serviceHeads.find((h) => h.id === selectedServiceHeadId)?.name}`,
-                serviceTypes.find((t) => t.id === selectedServiceTypeId)?.name && `Service Type: ${serviceTypes.find((t) => t.id === selectedServiceTypeId)?.name}`,
-                baplServiceLocation && `Location: ${baplServiceLocation}`,
-                baplSupervisorName && `Supervisor: ${baplSupervisorName}`,
-                baplTechnicianName && `Technician: ${baplTechnicianName}`,
-                baplManualJobNo && `Manual Job No.: ${baplManualJobNo}`,
-              ].filter(Boolean).join(', ')}
+              <strong>DMS fields:</strong>{' '}
+              {baplJobType && (
+                <>
+                  <strong>Job Type:</strong> {baplJobType}.{' '}
+                </>
+              )}
+              {serviceHeads.find((h) => h.id === selectedServiceHeadId)?.name && (
+                <>
+                  <strong>Service Head:</strong>{' '}
+                  {serviceHeads.find((h) => h.id === selectedServiceHeadId)?.name}.{' '}
+                </>
+              )}
+              {serviceTypes.find((t) => t.id === selectedServiceTypeId)?.name && (
+                <>
+                  <strong>Service Type:</strong>{' '}
+                  {serviceTypes.find((t) => t.id === selectedServiceTypeId)?.name}.{' '}
+                </>
+              )}
+              {baplServiceLocation && (
+                <>
+                  <strong>Location:</strong> {baplServiceLocation}.{' '}
+                </>
+              )}
+              {baplSupervisorName && (
+                <>
+                  <strong>Supervisor:</strong> {baplSupervisorName}.{' '}
+                </>
+              )}
+              {baplTechnicianName && (
+                <>
+                  <strong>Technician:</strong> {baplTechnicianName}.{' '}
+                </>
+              )}
+              {baplManualJobNo && (
+                <>
+                  <strong>Manual Job No.:</strong> {baplManualJobNo}.
+                </>
+              )}
             </p>
-          )}
-          {selectedJobTypeId && selectedServiceHeadId && selectedServiceTypeId && (
-            <p className="muted" style={{ marginTop: -8 }}>This will also be created as a job card in BAPL DMS's own database.</p>
           )}
 
           {!createdJobCard && (
             <div className="field">
-              <label>Photos (required - captured now, uploaded once the job card is created; up to 1 GB each)</label>
+              <label>Photos (required)</label>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: pendingPhotos.length > 0 ? 12 : 0 }}>
                 <label className="btn btn-sm" style={{ cursor: capturingPhoto ? 'default' : 'pointer', opacity: capturingPhoto ? 0.6 : 1 }}>
                   {capturingPhoto ? 'Adding…' : '📷 Take / Upload Photo'}
@@ -1272,24 +1389,16 @@ export function JobCardWizardPage() {
                   {pendingPhotos.map((p) => (
                     <div key={p.id} style={{ width: 150 }}>
                       <img src={p.previewUrl} alt="" style={{ width: '100%', height: 110, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)' }} />
-                      <select
-                        value={p.stage}
-                        style={{ marginTop: 4, fontSize: 12, padding: '4px 6px' }}
-                        onChange={(e) => setPendingPhotos((prev) => prev.map((x) => (x.id === p.id ? { ...x, stage: e.target.value as PhotoStage } : x)))}
-                      >
-                        {(['CheckIn', 'Inspection', 'Repair', 'Qc', 'Delivery'] as PhotoStage[]).map((s) => <option key={s} value={s}>{s}</option>)}
-                      </select>
+                      {/* Stage dropdown and lat/long location are captured (stage defaults to
+                         'CheckIn') but no longer shown here per Item 7 - they were clutter on a
+                         step that's just collecting photos before the job card exists. */}
                       <input
                         value={p.caption}
                         placeholder="Caption (optional)"
-                        style={{ marginTop: 4, fontSize: 12, padding: '4px 6px' }}
+                        style={{ marginTop: 6, fontSize: 12, padding: '4px 6px' }}
                         onChange={(e) => setPendingPhotos((prev) => prev.map((x) => (x.id === p.id ? { ...x, caption: e.target.value } : x)))}
                       />
-                      {p.latitude != null && p.longitude != null && (
-                        <p className="muted" style={{ margin: '4px 0 0', fontSize: 11 }}>📍 {p.latitude.toFixed(5)}, {p.longitude.toFixed(5)}</p>
-                      )}
-                      <button className="btn btn-sm" style={{ marginTop: 4, width: '100%' }} onClick={() => removePendingPhoto(p.id)}>Remove</button>
-                    </div>
+                    <button className="btn btn-sm" style={{ marginTop: 6, width: '100%', color: 'red' }} onClick={() => removePendingPhoto(p.id)}>Remove</button>                    </div>
                   ))}
                 </div>
               )}
@@ -1302,12 +1411,23 @@ export function JobCardWizardPage() {
             <>
               {photoUploadWarning && <p className="muted">{photoUploadWarning}</p>}
               {baplSyncWarning && <p className="muted">{baplSyncWarning}</p>}
-              <button className="btn btn-primary" onClick={() => navigate(`/jobcards/${createdJobCard.id}`)}>Continue to Job Card {createdJobCard.jobCardNumber}</button>
+              {/* Print moved here from the pre-creation button row per Item 7 - printing only
+                 makes sense once the job card actually exists. */}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn" onClick={printPreview} style={{ border: '1px solid var(--border)' }}>🖨️ Print</button>
+                <button
+                  className="btn btn-primary"
+                  // Item 7: land straight on the Workflow Timeline section of the job card, not
+                  // just the top of the page - see the #workflow-timeline anchor on JobCardDetailPage.
+                  onClick={() => navigate(`/jobcards/${createdJobCard.id}#workflow-timeline`)}
+                >
+                  Continue to Job Card {createdJobCard.jobCardNumber}
+                </button>
+              </div>
             </>
           ) : (
             <div style={{ display: 'flex', gap: 8 }}>
-              <button className="btn" disabled={submitting} onClick={() => setStep(2)}>← Back</button>
-              <button className="btn" disabled={submitting} onClick={printPreview}>🖨️ Print</button>
+              <button className="btn" disabled={submitting} style={{ border: '1px solid var(--border)' }} onClick={() => setStep(2)}>← Back</button>
               <button className="btn btn-primary" disabled={submitting || pendingPhotos.length === 0} onClick={submit}>
                 {submitting ? 'Creating...' : 'Create Job Card'}
               </button>

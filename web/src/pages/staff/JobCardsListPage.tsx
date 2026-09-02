@@ -1,4 +1,3 @@
-// web\src\pages\staff\JobCardsListPage.tsx
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { staffApi } from '../../api/client'
@@ -78,7 +77,7 @@ export function JobCardsListPage() {
                           {/* jc.id is "bapl-{JobCardHeaderId}" (see JobCardsController.SummarizeBapl) -
                              strip the prefix back to the numeric id the read-only detail route wants. */}
                           <Link to={`/jobcards/bapl/${jc.id.replace(/^bapl-/, '')}`}>{jc.jobCardNumber}</Link>
-                          <div><span style={{ background: '#1c64f2', color: '#fff', fontSize: 11, fontWeight: 600, padding: '1px 6px', borderRadius: 999 }}>BAPL DMS</span></div>
+                          <div><span style={{ background: '#1c64f2', color: '#fff', fontSize: 11, fontWeight: 600, padding: '1px 6px', borderRadius: 999 }}>DMS</span></div>
                         </>
                       ) : (
                         <Link to={`/jobcards/${jc.id}`}>{jc.jobCardNumber}</Link>
@@ -90,7 +89,17 @@ export function JobCardsListPage() {
                     <td><StatusBadge status={jc.status} /></td>
                     <td>{jc.technicianName ?? '-'}</td>
                     <td>{jc.createdAt ? new Date(jc.createdAt).toLocaleDateString() : '-'}</td>
-                    <td>{isBapl ? <span className="muted">-</span> : `📷 ${jc.photoCount ?? 0}`}</td>
+                    <td>
+                      {isBapl ? (
+                        <span className="muted">-</span>
+                      ) : jc.photoCount ? (
+                        // Item 10: media is viewable straight from the list now - jumps to the
+                        // Photos section on the job card instead of just showing a bare count.
+                        <Link to={`/jobcards/${jc.id}#photos`}>📷 {jc.photoCount}</Link>
+                      ) : (
+                        <span className="muted">📷 0</span>
+                      )}
+                    </td>
                   </tr>
                 )
               })}
@@ -104,3 +113,4 @@ export function JobCardsListPage() {
     </div>
   )
 }
+

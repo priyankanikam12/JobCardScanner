@@ -187,6 +187,28 @@ public class BaplDmsController : ControllerBase
     }
 
     /// <summary>
+    /// GET /api/bapl-dms/vehicle-suggestions?q=...&amp;dealerCode=... - live search-as-you-type
+    /// suggestions for the Job Card Wizard's chassis/registration-no. box (e.g. typing "P6" lists
+    /// every matching ChassisDetails row so the user can pick one, instead of only supporting a
+    /// single exact-match lookup). Picking a suggestion still goes through the existing
+    /// vehicle-lookup endpoint above to fetch the full auto-fill payload. Empty array for a query
+    /// under 2 characters (same convention as /dealers) rather than a full-table scan.
+    /// </summary>
+    [HttpGet("vehicle-suggestions")]
+    public async Task<IActionResult> VehicleSuggestions([FromQuery] string q, [FromQuery] string? dealerCode)
+    {
+        try
+        {
+            var rows = await _baplDms.SearchVehiclesAsync(q, dealerCode, 20, HttpContext.RequestAborted);
+            return Ok(rows);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return StatusCode(502, new { message = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// GET /api/bapl-dms/service-history?chassisNo=...&amp;dealerCode=... - this chassis's past job
     /// cards straight from BAPL DMS's own JobCardHeader/JobCardCustomer/JobCardComplaint tables, for
     /// the "Service History" section on JobCardScanner's own Job Card Detail page. Always returns 200
@@ -397,3 +419,4 @@ public class BaplDmsController : ControllerBase
         return Ok(results);
     }
 }
+

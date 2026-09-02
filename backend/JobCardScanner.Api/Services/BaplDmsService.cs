@@ -57,7 +57,23 @@ public record BaplDmsVehicleRow(
     /// breaking the vehicle lookup that already works. Run `SELECT TOP 3 * FROM LedgerMaster` and
     /// tell me the real column names if these keep coming back empty.</summary>
     string? CustomerAddress = null,
-    string? CustomerEmail = null);
+    string? CustomerEmail = null,
+    /// <summary>Battery Details panel fields the Job Card print preview previously had nowhere to
+    /// source and printed as "-" - now read straight from BAPL DMS's own ChassisBatteryDetails
+    /// (confirmed via a `SELECT * FROM ChassisBatteryDetails` you ran), keyed by chassis no. See
+    /// LookupVehicleAsync's ChassisBatteryDetails enrichment for how these (and the existing
+    /// BatteryNumber/MotorNo/ControllerNo/ConverterNo/ChargerNumber fields above) are actually
+    /// populated - that table is now the preferred source for all of those, not just these three.</summary>
+    string? BatteryChemical = null,
+    string? BatteryCapacity = null,
+    string? BatteryMake = null);
+
+/// <summary>One lightweight match for the Job Card Wizard's chassis/registration-no. autocomplete
+/// (search-as-you-type, e.g. typing "P6" lists every ChassisDetails row whose ChassisNo or RegNo
+/// contains it) - deliberately narrow (no customer/battery detail) since a full
+/// <see cref="BaplDmsVehicleRow"/> is only fetched once the user actually picks one suggestion, via
+/// the existing LookupVehicleAsync. See BaplDmsService.SearchVehiclesAsync.</summary>
+public record BaplDmsVehicleSuggestion(string ChassisNo, string? RegNo, string? ModelName, string? DealerId);
 
 /// <summary>One workshop/service location row from BAPL DMS's own LocationMaster - filtered to the
 /// "W" series (Loccode ending in W&lt;digits&gt;, e.g. "CUS0435W1") per your own workshops, as
@@ -219,7 +235,18 @@ public record BaplDmsRepairBillRow(int Id, string? RepairBillStatus, decimal? To
 /// qty is correctly 0 (sold out), which HAVING SUM(...) > 0 below excludes entirely, exactly as it
 /// should. Summing BatchClosingQty across every Flag='Y' row per ItemCode (one such row per batch)
 /// therefore gives the item's true total remaining stock across all its batches at that location.</summary>
-public record BaplDmsPartStockRow(string ItemCode, int AvailableQty);
+/// <summary>
+/// Description/Mrp/HsnCode are a SEPARATE best-effort enrichment (see GetPartsInventoryAsync), NOT
+/// part of the confirmed PartsInventory query above - PartsInventory itself was only confirmed to
+/// carry ItemCode/TransType/BatchOpeningQty/BatchTransQty/BatchClosingQty/FinalStockFlag, no
+/// item-name/price/HSN column. These three are guessed from a table named [dbo].[ItemMaster]
+/// (ItemCode/ItemName/Mrp/HsnCode columns) - BAPL DMS's DealerMaster/ComplaintMaster/LabourMaster/
+/// LocationMaster naming convention suggests an "ItemMaster" for parts, but this was NOT
+/// independently confirmed via a live SELECT * the way every other query in this file was. If they
+/// keep coming back null, run `SELECT TOP 3 * FROM ItemMaster` (or wherever part descriptions/MRP/
+/// HSN actually live) and share the real table/column names so this can be corrected.
+/// </summary>
+public record BaplDmsPartStockRow(string ItemCode, int AvailableQty, string? Description = null, decimal? Mrp = null, string? HsnCode = null);
 
 /// <summary>One labour rate-card row from BAPL DMS's own LabourMaster, for the Job Card Detail
 /// page's "Labour Suggestion" panel - mirrors BaplDmsPartStockRow's role for Part Suggestion.
@@ -390,6 +417,19 @@ public interface IBaplDmsService
     /// problem surfaces as a 502 with the actual SQL error instead of looking like missing data.
     /// </summary>
     Task<BaplDmsVehicleRow?> LookupVehicleAsync(string value, string? dealerCode, CancellationToken ct = default);
+
+    /// <summary>
+    /// Live search-as-you-type suggestions for the Job Card Wizard's chassis/registration-no. box
+    /// (e.g. typing "P6" returns every ChassisDetails row whose ChassisNo or RegNo contains it, so
+    /// the user can pick one instead of only supporting a single exact match). Same ChassisDetails
+    /// table as LookupVehicleAsync's primary query (confirmed schema), just LIKE-matched and capped
+    /// to <paramref name="take"/> rows instead of TOP 1 exact-match. <paramref name="dealerCode"/>
+    /// scopes to one dealer when given; null searches every dealer. Returns an empty list for a
+    /// query under 2 characters (same convention as SearchDealersAsync) rather than a full-table
+    /// LIKE scan. Throws <see cref="InvalidOperationException"/> on a real failure, same as
+    /// LookupVehicleAsync's primary query.
+    /// </summary>
+    Task<IReadOnlyList<BaplDmsVehicleSuggestion>> SearchVehiclesAsync(string q, string? dealerCode, int take, CancellationToken ct = default);
 
     /// <summary>
     /// This chassis's past job cards in BAPL DMS (JobCardHeader/JobCardCustomer/JobCardComplaint),
@@ -718,14 +758,56 @@ public class BaplDmsService : IBaplDmsService
 
         if (!found) return null;
 
-        // ----- ENRICHMENT: this chassis's most recent past job card (if any), for Previous Km,
-        // insurance/next-service dates, and battery/motor/controller/charger numbers - same
-        // confirmed JobCardHeader/JobCardCustomer/JobCardBatteryDetail schema already used elsewhere
-        // in this file. A brand-new vehicle with no service history yet simply won't have one of
-        // these rows - that's normal, not an error, so this is best-effort and never throws. -----
         int? vehicleKms = null;
         string? motorNo = null, batteryNo = null, controllerNo = null, converterNo = null, chargerNo = null;
         DateOnly? insuranceExpDate = null, nextServiceDueDate = null;
+        string? batteryChemical = null, batteryCapacity = null, batteryMake = null;
+
+        // ----- ENRICHMENT: BAPL DMS's own ChassisBatteryDetails - the vehicle's real battery/
+        // motor/charger/controller/converter serial numbers, plus Battery Make/Chemical/Capacity
+        // (confirmed via a `SELECT * FROM ChassisBatteryDetails` you ran - this is what the print
+        // preview's Battery Details panel was missing before, since the job-card-history
+        // enrichment below only ever had a subset of these and only for a chassis that already had
+        // a past job card). Keyed directly by ChassisNo, so this works even for a brand-new
+        // vehicle that's never been serviced. A chassis can have several rows here (corrections/
+        // re-entries over time - your sample shows this for a few chassis numbers), so this takes
+        // the most recently created one. Runs first and wins; the job-card-history enrichment
+        // right after only fills in whatever this one didn't find. -----
+        try
+        {
+            const string battSql = @"
+                SELECT TOP 1 MotorNo, BatteryNo, ChargerNo, ControllerNo, ConverterNo,
+                    BatteryChemical, BatteryCapacity, BatteryMake
+                FROM [dbo].[ChassisBatteryDetails]
+                WHERE ChassisNo = @chassisNo
+                ORDER BY Id DESC";
+            await using var cmd = new SqlCommand(battSql, conn) { CommandTimeout = 30 };
+            cmd.Parameters.AddWithValue("@chassisNo", chassisNo!);
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            if (await rdr.ReadAsync(ct))
+            {
+                motorNo = NullIfBlank(rdr["MotorNo"] as string);
+                batteryNo = NullIfBlank(rdr["BatteryNo"] as string);
+                chargerNo = NullIfBlank(rdr["ChargerNo"] as string);
+                controllerNo = NullIfBlank(rdr["ControllerNo"] as string);
+                converterNo = NullIfBlank(rdr["ConverterNo"] as string);
+                batteryChemical = NullIfBlank(rdr["BatteryChemical"] as string);
+                batteryCapacity = NullIfBlank(rdr["BatteryCapacity"] as string);
+                batteryMake = NullIfBlank(rdr["BatteryMake"] as string);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogInformation(ex, "BAPL DMS ChassisBatteryDetails enrichment skipped for chassis {ChassisNo}", chassisNo);
+        }
+
+        // ----- ENRICHMENT: this chassis's most recent past job card (if any), for Previous Km and
+        // insurance/next-service dates - same confirmed JobCardHeader/JobCardCustomer/
+        // JobCardBatteryDetail schema already used elsewhere in this file. Also used as a fallback
+        // for motor/battery/charger/controller/converter numbers on the rare chassis that has a
+        // ChassisBatteryDetails row missing one of those but does have job-card history with it. A
+        // brand-new vehicle with no service history yet simply won't have one of these rows -
+        // that's normal, not an error, so this is best-effort and never throws. -----
         try
         {
             const string historySql = @"
@@ -744,13 +826,13 @@ public class BaplDmsService : IBaplDmsService
             if (await rdr.ReadAsync(ct))
             {
                 vehicleKms = rdr["Vehiclekms"] as int?;
-                motorNo = rdr["MotorNo"] as string;
-                batteryNo = rdr["BatteryNo"] as string;
+                motorNo ??= NullIfBlank(rdr["MotorNo"] as string);
+                batteryNo ??= NullIfBlank(rdr["BatteryNo"] as string);
                 insuranceExpDate = ToDateOnly(rdr["InsuranceExpDate"]);
                 nextServiceDueDate = ToDateOnly(rdr["NextserviceDueDate"]);
-                controllerNo = rdr["ControllerNo"] as string;
-                converterNo = rdr["ConverterNo"] as string;
-                chargerNo = rdr["ChargerNo"] as string;
+                controllerNo ??= NullIfBlank(rdr["ControllerNo"] as string);
+                converterNo ??= NullIfBlank(rdr["ConverterNo"] as string);
+                chargerNo ??= NullIfBlank(rdr["ChargerNo"] as string);
             }
         }
         catch (Exception ex)
@@ -807,7 +889,49 @@ public class BaplDmsService : IBaplDmsService
             LocationCode: locationCode,
             DealerCode: foundDealerCode,
             CustomerAddress: customerAddress,
-            CustomerEmail: customerEmail);
+            CustomerEmail: customerEmail,
+            BatteryChemical: batteryChemical,
+            BatteryCapacity: batteryCapacity,
+            BatteryMake: batteryMake);
+    }
+
+    public async Task<IReadOnlyList<BaplDmsVehicleSuggestion>> SearchVehiclesAsync(string q, string? dealerCode, int take, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(q) || q.Trim().Length < 2) return Array.Empty<BaplDmsVehicleSuggestion>();
+        take = take is > 0 and <= 50 ? take : 20;
+
+        const string sql = @"
+            SELECT TOP (@take) ch.ChassisNo, ch.RegNo, ch.ItemName, ch.DealerId
+            FROM [dbo].[ChassisDetails] ch
+            WHERE (ch.ChassisNo LIKE @q OR ch.RegNo LIKE @q)
+              AND (@dealerCode IS NULL OR ch.DealerId = @dealerCode)
+            ORDER BY ch.ChassisNo";
+
+        var results = new List<BaplDmsVehicleSuggestion>();
+        try
+        {
+            await using var conn = new SqlConnection(ConnStr);
+            await conn.OpenAsync(ct);
+            await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+            cmd.Parameters.AddWithValue("@take", take);
+            cmd.Parameters.AddWithValue("@q", $"%{q.Trim()}%");
+            cmd.Parameters.AddWithValue("@dealerCode", (object?)dealerCode ?? DBNull.Value);
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            while (await rdr.ReadAsync(ct))
+            {
+                results.Add(new BaplDmsVehicleSuggestion(
+                    rdr["ChassisNo"] as string ?? "",
+                    rdr["RegNo"] as string,
+                    rdr["ItemName"] as string,
+                    rdr["DealerId"] as string));
+            }
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"BAPL DMS vehicle suggestion search failed for '{q}': {ex.Message}", ex);
+        }
+
+        return results;
     }
 
     public async Task<IReadOnlyList<BaplDmsJobCardHistoryRow>> GetServiceHistoryAsync(string chassisNo, string? dealerCode, CancellationToken ct = default)
@@ -1371,6 +1495,40 @@ public class BaplDmsService : IBaplDmsService
             await using var rdr = await cmd.ExecuteReaderAsync(ct);
             while (await rdr.ReadAsync(ct))
                 results.Add(new BaplDmsPartStockRow(rdr["ItemCode"] as string ?? "", Convert.ToInt32(rdr["AvailableQty"])));
+
+            // ----- ENRICHMENT (best-effort, unconfirmed schema - see BaplDmsPartStockRow's doc
+            // comment): Description/Mrp per item code, guessed from [dbo].[ItemMaster]. Batched into
+            // one query for every item code this location returned, rather than one query per row.
+            // Swallowed on failure (logged) exactly like LookupVehicleAsync's LedgerMaster.Address/
+            // Email guess - a wrong table/column name here must never break the part list itself,
+            // which already works off the confirmed PartsInventory query above. -----
+            if (results.Count > 0)
+            {
+                try
+                {
+                    var itemCodes = results.Select(r => r.ItemCode).Distinct().ToList();
+                    var paramNames = itemCodes.Select((_, i) => $"@i{i}").ToList();
+                    var enrichSql = $@"
+                        SELECT ItemCode, ItemName, Mrp, HsnCode
+                        FROM [dbo].[ItemMaster]
+                        WHERE ItemCode IN ({string.Join(",", paramNames)})";
+                    await using var enrichCmd = new SqlCommand(enrichSql, conn) { CommandTimeout = 30 };
+                    for (var i = 0; i < itemCodes.Count; i++)
+                        enrichCmd.Parameters.AddWithValue(paramNames[i], itemCodes[i]);
+                    var byItemCode = new Dictionary<string, (string? Description, decimal? Mrp, string? HsnCode)>(StringComparer.OrdinalIgnoreCase);
+                    await using var enrichRdr = await enrichCmd.ExecuteReaderAsync(ct);
+                    while (await enrichRdr.ReadAsync(ct))
+                        byItemCode[enrichRdr["ItemCode"] as string ?? ""] = (enrichRdr["ItemName"] as string, enrichRdr["Mrp"] as decimal?, enrichRdr["HsnCode"] as string);
+
+                    for (var i = 0; i < results.Count; i++)
+                        if (byItemCode.TryGetValue(results[i].ItemCode, out var extra))
+                            results[i] = results[i] with { Description = extra.Description, Mrp = extra.Mrp, HsnCode = extra.HsnCode };
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogInformation(ex, "BAPL DMS ItemMaster description/MRP enrichment skipped for location {LocationCode} (unconfirmed table/column names)", locationCode);
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -1862,4 +2020,11 @@ public class BaplDmsService : IBaplDmsService
 
     private static DateOnly? ToDateOnly(object? value) =>
         value is DateTime dt ? DateOnly.FromDateTime(dt) : null;
+
+    // ChassisBatteryDetails (and a few other BAPL DMS tables) store "no value" as an empty/
+    // whitespace string as often as a real NULL (e.g. BatteryMake is '' rather than NULL on
+    // several rows) - this normalizes both to null so the print/UI's "-" fallback applies to
+    // either instead of showing a blank cell for one and "-" for the other.
+    private static string? NullIfBlank(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }

@@ -130,6 +130,12 @@ export interface BaplDmsVehicleLookup {
   // BaplDmsService.cs on why these two specifically are not guaranteed to be populated.
   customerAddress?: string | null
   customerEmail?: string | null
+  // Battery Details panel fields the print preview previously had nowhere to source (see
+  // BaplDmsService.LookupVehicleAsync's ChassisBatteryDetails enrichment) - now read straight from
+  // BAPL DMS's own ChassisBatteryDetails table.
+  batteryChemical?: string | null
+  batteryCapacity?: string | null
+  batteryMake?: string | null
 }
 
 /// One active "W" series workshop location from BAPL DMS's own LocationMaster.
@@ -177,6 +183,21 @@ export interface BaplDmsJobSource {
 export interface BaplDmsPartStock {
   itemCode: string
   availableQty: number
+  /// Best-effort - see BaplDmsPartStockRow's doc comment in BaplDmsService.cs (guessed from an
+  /// unconfirmed [dbo].[ItemMaster] table). May be null even for a real item.
+  description?: string | null
+  mrp?: number | null
+  hsnCode?: string | null
+}
+
+/// One search-as-you-type match for the chassis/registration-no. autocomplete - see
+/// BaplDmsVehicleSuggestion's doc comment in BaplDmsService.cs. Pick one to run the full
+/// vehicle-lookup (BaplDmsVehicleLookup) the way a manual Search always has.
+export interface BaplDmsVehicleSuggestion {
+  chassisNo: string
+  regNo?: string | null
+  modelName?: string | null
+  dealerId?: string | null
 }
 
 /// One labour rate-card row from BAPL DMS's own LabourMaster - see BaplDmsLabourRow's doc comment
@@ -222,6 +243,7 @@ export interface Customer {
   mobile: string
   email?: string | null
   city?: string | null
+  state?: string | null
   address?: string | null
   outstandingAmount: number
   vehicles?: Vehicle[]
@@ -382,6 +404,14 @@ export interface JobCardPartSuggestion {
   itemCode: string
   availableQtyAtSuggestion?: number | null
   status: 'Paid' | 'U/W'
+  /// How many units of this part are used on this job card - distinct from
+  /// availableQtyAtSuggestion (BAPL DMS's stock level at suggestion time). Defaults to 1.
+  quantity: number
+  /// Snapshot of the item's description/HSN/MRP at suggestion time - see BaplDmsPartStock's doc
+  /// comment on why these may be null even for a real item.
+  description?: string | null
+  hsnCode?: string | null
+  mrp?: number | null
   createdAt?: string
 }
 

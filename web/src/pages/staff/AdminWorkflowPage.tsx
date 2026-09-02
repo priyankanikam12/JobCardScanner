@@ -1,4 +1,3 @@
-// web\src\pages\staff\AdminWorkflowPage.tsx
 import { useEffect, useState } from 'react'
 import { staffApi } from '../../api/client'
 import type { WorkflowStage } from '../../types'
@@ -46,3 +45,4 @@ export function AdminWorkflowPage() {
     </div>
   )
 }
+

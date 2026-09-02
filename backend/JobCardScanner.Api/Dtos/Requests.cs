@@ -17,7 +17,7 @@ public record DealerAdminCreateRequest(string Name, string Email, string? Mobile
 // ---------------- Customers / Vehicles (Job Card Wizard steps 1-2) ----------------
 public record CustomerLookupResult(Guid? CustomerId, string Name, string Mobile, string? Email, string? City, decimal OutstandingAmount, bool IsNew);
 
-public record CreateCustomerRequest(string Name, string Mobile, string? Email, string? Address, string? City, Guid DealerId);
+public record CreateCustomerRequest(string Name, string Mobile, string? Email, string? Address, string? City, Guid DealerId, string? State = null);
 
 public record CreateVehicleRequest(
     Guid CustomerId, string Model, string? Variant, string? Color, string? RegNo, string? Vin,
@@ -116,7 +116,11 @@ public record IssuePartRequest { }
 
 // ---------------- Part Suggestion ("Part Suggestion" panel - suggested from BAPL DMS's own
 // PartsInventory, status tracked locally only) ----------------
-public record AddPartSuggestionRequest(string ItemCode, int? AvailableQtyAtSuggestion, string Status);
+public record AddPartSuggestionRequest(
+    string ItemCode, int? AvailableQtyAtSuggestion, string Status,
+    // Optional - see JobCardPartSuggestion's doc comment. Quantity defaults to 1 (same convention
+    // as AddLabourSuggestionRequest.Quantity) when not supplied.
+    int Quantity = 1, string? Description = null, string? HsnCode = null, decimal? Mrp = null);
 public record UpdatePartSuggestionStatusRequest(string Status);
 
 // ---------------- Labour Suggestion ("Labour Suggestion" panel - suggested from BAPL DMS's own

@@ -181,6 +181,19 @@ public class JobCardsController : ControllerBase
         var vehicle = await _db.Vehicles.FirstOrDefaultAsync(v => v.Id == req.VehicleId);
         if (vehicle is null) return BadRequest(new { message = "Vehicle not found." });
 
+        // A chassis can only be "checked in" once at a time per dealer - block opening a second
+        // job card for the same chassis + dealer while an earlier one for it is still open.
+        // Matches by VehicleId (this dealer's own Vehicle row for the chassis) and, in case a
+        // duplicate Vehicle row exists for the same physical chassis, by the chassis number
+        // itself (Vin) too.
+        var openJobCardForChassis = await _db.JobCards.AsNoTracking()
+            .Where(j => j.DealerId == req.DealerId && j.Status != JobCardStatus.Closed)
+            .Where(j => j.VehicleId == req.VehicleId || (vehicle.Vin != null && j.Vehicle!.Vin == vehicle.Vin))
+            .Select(j => j.JobCardNumber)
+            .FirstOrDefaultAsync();
+        if (openJobCardForChassis is not null)
+            return BadRequest(new { message = $"This chassis already has an open job card ({openJobCardForChassis}). It must be closed before a new job card can be created for it." });
+
         var firstStage = await _db.WorkflowStages.AsNoTracking()
             .Where(s => (s.DealerId == null || s.DealerId == req.DealerId) && s.Active)
             .OrderBy(s => s.Seq).FirstOrDefaultAsync();
@@ -716,6 +729,10 @@ public class JobCardsController : ControllerBase
             ItemCode = req.ItemCode.Trim(),
             AvailableQtyAtSuggestion = req.AvailableQtyAtSuggestion,
             Status = req.Status,
+            Quantity = req.Quantity < 1 ? 1 : req.Quantity,
+            Description = string.IsNullOrWhiteSpace(req.Description) ? null : req.Description.Trim(),
+            HsnCode = string.IsNullOrWhiteSpace(req.HsnCode) ? null : req.HsnCode.Trim(),
+            Mrp = req.Mrp,
             SuggestedById = _currentUser.UserId,
         };
         _db.JobCardPartSuggestions.Add(suggestion);
@@ -735,6 +752,19 @@ public class JobCardsController : ControllerBase
         suggestion.Status = req.Status;
         await _db.SaveChangesAsync();
         return Ok(suggestion);
+    }
+
+    /// <summary>DELETE /api/jobcards/part-suggestions/{suggestionId} - removes a suggested part
+    /// (Item 16 - "multiple add and remove"), mirroring DeleteLabourSuggestion below.</summary>
+    [HttpDelete("part-suggestions/{suggestionId:guid}")]
+    [Authorize(Policy = Policies.ServiceAdvisorUp)]
+    public async Task<IActionResult> DeletePartSuggestion(Guid suggestionId)
+    {
+        var suggestion = await _db.JobCardPartSuggestions.FirstOrDefaultAsync(s => s.Id == suggestionId);
+        if (suggestion is null) return NotFound();
+        _db.JobCardPartSuggestions.Remove(suggestion);
+        await _db.SaveChangesAsync();
+        return NoContent();
     }
 
     // ---------------- Labour Suggestion ("Labour Suggestion" panel) ----------------

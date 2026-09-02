@@ -1,5 +1,5 @@
 // web\src\pages\staff\JobCardDetailPage.tsx
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
@@ -99,6 +99,21 @@ export function JobCardDetailPage() {
 
   useEffect(() => { load() }, [id])
 
+  // Item 7 (wizard): "Continue to Job Card" after creation links straight to
+  // /jobcards/{id}#workflow-timeline. Item 10 (list page): a job card's photo count links straight
+  // to /jobcards/{id}#photos. Both scroll that section into view once the page (and the matching
+  // id) has actually rendered, rather than relying on the browser's own same-navigation hash scroll
+  // (which can miss it here since the content loads asynchronously after mount).
+  const scrolledToHashRef = useRef(false)
+  useEffect(() => {
+    if (scrolledToHashRef.current || !jc || !window.location.hash) return
+    const el = document.getElementById(window.location.hash.slice(1))
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      scrolledToHashRef.current = true
+    }
+  }, [jc])
+
   if (!jc) return <p className="muted">Loading...</p>
 
   const run = async (fn: () => Promise<unknown>, successMsg?: string) => {
@@ -132,7 +147,7 @@ export function JobCardDetailPage() {
           {(jc.baplJobType || jc.baplServiceLocation || jc.baplSupervisorName || jc.baplTechnicianName || jc.baplManualJobNo) && (
             <p className="muted" style={{ marginTop: 8 }}>
               <span style={{ background: '#1c64f2', color: '#fff', fontSize: 11, fontWeight: 600, padding: '1px 6px', borderRadius: 999, marginRight: 6 }}>
-                BAPL DMS
+                DMS
               </span>
               {[
                 jc.baplJobType && `Job Type: ${jc.baplJobType}`,
@@ -164,7 +179,7 @@ export function JobCardDetailPage() {
           )}
         </div>
 
-        <div className="card">
+        <div className="card" id="workflow-timeline">
           <h3>Workflow Timeline</h3>
           <WorkflowTimeline
             stages={buildTimelineStages(stages)}
@@ -178,18 +193,21 @@ export function JobCardDetailPage() {
         <UpdateWorkflowStageCard jc={jc} stages={stages} busy={busy} run={run} canAssignTechnician={hasRole('WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin')} />
       )}
 
-      <BaplServiceHistoryCard chassisNo={jc.vehicle?.vin} dealerCode={jc.dealer?.code} />
-
       <ComplaintsCard jc={jc} run={run} />
       <PhotosCard jc={jc} run={run} />
       <WorklogCard jc={jc} run={run} profileId={profile?.id} />
       {/* Quality Check panel hidden per request - kept in code (not deleted) in case it's needed
          again later. QcCard itself is still defined below, just never rendered. */}
       {SHOW_QUALITY_CHECK_PANEL && hasRole('WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && <QcCard jc={jc} run={run} />}
-      <EstimatesCard jc={jc} run={run} />
+      {/* Item 16: Part Suggestion, then Item 17: Labour Suggestion, then Item 15: Estimates Amount
+         moves to AFTER Labour Suggestion (was before both). */}
       <PartSuggestionCard jc={jc} run={run} />
       <LabourSuggestionCard jc={jc} run={run} />
+      <EstimatesCard jc={jc} run={run} />
       {hasRole('Cashier', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && <InvoiceCard jc={jc} />}
+      {/* Item 13: BAPL DMS Service History moves to AFTER Invoice (was the 2nd card, right after
+         Update Workflow Stage). */}
+      <BaplServiceHistoryCard chassisNo={jc.vehicle?.vin} dealerCode={jc.dealer?.code} />
       <ClosureCard jc={jc} run={run} />
     </div>
   )
@@ -303,7 +321,7 @@ function PhotosCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<un
   const stages: PhotoStage[] = ['CheckIn', 'Inspection', 'Repair', 'Qc', 'Delivery']
 
   return (
-    <div className="card">
+    <div className="card" id="photos">
       <h3>Photos</h3>
       <div className="form-row">
         <div className="field">
@@ -369,9 +387,16 @@ function UpdateWorkflowStageCard({
   run: (fn: () => Promise<unknown>, successMsg?: string) => void
   canAssignTechnician: boolean
 }) {
-  // Deliberately starts blank (not pre-filled with the job card's current stage, and not
-  // auto-advanced to whatever's "next") - the advisor picks the new stage explicitly every time.
-  const [stageId, setStageId] = useState('')
+  // Item 12: defaults to the stage right after the last-completed one, instead of starting blank -
+  // the advisor can still pick a different stage, but the common "move to the next stage" action
+  // no longer needs an extra click just to open the dropdown and find it.
+  const nextStageAfterCurrent = (): string => {
+    const visible = stages.filter((s) => !HIDDEN_WORKFLOW_STAGE_KEYS.has(s.stageKey)).sort((a, b) => a.seq - b.seq)
+    if (visible.length === 0) return ''
+    const currentSeq = jc.currentStage && !HIDDEN_WORKFLOW_STAGE_KEYS.has(jc.currentStage.stageKey) ? jc.currentStage.seq : -1
+    return (visible.find((s) => s.seq > currentSeq) ?? visible[visible.length - 1]).id
+  }
+  const [stageId, setStageId] = useState(nextStageAfterCurrent)
   // Free-text technician name (see JobCard.AssignedTechnicianName) rather than a dropdown bound to
   // a User id - there's no confirmed technician catalog to pick from, so this is typed in directly
   // and sent as assignedTechnicianName on the same PUT /api/jobcards/{id} call.
@@ -380,10 +405,11 @@ function UpdateWorkflowStageCard({
   const [notes, setNotes] = useState('')
 
   useEffect(() => {
-    setStageId('')
+    setStageId(nextStageAfterCurrent())
     setTechnicianName(jc.assignedTechnicianName ?? '')
     setExpectedDeliveryAt(jc.expectedDeliveryAt ? jc.expectedDeliveryAt.slice(0, 16) : '')
-  }, [jc.id, jc.assignedTechnicianName, jc.expectedDeliveryAt])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jc.id, jc.currentStage?.id, jc.assignedTechnicianName, jc.expectedDeliveryAt, stages])
 
   const submit = async () => {
     const tasks: Promise<unknown>[] = []
@@ -452,18 +478,37 @@ function ComplaintsCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promis
   )
 }
 
+/** Item 14: the timer is now automatic, not manual - starts the moment this job card is open (no
+ * running log yet, and the job card isn't Closed) and stops the moment the job card is Closed. Both
+ * effects are guarded by their own condition already being false after the reload run() triggers
+ * (a fresh openLog appears after auto-start; it disappears - endedAt gets set - after auto-stop),
+ * so neither fires more than once per actual state change. */
 function WorklogCard({ jc, run, profileId }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>) => void; profileId?: string }) {
   const openLog = jc.worklogs.find((w) => !w.endedAt)
+
+  useEffect(() => {
+    if (jc.status !== 'Closed' && !openLog) {
+      run(() => staffApi.post(`/api/jobcards/${jc.id}/worklogs/start`, { technicianId: profileId, taskDescription: 'Service work' }))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jc.id, jc.status, openLog?.id])
+
+  useEffect(() => {
+    if (jc.status === 'Closed' && openLog) {
+      run(() => staffApi.post(`/api/jobcards/worklogs/${openLog.id}/end`, {}))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jc.status, openLog?.id])
+
   return (
     <div className="card">
       <h3>Technician Work Log</h3>
       {openLog ? (
-        <div>
-          <p className="muted">Timer running since {new Date(openLog.startedAt).toLocaleTimeString()}</p>
-          <button className="btn btn-sm" onClick={() => run(() => staffApi.post(`/api/jobcards/worklogs/${openLog.id}/end`, {}))}>Stop Timer</button>
-        </div>
+        <p className="muted">⏱ Timer running since {new Date(openLog.startedAt).toLocaleTimeString()} (stops automatically when this job card is closed).</p>
+      ) : jc.status === 'Closed' ? (
+        <p className="muted">Timer stopped - this job card is closed.</p>
       ) : (
-        <button className="btn btn-sm btn-primary" onClick={() => run(() => staffApi.post(`/api/jobcards/${jc.id}/worklogs/start`, { technicianId: profileId, taskDescription: 'Service work' }))}>Start Timer</button>
+        <p className="muted">Starting timer…</p>
       )}
       <table style={{ marginTop: 12 }}>
         <thead><tr><th>Started</th><th>Ended</th><th>Duration (min)</th></tr></thead>
@@ -498,33 +543,75 @@ function QcCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<unknow
   )
 }
 
-function EstimatesCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>) => void }) {
-  const [desc, setDesc] = useState('')
-  const [amount, setAmount] = useState(0)
-  const [reason, setReason] = useState('')
+/** Item 18: redefined from an OTP-gated customer-approval flow into a pure calculation view - a
+ * Part Details table (Sr no., Part No./Item Code, Description, HSN, MRP, Qty, Amount = MRP x Qty)
+ * sourced from jc.partSuggestions, a Labour Details table (same shape, Amount = Rate x Qty) sourced
+ * from jc.labourSuggestions, and a Grand Total row summing both. Per an explicit decision, this
+ * REPLACES the old Description/Amount/Reason + "Send Estimate to Customer" OTP flow entirely -
+ * that flow (and the Estimate/estimateNumber data behind it) still exists in the backend, just no
+ * longer surfaced on this card. */
+function EstimatesCard({ jc }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>) => void }) {
+  const money = (n: number) => `₹${n.toFixed(2)}`
 
-  const createAndSend = async () => {
-    const { data } = await staffApi.post(`/api/jobcards/${jc.id}/estimates`, {
-      reason,
-      lines: [{ type: 'Part', description: desc, quantity: 1, unitPrice: amount }],
-    })
-    await staffApi.post(`/api/estimates/${data.id}/send`)
-  }
+  const partRows = jc.partSuggestions.map((p, i) => {
+    const mrp = p.mrp ?? 0
+    const qty = p.quantity ?? 1
+    return { sr: i + 1, code: p.itemCode, description: p.description ?? '-', hsn: p.hsnCode ?? '-', mrp, qty, amount: mrp * qty }
+  })
+  const labourRows = jc.labourSuggestions.map((l, i) => {
+    const rate = l.rateAtSuggestion ?? 0
+    const qty = l.quantity ?? 1
+    return { sr: i + 1, code: l.labourCode, description: l.labourDescription ?? '-', hsn: l.hsnCode ?? '-', rate, qty, amount: rate * qty }
+  })
+  const partsTotal = partRows.reduce((sum, r) => sum + r.amount, 0)
+  const labourTotal = labourRows.reduce((sum, r) => sum + r.amount, 0)
+  const grandTotal = partsTotal + labourTotal
 
   return (
     <div className="card">
       <h3>Estimates Amount</h3>
+
+      <h4>Part Details</h4>
       <table>
-        <thead><tr><th>Estimate #</th><th>Amount</th><th>Status</th></tr></thead>
-        <tbody>{jc.estimates.map((e) => <tr key={e.id}><td>{e.estimateNumber}</td><td>Rs.{e.totalAmount}</td><td><StatusBadge status={e.status} /></td></tr>)}</tbody>
+        <thead><tr><th>Sr no.</th><th>Part No. (Item Code)</th><th>Description</th><th>HSN</th><th>MRP</th><th>Qty</th><th>Amount</th></tr></thead>
+        <tbody>
+          {partRows.map((r) => (
+            <tr key={r.sr}>
+              <td>{r.sr}</td><td>{r.code}</td><td>{r.description}</td><td>{r.hsn}</td>
+              <td>{money(r.mrp)}</td><td>{r.qty}</td><td>{money(r.amount)}</td>
+            </tr>
+          ))}
+          {partRows.length === 0 && <tr><td colSpan={7} className="muted">No parts suggested yet.</td></tr>}
+        </tbody>
+        {partRows.length > 0 && (
+          <tfoot><tr><td colSpan={6} style={{ textAlign: 'right', fontWeight: 600 }}>Parts Total</td><td style={{ fontWeight: 600 }}>{money(partsTotal)}</td></tr></tfoot>
+        )}
       </table>
-      <h4>Raise new estimate (sends OTP-gated approval request to customer)</h4>
-      <div className="form-row">
-        <div className="field"><label>Description</label><input value={desc} onChange={(e) => setDesc(e.target.value)} /></div>
-        <div className="field"><label>Amount (Rs.)</label><input type="number" value={amount} onChange={(e) => setAmount(Number(e.target.value))} /></div>
-        <div className="field"><label>Reason</label><input value={reason} onChange={(e) => setReason(e.target.value)} /></div>
+
+      <h4 style={{ marginTop: 16 }}>Labour Details</h4>
+      <table>
+        <thead><tr><th>Sr no.</th><th>Labour Code</th><th>Description</th><th>HSN</th><th>MRP (Rate)</th><th>Qty</th><th>Amount</th></tr></thead>
+        <tbody>
+          {labourRows.map((r) => (
+            <tr key={r.sr}>
+              <td>{r.sr}</td><td>{r.code}</td><td>{r.description}</td><td>{r.hsn}</td>
+              <td>{money(r.rate)}</td><td>{r.qty}</td><td>{money(r.amount)}</td>
+            </tr>
+          ))}
+          {labourRows.length === 0 && <tr><td colSpan={7} className="muted">No labour suggested yet.</td></tr>}
+        </tbody>
+        {labourRows.length > 0 && (
+          <tfoot><tr><td colSpan={6} style={{ textAlign: 'right', fontWeight: 600 }}>Labour Total</td><td style={{ fontWeight: 600 }}>{money(labourTotal)}</td></tr></tfoot>
+        )}
+      </table>
+
+      <div style={{
+        marginTop: 16, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12,
+        borderTop: '2px solid var(--border)', paddingTop: 10,
+      }}>
+        <strong style={{ fontSize: 16 }}>Grand Total</strong>
+        <strong style={{ fontSize: 18 }}>{money(grandTotal)}</strong>
       </div>
-      <button className="btn btn-sm btn-primary" disabled={!desc || amount <= 0} onClick={() => run(createAndSend)}>Send Estimate to Customer</button>
     </div>
   )
 }
@@ -535,10 +622,18 @@ function EstimatesCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise
  * BaplServiceHistoryCard above fetches its supplementary data; suggesting one just records an
  * itemCode + a Paid/U-W status in JobCardScannerDb (POST .../part-suggestions) - nothing is written
  * back into BAPL DMS itself. Status can be flipped afterwards (PUT .../part-suggestions/{id}). */
+/** Item 16: reworked into a type-ahead Item Code search (bound to description, so typing either
+ * the code or a word of the description narrows the list), a Qty field (distinct from the
+ * available-stock number, which is only shown as a hint), and multi add/remove - each suggested
+ * part gets its own Remove button (DELETE /api/jobcards/part-suggestions/{id}), instead of the old
+ * Paid/U-W toggle being the only action available. Grid columns per spec: Sr no., Item Code,
+ * Description, MRP, QTY, IssueType(Status). */
 function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => void }) {
   const [availableParts, setAvailableParts] = useState<BaplDmsPartStock[]>([])
+  const [search, setSearch] = useState('')
+  const [showSuggestions, setShowSuggestions] = useState(false)
   const [itemCode, setItemCode] = useState('')
-  const [qty, setQty] = useState<number | ''>('')
+  const [qty, setQty] = useState<number>(1)
   const [status, setStatus] = useState<'Paid' | 'U/W'>('Paid')
 
   useEffect(() => {
@@ -548,15 +643,31 @@ function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Pr
       .catch(() => setAvailableParts([]))
   }, [jc.baplServiceLocationCode])
 
+  const selectedPart = availableParts.find((p) => p.itemCode === itemCode)
+  const q = search.trim().toLowerCase()
+  const matches = q.length === 0 ? [] : availableParts
+    .filter((p) => p.itemCode.toLowerCase().includes(q) || (p.description ?? '').toLowerCase().includes(q))
+    .slice(0, 20)
+
+  const pickPart = (p: BaplDmsPartStock) => {
+    setItemCode(p.itemCode)
+    setSearch(`${p.itemCode}${p.description ? ' - ' + p.description : ''}`)
+    setShowSuggestions(false)
+  }
+
   const addSuggestion = async () => {
-    const selected = availableParts.find((p) => p.itemCode === itemCode)
     await staffApi.post(`/api/jobcards/${jc.id}/part-suggestions`, {
       itemCode,
-      availableQtyAtSuggestion: qty === '' ? selected?.availableQty ?? null : qty,
+      availableQtyAtSuggestion: selectedPart?.availableQty ?? null,
       status,
+      quantity: qty || 1,
+      description: selectedPart?.description ?? null,
+      hsnCode: selectedPart?.hsnCode ?? null,
+      mrp: selectedPart?.mrp ?? null,
     })
     setItemCode('')
-    setQty('')
+    setSearch('')
+    setQty(1)
     setStatus('Paid')
   }
 
@@ -564,25 +675,29 @@ function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Pr
     <div className="card">
       <h3>Part Suggestion</h3>
       <table>
-        <thead><tr><th>Item Code</th><th>Available Qty (at suggestion)</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Sr no.</th><th>Item Code</th><th>Description</th><th>MRP</th><th>QTY</th><th>Issue Type (Status)</th><th></th></tr></thead>
         <tbody>
-          {jc.partSuggestions.map((p) => (
+          {jc.partSuggestions.map((p, i) => (
             <tr key={p.id}>
+              <td>{i + 1}</td>
               <td>{p.itemCode}</td>
-              <td>{p.availableQtyAtSuggestion ?? '-'}</td>
+              <td>{p.description ?? '-'}</td>
+              <td>{p.mrp != null ? `₹${p.mrp}` : '-'}</td>
+              <td>{p.quantity}</td>
               <td><StatusBadge status={p.status} /></td>
-              <td>
+              <td style={{ display: 'flex', gap: 4 }}>
                 <button
                   className="btn btn-sm"
                   onClick={() => run(() => staffApi.put(`/api/jobcards/part-suggestions/${p.id}`, { status: p.status === 'Paid' ? 'U/W' : 'Paid' }))}
                 >
                   Mark {p.status === 'Paid' ? 'U/W' : 'Paid'}
                 </button>
+                <button className="btn btn-sm" onClick={() => run(() => staffApi.delete(`/api/jobcards/part-suggestions/${p.id}`))}>Remove</button>
               </td>
             </tr>
           ))}
           {jc.partSuggestions.length === 0 && (
-            <tr><td colSpan={4} className="muted">No parts suggested yet.</td></tr>
+            <tr><td colSpan={7} className="muted">No parts suggested yet.</td></tr>
           )}
         </tbody>
       </table>
@@ -590,32 +705,52 @@ function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Pr
       <h4>Suggest a part (from BAPL DMS PartsInventory)</h4>
       {!jc.baplServiceLocationCode && <p className="muted">No BAPL DMS service location on this job card - part list unavailable.</p>}
       <div className="form-row">
-        <div className="field">
-          <label>Item Code</label>
-          <select
-            value={itemCode}
-            onChange={(e) => {
-              setItemCode(e.target.value)
-              const p = availableParts.find((x) => x.itemCode === e.target.value)
-              setQty(p ? p.availableQty : '')
-            }}
-          >
-            <option value="">Select item…</option>
-            {availableParts.map((p) => <option key={p.itemCode} value={p.itemCode}>{p.itemCode} (avail. {p.availableQty})</option>)}
-          </select>
+        <div className="field" style={{ position: 'relative' }}>
+          <label>Item Code / Description</label>
+          <input
+            value={search}
+            placeholder="Start typing an item code or description…"
+            onChange={(e) => { setSearch(e.target.value); setItemCode(''); setShowSuggestions(true) }}
+            onFocus={() => setShowSuggestions(true)}
+            onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+            autoComplete="off"
+          />
+          {showSuggestions && matches.length > 0 && (
+            <ul style={{
+              position: 'absolute', zIndex: 10, top: '100%', left: 0, right: 0, marginTop: 2,
+              background: 'var(--card-bg, #fff)', border: '1px solid var(--border)', borderRadius: 8,
+              maxHeight: 220, overflowY: 'auto', listStyle: 'none', padding: 4, boxShadow: '0 6px 18px rgba(0,0,0,.12)',
+            }}>
+              {matches.map((p) => (
+                <li key={p.itemCode}>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    style={{ width: '100%', textAlign: 'left', border: 'none', background: 'transparent', padding: '6px 8px' }}
+                    onMouseDown={(e) => { e.preventDefault(); pickPart(p) }}
+                  >
+                    <strong>{p.itemCode}</strong>{p.description ? ` — ${p.description}` : ''} <span className="muted">(avail. {p.availableQty})</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
         <div className="field">
-          <label>Available Qty</label>
-          <input type="number" value={qty} onChange={(e) => setQty(e.target.value === '' ? '' : Number(e.target.value))} />
+          <label>QTY</label>
+          <input type="number" min={1} value={qty} onChange={(e) => setQty(Number(e.target.value))} style={{ width: '4rem' }} />
         </div>
         <div className="field">
-          <label>Status</label>
+          <label>Issue Type (Status)</label>
           <select value={status} onChange={(e) => setStatus(e.target.value as 'Paid' | 'U/W')}>
             <option value="Paid">Paid</option>
             <option value="U/W">U/W</option>
           </select>
         </div>
       </div>
+      {selectedPart && (
+        <p className="muted">MRP {selectedPart.mrp != null ? `₹${selectedPart.mrp}` : '-'} · HSN {selectedPart.hsnCode ?? '-'} · Available {selectedPart.availableQty}</p>
+      )}
       <button className="btn btn-sm btn-primary" disabled={!itemCode} onClick={() => run(addSuggestion, 'Part suggestion added.')}>Add Suggestion</button>
     </div>
   )
@@ -745,10 +880,12 @@ function LabourSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => 
       </table>
 
       <h4>Suggest labour (from BAPL DMS LabourMaster)</h4>
-      <div className="form-row">
+      {/* Item 17: search, Labour Code, Qty, Issue Type and the Add Suggestion button all in one
+         row now - Add sits immediately after Issue Type instead of on its own line below. */}
+      <div className="form-row" style={{ alignItems: 'flex-end' }}>
         <div className="field">
-          <label>Search</label>
-          <input type="text" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Labour code or description…" />
+          <label>Search (1 word)</label>
+          <input type="text" value={q} onChange={(e) => setQ(e.target.value)} placeholder="e.g. brake" />
         </div>
         <div className="field">
           <label>Labour Code</label>
@@ -772,13 +909,15 @@ function LabourSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => 
             {LABOUR_ISSUE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
         </div>
+        <div className="field">
+          <button className="btn btn-sm btn-primary" disabled={!selectedId} onClick={() => run(addSuggestion, 'Labour suggestion added.')}>Add Suggestion</button>
+        </div>
       </div>
       {selected && (
         <p className="muted">
           Rate ₹{selected.labourRate ?? '-'} · HSN {selected.hsnCode ?? '-'} · SGST {selected.sgst ?? '-'} · CGST {selected.cgst ?? '-'} · IGST {selected.igst ?? '-'}
         </p>
       )}
-      <button className="btn btn-sm btn-primary" disabled={!selectedId} onClick={() => run(addSuggestion, 'Labour suggestion added.')}>Add Suggestion</button>
     </div>
   )
 }
@@ -866,3 +1005,4 @@ function ClosureCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<u
     </div>
   )
 }
+

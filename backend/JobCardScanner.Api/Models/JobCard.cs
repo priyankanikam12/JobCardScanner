@@ -289,6 +289,25 @@ public class JobCardPartSuggestion
     public int? AvailableQtyAtSuggestion { get; set; }
     /// <summary>"Paid" or "U/W" (under warranty) - the only two options on the dropdown.</summary>
     [Required, MaxLength(20)] public string Status { get; set; } = "Paid";
+    /// <summary>How many units of this part are actually being used on this job card - distinct
+    /// from AvailableQtyAtSuggestion above (that's BAPL DMS's stock level at suggestion time, not a
+    /// quantity requested). Added for Items 16/18 (Part Suggestion grid's QTY column, and the
+    /// Estimates Amount calculation's Part Details table - Amount = Mrp x Quantity). Defaults to 1,
+    /// same convention as JobCardLabourSuggestion.Quantity. NEW column - see
+    /// deploy/add-part-suggestion-columns.sql for the manual production migration this needs
+    /// (Database.EnsureCreatedAsync() in Program.cs does nothing on a database that already
+    /// exists).</summary>
+    public int Quantity { get; set; } = 1;
+    /// <summary>Snapshot of the item's description/MRP/HSN at suggestion time, from BAPL DMS's own
+    /// best-effort ItemMaster enrichment (see BaplDmsPartStockRow's doc comment in
+    /// BaplDmsService.cs - these may be null even for a real item if that table/columns turn out to
+    /// be named differently). Snapshotted rather than live-linked, same reasoning as
+    /// JobCardLabourSuggestion's LabourDescription/HsnCode - a later price change shouldn't
+    /// retroactively alter what was already suggested. NEW columns - see
+    /// deploy/add-part-suggestion-columns.sql.</summary>
+    [MaxLength(400)] public string? Description { get; set; }
+    [MaxLength(20)] public string? HsnCode { get; set; }
+    [Column(TypeName = "decimal(12,2)")] public decimal? Mrp { get; set; }
     public Guid? SuggestedById { get; set; }
     public User? SuggestedBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

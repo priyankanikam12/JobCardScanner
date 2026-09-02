@@ -49,6 +49,7 @@ public class CustomersController : ControllerBase
             c.Mobile,
             c.Email,
             c.City,
+            c.State,
             c.OutstandingAmount,
             Vehicles = c.Vehicles.Select(v => new { v.Id, v.Model, v.Variant, v.RegNo, v.Vin, v.Odometer }),
         }));
@@ -65,7 +66,7 @@ public class CustomersController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Create(CreateCustomerRequest req)
     {
-        var customer = new Customer { Name = req.Name, Mobile = req.Mobile, Email = req.Email, Address = req.Address, City = req.City, DealerId = req.DealerId };
+        var customer = new Customer { Name = req.Name, Mobile = req.Mobile, Email = req.Email, Address = req.Address, City = req.City, State = req.State, DealerId = req.DealerId };
         _db.Customers.Add(customer);
         await _db.SaveChangesAsync();
         return CreatedAtAction(nameof(Get), new { id = customer.Id }, customer);

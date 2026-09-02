@@ -1,4 +1,3 @@
-// web\src\pages\staff\ReportsPage.tsx
 import { useState } from 'react'
 import { staffApi } from '../../api/client'
 
@@ -64,3 +63,4 @@ export function ReportsPage() {
     </div>
   )
 }
+

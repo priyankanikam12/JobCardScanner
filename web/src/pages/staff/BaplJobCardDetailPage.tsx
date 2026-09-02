@@ -1,4 +1,3 @@
-// web\src\pages\staff\BaplJobCardDetailPage.tsx
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { staffApi } from '../../api/client'
@@ -34,7 +33,7 @@ export function BaplJobCardDetailPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ background: '#1c64f2', color: '#fff', fontSize: 13, fontWeight: 600, padding: '2px 10px', borderRadius: 999 }}>
-            BAPL DMS
+            DMS
           </span>
           {row ? `${row.jobPrefix ?? ''}${row.jobNo ?? ''}` : 'Job Card'}
         </h2>
@@ -87,3 +86,4 @@ export function BaplJobCardDetailPage() {
     </div>
   )
 }
+
