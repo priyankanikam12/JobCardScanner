@@ -190,11 +190,15 @@ if (!builder.Configuration.GetValue<bool>("DisableHttpsRedirection"))
 app.UseCors("AppCors");
 
 // Serves job card photos uploaded via POST /api/jobcards/{id}/photos/upload (JobCardsController)
-// from wwwroot/uploads/... at the matching /uploads/... URL. No [Authorize] on static files
-// themselves (ASP.NET Core static file middleware doesn't support that) - the file names are
-// unguessable GUIDs, same tradeoff as most "public CDN link" photo storage.
+// from wwwroot/uploads/... at the matching /uploads/... URL, plus part-suggestion photos (see
+// POST /api/jobcards/{id}/part-suggestions/{suggestionId}/photos/upload). No [Authorize] on
+// static files themselves (ASP.NET Core static file middleware doesn't support that) - the file
+// names are unguessable GUIDs, same tradeoff as most "public CDN link" photo storage.
 Directory.CreateDirectory(Path.Combine(app.Environment.ContentRootPath, "wwwroot", "uploads", "jobcard-photos"));
-app.UseStaticFiles();
+Directory.CreateDirectory(Path.Combine(app.Environment.ContentRootPath, "wwwroot", "uploads", "jobcard-part-photos"));
+var staticFileProvider = new Microsoft.AspNetCore.StaticFiles.FileExtensionContentTypeProvider();
+staticFileProvider.Mappings[".apk"] = "application/vnd.android.package-archive";
+app.UseStaticFiles(new StaticFileOptions { ContentTypeProvider = staticFileProvider });
 
 app.UseAuthentication();
 app.UseAuthorization();
@@ -209,47 +213,37 @@ app.MapControllers();
 // wwwroot/index.html doesn't exist (the Vite dev server owns the frontend there instead).
 app.MapFallbackToFile("index.html");
 
-// Create the schema and seed demo data automatically on startup in Development, so
-// `dotnet run` against a fresh local SQL Server produces a ready-to-use JobCardScanner
-// database with zero manual steps.
+// ---------------------------------------------------------------------
+// Schema: real EF Core migrations, not EnsureCreatedAsync()/DbSeeder.
 //
-// NOTE ON EF CORE MIGRATIONS: this project ships without a checked-in Migrations/ folder,
-// because scaffolding one requires `dotnet ef migrations add`, which in turn requires a
-// successful `dotnet restore` - something this project was built without the ability to run
-// (see README "About this build" section). EnsureCreatedAsync() below creates the schema
-// directly from the model, which is sufficient for local development and evaluation.
-// Before deploying to Azure SQL / a shared environment, replace this with real migrations:
+// EnsureCreatedAsync() only creates a schema on a database that doesn't exist yet - it can never
+// apply an incremental change (a new table, a new column) to a database that's already there, so
+// every table added since JobCardScannerDb was first created (JobCardPartSuggestion,
+// JobCardPartSuggestionPhoto, JobCardLabourSuggestion, JobCard.AssignedTechnicianName, etc.) would
+// silently never appear. MigrateAsync() below applies whatever migrations exist in the
+// Migrations/ folder, in order, and is safe to run on every startup - it's a no-op once the
+// database is already up to date.
+//
+// DbSeeder.SeedAsync() (demo dealers/users) is intentionally NOT called here any more. If you
+// still want seed data on a brand-new database, run it manually once via a one-off script rather
+// than automatically on every startup.
+//
+// One-time setup, if you haven't already:
 //   dotnet ef migrations add InitialCreate
-// then swap EnsureCreatedAsync() for db.Database.MigrateAsync() so schema changes are
-// tracked and repeatable across environments.
-if (app.Environment.IsDevelopment())
+//   dotnet ef database update
+// From then on, whenever the model changes:
+//   dotnet ef migrations add <DescriptiveName>
+// MigrateAsync() below applies it automatically on the next run - no separate `database update`
+// step needed in any environment this API itself starts up in.
+// ---------------------------------------------------------------------
+using (var scope = app.Services.CreateScope())
 {
-    using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
-
-    // IMPORTANT: EnsureCreatedAsync() only creates the schema if the DATABASE ITSELF doesn't
-    // exist yet. If you (or anyone) already connected to this database and ran so much as one
-    // CREATE TABLE against it - e.g. testing a Users table by hand in SSMS/Azure Data Studio -
-    // then from that point on EnsureCreatedAsync() sees "database exists" and silently does
-    // NOTHING on every future startup: no Dealers, no WorkflowStages, no seeded admin user, even
-    // though the app logs no error at all. That silent no-op is why Users can stay empty forever
-    // even though this code looks correct. The logging below makes that state visible instead of
-    // silent - if you ever see "0 dealers / 0 users" here again after a startup, the fix is to
-    // drop and let this block recreate the database from scratch (see backend/README.md /
-    // AZURE_AD_SETUP.md), not to hand-edit tables.
-    var wasCreated = await db.Database.EnsureCreatedAsync();
-    await DbSeeder.SeedAsync(db);
+    await db.Database.MigrateAsync();
 
     var dealerCount = await db.Dealers.CountAsync();
     var userCount = await db.Users.CountAsync();
-    Console.WriteLine($"[DbSeeder] EnsureCreatedAsync created a new database: {wasCreated}. Current counts -> Dealers: {dealerCount}, Users: {userCount}.");
-    if (dealerCount == 0)
-    {
-        Console.WriteLine("[DbSeeder] WARNING: Dealers is empty, which means seeding never ran. " +
-            "This almost always means the database already existed with some hand-created table " +
-            "in it before this app ever touched it, so EnsureCreatedAsync() skipped schema " +
-            "creation entirely. Drop the database and restart the API to fix it properly.");
-    }
+    Console.WriteLine($"[Startup] Migrations applied. Current counts -> Dealers: {dealerCount}, Users: {userCount}.");
 }
 
 app.Run();
