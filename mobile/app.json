@@ -23,11 +23,6 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
-    "extra": {
-      "eas": {
-        "projectId": "429cf975-6d5a-4121-9e10-571eb86b70c1"
-      }
-    },
     "plugins": [
       [
         "expo-build-properties",
@@ -37,7 +32,19 @@
           }
         }
       ],
-      "expo-secure-store"
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "JobCardScanner needs access to your photos so you can attach vehicle photos to a job card.",
+          "cameraPermission": "JobCardScanner needs access to your camera so you can take vehicle photos for a job card."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "JobCardScanner uses your location to tag where a job card photo was taken."
+        }
+      ]
     ]
   }
 }

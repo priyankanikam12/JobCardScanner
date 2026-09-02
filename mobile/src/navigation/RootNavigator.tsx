@@ -7,12 +7,14 @@ import { ForceChangePasswordScreen } from '../screens/ForceChangePasswordScreen'
 import { DashboardScreen } from '../screens/DashboardScreen'
 import { JobCardsListScreen } from '../screens/JobCardsListScreen'
 import { JobCardDetailScreen } from '../screens/JobCardDetailScreen'
+import { JobCardWizardScreen } from '../screens/JobCardWizardScreen'
 import { PartsScreen } from '../screens/PartsScreen'
 
 export type RootStackParamList = {
   Dashboard: undefined
   JobCardsList: undefined
   JobCardDetail: { id: string }
+  JobCardWizard: undefined
   Parts: undefined
 }
 
@@ -48,6 +50,7 @@ export function RootNavigator() {
           <Stack.Screen name="Dashboard" component={DashboardScreen} options={{ title: 'JobCardScanner' }} />
           <Stack.Screen name="JobCardsList" component={JobCardsListScreen} options={{ title: 'Job Cards' }} />
           <Stack.Screen name="JobCardDetail" component={JobCardDetailScreen} options={{ title: 'Job Card' }} />
+          <Stack.Screen name="JobCardWizard" component={JobCardWizardScreen} options={{ title: 'New Job Card' }} />
           <Stack.Screen name="Parts" component={PartsScreen} options={{ title: 'Parts Catalog' }} />
         </Stack.Navigator>
       )}
