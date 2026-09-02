@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Alert, Button, ScrollView, StyleSheet, Text, View } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { apiClient } from '../api/client'
-import { useAuth } from '../auth/AuthContext'
+import { useStaffAuth } from '../auth/StaffAuthContext'
 import { Badge } from '../components/Badge'
 import { PartSuggestionSection } from '../components/PartSuggestionSection'
 import { LabourSuggestionSection } from '../components/LabourSuggestionSection'
@@ -13,7 +13,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'JobCardDetail'>
 
 export function JobCardDetailScreen({ route }: Props) {
   const { id } = route.params
-  const { profile } = useAuth()
+  const { profile } = useStaffAuth()
   const [jc, setJc] = useState<JobCardDetail | null>(null)
   const [stages, setStages] = useState<WorkflowStage[]>([])
 

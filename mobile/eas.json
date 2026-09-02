@@ -1,0 +1,43 @@
+{
+  "cli": {
+    "version": ">= 12.0.0",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_AZURE_CLIENT_ID": "46abc486-d3bf-4b00-adcf-efbc7794c9e7",
+        "EXPO_PUBLIC_AZURE_TENANT_ID": "a265301a-63b1-4aec-9d47-273b49c178b4",
+        "EXPO_PUBLIC_AZURE_API_SCOPE": "api://8271e7f5-7bd9-4ece-bf03-b25ce3674d98/access_as_user",
+        "EXPO_PUBLIC_API_BASE_URL": "http://3.88.172.79"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_AZURE_CLIENT_ID": "46abc486-d3bf-4b00-adcf-efbc7794c9e7",
+        "EXPO_PUBLIC_AZURE_TENANT_ID": "a265301a-63b1-4aec-9d47-273b49c178b4",
+        "EXPO_PUBLIC_AZURE_API_SCOPE": "api://8271e7f5-7bd9-4ece-bf03-b25ce3674d98/access_as_user",
+        "EXPO_PUBLIC_API_BASE_URL": "http://3.88.172.79"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

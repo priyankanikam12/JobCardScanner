@@ -1,3 +1,4 @@
+// web\src\pages\staff\LoginPage.tsx
 import { useState, type FormEvent } from 'react'
 import { useIsAuthenticated, useMsal } from '@azure/msal-react'
 import { Navigate, Link, useNavigate } from 'react-router-dom'

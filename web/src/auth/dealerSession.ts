@@ -1,3 +1,4 @@
+// web\src\auth\dealerSession.ts
 // "Dealer / Workshop Login" session storage - the local email+password sign-in path for
 // dealer-level staff who don't have an Azure AD account (see backend
 // Controllers/DealerAuthController.cs and Auth/AuthSchemes.DealerJwt). Kept as a small,

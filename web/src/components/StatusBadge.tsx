@@ -1,3 +1,4 @@
+// web\src\components\StatusBadge.tsx
 const COLOR_MAP: Record<string, string> = {
   Open: 'badge',
   InProgress: 'badge-warning',

@@ -1,3 +1,4 @@
+// web\src\components\StaffLayout.tsx
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useMsal } from '@azure/msal-react'

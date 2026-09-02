@@ -2,14 +2,14 @@ import { useEffect, useState } from 'react'
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { apiClient } from '../api/client'
-import { useAuth } from '../auth/AuthContext'
+import { useStaffAuth } from '../auth/StaffAuthContext'
 import type { DashboardKpis } from '../types'
 import type { RootStackParamList } from '../navigation/RootNavigator'
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Dashboard'>
 
 export function DashboardScreen({ navigation }: Props) {
-  const { profile } = useAuth()
+  const { profile } = useStaffAuth()
   const [kpis, setKpis] = useState<DashboardKpis | null>(null)
   const [refreshing, setRefreshing] = useState(false)
 

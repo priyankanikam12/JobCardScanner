@@ -1,8 +1,9 @@
 import { ActivityIndicator, Button, View } from 'react-native'
 import { NavigationContainer } from '@react-navigation/native'
 import { createNativeStackNavigator } from '@react-navigation/native-stack'
-import { useAuth } from '../auth/AuthContext'
+import { useStaffAuth } from '../auth/StaffAuthContext'
 import { LoginScreen } from '../screens/LoginScreen'
+import { ForceChangePasswordScreen } from '../screens/ForceChangePasswordScreen'
 import { DashboardScreen } from '../screens/DashboardScreen'
 import { JobCardsListScreen } from '../screens/JobCardsListScreen'
 import { JobCardDetailScreen } from '../screens/JobCardDetailScreen'
@@ -18,7 +19,9 @@ export type RootStackParamList = {
 const Stack = createNativeStackNavigator<RootStackParamList>()
 
 export function RootNavigator() {
-  const { profile, loading, signOut } = useAuth()
+  // isAuthenticated/mustChangePassword cover BOTH sign-in paths - Azure AD and the local
+  // Dealer/Workshop session - see StaffAuthContext's doc comment.
+  const { isAuthenticated, mustChangePassword, loading, signOut } = useStaffAuth()
 
   if (loading) {
     return (
@@ -28,10 +31,18 @@ export function RootNavigator() {
     )
   }
 
+  // Every dealer login created by the admin "Bulk import dealers from ERP" flow (or reset by an
+  // admin) starts on the same shared default password - force it to be replaced with something
+  // only the dealer knows before letting them anywhere else in the app, same as web's RequireStaff
+  // redirecting to /change-password. Azure AD staff never carry this flag.
+  const showForceChangePassword = isAuthenticated && mustChangePassword
+
   return (
     <NavigationContainer>
-      {!profile ? (
+      {!isAuthenticated ? (
         <LoginScreen />
+      ) : showForceChangePassword ? (
+        <ForceChangePasswordScreen />
       ) : (
         <Stack.Navigator screenOptions={{ headerRight: () => <Button title="Sign out" onPress={signOut} /> }}>
           <Stack.Screen name="Dashboard" component={DashboardScreen} options={{ title: 'JobCardScanner' }} />

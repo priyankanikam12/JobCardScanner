@@ -1,3 +1,4 @@
+// web\src\auth\msalConfig.ts
 import type { Configuration } from '@azure/msal-browser'
 import { PublicClientApplication } from '@azure/msal-browser'
 

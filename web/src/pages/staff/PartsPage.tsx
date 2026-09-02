@@ -1,3 +1,4 @@
+// web\src\pages\staff\PartsPage.tsx
 import { useEffect, useState } from 'react'
 import { staffApi } from '../../api/client'
 import type { BaplDmsPartStock, PartMaster } from '../../types'

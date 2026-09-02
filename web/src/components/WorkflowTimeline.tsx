@@ -1,3 +1,4 @@
+// web\src\components\WorkflowTimeline.tsx
 import type { WorkflowStage } from '../types'
 
 /** Minimal shape both surfaces that show timestamps against a stage already have:

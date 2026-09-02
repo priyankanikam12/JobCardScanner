@@ -1,3 +1,4 @@
+// web\src\pages\staff\BaplJobCardDetailPage.tsx
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { staffApi } from '../../api/client'

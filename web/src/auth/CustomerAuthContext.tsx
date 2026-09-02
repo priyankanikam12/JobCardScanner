@@ -1,3 +1,4 @@
+// web\src\auth\CustomerAuthContext.tsx
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
 
 interface CustomerSession {

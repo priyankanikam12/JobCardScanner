@@ -172,9 +172,20 @@ if (app.Environment.IsDevelopment())
 // https-domain deployment path (see deploy/DEPLOYMENT_GUIDE.md) keeps this on by default.
 // Set "DisableHttpsRedirection": true in appsettings.Production.json for a plain-IP deployment -
 // see deploy/DEPLOYMENT_GUIDE_PUBLIC_IP.md.
+//
+// Once a self-signed cert is added for the browser's sake (MSAL needs a secure context - see
+// main.tsx), this only redirects the /api/... surface's CALLERS THAT AREN'T the SPA away from
+// plain HTTP for non-API requests - it deliberately EXCLUDES /api/... itself. The Android/Expo
+// app talks straight to /api/... over plain HTTP and does its own PKCE via expo-crypto (a native
+// module, not the browser's window.crypto.subtle), so it has no secure-context requirement of its
+// own - and routing it through this redirect would just run it into the self-signed cert's
+// untrusted-CA wall, which Android enforces hard with no "proceed anyway" click-through the way a
+// browser has. See deploy/ANDROID_DEPLOYMENT.md.
 if (!builder.Configuration.GetValue<bool>("DisableHttpsRedirection"))
 {
-    app.UseHttpsRedirection();
+    app.UseWhen(
+        ctx => !ctx.Request.Path.StartsWithSegments("/api"),
+        branch => branch.UseHttpsRedirection());
 }
 app.UseCors("AppCors");
 

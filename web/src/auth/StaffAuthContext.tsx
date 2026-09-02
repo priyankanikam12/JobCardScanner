@@ -1,3 +1,4 @@
+// web\src\auth\StaffAuthContext.tsx
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { useIsAuthenticated, useMsal } from '@azure/msal-react'
 import { staffApi } from '../api/client'
