@@ -301,6 +301,15 @@ label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; c
 .field { margin-bottom: 14px; }
 .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
 
+/* Used by the "Suggest a part" / "Suggest labour" add-rows on the Job Card Detail page - .form-row's
+   equal-width grid columns left the Qty/Issue Type/Add Suggestion fields stretched out with a lot
+   of empty space around a tiny input/button. .suggest-row instead lets the search field grow and
+   keeps the rest sized to their content, so the whole row reads as one compact line. */
+.suggest-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px; }
+.suggest-row .field { margin-bottom: 0; }
+.suggest-row .field-grow { flex: 1 1 260px; min-width: 220px; }
+.suggest-row .field-compact { flex: 0 0 auto; }
+
 .center-screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); }
 .login-card { background: var(--surface); border-radius: 16px; padding: 40px; width: 380px; box-shadow: var(--shadow-lg); text-align: center; }
 

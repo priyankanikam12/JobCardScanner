@@ -29,13 +29,15 @@ public class BaplDmsController : ControllerBase
     private readonly JobCardScannerDbContext _db;
     private readonly ILogger<BaplDmsController> _logger;
     private readonly IConfiguration _config;
+    private readonly ICurrentUserService _currentUser;
 
-    public BaplDmsController(IBaplDmsService baplDms, JobCardScannerDbContext db, ILogger<BaplDmsController> logger, IConfiguration config)
+    public BaplDmsController(IBaplDmsService baplDms, JobCardScannerDbContext db, ILogger<BaplDmsController> logger, IConfiguration config, ICurrentUserService currentUser)
     {
         _baplDms = baplDms;
         _db = db;
         _logger = logger;
         _config = config;
+        _currentUser = currentUser;
     }
 
     /// <summary>Same shared default password as the bulk BAPL ERP import (AdminDealerImportController -
@@ -178,12 +180,53 @@ public class BaplDmsController : ControllerBase
         try
         {
             var hit = await _baplDms.LookupVehicleAsync(value, dealerCode, HttpContext.RequestAborted);
-            return hit is null ? NotFound(new { message = $"'{value}' was not found in BAPL DMS." }) : Ok(hit);
+            if (hit is null) return NotFound(new { message = $"'{value}' was not found in BAPL DMS." });
+
+            hit = await AttachOpenJobCardAsync(hit, dealerCode);
+            return Ok(hit);
         }
         catch (InvalidOperationException ex)
         {
             return StatusCode(502, new { message = ex.Message });
         }
+    }
+
+    /// <summary>Fills in BaplDmsVehicleRow.OpenJobCardNumber/Source/Status (see that record's doc
+    /// comment) so the Job Card Wizard can warn the moment a chassis with an already-open job card
+    /// is selected, instead of only at final submit (JobCardsController.Create's own duplicate
+    /// check, which this repeats). Checks JobCardScanner's own JobCards first (scoped to the calling
+    /// user's own dealer - a dealer-scoped user has no business knowing about another dealer's open
+    /// job cards), then falls back to BAPL DMS's own job card history via
+    /// GetOpenJobCardForChassisAsync (best-effort - a BAPL DMS hiccup here must never block the
+    /// lookup that already succeeded).</summary>
+    private async Task<BaplDmsVehicleRow> AttachOpenJobCardAsync(BaplDmsVehicleRow hit, string? dealerCode)
+    {
+        if (_currentUser.DealerId is Guid localDealerId)
+        {
+            var localOpenJobCardNumber = await _db.JobCards.AsNoTracking()
+                .Where(j => j.DealerId == localDealerId && j.Status != JobCardStatus.Closed)
+                .Where(j => j.Vehicle != null && j.Vehicle.Vin == hit.ChassisNo)
+                .Select(j => j.JobCardNumber)
+                .FirstOrDefaultAsync();
+            if (localOpenJobCardNumber is not null)
+                return hit with { OpenJobCardNumber = localOpenJobCardNumber, OpenJobCardSource = "local", OpenJobCardStatus = "Open" };
+        }
+
+        try
+        {
+            var dmsOpen = await _baplDms.GetOpenJobCardForChassisAsync(hit.ChassisNo, dealerCode ?? hit.DealerCode, HttpContext.RequestAborted);
+            if (dmsOpen is not null)
+            {
+                var dmsJobNumber = $"{dmsOpen.JobPrefix}{dmsOpen.JobNo}";
+                return hit with { OpenJobCardNumber = dmsJobNumber, OpenJobCardSource = "bapl-dms", OpenJobCardStatus = dmsOpen.JobStatus };
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Could not check BAPL DMS for an open job card on chassis {ChassisNo} - proceeding without this check", hit.ChassisNo);
+        }
+
+        return hit;
     }
 
     /// <summary>
@@ -193,13 +236,20 @@ public class BaplDmsController : ControllerBase
     /// single exact-match lookup). Picking a suggestion still goes through the existing
     /// vehicle-lookup endpoint above to fetch the full auto-fill payload. Empty array for a query
     /// under 2 characters (same convention as /dealers) rather than a full-table scan.
+    /// Was hardcoded to a TOP 20 (2026-09-03: raised to 100, and made overridable via ?take=) - a
+    /// dealer whose stock is all one item code/batch (e.g. 80 chassis all "P6DSVFMSPBH01xxxx",
+    /// confirmed against a real ChassisDetails count) shares almost the same prefix on every row, so
+    /// ORDER BY ChassisNo only ever surfaced the alphabetically-first 20 of them for a short/broad
+    /// query - anything past that looked "not found" even though it was sitting in the table,
+    /// because there was no way to see further down the list or ask for more. See
+    /// SearchVehiclesAsync's own doc comment on the new upper ceiling this respects.
     /// </summary>
     [HttpGet("vehicle-suggestions")]
-    public async Task<IActionResult> VehicleSuggestions([FromQuery] string q, [FromQuery] string? dealerCode)
+    public async Task<IActionResult> VehicleSuggestions([FromQuery] string q, [FromQuery] string? dealerCode, [FromQuery] int? take)
     {
         try
         {
-            var rows = await _baplDms.SearchVehiclesAsync(q, dealerCode, 20, HttpContext.RequestAborted);
+            var rows = await _baplDms.SearchVehiclesAsync(q, dealerCode, take ?? 100, HttpContext.RequestAborted);
             return Ok(rows);
         }
         catch (InvalidOperationException ex)
@@ -344,18 +394,21 @@ public class BaplDmsController : ControllerBase
     }
 
     /// <summary>
-    /// GET /api/bapl-dms/labour?jobTypeId=&amp;serviceHeadId=&amp;serviceTypeId=&amp;q=... - backs the
-    /// Job Card Detail page's "Labour Suggestion" panel. All params optional - jobTypeId/
+    /// GET /api/bapl-dms/labour?jobTypeId=&amp;serviceHeadId=&amp;serviceTypeId=&amp;dealerCode=&amp;q=... -
+    /// backs the Job Card Detail page's "Labour Suggestion" panel. All params optional - jobTypeId/
     /// serviceHeadId/serviceTypeId default the list to the job card's own already-selected cascade
-    /// (see JobCardDetail.baplJobTypeId etc on the frontend), q is a free-text search across
-    /// LabourCode/LabourDescription combined with (not replacing) any cascade filter - see
-    /// BaplDmsLabourRow's doc comment for why both matter (many LabourMaster rows have no cascade
-    /// mapping yet).
+    /// (see JobCardDetail.baplJobTypeId etc on the frontend), dealerCode (2026-09-03, see
+    /// JobCardDetail.baplDealerCode - JobCardsController's GetById now returns the job card's own
+    /// resolved BAPL DMS dealer code alongside Dealer) scopes the PartWiseLabourMaster union (skipped
+    /// entirely without one), q is a free-text search across LabourCode/LabourDescription (and, for
+    /// PartWiseLabourMaster rows, PartCode/PartDescription too) combined with (not replacing) any
+    /// cascade filter - see BaplDmsLabourRow's doc comment for why both matter (many LabourMaster
+    /// rows have no cascade mapping yet).
     /// </summary>
     [HttpGet("labour")]
-    public async Task<IActionResult> Labour([FromQuery] int? jobTypeId, [FromQuery] int? serviceHeadId, [FromQuery] int? serviceTypeId, [FromQuery] string? q)
+    public async Task<IActionResult> Labour([FromQuery] int? jobTypeId, [FromQuery] int? serviceHeadId, [FromQuery] int? serviceTypeId, [FromQuery] string? dealerCode, [FromQuery] string? q)
     {
-        try { return Ok(await _baplDms.GetLabourAsync(jobTypeId, serviceHeadId, serviceTypeId, q, HttpContext.RequestAborted)); }
+        try { return Ok(await _baplDms.GetLabourAsync(jobTypeId, serviceHeadId, serviceTypeId, dealerCode, q, HttpContext.RequestAborted)); }
         catch (InvalidOperationException ex) { return StatusCode(502, new { message = ex.Message }); }
     }
 

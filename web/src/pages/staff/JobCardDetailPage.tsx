@@ -2,14 +2,68 @@ import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
+import { PasswordInput } from '../../components/PasswordInput'
 import { StatusBadge } from '../../components/StatusBadge'
 import { WorkflowTimeline, type WorkflowTimelineHistoryEntry } from '../../components/WorkflowTimeline'
-import type { BaplDmsJobCardHistory, BaplDmsLabourRow, BaplDmsPartStock, JobCardDetail, WorkflowStage } from '../../types'
+import type { BaplDmsJobCardHistory, BaplDmsLabourRow, BaplDmsPartStock, JobCardDetail, StaffRole, WorkflowStage } from '../../types'
+import { buildEstimatePrintHtml, buildJobCardPrintHtml } from '../../lib/jobCardPrintHtml'
 
 // Photo URLs come back from the API as a relative path (e.g. "/uploads/jobcard-photos/.../x.jpg" -
 // see JobCardsController.UploadPhoto), same origin as the API itself, not the frontend dev server.
 const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL
 const photoSrc = (url: string) => (url.startsWith('http') ? url : `${API_BASE_URL}${url}`)
+
+/** "Set/reset customer portal password" - the dealer/admin side of the new customer password
+ * login (POST /api/customers/{id}/admin-reset-password), which runs alongside the customer's
+ * existing OTP-based portal login rather than replacing it (see CustomerPortalController.Login's
+ * doc comment). Only visible to WorkshopManager and up, matching the backend policy exactly. This
+ * SETS the password to whatever the admin/dealer types here (never reveals or "checks" the
+ * existing one - only a PBKDF2 hash is ever stored, same as staff Users), so share it with the
+ * customer directly afterwards. */
+function CustomerPasswordResetButton({ customerId, customerName }: { customerId: string; customerName: string }) {
+  const [open, setOpen] = useState(false)
+  const [newPassword, setNewPassword] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+
+  const save = async () => {
+    setSaving(true)
+    setMsg(null)
+    try {
+      await staffApi.post(`/api/customers/${customerId}/admin-reset-password`, { newPassword })
+      setMsg(`Password set for ${customerName}. Share it with them directly.`)
+      setNewPassword('')
+    } catch (err: unknown) {
+      setMsg((err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not set the password.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!open) {
+    return (
+      <button type="button" className="btn btn-sm" style={{ marginTop: 6 }} onClick={() => setOpen(true)}>
+        Set/reset customer portal password
+      </button>
+    )
+  }
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div className="form-row" style={{ alignItems: 'flex-end' }}>
+        <div className="field" style={{ marginBottom: 0 }}>
+          <label>New password for {customerName}</label>
+          <PasswordInput value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="At least 8 characters" minLength={8} />
+        </div>
+        <button type="button" className="btn btn-sm btn-primary" disabled={newPassword.length < 8 || saving} onClick={save}>
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        <button type="button" className="btn btn-sm" onClick={() => { setOpen(false); setMsg(null) }}>Cancel</button>
+      </div>
+      {msg && <p className="muted" style={{ marginTop: 6 }}>{msg}</p>}
+    </div>
+  )
+}
 
 /** Of the app's 15 workflow stages (see DbSeeder's default template), these 3 are hidden from both
  * the read-only Workflow Timeline below and the Update Workflow Stage dropdown further down - NOT
@@ -78,6 +132,201 @@ function resolveTimelineCurrentStageId(stages: WorkflowStage[], currentStage?: W
   return visible.sort((a, b) => b.seq - a.seq)[0]?.id
 }
 
+/** Raw chronological stage-history log ("grid") shown below the visual Workflow Timeline stepper -
+ * unlike the stepper (one row per DEFINED stage, showing only the latest visit), this shows every
+ * row that's actually happened, in order, including remarks and who made each change. Worth having
+ * now that most stage changes are auto-triggered (see backend WorkflowStageAutomation) and carry a
+ * system-generated remark like "Auto-advanced: part suggested." that the stepper alone doesn't
+ * surface - this is the audit trail of exactly what moved the job card forward and when. */
+function WorkflowHistoryGrid({ jc }: { jc: JobCardDetail }) {
+  const rows = [...jc.stageHistory].sort((a, b) => new Date(a.enteredAt).getTime() - new Date(b.enteredAt).getTime())
+  if (rows.length === 0) return null
+  const fmt = (iso?: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—')
+  return (
+    <table style={{ marginTop: 16 }}>
+      <thead>
+        <tr><th>Stage</th><th>Entered</th><th>Exited</th><th>Remarks</th><th>By</th></tr>
+      </thead>
+      <tbody>
+        {rows.map((h) => (
+          <tr key={h.id}>
+            <td>{h.stage?.label ?? '—'}</td>
+            <td>{fmt(h.enteredAt)}</td>
+            <td>{fmt(h.exitedAt)}</td>
+            <td>{h.notes ?? '—'}</td>
+            <td>{h.changedBy?.name ?? (h.notes?.startsWith('Auto-advanced') ? 'System' : '—')}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+/** "Print" menu (2026-09-03) - replaces the separate standalone "Invoice" card that used to sit
+ * further down the page (Download Invoice from DMS - see git history / InvoiceCard) with a single
+ * dropdown next to the status badge, 3 options per explicit request:
+ *   1. Estimate    - customer/dealer/vehicle identity + the Estimates Amount tables only (Part
+ *                    Details, Labour Details, Grand Total) - see buildEstimatePrintHtml.
+ *   2. JobCard print - the same BAPL DMS "Job Card + Gate Pass" paper layout the wizard's own
+ *                    pre-creation Print button uses (buildJobCardPrintHtml, now shared - see
+ *                    lib/jobCardPrintHtml.ts), but filled from this job card's real saved data
+ *                    (and its real Job No/Invoice No once known, instead of the wizard's "-"
+ *                    placeholders).
+ *   3. Invoice     - BAPL DMS's own repair bill PDF (GET /api/jobcards/{id}/invoice-pdf) - the
+ *                    exact same source InvoiceCard used to download, opened in a new tab instead
+ *                    of forced straight to disk so it can be reviewed/printed from the browser's
+ *                    own PDF viewer. Same role gate InvoiceCard had (Cashier/DealerAdmin/
+ *                    CorporateAdmin/SystemAdmin) - not everyone should be pulling repair bills.
+ * Notices/errors from the Invoice option are surfaced through the same `setMsg` line the rest of
+ * this page already uses for action feedback, rather than a second, separate message area. */
+function PrintMenu({ jc, hasRole, setMsg }: { jc: JobCardDetail; hasRole: (...roles: StaffRole[]) => boolean; setMsg: (m: string | null) => void }) {
+  const [open, setOpen] = useState(false)
+  const [invoiceBusy, setInvoiceBusy] = useState(false)
+  // 2026-09-03 fix ("clicking Print button, no options shown"): this used to close the menu via
+  // onBlur on the toggle button itself (setTimeout(() => setOpen(false), 150)), copied from this
+  // page's search-box dropdowns (PartSuggestionCard/LabourSuggestionCard) - but those are text
+  // INPUTS, which reliably hold focus while the user interacts with them. A plain <button> doesn't
+  // reliably take focus on click in every browser (notably Safari, which by default only focuses a
+  // button via keyboard navigation, not a mouse click) - without focus, onBlur never fires to have
+  // opened anything to begin with in some environments, and in others the focus/blur timing raced
+  // against the click that was meant to open it. A click-outside listener has none of that
+  // timing/focus dependency - it opens on click and closes only when a real click lands outside
+  // this container, regardless of how the browser handles button focus.
+  const containerRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    return () => document.removeEventListener('mousedown', onDocMouseDown)
+  }, [open])
+
+  const printWindow = (html: string, popupBlockedMsg: string) => {
+    const win = window.open('', '_blank', 'width=900,height=650')
+    if (!win) { setMsg(popupBlockedMsg); return }
+    win.document.write(html)
+    win.document.close()
+  }
+
+  const printEstimate = () => {
+    setOpen(false)
+    const money = (n: number) => n
+    const partRows = jc.partSuggestions.map((p, i) => {
+      const mrp = p.mrp ?? 0
+      const qty = p.quantity ?? 1
+      return { sr: i + 1, code: p.itemCode, description: p.description ?? '-', hsn: p.hsnCode ?? '-', mrp: money(mrp), qty, amount: mrp * qty }
+    })
+    const labourRows = jc.labourSuggestions.map((l, i) => {
+      const rate = l.rateAtSuggestion ?? 0
+      const qty = l.quantity ?? 1
+      return { sr: i + 1, code: l.labourCode, description: l.labourDescription ?? '-', hsn: l.hsnCode ?? '-', rate: money(rate), qty, amount: rate * qty }
+    })
+    const partsTotal = partRows.reduce((sum, r) => sum + r.amount, 0)
+    const labourTotal = labourRows.reduce((sum, r) => sum + r.amount, 0)
+    printWindow(buildEstimatePrintHtml({
+      dealerName: jc.dealer?.name,
+      dealerCode: jc.dealer?.code,
+      jobCardNumber: jc.jobCardNumber,
+      printDate: jc.createdAt ? new Date(jc.createdAt).toLocaleDateString('en-GB') : '-',
+      customerName: jc.customer?.name,
+      customerMobile: jc.customer?.mobile,
+      address: jc.customer?.address,
+      city: jc.customer?.city,
+      vehicleModel: jc.vehicle?.model,
+      vehicleVariant: jc.vehicle?.variant,
+      registerNo: jc.vehicle?.regNo,
+      chassisNo: jc.vehicle?.vin,
+      odometer: jc.odometerAtCheckIn,
+      partRows,
+      labourRows,
+      partsTotal,
+      labourTotal,
+      grandTotal: partsTotal + labourTotal,
+    }), 'Please allow popups to print the estimate.')
+  }
+
+  const printJobCard = () => {
+    setOpen(false)
+    printWindow(buildJobCardPrintHtml({
+      dealerName: jc.dealer?.name,
+      dealerCode: jc.dealer?.code,
+      location: jc.baplServiceLocation,
+      jobinDate: jc.createdAt ?? new Date().toISOString(),
+      jobtype: jc.baplJobType,
+      jobsource: jc.baplJobSourceName,
+      serviceHead: jc.baplServiceHeadName,
+      serviceType: jc.baplServiceTypeName,
+      estdelDate: jc.expectedDeliveryAt,
+      vehiclekms: jc.odometerAtCheckIn,
+      manualjobNo: jc.baplManualJobNo,
+      supervisor: jc.baplSupervisorName,
+      technician: jc.baplTechnicianName,
+      customerName: jc.customer?.name,
+      customerMobile: jc.customer?.mobile,
+      address: jc.customer?.address,
+      city: jc.customer?.city,
+      chassisNo: jc.vehicle?.vin,
+      batteryNo: jc.vehicle?.batteryNo,
+      chargerNo: jc.vehicle?.chargerNo,
+      controllerNo: jc.vehicle?.controllerNo,
+      registerNo: jc.vehicle?.regNo,
+      modelName: jc.vehicle?.model,
+      colour: jc.vehicle?.color,
+      insuranceExpiry: jc.vehicle?.insuranceExpiry,
+      complaints: jc.complaints.map((c) => c.description),
+      jobNo: jc.baplJobNo != null ? String(jc.baplJobNo) : jc.jobCardNumber,
+      invoiceNo: jc.invoice?.invoiceNumber,
+    }), 'Please allow popups to print the job card.')
+  }
+
+  const printInvoice = async () => {
+    setOpen(false)
+    setInvoiceBusy(true)
+    setMsg(null)
+    try {
+      const { data } = await staffApi.get(`/api/jobcards/${jc.id}/invoice-pdf`, { responseType: 'blob' })
+      const url = URL.createObjectURL(data as Blob)
+      const win = window.open(url, '_blank')
+      if (!win) setMsg('Please allow popups to view/print the invoice.')
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } })?.response?.status
+      if (status === 404) setMsg('No repair bill saved in BAPL DMS for this job yet.')
+      else setMsg('Could not open the invoice from BAPL DMS. Please try again.')
+    } finally {
+      setInvoiceBusy(false)
+    }
+  }
+
+  return (
+    <div ref={containerRef} style={{ position: 'relative' }}>
+      <button
+        type="button"
+        className="btn"
+        style={{ border: '1px solid var(--border)' }}
+        onClick={() => setOpen((o) => !o)}
+        disabled={invoiceBusy}
+      >
+        🖨️ {invoiceBusy ? 'Opening…' : 'Print'} ▾
+      </button>
+      {open && (
+        <ul style={{
+          position: 'absolute', zIndex: 10, top: '100%', right: 0, marginTop: 2, minWidth: 160,
+          background: 'var(--card-bg, #fff)', border: '1px solid var(--border)', borderRadius: 8,
+          listStyle: 'none', padding: 4, boxShadow: '0 6px 18px rgba(0,0,0,.12)',
+        }}>
+          <li><button type="button" className="btn btn-sm" style={{ width: '100%', textAlign: 'left', border: 'none', background: 'transparent' }} onMouseDown={(e) => { e.preventDefault(); printEstimate() }}>Estimate</button></li>
+          <li><button type="button" className="btn btn-sm" style={{ width: '100%', textAlign: 'left', border: 'none', background: 'transparent' }} onMouseDown={(e) => { e.preventDefault(); printJobCard() }}>JobCard print</button></li>
+          {hasRole('Cashier', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
+            <li><button type="button" className="btn btn-sm" style={{ width: '100%', textAlign: 'left', border: 'none', background: 'transparent' }} onMouseDown={(e) => { e.preventDefault(); printInvoice() }}>Invoice</button></li>
+          )}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 export function JobCardDetailPage() {
   const { id } = useParams<{ id: string }>()
   const { profile, hasRole } = useStaffAuth()
@@ -123,7 +372,12 @@ export function JobCardDetailPage() {
       await load()
       if (successMsg) setMsg(successMsg)
     } catch (err: unknown) {
-      setMsg((err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Action failed.')
+      // Surface both the friendly message and the raw exception detail when the backend sends one
+      // (see JobCardsController.AddPartSuggestion/AddLabourSuggestion's catch blocks) - this is
+      // what actually tells apart "migration wasn't run against this database" from a genuinely
+      // new bug, without needing to open DevTools' Network tab.
+      const data = (err as { response?: { data?: { message?: string; detail?: string } } })?.response?.data
+      setMsg(data ? [data.message, data.detail].filter(Boolean).join(' — ') || 'Action failed.' : 'Action failed.')
     } finally {
       setBusy(false)
     }
@@ -133,7 +387,10 @@ export function JobCardDetailPage() {
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h2 style={{ margin: 0 }}>{jc.jobCardNumber}</h2>
-        <StatusBadge status={jc.status} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <PrintMenu jc={jc} hasRole={hasRole} setMsg={setMsg} />
+          <StatusBadge status={jc.status} />
+        </div>
       </div>
       {msg && <p className="muted">{msg}</p>}
 
@@ -143,6 +400,9 @@ export function JobCardDetailPage() {
           <p><strong>{jc.customer?.name}</strong><br />{jc.customer?.mobile}</p>
           <p>{jc.vehicle?.model} {jc.vehicle?.variant}<br />Reg: {jc.vehicle?.regNo} | Odometer: {jc.odometerAtCheckIn} km</p>
           <p className="muted">Tracking link: /track/{jc.trackingToken}</p>
+          {jc.customer && hasRole('WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
+            <CustomerPasswordResetButton customerId={jc.customer.id} customerName={jc.customer.name} />
+          )}
           {(jc.baplJobType || jc.baplServiceLocation || jc.baplSupervisorName || jc.baplTechnicianName || jc.baplManualJobNo) && (
             <p className="muted" style={{ marginTop: 8 }}>
               <span style={{ background: '#1c64f2', color: '#fff', fontSize: 11, fontWeight: 600, padding: '1px 6px', borderRadius: 999, marginRight: 6 }}>
@@ -185,6 +445,7 @@ export function JobCardDetailPage() {
             currentStageId={resolveTimelineCurrentStageId(stages, jc.currentStage)}
             history={buildTimelineHistory(jc)}
           />
+          <WorkflowHistoryGrid jc={jc} />
         </div>
       </div>
 
@@ -203,10 +464,13 @@ export function JobCardDetailPage() {
       <PartSuggestionCard jc={jc} run={run} />
       <LabourSuggestionCard jc={jc} run={run} />
       <EstimatesCard jc={jc} run={run} />
-      {hasRole('Cashier', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && <InvoiceCard jc={jc} />}
       {/* Item 13: BAPL DMS Service History moves to AFTER Invoice (was the 2nd card, right after
          Update Workflow Stage). */}
       <BaplServiceHistoryCard chassisNo={jc.vehicle?.vin} dealerCode={jc.dealer?.code} />
+      {/* 2026-09-03: standalone Invoice card, back below BAPL DMS Service History per explicit
+         request - the Print menu's own "Invoice" option (next to the status badge above) stays too,
+         so both paths work; this one is the quick one-click download without opening the menu. */}
+      {hasRole('Cashier', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && <InvoiceCard jc={jc} />}
       <ClosureCard jc={jc} run={run} />
     </div>
   )
@@ -399,8 +663,16 @@ function PhotosCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<un
 /** The interactive counterpart to the read-only WorkflowTimeline above: moves the job card to a
  * new stage (POST /stage, ServiceAdvisor+) and, for WorkshopManager+, also assigns a technician
  * and expected-completion date (PUT /api/jobcards/{id}) in the same action - mirrors the combined
- * "Update Workflow Stage" panel this was modelled on. Kept as two conditionally-fired requests
- * rather than one endpoint since the backend already splits this exact way by role. */
+ * "Update Workflow Stage" panel this was modelled on.
+ *
+ * No longer has a manual stage picker (per explicit request: "dont want manual whole... stage
+ * automatically update") - the job card's stage now advances itself as real work happens (see
+ * backend WorkflowStageAutomation): adding a part/labour suggestion, drafting an estimate, or
+ * starting a technician worklog each auto-advance to the matching stage the first time they
+ * happen. Only two of the 8 stages have no such unambiguous trigger anywhere else in the app -
+ * "Repair Completed" and "Ready for Delivery" - so those stay one explicit button each below,
+ * never a dropdown. Assign Technician / Expected Completion / Remarks stay manual fields, exactly
+ * as asked. */
 function UpdateWorkflowStageCard({
   jc, stages, busy, run, canAssignTechnician,
 }: {
@@ -410,16 +682,6 @@ function UpdateWorkflowStageCard({
   run: (fn: () => Promise<unknown>, successMsg?: string) => void
   canAssignTechnician: boolean
 }) {
-  // Item 12: defaults to the stage right after the last-completed one, instead of starting blank -
-  // the advisor can still pick a different stage, but the common "move to the next stage" action
-  // no longer needs an extra click just to open the dropdown and find it.
-  const nextStageAfterCurrent = (): string => {
-    const visible = stages.filter((s) => !HIDDEN_WORKFLOW_STAGE_KEYS.has(s.stageKey)).sort((a, b) => a.seq - b.seq)
-    if (visible.length === 0) return ''
-    const currentSeq = jc.currentStage && !HIDDEN_WORKFLOW_STAGE_KEYS.has(jc.currentStage.stageKey) ? jc.currentStage.seq : -1
-    return (visible.find((s) => s.seq > currentSeq) ?? visible[visible.length - 1]).id
-  }
-  const [stageId, setStageId] = useState(nextStageAfterCurrent)
   // Free-text technician name (see JobCard.AssignedTechnicianName) rather than a dropdown bound to
   // a User id - there's no confirmed technician catalog to pick from, so this is typed in directly
   // and sent as assignedTechnicianName on the same PUT /api/jobcards/{id} call.
@@ -428,55 +690,70 @@ function UpdateWorkflowStageCard({
   const [notes, setNotes] = useState('')
 
   useEffect(() => {
-    setStageId(nextStageAfterCurrent())
     setTechnicianName(jc.assignedTechnicianName ?? '')
     setExpectedDeliveryAt(jc.expectedDeliveryAt ? jc.expectedDeliveryAt.slice(0, 16) : '')
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jc.id, jc.currentStage?.id, jc.assignedTechnicianName, jc.expectedDeliveryAt, stages])
+  }, [jc.id, jc.assignedTechnicianName, jc.expectedDeliveryAt])
 
-  const submit = async () => {
-    const tasks: Promise<unknown>[] = []
-    if (stageId && stageId !== jc.currentStage?.id) {
-      tasks.push(staffApi.post(`/api/jobcards/${jc.id}/stage`, { stageId, notes: notes || null }))
-    }
-    if (canAssignTechnician) {
-      tasks.push(staffApi.put(`/api/jobcards/${jc.id}`, {
-        assignedTechnicianName: technicianName || null,
-        expectedDeliveryAt: expectedDeliveryAt || null,
-      }))
-    }
-    if (tasks.length > 0) await Promise.all(tasks)
+  const saveDetails = () => staffApi.put(`/api/jobcards/${jc.id}`, {
+    assignedTechnicianName: technicianName || null,
+    expectedDeliveryAt: expectedDeliveryAt || null,
+  })
+
+  const currentSeq = jc.currentStage?.seq ?? -1
+  const repairCompletedStage = stages.find((s) => s.stageKey === 'repair_completed')
+  const readyForDeliveryStage = stages.find((s) => s.stageKey === 'ready_for_delivery')
+  const markStage = (stage?: WorkflowStage) => {
+    if (!stage) return Promise.resolve()
+    return staffApi.post(`/api/jobcards/${jc.id}/stage`, { stageId: stage.id, notes: notes || null })
   }
 
   return (
     <div className="card">
       <h3>Update Workflow Stage</h3>
-      <div className="form-row">
-        <div className="field">
-          <label>Stage</label>
-          <select disabled={busy} value={stageId} onChange={(e) => setStageId(e.target.value)}>
-            <option value="" disabled>Select new stage…</option>
-            {stages.filter((s) => !HIDDEN_WORKFLOW_STAGE_KEYS.has(s.stageKey)).map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
-          </select>
+      <p className="muted" style={{ marginTop: -6 }}>
+        The stage above now advances automatically as work happens - parts/labour suggested, an
+        estimate drafted, a technician's first worklog started, an invoice generated. Use the two
+        buttons below only for the steps with no automatic trigger.
+      </p>
+      {canAssignTechnician && (
+        <div className="form-row" style={{ alignItems: 'flex-end' }}>
+          <div className="field">
+            <label>Assign Technician</label>
+            <input disabled={busy} value={technicianName} onChange={(e) => setTechnicianName(e.target.value)} placeholder="Technician name" />
+          </div>
+          <div className="field">
+            <label>Expected Completion</label>
+            <input type="datetime-local" disabled={busy} value={expectedDeliveryAt} onChange={(e) => setExpectedDeliveryAt(e.target.value)} />
+          </div>
+          <div className="field">
+            <button className="btn btn-sm" disabled={busy} onClick={() => run(saveDetails, 'Technician & completion date updated.')}>Save</button>
+          </div>
         </div>
-        {canAssignTechnician && (
-          <>
-            <div className="field">
-              <label>Assign Technician</label>
-              <input disabled={busy} value={technicianName} onChange={(e) => setTechnicianName(e.target.value)} placeholder="Technician name" />
-            </div>
-            <div className="field">
-              <label>Expected Completion</label>
-              <input type="datetime-local" disabled={busy} value={expectedDeliveryAt} onChange={(e) => setExpectedDeliveryAt(e.target.value)} />
-            </div>
-          </>
-        )}
-      </div>
+      )}
       <div className="field">
-        <label>Remarks</label>
+        <label>Remarks (attached to the buttons below)</label>
         <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Stage remarks…" />
       </div>
-      <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => run(submit, 'Workflow stage updated.')}>Update Stage</button>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        {repairCompletedStage && (
+          <button
+            className="btn btn-sm btn-primary"
+            disabled={busy || currentSeq >= repairCompletedStage.seq}
+            onClick={() => run(() => markStage(repairCompletedStage), 'Marked Repair Completed.')}
+          >
+            Mark Repair Completed
+          </button>
+        )}
+        {readyForDeliveryStage && (
+          <button
+            className="btn btn-sm btn-primary"
+            disabled={busy || currentSeq >= readyForDeliveryStage.seq}
+            onClick={() => run(() => markStage(readyForDeliveryStage), 'Marked Ready for Delivery.')}
+          >
+            Mark Ready for Delivery
+          </button>
+        )}
+      </div>
     </div>
   )
 }
@@ -729,9 +1006,10 @@ function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Pr
       {!jc.baplServiceLocationCode && <p className="muted">No BAPL DMS service location on this job card - part list unavailable.</p>}
       {/* Item-code/description, QTY, Issue Type and the Add Suggestion button all in one row now,
          matching Suggest labour's layout below - Add sits at the end of the row instead of on its
-         own line underneath. */}
-      <div className="form-row" style={{ alignItems: 'flex-end' }}>
-        <div className="field" style={{ position: 'relative' }}>
+         own line underneath. .suggest-row (not .form-row) so the search field grows and Qty/Issue
+         Type/Add stay sized to their content instead of being stretched into equal-width columns. */}
+      <div className="suggest-row">
+        <div className="field field-grow" style={{ position: 'relative' }}>
           <label>Item Code / Description</label>
           <input
             value={search}
@@ -778,18 +1056,18 @@ function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Pr
             )
           )}
         </div>
-        <div className="field">
+        <div className="field field-compact">
           <label>QTY</label>
           <input type="number" min={1} value={qty} onChange={(e) => setQty(Number(e.target.value))} style={{ width: '4rem' }} />
         </div>
-        <div className="field">
+        <div className="field field-compact">
           <label>Issue Type (Status)</label>
           <select value={status} onChange={(e) => setStatus(e.target.value as 'Paid' | 'U/W')}>
             <option value="Paid">Paid</option>
             <option value="U/W">U/W</option>
           </select>
         </div>
-        <div className="field">
+        <div className="field field-compact">
           <button className="btn btn-sm btn-primary" disabled={!itemCode} onClick={() => run(addSuggestion, 'Part suggestion added.')}>Add Suggestion</button>
         </div>
       </div>
@@ -816,12 +1094,20 @@ const LABOUR_ISSUE_TYPES = ['Paid', 'U/W'] as const
 function LabourSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => void }) {
   const [rows, setRows] = useState<BaplDmsLabourRow[]>([])
   const [q, setQ] = useState('')
+  // Type-ahead dropdown state, mirroring PartSuggestionCard's search/pickPart pattern above -
+  // "search, see a list appear below, pick one, it locks" instead of the old plain <select> (which
+  // needed an extra click to open and, with a search box that looked inert above it, read as
+  // "typing 'P' then Enter does nothing").
+  const [showSuggestions, setShowSuggestions] = useState(false)
   // Tracks the selected LabourMaster row by its own unique int id, NOT by LabourCode - real
   // LabourMaster data has the same LabourCode repeated across several rows for different
   // CityTier/oemmodelname scoping (e.g. "SF0M001" appears 4 times), so keying/looking up by
   // LabourCode both broke React's key uniqueness and silently resolved to the wrong row's
   // rate/HSN/GST (always the first match) regardless of which option was actually picked.
   const [selectedId, setSelectedId] = useState('')
+  // Holds the actually-picked row's own data, set once at pick time - see pickLabour below for why
+  // this can no longer be derived as `rows.find(...)` (2026-09-03 fix).
+  const [selected, setSelected] = useState<BaplDmsLabourRow | null>(null)
   const [qty, setQty] = useState<number>(1)
   const [issueType, setIssueType] = useState('')
   const [editing, setEditing] = useState<{ id: string; qty: number; issueType: string } | null>(null)
@@ -831,13 +1117,39 @@ function LabourSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => 
     if (jc.baplJobTypeId) params.jobTypeId = jc.baplJobTypeId
     if (jc.baplServiceHeadId) params.serviceHeadId = jc.baplServiceHeadId
     if (jc.baplServiceTypeId) params.serviceTypeId = jc.baplServiceTypeId
+    // 2026-09-03: scopes the PartWiseLabourMaster union (see GetLabourAsync's doc comment) to this
+    // job card's own dealer - without it PartWiseLabourMaster rows are skipped server-side
+    // entirely, so this list would silently stay LabourMaster-only.
+    if (jc.baplDealerCode) params.dealerCode = jc.baplDealerCode
     if (q.trim()) params.q = q.trim()
-    staffApi.get<BaplDmsLabourRow[]>('/api/bapl-dms/labour', { params })
-      .then(({ data }) => setRows(data))
-      .catch(() => setRows([]))
-  }, [jc.baplJobTypeId, jc.baplServiceHeadId, jc.baplServiceTypeId, q])
+    // Debounced (300ms) same as every other search-as-you-type box in this app - was firing a
+    // request on every single keystroke before.
+    const handle = setTimeout(() => {
+      staffApi.get<BaplDmsLabourRow[]>('/api/bapl-dms/labour', { params })
+        .then(({ data }) => setRows(data))
+        .catch(() => setRows([]))
+    }, 300)
+    return () => clearTimeout(handle)
+  }, [jc.baplJobTypeId, jc.baplServiceHeadId, jc.baplServiceTypeId, jc.baplDealerCode, q])
 
-  const selected = rows.find((r) => String(r.id) === selectedId)
+  // 2026-09-03 fix ("Add Suggestion" silently doing nothing under Labour Suggestion): this used to
+  // be `rows.find((r) => String(r.id) === selectedId)`. pickLabour below sets `q` to the picked
+  // row's own "Code - Description" text so the input shows what was chosen - but `q` is also this
+  // effect's search trigger, so that same assignment re-fires the debounced search a moment later,
+  // searching BAPL DMS for the literal string "SF0M001 - Some Description". That essentially never
+  // matches a real LabourCode/Description on its own, so `rows` comes back empty and `selected`
+  // (when derived from `rows`) would go right back to undefined - even though selectedId (and so
+  // the enabled Add Suggestion button) still looked picked. Clicking Add Suggestion then hit
+  // `if (!selected) return` and silently did nothing: no request, no error, nothing added to the
+  // grid. Storing the picked row directly (see pickLabour) instead of re-deriving it from `rows`
+  // means a later, unrelated re-search can no longer un-pick it.
+
+  const pickLabour = (r: BaplDmsLabourRow) => {
+    setSelectedId(String(r.id))
+    setSelected(r)
+    setQ(`${r.labourCode}${r.labourDescription ? ' - ' + r.labourDescription : ''}`)
+    setShowSuggestions(false)
+  }
 
   const addSuggestion = async () => {
     if (!selected) return
@@ -853,6 +1165,8 @@ function LabourSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => 
       issueType: issueType.trim() || null,
     })
     setSelectedId('')
+    setSelected(null)
+    setQ('')
     setQty(1)
     setIssueType('')
   }
@@ -924,53 +1238,93 @@ function LabourSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => 
       </table>
 
       <h4>Suggest labour (from BAPL DMS LabourMaster)</h4>
-      {/* Item 17: search, Labour Code, Qty, Issue Type and the Add Suggestion button all in one
-         row now - Add sits immediately after Issue Type instead of on its own line below. */}
-      <div className="form-row" style={{ alignItems: 'flex-end' }}>
-        <div className="field">
-          <label>Search (1 word)</label>
-          <input type="text" value={q} onChange={(e) => setQ(e.target.value)} placeholder="e.g. brake" />
-        </div>
-        <div className="field">
+      {/* Item 17: Labour Code, Qty, Issue Type and the Add Suggestion button all in one row now -
+         no separate "Search" field/label any more, same as Item Code / Description above: the
+         Labour Code field itself IS the search box (typing filters the dropdown below it), matching
+         PartSuggestionCard's pattern instead of presenting search as a distinct extra step.
+         .suggest-row (not .form-row) so this field grows and Qty/Issue Type/Add stay sized to their
+         content instead of being stretched into equal-width columns. */}
+      <div className="suggest-row">
+        <div className="field field-grow" style={{ position: 'relative' }}>
           <label>Labour Code</label>
-          <select value={selectedId} onChange={(e) => setSelectedId(e.target.value)}>
-            <option value="">Select labour…</option>
-            {rows.map((r) => (
-              <option key={r.id} value={String(r.id)}>
-                {r.labourCode} - {r.labourDescription ?? 'No description'} (₹{r.labourRate ?? '-'})
-              </option>
-            ))}
-          </select>
+          <input
+            type="text"
+            value={q}
+            placeholder="Search by labour code or description…"
+            onChange={(e) => { setQ(e.target.value); setSelectedId(''); setSelected(null); setShowSuggestions(true) }}
+            onFocus={() => setShowSuggestions(true)}
+            onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+            autoComplete="off"
+          />
+          {showSuggestions && q.trim().length > 0 && (
+            rows.length > 0 ? (
+              <ul style={{
+                position: 'absolute', zIndex: 10, top: '100%', left: 0, right: 0, marginTop: 2,
+                background: 'var(--card-bg, #fff)', border: '1px solid var(--border)', borderRadius: 8,
+                maxHeight: 220, overflowY: 'auto', listStyle: 'none', padding: 4, boxShadow: '0 6px 18px rgba(0,0,0,.12)',
+              }}>
+                {rows.map((r) => (
+                  <li key={r.id}>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      style={{ width: '100%', textAlign: 'left', border: 'none', background: 'transparent', padding: '6px 8px' }}
+                      onMouseDown={(e) => { e.preventDefault(); pickLabour(r) }}
+                    >
+                      <strong>{r.labourCode}</strong>{r.labourDescription ? ` — ${r.labourDescription}` : ''} <span className="muted">(₹{r.labourRate ?? '-'})</span>
+                      {/* 2026-09-03: PartWiseLabourMaster rows are tied to a specific part - shown
+                         here so it's clear this rate applies to that part, not labour in general
+                         (plain LabourMaster rows have no partCode, so this never shows for those). */}
+                      {r.partCode && (
+                        <><br /><span className="muted" style={{ fontSize: 12 }}>Part: {r.partCode}{r.partDescription ? ` — ${r.partDescription}` : ''}</span></>
+                      )}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div style={{
+                position: 'absolute', zIndex: 10, top: '100%', left: 0, right: 0, marginTop: 2,
+                background: 'var(--card-bg, #fff)', border: '1px solid var(--border)', borderRadius: 8,
+                padding: '8px 10px', boxShadow: '0 6px 18px rgba(0,0,0,.12)',
+              }}>
+                <span className="muted" style={{ fontSize: 13 }}>No labour found in BAPL DMS matching "{q.trim()}".</span>
+              </div>
+            )
+          )}
         </div>
-        <div className="field">
+        <div className="field field-compact">
           <label>Qty</label>
           <input type="number" min={1} value={qty} onChange={(e) => setQty(Number(e.target.value))} style={{ width: '4rem' }} />
         </div>
-        <div className="field">
+        <div className="field field-compact">
           <label>Issue Type</label>
           <select value={issueType} onChange={(e) => setIssueType(e.target.value)}>
             <option value="">Select…</option>
             {LABOUR_ISSUE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
         </div>
-        <div className="field">
+        <div className="field field-compact">
           <button className="btn btn-sm btn-primary" disabled={!selectedId} onClick={() => run(addSuggestion, 'Labour suggestion added.')}>Add Suggestion</button>
         </div>
       </div>
       {selected && (
         <p className="muted">
           Rate ₹{selected.labourRate ?? '-'} · HSN {selected.hsnCode ?? '-'} · SGST {selected.sgst ?? '-'} · CGST {selected.cgst ?? '-'} · IGST {selected.igst ?? '-'}
+          {selected.partCode && ` · Part: ${selected.partCode}${selected.partDescription ? ' — ' + selected.partDescription : ''}`}
         </p>
       )}
     </div>
   )
 }
 
-/** "Download Invoice from DMS" (replaces the old local Generate-Invoice/Download-PDF flow - BAPL
- * DMS's own repair bill is now the source of truth for a job card's invoice). Streams the PDF
- * through staffApi so the same Bearer token every other call on this page carries is attached (see
- * api/client.ts's interceptor) - a plain <a href> pointed at the API would 401 instead of
- * downloading anything - then hands the blob to the browser via a temporary <a download> element. */
+/** "Download Invoice from DMS" - BAPL DMS's own repair bill is the source of truth for a job
+ * card's invoice. Streams the PDF through staffApi so the same Bearer token every other call on
+ * this page carries is attached (see api/client.ts's interceptor) - a plain <a href> pointed at
+ * the API would 401 instead of downloading anything - then hands the blob to the browser via a
+ * temporary <a download> element. Re-added 2026-09-03 as its own card below BAPL DMS Service
+ * History (it briefly lived only inside the header's Print menu - see PrintMenu's "Invoice"
+ * option, which stays too and opens the same PDF in a new tab instead of forcing a download). */
 function InvoiceCard({ jc }: { jc: JobCardDetail }) {
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)

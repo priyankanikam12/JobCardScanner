@@ -126,6 +126,13 @@ export interface BaplDmsVehicleLookup {
   customerLedgerId?: number | null
   locationCode?: string | null
   dealerCode?: string | null
+  // Set server-side (BaplDmsController.VehicleLookup) when this chassis already has an open job
+  // card - either in JobCardScanner's own JobCards (openJobCardSource "local") or in BAPL DMS's own
+  // job card history (openJobCardSource "bapl-dms") - so the wizard can warn immediately on
+  // selecting the chassis instead of only at final submit. See BaplDmsVehicleRow's doc comment.
+  openJobCardNumber?: string | null
+  openJobCardSource?: 'local' | 'bapl-dms' | null
+  openJobCardStatus?: string | null
   // Best-effort LedgerMaster.Address/Email - see BaplDmsVehicleRow's doc comment in
   // BaplDmsService.cs on why these two specifically are not guaranteed to be populated.
   customerAddress?: string | null
@@ -198,9 +205,11 @@ export interface BaplDmsVehicleSuggestion {
   regNo?: string | null
   modelName?: string | null
   dealerId?: string | null
+  saleDate?: string | null
 }
 
-/// One labour rate-card row from BAPL DMS's own LabourMaster - see BaplDmsLabourRow's doc comment
+/// One labour rate-card row from BAPL DMS's own LabourMaster, OR from PartWiseLabourMaster (a
+/// second, part-linked rate card unioned in as of 2026-09-03) - see BaplDmsLabourRow's doc comment
 /// in BaplDmsService.cs for the confirmed schema and the cascade-id/NULL-handling caveats.
 export interface BaplDmsLabourRow {
   id: number
@@ -216,6 +225,11 @@ export interface BaplDmsLabourRow {
   serviceHeadId?: number | null
   serviceTypeId?: number | null
   oemModelName?: string | null
+  /// "LabourMaster" or "PartWiseLabourMaster" - tells the two source tables apart in the picker.
+  source?: string
+  /// Only ever set on a PartWiseLabourMaster row - the specific part this labour rate is tied to.
+  partCode?: string | null
+  partDescription?: string | null
 }
 
 /// One repair bill BAPL DMS has for a job card - for the Detail page's "Download Invoice from DMS"
@@ -234,6 +248,9 @@ export interface CurrentUser {
   role: StaffRole
   dealerId?: string | null
   dealerName?: string | null
+  /** BAPL DMS's own dealer code (e.g. "CUS0435") - used to scope chassis/reg-no vehicle search to
+   * this user's own dealer. See AuthController.Me's DealerBaplDmsCode doc comment. */
+  dealerBaplDmsCode?: string | null
   avatarColor?: string | null
 }
 
@@ -349,6 +366,7 @@ export interface JobCardStageHistoryEntry {
   enteredAt: string
   exitedAt?: string | null
   notes?: string | null
+  changedBy?: { id: string; name: string } | null
 }
 
 export interface JobCardWorklog {
@@ -475,6 +493,10 @@ export interface JobCardDetail extends Omit<JobCardSummary, 'customerName' | 've
   customer?: Customer
   vehicle?: Vehicle
   dealer?: { id: string; name: string; code: string } | null
+  /// This job card's dealer, resolved to BAPL DMS's own dealer code (distinct from dealer.code
+  /// above, which is JobCardScanner's own local code) - used to scope the Labour Suggestion
+  /// panel's PartWiseLabourMaster search to the right dealer.
+  baplDealerCode?: string | null
   currentStage?: WorkflowStage
   serviceAdvisor?: { id: string; name: string } | null
   assignedTechnician?: { id: string; name: string } | null

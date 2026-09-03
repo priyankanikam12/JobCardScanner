@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
@@ -18,16 +18,21 @@ export function DashboardPage() {
 
 // ==================== Dealer Dashboard ====================
 
-const TILES: { key: keyof DashboardKpis; label: string; icon: string }[] = [
-  { key: 'vehiclesReceivedToday', label: 'Vehicles Received Today', icon: '🚗' },
-  { key: 'totalOpen', label: 'Open Job Cards', icon: '📋' },
-  { key: 'underService', label: 'Under Service', icon: '🔧' },
-  { key: 'waitingForParts', label: 'Waiting for Parts', icon: '📦' },
-  { key: 'waitingCustomerApproval', label: 'Waiting Customer Approval', icon: '✅' },
-  { key: 'vehiclesReady', label: 'Vehicles Ready', icon: '🏁' },
-  { key: 'vehiclesDeliveredToday', label: 'Vehicles Delivered', icon: '🚀' },
-  { key: 'pendingJobCards', label: 'Pending Job Cards', icon: '⏳' },
-  { key: 'warrantyJobsOpen', label: 'Warranty Jobs', icon: '🛡️' },
+// Each tile's `to` is the exact /jobcards filter that reproduces the number on the card - these
+// param names match JobCardsController.List's new dashboard-filter params 1:1 (excludeClosed/
+// overdue/createdToday/deliveredToday/closedThisMonth/warrantyOnly/pendingBucket), each mirroring
+// the same WHERE clause DashboardController.Kpis used to compute that same number, so a click
+// always lands on the set of job cards that make up the count just shown.
+const TILES: { key: keyof DashboardKpis; label: string; icon: string; to: string }[] = [
+  { key: 'vehiclesReceivedToday', label: 'Vehicles Received Today', icon: '🚗', to: '/jobcards?createdToday=true' },
+  { key: 'totalOpen', label: 'Open Job Cards', icon: '📋', to: '/jobcards?excludeClosed=true' },
+  { key: 'underService', label: 'Under Service', icon: '🔧', to: '/jobcards?stageKey=in_repair' },
+  { key: 'waitingForParts', label: 'Waiting for Parts', icon: '📦', to: '/jobcards?stageKey=part_suggestion' },
+  { key: 'waitingCustomerApproval', label: 'Waiting Customer Approval', icon: '✅', to: '/jobcards?status=PendingCustomerApproval' },
+  { key: 'vehiclesReady', label: 'Vehicles Ready', icon: '🏁', to: '/jobcards?stageKey=ready_for_delivery' },
+  { key: 'vehiclesDeliveredToday', label: 'Vehicles Delivered', icon: '🚀', to: '/jobcards?deliveredToday=true' },
+  { key: 'pendingJobCards', label: 'Pending Job Cards', icon: '⏳', to: '/jobcards?pendingBucket=true' },
+  { key: 'warrantyJobsOpen', label: 'Warranty Jobs', icon: '🛡️', to: '/jobcards?warrantyOnly=true&excludeClosed=true' },
 ]
 
 const QUICK_LINKS: { label: string; to: string }[] = [
@@ -40,6 +45,7 @@ const QUICK_LINKS: { label: string; to: string }[] = [
 
 function DealerDashboard() {
   const { profile, hasRole } = useStaffAuth()
+  const navigate = useNavigate()
   const [kpis, setKpis] = useState<DashboardKpis | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -67,25 +73,34 @@ function DealerDashboard() {
 
       <div className="kpi-grid">
         {TILES.map((t, i) => (
-          <div key={t.key} className={`kpi kpi-a${(i % 6) + 1}`}>
+          // Every tile is a Link to the /jobcards filter that reproduces its own number - see
+          // TILES' doc comment above for how each `to` matches DashboardController.Kpis' own
+          // computation.
+          <Link key={t.key} to={t.to} className={`kpi kpi-a${(i % 6) + 1}`} style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
             <div className="kpi-icon">{t.icon}</div>
             <div className="value">{kpis[t.key] as number}</div>
             <div className="label">{t.label}</div>
-          </div>
+          </Link>
         ))}
       </div>
 
       <div className="kpi-grid">
-        <div className="kpi kpi-a2">
+        {/* Revenue/turnaround are both driven by CLOSED (invoiced) job cards - the closest
+           equivalent /jobcards filter, even though neither is an exact reproduction of the
+           number shown (revenue/turnaround are computed off Invoices, not a job-card count). */}
+        <Link to="/jobcards?status=Closed" className="kpi kpi-a2" style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
           <div className="kpi-icon">₹</div>
           <div className="value">₹{kpis.revenuePaidInvoices.toLocaleString()}</div>
           <div className="label">Revenue (Paid Invoices)</div>
-        </div>
-        <div className="kpi kpi-a1">
+        </Link>
+        <Link to="/jobcards?status=Closed" className="kpi kpi-a1" style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
           <div className="kpi-icon">⏱️</div>
           <div className="value">{kpis.avgTurnaroundHours} hrs</div>
           <div className="label">Avg. Service Time</div>
-        </div>
+        </Link>
+        {/* Not a Link - there's no rating/feedback capture in the schema yet (see
+           DashboardController.Kpis' own comment on this), so no job-card filter actually
+           corresponds to this number. */}
         <div className="kpi kpi-a5">
           <div className="kpi-icon">⭐</div>
           <div className="value">{kpis.csat.average != null ? `${kpis.csat.average.toFixed(1)} / 5` : '—'}</div>
@@ -106,6 +121,7 @@ function DealerDashboard() {
 
       <div className="card">
         <h3>Job Cards by Status</h3>
+        <p className="muted" style={{ marginTop: -6, marginBottom: 10 }}>Click a bar to see those job cards.</p>
         <div style={{ width: '100%', height: 260 }}>
           <ResponsiveContainer>
             <BarChart data={kpis.byStatus}>
@@ -113,7 +129,13 @@ function DealerDashboard() {
               <XAxis dataKey="status" fontSize={12} />
               <YAxis allowDecimals={false} />
               <Tooltip />
-              <Bar dataKey="count" fill="#2563eb" radius={[4, 4, 0, 0]} />
+              <Bar
+                dataKey="count"
+                fill="#2563eb"
+                radius={[4, 4, 0, 0]}
+                cursor="pointer"
+                onClick={(entry) => navigate(`/jobcards?status=${encodeURIComponent(entry.status)}`)}
+              />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -219,11 +241,17 @@ function CorporateDashboard() {
               <div className="value">{data.csat.average != null ? `${data.csat.average.toFixed(1)} / 5` : '—'}</div>
               <div className="label">CSAT{data.csat.average == null ? ' (no ratings yet)' : ''}</div>
             </div>
-            <div className="kpi kpi-a4">
+            {/* Only this tile links out - Revenue/Warranty Cost/CSAT are computed off Invoices (or,
+               for CSAT, off a rating system that doesn't exist yet - see DealerDashboard's own
+               CSAT tile comment), not a job-card count, so there's no /jobcards filter that
+               actually reproduces those numbers the way there is for Pending Vehicles. The
+               region/state/city/dealer/model filter bar above isn't passed through - JobCardsListPage
+               doesn't support those dimensions today, only status/stageKey/q. */}
+            <Link to="/jobcards?excludeClosed=true" className="kpi kpi-a4" style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
               <div className="kpi-icon">🚗</div>
               <div className="value">{data.pendingVehicles}</div>
               <div className="label">Pending Vehicles</div>
-            </div>
+            </Link>
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: 16 }}>

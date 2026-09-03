@@ -8,6 +8,7 @@ import type {
   Customer, Dealer, JobCardPriority, JobCardSource, PhotoStage, ServiceType, Vehicle,
 } from '../../types'
 import { VEHICLE_MODELS, variantsForModel } from '../../data/vehicleCatalog'
+import { buildJobCardPrintHtml } from '../../lib/jobCardPrintHtml'
 
 const STEPS = ['Customer', 'Vehicle', 'Service Details', 'Review & Create']
 
@@ -42,280 +43,6 @@ function nowForDatetimeLocalInput(): string {
   const d = new Date()
   d.setMinutes(d.getMinutes() - d.getTimezoneOffset())
   return d.toISOString().slice(0, 16)
-}
-
-const dash = (v: unknown) => (v !== null && v !== undefined && String(v).trim() !== '' ? String(v) : '-')
-const fmtDatePrint = (v?: string | null) => {
-  if (!v) return '-'
-  const d = new Date(v)
-  return Number.isNaN(d.getTime()) ? '-' : d.toLocaleDateString('en-GB')
-}
-
-/**
- * Builds a print preview matching the real BAPL DMS "Job Card + Gate Pass" paper layout, field for
- * field: a Job Card page (company/dealer header, Job Details/Customer Details/Vehicle Details/
- * Battery Details panels, Customer Voice & Complaints, Observation/Supervisor Comment/Remarks,
- * signatures) followed by a torn-off Gate Pass page, applied to whatever this wizard has captured so
- * far (this runs from the Review & Create step, before the job card - and BAPL DMS's own Job No./
- * Invoice No - actually exist, so those show "-" here; the real numbers appear once the job card is
- * created). Fields BAPL DMS's own print shows that JobCardScanner genuinely has nowhere to source
- * (GST No., Alt. Mobile, customer State, OEM Model, and every Battery Details voltage/capacity
- * test reading - BAPL DMS's ChassisBatteryDetails table doesn't carry those, only serial numbers
- * and Make/Chemical/Capacity, which this DOES now print) show as "-" rather than being guessed.
- */
-function buildJobCardPrintHtml(d: {
-  dealerName?: string | null
-  dealerCode?: string | null
-  location?: string | null
-  jobinDate: string
-  jobtype?: string | null
-  jobsource?: string | null
-  serviceHead?: string | null
-  serviceType?: string | null
-  estdelDate?: string | null
-  vehiclekms?: number | null
-  manualjobNo?: string | null
-  supervisor?: string | null
-  technician?: string | null
-  customerName?: string | null
-  customerMobile?: string | null
-  address?: string | null
-  city?: string | null
-  chassisNo?: string | null
-  batteryNo?: string | null
-  chargerNo?: string | null
-  controllerNo?: string | null
-  registerNo?: string | null
-  modelName?: string | null
-  colour?: string | null
-  saleDate?: string | null
-  insuranceExpiry?: string | null
-  // Sourced from BAPL DMS's own ChassisBatteryDetails table (see BaplDmsService.LookupVehicleAsync's
-  // ChassisBatteryDetails enrichment) - previously nowhere to source, so the Battery Details panel
-  // printed "-" for all three even when BAPL DMS had them on file.
-  batteryChemical?: string | null
-  batteryCapacity?: string | null
-  batteryMake?: string | null
-  complaints: string[]
-}): string {
-  const complaintRows = d.complaints.length
-    ? d.complaints.map((c, i) => `
-        <tr>
-          <td class="tc">${i + 1}</td>
-          <td>-</td>
-          <td>-</td>
-          <td>${c}</td>
-        </tr>`).join('')
-    : `<tr><td colspan="4" class="tc muted">No complaints recorded</td></tr>`
-
-  // The real paper form shows the delivery time as a full "HH:MM:SS.fffffff"-style stamp (e.g.
-  // "20:20:00.0000000"); the wizard only ever captures a datetime-local value (minute precision),
-  // so this pads seconds/fractional-seconds as zero rather than fabricating precision that was
-  // never entered.
-  const deliveryTimeMatch = d.estdelDate ? /T(\d{2}):(\d{2})/.exec(d.estdelDate) : null
-  const deliveryTime = deliveryTimeMatch ? `${deliveryTimeMatch[1]}:${deliveryTimeMatch[2]}:00.0000000` : '-'
-
-  const printDate = fmtDatePrint(d.jobinDate)
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Job Card Preview</title>
-<style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-body{font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#111;background:#fff;padding:10mm 12mm}
-.doc-head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2.5px solid #1a4f8b;padding-bottom:7px;margin-bottom:8px}
-.co-name{font-size:15px;font-weight:bold;color:#1a4f8b;letter-spacing:.2px}
-.co-sub{font-size:9px;color:#555;margin-top:3px}
-.doc-right{text-align:right}
-.doc-title{font-size:15px;font-weight:bold;color:#1a4f8b;letter-spacing:.5px;margin-bottom:5px}
-.doc-right table{margin-left:auto;border-collapse:collapse;font-size:9.5px;color:#333}
-.doc-right td{padding:1.5px 3px}
-.doc-right td.lbl{color:#666;text-align:right;padding-right:5px}
-.doc-right td.val{font-weight:bold}
-.sec{border:1px solid #c8c8c8;border-radius:2px;margin-bottom:6px;page-break-inside:avoid}
-.sec-title{background:#e8e8e8;color:#333;font-size:8.5px;font-weight:bold;letter-spacing:.9px;text-transform:uppercase;padding:4px 8px;border-bottom:1px solid #c8c8c8}
-.row2{display:flex;gap:6px;margin-bottom:6px;align-items:flex-start}
-.row2>.sec{flex:1;margin-bottom:0}
-.kv{width:100%;border-collapse:collapse}
-.kv tr{border-bottom:1px solid #eaeaea}
-.kv tr:last-child{border-bottom:none}
-.kv td{padding:3.5px 8px;vertical-align:top;line-height:1.45}
-.kv td.k{width:46%;font-size:9px;color:#555;white-space:nowrap}
-.kv td.v{font-size:10px;font-weight:bold;word-break:break-word}
-.split{display:flex}
-.split .col{flex:1;border-right:1px solid #e0e0e0}
-.split .col:last-child{border-right:none}
-.cpl{width:100%;border-collapse:collapse;font-size:10px}
-.cpl thead tr{background:#eef2f9}
-.cpl th{padding:5px 8px;text-align:left;font-size:8.5px;font-weight:bold;color:#1a4f8b;border-bottom:1px solid #c8c8c8;white-space:nowrap}
-.cpl td{padding:4.5px 8px;border-bottom:1px solid #eaeaea;vertical-align:top;line-height:1.4}
-.cpl tbody tr:last-child td{border-bottom:none}
-.obs-strip{border:1px solid #c8c8c8;border-radius:2px;padding:0;margin-bottom:6px;display:flex;page-break-inside:avoid}
-.obs-item{flex:1;padding:6px 10px;border-right:1px solid #e0e0e0}
-.obs-item:last-child{border-right:none}
-.obs-lbl{display:block;font-size:8px;font-weight:bold;color:#333;background:#e8e8e8;text-transform:uppercase;letter-spacing:.5px;padding:3px 6px;margin:-6px -10px 6px -10px}
-.obs-val{font-size:10px;line-height:1.5;min-height:28px;display:block}
-.sigs{display:flex;justify-content:space-around;align-items:flex-end;margin-top:24px;margin-bottom:10px;padding:0 20px;page-break-inside:avoid}
-.sig{width:28%;text-align:center}
-.sig-space{height:40px}
-.sig-line{border-top:1px solid #333;margin:0 10px}
-.sig-label{font-size:9px;color:#333;padding-top:5px;font-weight:bold;letter-spacing:.3px}
-.tc{text-align:center}
-.muted{color:#999;font-style:italic}
-.tear-line{display:flex;align-items:center;margin:14px 0;gap:8px;page-break-inside:avoid}
-.tear-line-border{flex:1;border-top:1.5px dashed #888}
-.tear-line-label{font-size:8.5px;color:#888;white-space:nowrap;letter-spacing:.5px;display:flex;align-items:center;gap:4px}
-.tear-scissors{font-size:12px;color:#888;transform:rotate(90deg);display:inline-block}
-.gp-section{page-break-before:always;page-break-inside:avoid}
-.gp-heading{text-align:center;font-size:13px;font-weight:bold;color:#1a4f8b;letter-spacing:1px;text-transform:uppercase;padding:6px 0 10px;margin-bottom:10px;border-bottom:1px solid #ccc}
-.gp-sigs{display:flex;justify-content:space-between;align-items:flex-end;padding:0 10px;margin-bottom:12px}
-.gp-sig-box{width:220px;text-align:center}
-.gp-sig-space{height:40px}
-.gp-sig-line{border-top:1px solid #333;margin:0 10px}
-.gp-sig-label{font-size:10px;color:#333;padding-top:5px;font-weight:bold;letter-spacing:.3px}
-.gp-tbl{width:100%;border-collapse:collapse;font-size:11px}
-.gp-tbl td{padding:7px 10px;border:1px solid #ddd;vertical-align:middle;line-height:1.5}
-.gp-tbl td.gl{color:#555;font-size:9.5px;white-space:nowrap;background:#f8f9fb;width:20%}
-.gp-tbl td.gv{font-size:11px;font-weight:bold;word-break:break-word}
-.gp-sigs-bottom{display:flex;justify-content:space-between;align-items:flex-end;padding:0 10px;margin-top:20px}
-@media print{body{padding:0}@page{size:A4;margin:10mm 12mm}.sec,.obs-strip,.row2,.sigs,.tear-line,.gp-section{page-break-inside:avoid}}
-</style>
-</head>
-<body>
-<div class="page1">
-<div class="doc-head">
-  <div>
-    <div class="co-name">${dash(d.dealerName)}</div>
-    <div class="co-sub">Dealer Code: ${dash(d.dealerCode)} &nbsp;|&nbsp; ${dash(d.dealerName)}</div>
-  </div>
-  <div class="doc-right">
-    <div class="doc-title">JOB CARD</div>
-    <table>
-      <tr><td class="lbl">Invoice No:</td><td class="val">-</td></tr>
-      <tr><td class="lbl">Job No:</td><td class="val">- (assigned on creation) &nbsp; Date: ${printDate}</td></tr>
-    </table>
-  </div>
-</div>
-<div class="row2">
-  <div class="sec">
-    <div class="sec-title">Job Details</div>
-    <div class="split">
-      <div class="col">
-        <table class="kv">
-          <tr><td class="k">Job Type</td><td class="v">${dash(d.jobtype)}</td></tr>
-          <tr><td class="k">Job Source</td><td class="v">${dash(d.jobsource)}</td></tr>
-          <tr><td class="k">Service Head</td><td class="v">${dash(d.serviceHead)}</td></tr>
-          <tr><td class="k">Service Type</td><td class="v">${dash(d.serviceType)}</td></tr>
-          <tr><td class="k">Est. Delivery</td><td class="v">${fmtDatePrint(d.estdelDate)}</td></tr>
-        </table>
-      </div>
-      <div class="col">
-        <table class="kv">
-          <tr><td class="k">Vehicle Kms</td><td class="v">${dash(d.vehiclekms)}</td></tr>
-          <tr><td class="k">Manual Job No</td><td class="v">${dash(d.manualjobNo)}</td></tr>
-          <tr><td class="k">Supervisor</td><td class="v">${dash(d.supervisor)}</td></tr>
-          <tr><td class="k">Technician</td><td class="v">${dash(d.technician)}</td></tr>
-          <tr><td class="k">Delivery Time</td><td class="v">${deliveryTime}</td></tr>
-        </table>
-      </div>
-    </div>
-  </div>
-  <div class="sec">
-    <div class="sec-title">Customer Details</div>
-    <table class="kv">
-      <tr><td class="k">Customer Name</td><td class="v">${dash(d.customerName)}</td></tr>
-      <tr><td class="k">Address</td><td class="v">${dash(d.address)}</td></tr>
-      <tr><td class="k">City &amp; Pin</td><td class="v">${dash(d.city)}</td></tr>
-      <tr><td class="k">State</td><td class="v">-</td></tr>
-      <tr><td class="k">GST No.</td><td class="v">-</td></tr>
-      <tr><td class="k">Mobile</td><td class="v">${dash(d.customerMobile)}</td></tr>
-      <tr><td class="k">Alt. Mobile</td><td class="v">-</td></tr>
-    </table>
-  </div>
-</div>
-<div class="row2">
-  <div class="sec">
-    <div class="sec-title">Vehicle Details</div>
-    <table class="kv">
-      <tr><td class="k">Chassis No</td><td class="v">${dash(d.chassisNo)}</td></tr>
-      <tr><td class="k">Battery No</td><td class="v">${dash(d.batteryNo)}</td></tr>
-      <tr><td class="k">Charger No</td><td class="v">${dash(d.chargerNo)}</td></tr>
-      <tr><td class="k">Controller No</td><td class="v">${dash(d.controllerNo)}</td></tr>
-      <tr><td class="k">Register No</td><td class="v">${dash(d.registerNo)}</td></tr>
-      <tr><td class="k">Model</td><td class="v">${dash(d.modelName)}</td></tr>
-      <tr><td class="k">OEM Model</td><td class="v">-</td></tr>
-      <tr><td class="k">Colour</td><td class="v">${dash(d.colour)}</td></tr>
-      <tr><td class="k">Sale Date</td><td class="v">${fmtDatePrint(d.saleDate)}</td></tr>
-      <tr><td class="k">Insurance Exp.</td><td class="v">${fmtDatePrint(d.insuranceExpiry)}</td></tr>
-    </table>
-  </div>
-  <div class="sec">
-    <div class="sec-title">Battery Details</div>
-    <table class="kv">
-      <tr><td class="k">Battery Make</td><td class="v">${dash(d.batteryMake)}</td></tr>
-      <tr><td class="k">Battery Serial No(s)</td><td class="v">${dash(d.batteryNo)}</td></tr>
-      <tr><td class="k">Voltage at Full Charge (OCV)</td><td class="v">-</td></tr>
-      <tr><td class="k">Voltage at Full Charge (CCV)</td><td class="v">-</td></tr>
-      <tr><td class="k">Voltage at Discharge</td><td class="v">-</td></tr>
-      <tr><td class="k">Capacity (AH)</td><td class="v">-</td></tr>
-      <tr><td class="k">Battery Set Voltage</td><td class="v">-</td></tr>
-      <tr><td class="k">Motor Drawing (No Load)</td><td class="v">-</td></tr>
-      <tr><td class="k">Controller No. Make</td><td class="v">${dash(d.controllerNo)}</td></tr>
-      <tr><td class="k">Battery Chemical</td><td class="v">${dash(d.batteryChemical)}</td></tr>
-      <tr><td class="k">Battery Capacity</td><td class="v">${dash(d.batteryCapacity)}</td></tr>
-    </table>
-  </div>
-</div>
-<div class="sec">
-  <div class="sec-title">Customer Voice &amp; Complaints</div>
-  <table class="cpl">
-    <thead><tr><th style="width:36px">Sr</th><th style="width:24%">Customer Voice</th><th style="width:24%">Code</th><th>Complaint</th></tr></thead>
-    <tbody>${complaintRows}</tbody>
-  </table>
-</div>
-<div class="obs-strip">
-  <div class="obs-item"><span class="obs-lbl">Observation</span><span class="obs-val">-</span></div>
-  <div class="obs-item"><span class="obs-lbl">Supervisor Comment</span><span class="obs-val">-</span></div>
-  <div class="obs-item"><span class="obs-lbl">Remarks</span><span class="obs-val">-</span></div>
-</div>
-<div class="sigs">
-  <div class="sig"><div class="sig-space"></div><div class="sig-line"></div><div class="sig-label">Technician</div></div>
-  <div class="sig"><div class="sig-space"></div><div class="sig-line"></div><div class="sig-label">Supervisor / Advisor</div></div>
-  <div class="sig"><div class="sig-space"></div><div class="sig-line"></div><div class="sig-label">Customer</div></div>
-</div>
-<div class="tear-line">
-  <div class="tear-line-border"></div>
-  <div class="tear-line-label"><span class="tear-scissors">&#9988;</span> TEAR HERE <span class="tear-scissors">&#9988;</span></div>
-  <div class="tear-line-border"></div>
-</div>
-</div>
-<div class="page2 gp-section">
-  <div class="gp-heading">Gate Pass</div>
-  <div class="gp-sigs">
-    <div class="gp-sig-box"><div class="gp-sig-space"></div><div class="gp-sig-line"></div><div class="gp-sig-label">Supervisor / Advisor</div></div>
-    <div class="gp-sig-box"><div class="gp-sig-space"></div><div class="gp-sig-line"></div><div class="gp-sig-label">Customer</div></div>
-  </div>
-  <table class="gp-tbl">
-    <tr>
-      <td class="gl">Customer Name</td><td class="gv">${dash(d.customerName)}</td>
-      <td class="gl">Job Date</td><td class="gv">${printDate}</td>
-      <td class="gl">Job No</td><td class="gv">-</td>
-    </tr>
-    <tr>
-      <td class="gl">Vehicle No.</td><td class="gv">${dash(d.registerNo)}</td>
-      <td class="gl">Chassis No.</td><td class="gv">${dash(d.chassisNo)}</td>
-      <td class="gl"></td><td class="gv"></td>
-    </tr>
-  </table>
-  <div class="gp-sigs-bottom">
-    <div class="gp-sig-box"><div class="gp-sig-space"></div><div class="gp-sig-line"></div><div class="gp-sig-label">Supervisor / Advisor</div></div>
-    <div class="gp-sig-box"><div class="gp-sig-space"></div><div class="gp-sig-line"></div><div class="gp-sig-label">Customer</div></div>
-  </div>
-</div>
-</body>
-</html>`
 }
 
 export function JobCardWizardPage() {
@@ -417,21 +144,44 @@ export function JobCardWizardPage() {
   // Item 12a: a styled inline banner instead of a plain window.alert() for "This Vehicle not
   // sold" - a native browser alert can't be styled and blocks the page until dismissed.
   const [vehicleNotSoldNotice, setVehicleNotSoldNotice] = useState<string | null>(null)
+  // "This chassis already has an open job card" - set from BaplDmsVehicleLookup.openJobCardNumber
+  // (see that field's doc comment) the moment a chassis is selected, instead of only finding out
+  // after filling in the whole wizard and hitting the final "Create Job Card" (which still has its
+  // own hard block - JobCardsController.Create - as a backstop). Blocks applyVehicleHit entirely
+  // (same pattern as vehicleNotSoldNotice above) so the chassis can't be used to pre-fill/proceed
+  // until that other job card is closed.
+  const [openJobCardNotice, setOpenJobCardNotice] = useState<string | null>(null)
   // Item 2: live search-as-you-type suggestions under the chassis/reg-no box (e.g. typing "P6"
   // lists every matching ChassisDetails row so the user can pick one, instead of only supporting
   // Enter/Search for a single exact match). Debounced so it doesn't fire a request per keystroke;
   // cleared as soon as one is picked or the box is emptied.
   const [vehicleSuggestions, setVehicleSuggestions] = useState<BaplDmsVehicleSuggestion[]>([])
   const [showVehicleSuggestions, setShowVehicleSuggestions] = useState(false)
+  // Global (cross-dealer) chassis/reg-no search - offered as a fallback right on the "not found"
+  // flag when a dealer-scoped lookup 404s, mirroring BAPL DMS's own Angular "Search Chassis Across
+  // All Dealers" popup (ebw-invoice component). GET /api/bapl-dms/vehicle-lookup already supports
+  // this - dealerCode is optional server-side and an omitted one searches every dealer (see
+  // IBaplDmsService.LookupVehicleAsync's own doc comment) - so no backend change was needed, just
+  // this fallback UI wired to the same endpoint with dealerCode left out.
+  const [showGlobalSearchOffer, setShowGlobalSearchOffer] = useState(false)
+  const [globalSearchLoading, setGlobalSearchLoading] = useState(false)
+  const [globalHit, setGlobalHit] = useState<BaplDmsVehicleLookup | null>(null)
+  const [globalSearchNotFound, setGlobalSearchNotFound] = useState(false)
+  // Scopes chassis/reg-no search to the dealer this job card is being created for - the wizard's
+  // own dealer picker (Corporate/System Admin choosing which dealer/workshop) when one is set,
+  // falling back to the signed-in dealer's own BAPL DMS code otherwise. Left undefined (unscoped,
+  // matching the backend's existing "search everything" default) only when neither is known yet -
+  // e.g. a brand new dealer login whose BaplDmsDealerCode hasn't been resolved by any lookup yet.
+  const vehicleSearchDealerCode = dealers.find((d) => d.id === effectiveDealerId)?.baplDmsDealerCode ?? profile?.dealerBaplDmsCode ?? undefined
   useEffect(() => {
     if (!showVehicleSuggestions || chassisOrRegQ.trim().length < 2) { setVehicleSuggestions([]); return }
     const handle = setTimeout(() => {
-      staffApi.get<BaplDmsVehicleSuggestion[]>('/api/bapl-dms/vehicle-suggestions', { params: { q: chassisOrRegQ.trim() } })
+      staffApi.get<BaplDmsVehicleSuggestion[]>('/api/bapl-dms/vehicle-suggestions', { params: { q: chassisOrRegQ.trim(), dealerCode: vehicleSearchDealerCode } })
         .then(({ data }) => setVehicleSuggestions(data))
         .catch(() => setVehicleSuggestions([]))
     }, 300)
     return () => clearTimeout(handle)
-  }, [chassisOrRegQ, showVehicleSuggestions])
+  }, [chassisOrRegQ, showVehicleSuggestions, vehicleSearchDealerCode])
   // Fields pre-filled from a BAPL DMS auto-fetch are locked by default (disabled inputs) so they
   // aren't accidentally overwritten - each section has its own "Edit anyway" escape hatch for the
   // rare case the fetched data is wrong. Resets back to locked whenever a fresh hit comes in.
@@ -439,6 +189,23 @@ export function JobCardWizardPage() {
   const [unlockVehicleFields, setUnlockVehicleFields] = useState(false)
   const customerFieldsLocked = !!baplVehicleHit && !unlockCustomerFields
   const vehicleFieldsLocked = !!baplVehicleHit && !unlockVehicleFields
+
+  const applyVehicleHit = (data: BaplDmsVehicleLookup) => {
+    setBaplVehicleHit(data)
+    setNewCustomer((c) => ({
+      ...c,
+      name: data.customerName || c.name,
+      mobile: data.customerMobile ? data.customerMobile.replace(/\D/g, '').slice(0, 10) : c.mobile,
+      city: data.customerCity || c.city,
+      email: data.customerEmail || c.email,
+      address: data.customerAddress || c.address,
+      // Item 3: ChassisDetails.SaleDate is what gated this fetch in the first place (a null one
+      // never reaches here - see the alert above) - show it back in the Sale Date field instead
+      // of leaving it blank for the user to re-type. BAPL DMS returns a full datetime (e.g.
+      // "2026-07-17T15:47:40.203"); the <input type="date"> only wants the date part.
+      saleDate: data.saleDate ? data.saleDate.split('T')[0] : c.saleDate,
+    }))
+  }
 
   const lookupByChassisOrReg = async (valueOverride?: string) => {
     const value = (valueOverride ?? chassisOrRegQ).trim()
@@ -448,11 +215,24 @@ export function JobCardWizardPage() {
     setVehicleLookupLoading(true)
     setVehicleLookupError(null)
     setVehicleNotSoldNotice(null)
+    setOpenJobCardNotice(null)
     setBaplVehicleHit(null)
     setUnlockCustomerFields(false)
     setUnlockVehicleFields(false)
+    setShowGlobalSearchOffer(false)
+    setGlobalHit(null)
+    setGlobalSearchNotFound(false)
     try {
-      const { data } = await staffApi.get<BaplDmsVehicleLookup>('/api/bapl-dms/vehicle-lookup', { params: { value } })
+      const { data } = await staffApi.get<BaplDmsVehicleLookup>('/api/bapl-dms/vehicle-lookup', { params: { value, dealerCode: vehicleSearchDealerCode } })
+      // This chassis already has an open job card somewhere (JobCardScanner locally, or BAPL DMS -
+      // see openJobCardNumber's doc comment) - refuse to auto-fill/proceed with it at all, and say
+      // exactly where the open job card is so staff know where to go close it first.
+      if (data.openJobCardNumber) {
+        const where = data.openJobCardSource === 'bapl-dms' ? 'in BAPL DMS' : 'here'
+        const status = data.openJobCardStatus ? ` (status: ${data.openJobCardStatus})` : ''
+        setOpenJobCardNotice(`This chassis already has an open job card ${where}: ${data.openJobCardNumber}${status}. It must be closed before this chassis can be used for a new job card.`)
+        return
+      }
       // Item 3: a hit with no SaleDate on file isn't auto-fetched - alert and leave the customer/
       // vehicle fields for manual entry instead of pre-filling from an incomplete BAPL DMS record.
       if (!data.saleDate) {
@@ -463,30 +243,61 @@ export function JobCardWizardPage() {
         setVehicleLookupError(`"${value}" was found in DMS.`)
         return
       }
-      setBaplVehicleHit(data)
-      setNewCustomer((c) => ({
-        ...c,
-        name: data.customerName || c.name,
-        mobile: data.customerMobile ? data.customerMobile.replace(/\D/g, '').slice(0, 10) : c.mobile,
-        city: data.customerCity || c.city,
-        email: data.customerEmail || c.email,
-        address: data.customerAddress || c.address,
-        // Item 3: ChassisDetails.SaleDate is what gated this fetch in the first place (a null one
-        // never reaches here - see the alert above) - show it back in the Sale Date field instead
-        // of leaving it blank for the user to re-type. BAPL DMS returns a full datetime (e.g.
-        // "2026-07-17T15:47:40.203"); the <input type="date"> only wants the date part.
-        saleDate: data.saleDate ? data.saleDate.split('T')[0] : c.saleDate,
-      }))
+      applyVehicleHit(data)
     } catch (err: unknown) {
       const response = (err as { response?: { status?: number; data?: { message?: string } } })?.response
-      setVehicleLookupError(response?.status === 404
-        ? `"${value}" wasn't found in BAPL DMS - add the customer/vehicle manually below.`
-        : response?.data?.message
+      if (response?.status === 404) {
+        setVehicleLookupError(`"${value}" wasn't found in BAPL DMS for this dealer.`)
+        // Offer the cross-dealer fallback right on the "not found" flag, instead of only letting
+        // the user give up and add the vehicle manually - see the state block above for why this
+        // needs no new backend endpoint.
+        setShowGlobalSearchOffer(true)
+      } else {
+        setVehicleLookupError(response?.data?.message
           ? `BAPL DMS error: ${response.data.message}`
           : 'Could not reach BAPL DMS right now - add the customer/vehicle manually below.')
+      }
     } finally {
       setVehicleLookupLoading(false)
     }
+  }
+
+  /** "Search across all dealers" - re-runs the exact same lookup with dealerCode omitted, so a
+   * chassis/reg no. sold by a DIFFERENT dealer still turns up instead of silently reading as
+   * "doesn't exist anywhere". Mirrors BAPL DMS's own Angular ebw-invoice component's
+   * searchGlobalChassis()/applyGlobalChassisResult() pair. */
+  const searchGlobalChassis = async () => {
+    const value = chassisOrRegQ.trim()
+    if (!value) return
+    setGlobalSearchLoading(true)
+    setGlobalSearchNotFound(false)
+    setGlobalHit(null)
+    try {
+      const { data } = await staffApi.get<BaplDmsVehicleLookup>('/api/bapl-dms/vehicle-lookup', { params: { value } })
+      setGlobalHit(data)
+    } catch {
+      setGlobalSearchNotFound(true)
+    } finally {
+      setGlobalSearchLoading(false)
+    }
+  }
+
+  const applyGlobalHit = () => {
+    if (!globalHit) return
+    // Same open-job-card block as the dealer-scoped lookup above - a cross-dealer hit can still
+    // belong to a chassis with an open job card (at this dealer or elsewhere).
+    if (globalHit.openJobCardNumber) {
+      const where = globalHit.openJobCardSource === 'bapl-dms' ? 'in BAPL DMS' : 'here'
+      const status = globalHit.openJobCardStatus ? ` (status: ${globalHit.openJobCardStatus})` : ''
+      setOpenJobCardNotice(`This chassis already has an open job card ${where}: ${globalHit.openJobCardNumber}${status}. It must be closed before this chassis can be used for a new job card.`)
+      setShowGlobalSearchOffer(false)
+      setGlobalHit(null)
+      return
+    }
+    applyVehicleHit(globalHit)
+    setVehicleLookupError(null)
+    setShowGlobalSearchOffer(false)
+    setGlobalHit(null)
   }
 
   // Step 2: vehicle
@@ -1029,9 +840,25 @@ export function JobCardWizardPage() {
                       onMouseDown={(e) => { e.preventDefault(); setChassisOrRegQ(s.chassisNo); lookupByChassisOrReg(s.chassisNo) }}
                     >
                       <strong>{s.chassisNo}</strong>{s.regNo ? ` · ${s.regNo}` : ''}{s.modelName ? ` — ${s.modelName}` : ''}
+                      {/* Item (a): show Sale Date on every suggestion row, not just after a full
+                         Search hit - lets the user tell sold vehicles apart from unsold ones before
+                         picking one. */}
+                      <span style={{ display: 'block', fontSize: 12, color: 'var(--muted, #6b7280)' }}>
+                        Sale date: {s.saleDate ? new Date(s.saleDate).toLocaleDateString() : 'not sold'}
+                      </span>
                     </button>
                   </li>
                 ))}
+                {/* /api/bapl-dms/vehicle-suggestions caps results (100 by default - see
+                   BaplDmsController.VehicleSuggestions' doc comment on why this exists and isn't
+                   just "show everything"). A dealer whose stock shares one chassis-number prefix
+                   can have more matches than that for a short query - say so, instead of letting a
+                   chassis that's the 101st alphabetical match silently look like it doesn't exist. */}
+                {vehicleSuggestions.length >= 100 && (
+                  <li style={{ padding: '6px 8px', fontSize: 12, color: 'var(--muted, #6b7280)' }}>
+                    Showing the first {vehicleSuggestions.length} matches - keep typing more of the chassis/reg no. to narrow down.
+                  </li>
+                )}
               </ul>
             )}
             {vehicleNotSoldNotice && (
@@ -1054,7 +881,61 @@ export function JobCardWizardPage() {
                 </button>
               </p>
             )}
+            {openJobCardNotice && (
+              <p
+                role="alert"
+                style={{
+                  marginTop: 8, padding: '10px 14px', borderRadius: 8,
+                  background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b',
+                  fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8,
+                }}
+              >
+                🚫 {openJobCardNotice}
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  style={{ marginLeft: 'auto', border: 'none', background: 'transparent', color: '#991b1b' }}
+                  onClick={() => setOpenJobCardNotice(null)}
+                >
+                  Dismiss
+                </button>
+              </p>
+            )}
             {vehicleLookupError && <p className="error-text">{vehicleLookupError}</p>}
+            {showGlobalSearchOffer && !globalHit && (
+              <p
+                role="alert"
+                style={{
+                  marginTop: 8, padding: '10px 14px', borderRadius: 8,
+                  background: '#eef6ff', border: '1px solid #bfdcff', color: '#1e3a5f',
+                  display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+                }}
+              >
+                🔎 Not found for this dealer.{globalSearchNotFound ? ' Not found anywhere in BAPL DMS either.' : ' Search BAPL DMS across every dealer?'}
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary"
+                  style={{ marginLeft: 'auto' }}
+                  disabled={globalSearchLoading}
+                  onClick={searchGlobalChassis}
+                >
+                  {globalSearchLoading ? 'Searching…' : 'Search all dealers'}
+                </button>
+              </p>
+            )}
+            {globalHit && (
+              <div style={{ marginTop: 8, padding: '10px 14px', borderRadius: 8, background: '#eef6ff', border: '1px solid #bfdcff' }}>
+                <p style={{ fontWeight: 600, color: '#1e3a5f', margin: 0 }}>
+                  Found in BAPL DMS{globalHit.dealerCode && globalHit.dealerCode !== vehicleSearchDealerCode ? ` — registered to dealer ${globalHit.dealerCode}, not this workshop` : ''}
+                </p>
+                <p className="muted" style={{ margin: '4px 0 8px' }}>
+                  {globalHit.customerName || 'Unknown customer'}{globalHit.customerMobile ? ` (${globalHit.customerMobile})` : ''} · {globalHit.modelName || 'Model unknown'}
+                  {globalHit.registerNo ? ` · reg no. ${globalHit.registerNo}` : ''}
+                  {globalHit.saleDate ? ` · sold ${new Date(globalHit.saleDate).toLocaleDateString()}` : ' · not yet sold'}
+                </p>
+                <button type="button" className="btn btn-sm btn-primary" onClick={applyGlobalHit}>Use this vehicle</button>
+              </div>
+            )}
             {baplVehicleHit && (
               <p className="muted" style={{ marginTop: 4 }}>
                 Customer Details : customer-{baplVehicleHit.customerName || 'Unknown customer'}
@@ -1354,43 +1235,13 @@ export function JobCardWizardPage() {
           {(baplJobType || baplServiceLocation || baplSupervisorName || baplTechnicianName || baplManualJobNo) && (
             <p>
               <strong>DMS fields:</strong>{' '}
-              {baplJobType && (
-                <>
-                  <strong>Job Type:</strong> {baplJobType}.{' '}
-                </>
-              )}
-              {serviceHeads.find((h) => h.id === selectedServiceHeadId)?.name && (
-                <>
-                  <strong>Service Head:</strong>{' '}
-                  {serviceHeads.find((h) => h.id === selectedServiceHeadId)?.name}.{' '}
-                </>
-              )}
-              {serviceTypes.find((t) => t.id === selectedServiceTypeId)?.name && (
-                <>
-                  <strong>Service Type:</strong>{' '}
-                  {serviceTypes.find((t) => t.id === selectedServiceTypeId)?.name}.{' '}
-                </>
-              )}
-              {baplServiceLocation && (
-                <>
-                  <strong>Location:</strong> {baplServiceLocation}.{' '}
-                </>
-              )}
-              {baplSupervisorName && (
-                <>
-                  <strong>Supervisor:</strong> {baplSupervisorName}.{' '}
-                </>
-              )}
-              {baplTechnicianName && (
-                <>
-                  <strong>Technician:</strong> {baplTechnicianName}.{' '}
-                </>
-              )}
-              {baplManualJobNo && (
-                <>
-                  <strong>Manual Job No.:</strong> {baplManualJobNo}.
-                </>
-              )}
+              {baplJobType && <><strong>Job Type:</strong> {baplJobType}. </>}
+              {serviceHeads.find((h) => h.id === selectedServiceHeadId)?.name && `Service Head: ${serviceHeads.find((h) => h.id === selectedServiceHeadId)?.name}. `}
+              {serviceTypes.find((t) => t.id === selectedServiceTypeId)?.name && `Service Type: ${serviceTypes.find((t) => t.id === selectedServiceTypeId)?.name}. `}
+              {baplServiceLocation && `Location: ${baplServiceLocation}. `}
+              {baplSupervisorName && `Supervisor: ${baplSupervisorName}. `}
+              {baplTechnicianName && `Technician: ${baplTechnicianName}. `}
+              {baplManualJobNo && `Manual Job No.: ${baplManualJobNo}.`}
             </p>
           )}
 

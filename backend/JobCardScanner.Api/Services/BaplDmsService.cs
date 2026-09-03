@@ -66,14 +66,32 @@ public record BaplDmsVehicleRow(
     /// populated - that table is now the preferred source for all of those, not just these three.</summary>
     string? BatteryChemical = null,
     string? BatteryCapacity = null,
-    string? BatteryMake = null);
+    string? BatteryMake = null,
+    /// <summary>Set by BaplDmsController.VehicleLookup (NOT by LookupVehicleAsync itself - this
+    /// record is filled in here, after the lookup, from two separate checks: JobCardScanner's own
+    /// JobCards table for the calling dealer, and BaplDmsService.GetOpenJobCardForChassisAsync for
+    /// BAPL DMS's own job cards) when this chassis already has an open (not yet closed/billed) job
+    /// card somewhere. Non-null means the wizard should warn immediately on selecting this chassis
+    /// and refuse to auto-fill/proceed with it, instead of only finding out at final submit time
+    /// (JobCardsController.Create already has the same duplicate check, but that's the last step of
+    /// the wizard - this repeats it right at chassis-selection time so the user isn't allowed to
+    /// fill in the whole form first). "JC-1042" (local) or "SVC1042" (BAPL DMS JobPrefix+JobNo).</summary>
+    string? OpenJobCardNumber = null,
+    /// <summary>"local" (JobCardScanner's own JobCards, this dealer only) or "bapl-dms" (BAPL DMS's
+    /// own job card history, which JobCardsController.Create's duplicate check also already covers -
+    /// see OpenJobCardNumber's doc comment).</summary>
+    string? OpenJobCardSource = null,
+    /// <summary>BAPL DMS's own JobStatus text for an "bapl-dms"-sourced hit (e.g. "In Progress") -
+    /// null for a "local" hit, where JobCardScanner's own Status enum isn't a single display string
+    /// the same way.</summary>
+    string? OpenJobCardStatus = null);
 
 /// <summary>One lightweight match for the Job Card Wizard's chassis/registration-no. autocomplete
 /// (search-as-you-type, e.g. typing "P6" lists every ChassisDetails row whose ChassisNo or RegNo
 /// contains it) - deliberately narrow (no customer/battery detail) since a full
 /// <see cref="BaplDmsVehicleRow"/> is only fetched once the user actually picks one suggestion, via
 /// the existing LookupVehicleAsync. See BaplDmsService.SearchVehiclesAsync.</summary>
-public record BaplDmsVehicleSuggestion(string ChassisNo, string? RegNo, string? ModelName, string? DealerId);
+public record BaplDmsVehicleSuggestion(string ChassisNo, string? RegNo, string? ModelName, string? DealerId, DateOnly? SaleDate);
 
 /// <summary>One workshop/service location row from BAPL DMS's own LocationMaster - filtered to the
 /// "W" series (Loccode ending in W&lt;digits&gt;, e.g. "CUS0435W1") per your own workshops, as
@@ -180,6 +198,11 @@ public record BaplDmsJobCardListRow(
     string? Supervisor,
     string? Technician);
 
+/// <summary>The result of BaplDmsService.GetOpenJobCardForChassisAsync - just enough to build the
+/// "this chassis already has an open job card in BAPL DMS" block message
+/// (JobCardsController.Create), never persisted anywhere locally.</summary>
+public record BaplDmsOpenJobCardRow(int JobCardHeaderId, int? JobNo, string? JobPrefix, string? JobStatus);
+
 /// <summary>Full read-only detail for one BAPL DMS job card, by its JobCardHeaderId - powers the
 /// read-only "BAPL DMS Job Card" view a merged /jobcards list row links to (see
 /// BaplDmsService.GetJobCardByIdAsync and the /jobcards/bapl/:id page). A superset of
@@ -232,24 +255,36 @@ public record BaplDmsRepairBillRow(int Id, string? RepairBillStatus, decimal? To
 /// per batch is marked FinalStockFlag = 'Y' - the batch's current/latest state. Example confirmed
 /// from your data: item 22GE370010AS at CUS0435W1 has a 'P' row (closing qty 1, Flag 'N' - since a
 /// later row supersedes it) followed by an 'S' row (closing qty 0, Flag 'Y') - so its real available
-/// qty is correctly 0 (sold out), which HAVING SUM(...) > 0 below excludes entirely, exactly as it
-/// should. Summing BatchClosingQty across every Flag='Y' row per ItemCode (one such row per batch)
-/// therefore gives the item's true total remaining stock across all its batches at that location.</summary>
+/// qty is correctly 0 (sold out). Summing BatchClosingQty across every Flag='Y' row per ItemCode (one
+/// such row per batch) gives the item's true total remaining stock across all its batches at that
+/// location - this CAN come out to zero or negative (oversold/adjustment). GetPartsInventoryAsync
+/// deliberately does NOT filter these out any more (previously a `HAVING SUM(...) > 0`, removed
+/// 2026-09-03): a workshop still needs to be able to suggest a part it's temporarily out of stock on
+/// (e.g. to flag it needs reordering, or to record it as Under Warranty pending stock) - hiding every
+/// zero/negative-stock item from the search made the "Suggest a part" box come up empty for exactly
+/// the items staff were most likely to be searching for right after they'd just sold the last unit,
+/// which read as "Add Suggestion is broken" rather than "this item has none left". The frontend
+/// (PartSuggestionCard) already shows the real AvailableQty next to each match either way, so an
+/// out-of-stock item is still clearly labelled as such - it's just no longer invisible.</summary>
 /// <summary>
 /// Description/Mrp/HsnCode are a SEPARATE best-effort enrichment (see GetPartsInventoryAsync), NOT
 /// part of the confirmed PartsInventory query above - PartsInventory itself was only confirmed to
 /// carry ItemCode/TransType/BatchOpeningQty/BatchTransQty/BatchClosingQty/FinalStockFlag, no
-/// item-name/price/HSN column. These three are guessed from a table named [dbo].[ItemMaster]
-/// (ItemCode/ItemName/Mrp/HsnCode columns) - BAPL DMS's DealerMaster/ComplaintMaster/LabourMaster/
-/// LocationMaster naming convention suggests an "ItemMaster" for parts, but this was NOT
-/// independently confirmed via a live SELECT * the way every other query in this file was. If they
-/// keep coming back null, run `SELECT TOP 3 * FROM ItemMaster` (or wherever part descriptions/MRP/
-/// HSN actually live) and share the real table/column names so this can be corrected.
+/// item-name/price/HSN column. These three come from [dbo].[ItemMaster] - CONFIRMED 2026-09-03 (you
+/// ran `SELECT * FROM ItemMaster WHERE itemcode=...` and shared the real columns): itemcode/
+/// itemname/hsncode exist as expected, but there is no column literally named "Mrp" - the price
+/// columns are dlrprice (dealer's own cost) and custprice (price charged to the customer), so
+/// GetPartsInventoryAsync's enrichment query selects custprice aliased as Mrp. If that turns out to
+/// be the wrong one of the two for what should show as "MRP" on the job card, swap the alias to
+/// dlrprice instead - both exist, this was just the closer match of the two to "price shown to the
+/// customer".
 /// </summary>
 public record BaplDmsPartStockRow(string ItemCode, int AvailableQty, string? Description = null, decimal? Mrp = null, string? HsnCode = null);
 
-/// <summary>One labour rate-card row from BAPL DMS's own LabourMaster, for the Job Card Detail
-/// page's "Labour Suggestion" panel - mirrors BaplDmsPartStockRow's role for Part Suggestion.
+/// <summary>One labour rate-card row from BAPL DMS's own LabourMaster, OR from PartWiseLabourMaster
+/// (a second, part-linked rate card - see GetLabourAsync's doc comment for why both are queried and
+/// merged), for the Job Card Detail page's "Labour Suggestion" panel - mirrors BaplDmsPartStockRow's
+/// role for Part Suggestion.
 /// CONFIRMED schema (you ran `SELECT * FROM LabourMaster` and shared the full column list plus
 /// real rows): LabourCode/LabourDescription/LabourRate/Sgst/Cgst/Igst/HsnCode/Category all
 /// populated on every row; JobTypeId/ServiceHeadId/ServiceTypeId (LabourMaster's own
@@ -263,7 +298,15 @@ public record BaplDmsPartStockRow(string ItemCode, int AvailableQty, string? Des
 /// with (not replaced by) the free-text search on top. IsActive
 /// mirrors LabourMaster's own isLabourActive column, which is NULL (not 0) on many legacy rows -
 /// treated as active (not excluded) since NULL here means "never explicitly deactivated", not
-/// "inactive".</summary>
+/// "inactive".
+/// PartCode/PartDescription are ONLY ever populated for a PartWiseLabourMaster row (you shared its
+/// schema/sample data 2026-09-03: Id/LabourCode/LabourName/PartCode/PartDescription/ModelName/
+/// CityTier/LabourRate/LabourHrs/CGST/SGST/IGST/JobType/DealerCode/HSNCode/EffectiveDate/
+/// ServiceType/ServiceHead/IsActive) - a plain LabourMaster row always has these null, since that
+/// table isn't tied to a specific part. Source tells the two apart in the UI/logs without relying
+/// on that null-ness alone. Id collisions are possible between the two source tables (both are
+/// small independent int-identity tables) - GetLabourAsync negates PartWiseLabourMaster's own Id
+/// before it reaches here so merged rows still have a unique Id for React keys/selection.</summary>
 public record BaplDmsLabourRow(
     int Id,
     string LabourCode,
@@ -277,7 +320,10 @@ public record BaplDmsLabourRow(
     int? JobTypeId,
     int? ServiceHeadId,
     int? ServiceTypeId,
-    string? OemModelName);
+    string? OemModelName,
+    string Source = "LabourMaster",
+    string? PartCode = null,
+    string? PartDescription = null);
 
 /// <summary>Full RepairBillHeader row for one BAPL DMS job (RepairBillHeader.JobId), for the
 /// "Download Invoice from DMS" PDF (see InvoicePdfService.BuildInvoicePdfAsync). Wider than the
@@ -440,6 +486,21 @@ public interface IBaplDmsService
     Task<IReadOnlyList<BaplDmsJobCardHistoryRow>> GetServiceHistoryAsync(string chassisNo, string? dealerCode, CancellationToken ct = default);
 
     /// <summary>
+    /// This chassis's most recent BAPL DMS job card, ONLY if it's still open (i.e. not Billed) -
+    /// null if there is no job card for this chassis in BAPL DMS at all, or the most recent one is
+    /// already closed/billed. Added so JobCardsController.Create's existing "this chassis already
+    /// has an open job card" duplicate check (which only ever looked at JobCardScanner's own local
+    /// JobCards table) also catches a job card opened directly in BAPL DMS outside JobCardScanner -
+    /// that job card is only ever READ here, never written into JobCardScanner's own database; the
+    /// local database still only ever gets a row for a job card actually created through
+    /// JobCardScanner's own wizard. Uses the same JobStatus CASE expression as SearchJobCardsAsync
+    /// (see that method's doc comment on why a stored h.JobStatus column isn't trustworthy).
+    /// Throws <see cref="InvalidOperationException"/> on a real failure, same as the other methods
+    /// on this confirmed schema.
+    /// </summary>
+    Task<BaplDmsOpenJobCardRow?> GetOpenJobCardForChassisAsync(string chassisNo, string? dealerCode, CancellationToken ct = default);
+
+    /// <summary>
     /// Browse/search across BAPL DMS's own job cards (JobCardHeader/JobCardCustomer - same
     /// confirmed schema as LookupVehicleAsync's primary query and GetServiceHistoryAsync), for
     /// blending into the /jobcards list page alongside JobCardScanner's own records (see
@@ -518,17 +579,26 @@ public interface IBaplDmsService
     /// a live SELECT *) "available" rule this uses.</summary>
     Task<IReadOnlyList<BaplDmsPartStockRow>> GetPartsInventoryAsync(string locationCode, CancellationToken ct = default);
 
-    /// <summary>Active labour rate-card rows from BAPL DMS's own LabourMaster, for the "Labour
-    /// Suggestion" panel - see BaplDmsLabourRow's doc comment for the confirmed schema and the
-    /// cascade-id/NULL-handling caveats. jobTypeId/serviceHeadId/serviceTypeId are each optional and,
-    /// when given, EXCLUDE only a row that has a value there AND it doesn't match - a row with NULL
-    /// Jobtype/ServiceHead/ServiceType always passes through (most of LabourMaster is unmapped to
-    /// the cascade, so a strict filter would hide nearly everything); q (optional) further narrows
-    /// by LabourCode/LabourDescription substring, combined with (not replacing) the cascade filter.
-    /// All null/empty -> every active labour row, capped at 500 like SearchAspNetUsersAsync. Throws
-    /// <see cref="InvalidOperationException"/> on a real failure (confirmed schema, so a failure
-    /// here is real, not "table doesn't exist" - same reasoning as GetPartsInventoryAsync).</summary>
-    Task<IReadOnlyList<BaplDmsLabourRow>> GetLabourAsync(int? jobTypeId, int? serviceHeadId, int? serviceTypeId, string? q, CancellationToken ct = default);
+    /// <summary>Active labour rate-card rows from BAPL DMS's own LabourMaster, UNIONed with
+    /// PartWiseLabourMaster (2026-09-03: a second rate card that ties a labour code to a specific
+    /// PartCode/PartDescription, scoped per-dealer via its own DealerCode column - you shared its
+    /// schema and confirmed real rows exist there that aren't in plain LabourMaster) - for the
+    /// "Labour Suggestion" panel. See BaplDmsLabourRow's doc comment for the confirmed schema and
+    /// the cascade-id/NULL-handling caveats (both tables get the same lenient treatment: NULL on a
+    /// cascade/dealer column always passes through, only an explicit non-matching value excludes a
+    /// row). jobTypeId/serviceHeadId/serviceTypeId are each optional and, when given, EXCLUDE only a
+    /// row that has a value there AND it doesn't match; dealerCode (optional - PartWiseLabourMaster
+    /// rows are skipped entirely when this is null, since showing every dealer's part-linked rates
+    /// to everyone would be wrong) scopes PartWiseLabourMaster the same lenient way. q (optional)
+    /// further narrows by LabourCode/LabourDescription (and, for PartWiseLabourMaster, PartCode/
+    /// PartDescription too) substring, combined with (not replacing) the cascade filter. All
+    /// null/empty -> every active labour row from both tables, capped at 500 each like
+    /// SearchAspNetUsersAsync. Throws <see cref="InvalidOperationException"/> on a real failure to
+    /// LabourMaster (confirmed schema, so a failure there is real, not "table doesn't exist" - same
+    /// reasoning as GetPartsInventoryAsync); a PartWiseLabourMaster-specific failure is logged and
+    /// swallowed instead, since that union is new/less proven and must never take down the whole
+    /// panel the way it already worked before today.</summary>
+    Task<IReadOnlyList<BaplDmsLabourRow>> GetLabourAsync(int? jobTypeId, int? serviceHeadId, int? serviceTypeId, string? dealerCode, string? q, CancellationToken ct = default);
 
     /// <summary>Most recent (non-deleted) RepairBillHeader row for one BAPL DMS job card, for the
     /// "Download Invoice from DMS" PDF (see InvoicePdfService.BuildInvoicePdfAsync). Returns null
@@ -898,10 +968,15 @@ public class BaplDmsService : IBaplDmsService
     public async Task<IReadOnlyList<BaplDmsVehicleSuggestion>> SearchVehiclesAsync(string q, string? dealerCode, int take, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(q) || q.Trim().Length < 2) return Array.Empty<BaplDmsVehicleSuggestion>();
-        take = take is > 0 and <= 50 ? take : 20;
+        // Ceiling raised 50 -> 120 (2026-09-03) - a dealer whose whole current stock is one item
+        // code/batch can have 80+ ChassisDetails rows sharing almost the same ChassisNo prefix
+        // (confirmed: 80 rows for one dealer, all "P6DSVFMSPBH01xxxx"), so the old 50-row ceiling
+        // could still clip a single dealer's full inventory - see BaplDmsController.VehicleSuggestions'
+        // doc comment on the caller-side default this ceiling now leaves room under.
+        take = take is > 0 and <= 120 ? take : 60;
 
         const string sql = @"
-            SELECT TOP (@take) ch.ChassisNo, ch.RegNo, ch.ItemName, ch.DealerId
+            SELECT TOP (@take) ch.ChassisNo, ch.RegNo, ch.ItemName, ch.DealerId, ch.SaleDate
             FROM [dbo].[ChassisDetails] ch
             WHERE (ch.ChassisNo LIKE @q OR ch.RegNo LIKE @q)
               AND (@dealerCode IS NULL OR ch.DealerId = @dealerCode)
@@ -923,7 +998,8 @@ public class BaplDmsService : IBaplDmsService
                     rdr["ChassisNo"] as string ?? "",
                     rdr["RegNo"] as string,
                     rdr["ItemName"] as string,
-                    rdr["DealerId"] as string));
+                    rdr["DealerId"] as string,
+                    ToDateOnly(rdr["SaleDate"])));
             }
         }
         catch (Exception ex)
@@ -984,6 +1060,65 @@ public class BaplDmsService : IBaplDmsService
         }
 
         return results;
+    }
+
+    public async Task<BaplDmsOpenJobCardRow?> GetOpenJobCardForChassisAsync(string chassisNo, string? dealerCode, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(chassisNo)) return null;
+        chassisNo = chassisNo.Trim();
+
+        // Same JobStatus CASE expression as SearchJobCardsAsync - see that method's doc comment on
+        // why a stored h.JobStatus column isn't trustworthy. Only the single most recent job card
+        // for this chassis matters here (an older, already-closed one shouldn't block a new one).
+        const string sql = @"
+            SELECT TOP 1
+                h.Id AS JobCardHeaderId, h.JobNo, h.Jobprefix,
+                CASE
+                    WHEN rb.RepairbillStatus = 'Billed' THEN 'Closed'
+                    WHEN rb.TotalNetAmount > 0 THEN 'Complete'
+                    WHEN h.IsMaterialTransfer = 1 THEN 'Material Transfer'
+                    WHEN fr.Ffirstatus = 'Closed' THEN 'FFIR Closed'
+                    WHEN fr.Id IS NOT NULL THEN 'FFIR Created'
+                    ELSE 'Open'
+                END AS JobStatus
+            FROM [dbo].[JobCardHeader] h
+            JOIN [dbo].[JobCardCustomer] c ON c.JobCardHeaderId = h.Id
+            OUTER APPLY (
+                SELECT TOP 1 rb2.RepairbillStatus, rb2.TotalNetAmount
+                FROM [dbo].[RepairBillHeader] rb2 WHERE rb2.JobId = h.Id ORDER BY rb2.Id DESC
+            ) rb
+            OUTER APPLY (
+                SELECT TOP 1 fr2.Id, fr2.Ffirstatus
+                FROM [dbo].[Ffirheader] fr2 WHERE fr2.JobCardHeaderId = h.Id ORDER BY fr2.Id DESC
+            ) fr
+            WHERE ISNULL(h.IsDelete, 0) = 0
+              AND (h.Chassisno = @chassisNo OR c.ChassisNo = @chassisNo)
+              AND (@dealerCode IS NULL OR h.DealerCode = @dealerCode)
+            ORDER BY h.JobinDate DESC, h.CreatedDate DESC";
+
+        try
+        {
+            await using var conn = new SqlConnection(ConnStr);
+            await conn.OpenAsync(ct);
+            await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+            cmd.Parameters.AddWithValue("@chassisNo", chassisNo);
+            cmd.Parameters.AddWithValue("@dealerCode", (object?)dealerCode ?? DBNull.Value);
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            if (!await rdr.ReadAsync(ct)) return null;
+
+            var status = rdr["JobStatus"] as string;
+            // "Closed" is the only status this CASE ever produces for a fully billed job card -
+            // everything else (Open/Complete/Material Transfer/FFIR Created/FFIR Closed) still
+            // counts as "in progress" for duplicate-blocking purposes, same as the local check's
+            // `Status != JobCardStatus.Closed`.
+            if (status == "Closed") return null;
+
+            return new BaplDmsOpenJobCardRow((int)rdr["JobCardHeaderId"], rdr["JobNo"] as int?, rdr["Jobprefix"] as string, status);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Could not check BAPL DMS for an open job card on chassis '{chassisNo}': {ex.Message}", ex);
+        }
     }
 
     public async Task<IReadOnlyList<BaplDmsJobCardListRow>> SearchJobCardsAsync(string? q, string? dealerCode, int take, CancellationToken ct = default)
@@ -1189,7 +1324,18 @@ public class BaplDmsService : IBaplDmsService
             throw new InvalidOperationException($"Could not read BAPL DMS's workshop locations (LocationMaster): {ex.Message}", ex);
         }
 
-        return results;
+        // Dedupe by LocCode (2026-09-03) - reported as "duplicate location shown" in the wizard's
+        // Service Location dropdown. LocationMaster has no PK/unique constraint enforced on
+        // (Loccode, DealerId) on BAPL DMS's side that this app can see, and this dealer's data has
+        // more than one Active='Y' row for the same Loccode (confirmed by the symptom - the query
+        // above has no JOIN that could introduce a duplicate on its own). A workshop should only
+        // ever appear once regardless of how many raw LocationMaster rows exist for it, so this
+        // keeps the first row seen per LocCode and drops the rest, rather than a SQL-side DISTINCT
+        // (which wouldn't dedupe two rows whose LocName/City/State text differs even slightly).
+        return results
+            .GroupBy(r => r.LocCode, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .ToList();
     }
 
     public async Task<IReadOnlyList<BaplDmsJobTypeRow>> GetJobTypesAsync(CancellationToken ct = default)
@@ -1476,14 +1622,15 @@ public class BaplDmsService : IBaplDmsService
         if (string.IsNullOrWhiteSpace(locationCode)) return Array.Empty<BaplDmsPartStockRow>();
 
         // See BaplDmsPartStockRow's doc comment - CONFIRMED rule: FinalStockFlag = 'Y' marks each
-        // batch's current transaction row, summed by ItemCode. Only items with a positive remaining
-        // balance are worth suggesting.
+        // batch's current transaction row, summed by ItemCode. Every item tracked at this location
+        // is returned (no HAVING > 0 filter any more - see the doc comment above on why hiding
+        // zero/negative-stock items made "Suggest a part" look broken); AvailableQty can legitimately
+        // be 0 or negative, and the frontend shows it plainly next to each result either way.
         const string sql = @"
             SELECT ItemCode, SUM(BatchClosingQty) AS AvailableQty
             FROM [dbo].[PartsInventory]
             WHERE DealerLocation = @loc AND FinalStockFlag = 'Y'
             GROUP BY ItemCode
-            HAVING SUM(BatchClosingQty) > 0
             ORDER BY ItemCode";
         var results = new List<BaplDmsPartStockRow>();
         try
@@ -1496,12 +1643,22 @@ public class BaplDmsService : IBaplDmsService
             while (await rdr.ReadAsync(ct))
                 results.Add(new BaplDmsPartStockRow(rdr["ItemCode"] as string ?? "", Convert.ToInt32(rdr["AvailableQty"])));
 
-            // ----- ENRICHMENT (best-effort, unconfirmed schema - see BaplDmsPartStockRow's doc
-            // comment): Description/Mrp per item code, guessed from [dbo].[ItemMaster]. Batched into
-            // one query for every item code this location returned, rather than one query per row.
-            // Swallowed on failure (logged) exactly like LookupVehicleAsync's LedgerMaster.Address/
-            // Email guess - a wrong table/column name here must never break the part list itself,
-            // which already works off the confirmed PartsInventory query above. -----
+            // ----- ENRICHMENT: Description/Mrp/HsnCode per item code, from [dbo].[ItemMaster].
+            // Batched into one query for every item code this location returned, rather than one
+            // query per row.
+            // CONFIRMED 2026-09-03 (you ran `SELECT * FROM ItemMaster WHERE itemcode=...` and shared
+            // the real columns) - ItemMaster has itemcode/itemname/hsncode (case-insensitive match to
+            // the ItemCode/ItemName/HsnCode this was already selecting - fine as-is), but there is NO
+            // column literally named "Mrp". That's why Description/HSN were coming back blank too,
+            // not just MRP: SQL Server rejects the whole SELECT with "Invalid column name 'Mrp'",
+            // which the catch block below swallows, discarding the entire enrichment for every part
+            // in the list. There's no single "printed MRP" column either - the two price columns are
+            // dlrprice (dealer's own cost) and custprice (price charged to the customer), so custprice
+            // is what's shown as MRP here, aliased back to Mrp so the rest of this method/the
+            // BaplDmsPartStockRow record don't need to change. Swallowed on failure (logged) exactly
+            // like LookupVehicleAsync's LedgerMaster.Address/Email guess - a wrong table/column name
+            // here must never break the part list itself, which already works off the confirmed
+            // PartsInventory query above. -----
             if (results.Count > 0)
             {
                 try
@@ -1509,7 +1666,7 @@ public class BaplDmsService : IBaplDmsService
                     var itemCodes = results.Select(r => r.ItemCode).Distinct().ToList();
                     var paramNames = itemCodes.Select((_, i) => $"@i{i}").ToList();
                     var enrichSql = $@"
-                        SELECT ItemCode, ItemName, Mrp, HsnCode
+                        SELECT ItemCode, ItemName, CustPrice AS Mrp, HsnCode
                         FROM [dbo].[ItemMaster]
                         WHERE ItemCode IN ({string.Join(",", paramNames)})";
                     await using var enrichCmd = new SqlCommand(enrichSql, conn) { CommandTimeout = 30 };
@@ -1538,7 +1695,7 @@ public class BaplDmsService : IBaplDmsService
     }
 
     /// <summary>See IBaplDmsService.GetLabourAsync's doc comment.</summary>
-    public async Task<IReadOnlyList<BaplDmsLabourRow>> GetLabourAsync(int? jobTypeId, int? serviceHeadId, int? serviceTypeId, string? q, CancellationToken ct = default)
+    public async Task<IReadOnlyList<BaplDmsLabourRow>> GetLabourAsync(int? jobTypeId, int? serviceHeadId, int? serviceTypeId, string? dealerCode, string? q, CancellationToken ct = default)
     {
         // isLabourActive is NULL (not 0) on many legacy rows - treated as active.
         //
@@ -1590,7 +1747,72 @@ public class BaplDmsService : IBaplDmsService
                     ToNullableInt(rdr["Jobtype"]),
                     ToNullableInt(rdr["ServiceHead"]),
                     ToNullableInt(rdr["ServiceType"]),
-                    rdr["oemmodelname"] as string));
+                    rdr["oemmodelname"] as string,
+                    Source: "LabourMaster"));
+            }
+
+            // 2026-09-03: UNION in PartWiseLabourMaster - a second rate card you confirmed exists
+            // (shared its schema/real rows) that ties a labour code to a specific
+            // PartCode/PartDescription and is scoped per-dealer (its own DealerCode column), unlike
+            // LabourMaster above which has no dealer scoping at all. Only queried when a dealerCode
+            // was actually resolved for the caller - without one there's no safe way to know which
+            // dealer's part-linked rates should be visible, so this union is skipped entirely (the
+            // plain LabourMaster results above are still returned either way). A failure here is
+            // logged and swallowed rather than thrown, unlike the LabourMaster query above: that one
+            // already worked before today and a real problem there should surface loudly, but this
+            // union is new/unconfirmed against every environment yet and must never take the whole
+            // Labour Suggestion panel down if e.g. this particular database doesn't have the table.
+            if (!string.IsNullOrWhiteSpace(dealerCode))
+            {
+                try
+                {
+                    const string pwlmSql = @"
+                        SELECT TOP 500 Id, LabourCode, LabourName, PartCode, PartDescription, ModelName,
+                               LabourRate, CGST, SGST, IGST, JobType, HSNCode, ServiceType, ServiceHead
+                        FROM [dbo].[PartWiseLabourMaster]
+                        WHERE (IsActive IS NULL OR IsActive = 1)
+                          AND (DealerCode IS NULL OR DealerCode = @dealerCode)
+                          AND (@jobTypeId IS NULL OR JobType IS NULL OR JobType = @jobTypeId)
+                          AND (@serviceHeadId IS NULL OR ServiceHead IS NULL OR ServiceHead = @serviceHeadId)
+                          AND (@serviceTypeId IS NULL OR ServiceType IS NULL OR ServiceType = @serviceTypeId)
+                          AND (@qLike IS NULL OR LabourCode LIKE @qLike OR LabourName LIKE @qLike
+                               OR PartCode LIKE @qLike OR PartDescription LIKE @qLike)
+                        ORDER BY LabourName";
+                    await using var pwlmCmd = new SqlCommand(pwlmSql, conn) { CommandTimeout = 30 };
+                    pwlmCmd.Parameters.AddWithValue("@dealerCode", dealerCode.Trim());
+                    pwlmCmd.Parameters.AddWithValue("@jobTypeId", (object?)jobTypeId ?? DBNull.Value);
+                    pwlmCmd.Parameters.AddWithValue("@serviceHeadId", (object?)serviceHeadId ?? DBNull.Value);
+                    pwlmCmd.Parameters.AddWithValue("@serviceTypeId", (object?)serviceTypeId ?? DBNull.Value);
+                    pwlmCmd.Parameters.AddWithValue("@qLike", string.IsNullOrWhiteSpace(q) ? (object)DBNull.Value : $"%{q.Trim()}%");
+                    await using var pwlmRdr = await pwlmCmd.ExecuteReaderAsync(ct);
+                    while (await pwlmRdr.ReadAsync(ct))
+                    {
+                        results.Add(new BaplDmsLabourRow(
+                            // Negated so this can never collide with a LabourMaster row's own Id
+                            // above - both tables are independent int-identity columns, so the same
+                            // small number (e.g. 1, 2) exists in both.
+                            -Convert.ToInt32(pwlmRdr["Id"]),
+                            pwlmRdr["LabourCode"] as string ?? "",
+                            pwlmRdr["LabourName"] as string,
+                            pwlmRdr["HSNCode"] as string,
+                            ToNullableDecimal(pwlmRdr["SGST"]),
+                            ToNullableDecimal(pwlmRdr["CGST"]),
+                            ToNullableDecimal(pwlmRdr["IGST"]),
+                            ToNullableDecimal(pwlmRdr["LabourRate"]),
+                            Category: null,
+                            ToNullableInt(pwlmRdr["JobType"]),
+                            ToNullableInt(pwlmRdr["ServiceHead"]),
+                            ToNullableInt(pwlmRdr["ServiceType"]),
+                            pwlmRdr["ModelName"] as string,
+                            Source: "PartWiseLabourMaster",
+                            PartCode: pwlmRdr["PartCode"] as string,
+                            PartDescription: pwlmRdr["PartDescription"] as string));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogInformation(ex, "BAPL DMS PartWiseLabourMaster lookup skipped for dealer {DealerCode} (table may not exist on this database yet)", dealerCode);
+                }
             }
         }
         catch (Exception ex)

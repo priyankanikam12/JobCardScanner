@@ -1,50 +1,120 @@
 import { useEffect, useState } from 'react'
-import { FlatList, StyleSheet, Text, TextInput, View } from 'react-native'
+import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import { apiClient } from '../api/client'
-import type { PartMaster } from '../types'
+import { useStaffAuth } from '../auth/StaffAuthContext'
+import { PickerField } from '../components/PickerField'
+import type { BaplDmsPartStock, BaplDmsWorkshop, PartMaster } from '../types'
+
+interface PartsSearchResponse {
+  localParts: PartMaster[]
+  dmsParts: BaplDmsPartStock[]
+  dmsWarning: string | null
+}
 
 export function PartsScreen() {
+  const { profile } = useStaffAuth()
   const [q, setQ] = useState('')
-  const [parts, setParts] = useState<PartMaster[]>([])
+  const [locationCode, setLocationCode] = useState('')
+  // Dealer's own BAPL DMS workshop location(s) - fetched once so the DMS Parts Inventory list
+  // below can pick one automatically instead of requiring the user to know/type a location code.
+  // Mirrors web's PartsPage.tsx same change.
+  const [workshops, setWorkshops] = useState<BaplDmsWorkshop[]>([])
+  const [localParts, setLocalParts] = useState<PartMaster[]>([])
+  const [dmsParts, setDmsParts] = useState<BaplDmsPartStock[]>([])
+  const [dmsWarning, setDmsWarning] = useState<string | null>(null)
 
-  const search = () => apiClient.get<PartMaster[]>('/api/parts', { params: { q: q || undefined } }).then((r) => setParts(r.data))
+  const search = (loc: string) =>
+    apiClient.get<PartsSearchResponse>('/api/parts', { params: { q: q || undefined, locationCode: loc || undefined } })
+      .then((r) => {
+        setLocalParts(r.data.localParts)
+        setDmsParts(r.data.dmsParts)
+        setDmsWarning(r.data.dmsWarning)
+      })
 
-  useEffect(() => { search() }, [])
+  useEffect(() => { search(locationCode) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Item 11: search-as-you-type (debounced) instead of requiring the keyboard's search key.
   useEffect(() => {
-    const handle = setTimeout(search, 300)
+    const handle = setTimeout(() => search(locationCode), 300)
     return () => clearTimeout(handle)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q])
+  }, [q, locationCode])
+
+  useEffect(() => {
+    if (!profile?.dealerId) return
+    apiClient.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: profile.dealerId } })
+      .then(({ data }) => {
+        setWorkshops(data)
+        // Auto-select this dealer's first workshop location so DMS Parts Inventory shows with no
+        // manual search needed.
+        if (data.length > 0) setLocationCode((prev) => prev || data[0].locCode)
+      })
+      .catch(() => setWorkshops([]))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile?.dealerId])
 
   return (
-    <View style={styles.container}>
-      <TextInput style={styles.search} placeholder="Search parts" value={q} onChangeText={setQ} onSubmitEditing={search} returnKeyType="search" />
-      <FlatList
-        data={parts}
-        keyExtractor={(item) => item.id}
-        renderItem={({ item }) => (
-          <View style={styles.row}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.name}>{item.name}</Text>
-              <Text style={styles.muted}>{item.partNumber} - {item.category}</Text>
-            </View>
-            <Text style={styles.price}>Rs.{item.unitPrice}</Text>
-            <Text style={item.stockQty <= 5 ? styles.lowStock : styles.muted}>{item.stockQty} in stock</Text>
+    <ScrollView style={styles.container} keyboardShouldPersistTaps="handled">
+      <TextInput style={styles.search} placeholder="Search parts" value={q} onChangeText={setQ} returnKeyType="search" />
+
+      {workshops.length > 0 ? (
+        <View style={{ marginBottom: 12 }}>
+          <PickerField
+            label="BAPL DMS workshop location"
+            value={locationCode}
+            options={workshops.map((w) => ({ label: `${w.locCode} — ${w.locName}`, value: w.locCode }))}
+            onChange={setLocationCode}
+          />
+        </View>
+      ) : (
+        <TextInput
+          style={styles.search}
+          placeholder="BAPL DMS workshop location code (e.g. CUS0435W1)"
+          value={locationCode}
+          onChangeText={setLocationCode}
+          autoCapitalize="characters"
+        />
+      )}
+
+      <Text style={styles.sectionTitle}>JobCardScanner catalog</Text>
+      {localParts.length === 0 && <Text style={styles.muted}>No matches in JobCardScanner's own catalog.</Text>}
+      {localParts.map((item) => (
+        <View key={item.id} style={styles.row}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.name}>{item.name}</Text>
+            <Text style={styles.muted}>{item.partNumber} - {item.category}</Text>
           </View>
-        )}
-      />
-    </View>
+          <Text style={styles.price}>Rs.{item.unitPrice}</Text>
+          <Text style={item.stockQty <= 5 ? styles.lowStock : styles.muted}>{item.stockQty} in stock</Text>
+        </View>
+      ))}
+
+      <Text style={styles.sectionTitle}>BAPL DMS Parts Inventory</Text>
+      {!locationCode && <Text style={styles.muted}>Select or enter a BAPL DMS workshop location above to see its live stock.</Text>}
+      {dmsWarning && <Text style={[styles.muted, { color: '#dc2626' }]}>{dmsWarning}</Text>}
+      {!!locationCode && dmsParts.length === 0 && !dmsWarning && (
+        <Text style={styles.muted}>No stock found at "{locationCode}"{q ? ` matching "${q}"` : ''}.</Text>
+      )}
+      {dmsParts.map((item) => (
+        <View key={item.itemCode} style={styles.row}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.name}>{item.itemCode}</Text>
+            {item.description && <Text style={styles.muted}>{item.description}</Text>}
+          </View>
+          <Text style={styles.price}>{item.availableQty} avail.</Text>
+        </View>
+      ))}
+    </ScrollView>
   )
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f4f6f9', padding: 12 },
   search: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 8, padding: 10, marginBottom: 12 },
+  sectionTitle: { fontSize: 13, fontWeight: '700', color: '#101828', marginBottom: 8, marginTop: 4 },
   row: { backgroundColor: '#fff', borderRadius: 10, borderWidth: 1, borderColor: '#e2e6ec', padding: 14, marginBottom: 8, flexDirection: 'row', alignItems: 'center', gap: 10 },
   name: { fontWeight: '700', color: '#101828' },
-  muted: { fontSize: 12, color: '#6b7280', marginTop: 2 },
+  muted: { fontSize: 12, color: '#6b7280', marginTop: 2, marginBottom: 8 },
   price: { fontWeight: '600' },
   lowStock: { color: '#dc2626', fontSize: 12, fontWeight: '600' },
 })

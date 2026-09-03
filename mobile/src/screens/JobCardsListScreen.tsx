@@ -4,11 +4,36 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { apiClient } from '../api/client'
 import { Badge } from '../components/Badge'
 import type { JobCardListResponse, JobCardSummary } from '../types'
-import type { RootStackParamList } from '../navigation/RootNavigator'
+import type { JobCardsListFilter, RootStackParamList } from '../navigation/RootNavigator'
 
 type Props = NativeStackScreenProps<RootStackParamList, 'JobCardsList'>
 
-export function JobCardsListScreen({ navigation }: Props) {
+// Short human label for the active Dashboard deep-link filter, shown as a dismissible chip -
+// mirrors web's Dashboard "Job Cards"/Quick Links deep-links landing on an already-filtered list.
+const FILTER_LABELS: Record<string, string> = {
+  status: 'Status',
+  stageKey: 'Stage',
+  excludeClosed: 'Open job cards',
+  overdue: 'Overdue',
+  createdToday: 'Created today',
+  deliveredToday: 'Delivered today',
+  closedThisMonth: 'Closed this month',
+  warrantyOnly: 'Warranty',
+  pendingBucket: 'Pending',
+}
+
+function describeFilter(filter: JobCardsListFilter | undefined): string | null {
+  if (!filter) return null
+  const key = (Object.keys(filter) as (keyof JobCardsListFilter)[]).find((k) => filter[k])
+  if (!key) return null
+  if (key === 'status' || key === 'stageKey') return `${FILTER_LABELS[key]}: ${filter[key]}`
+  return FILTER_LABELS[key]
+}
+
+export function JobCardsListScreen({ navigation, route }: Props) {
+  // Dashboard KPI cards deep-link here with one of these set (e.g. { excludeClosed: true } or
+  // { status: 'PendingCustomerApproval' }) - see DashboardScreen.tsx's KPIS array.
+  const filter = route.params
   const [jobCards, setJobCards] = useState<JobCardSummary[]>([])
   // Non-null only when a real BAPL DMS problem (not "this dealer has no BAPL DMS data", which is
   // normal and silent) kept its job cards out of the blended list below - mirrors
@@ -20,12 +45,17 @@ export function JobCardsListScreen({ navigation }: Props) {
   const load = () => {
     setRefreshing(true)
     apiClient
-      .get<JobCardListResponse>('/api/jobcards', { params: { q: q || undefined } })
+      .get<JobCardListResponse>('/api/jobcards', { params: { q: q || undefined, ...filter } })
       .then((r) => { setJobCards(r.data.items); setBaplDmsWarning(r.data.baplDmsWarning ?? null) })
       .finally(() => setRefreshing(false))
   }
 
-  useEffect(load, [])
+  // Re-fetches whenever the filter changes - covers both the initial mount and the filter chip's
+  // "clear" (navigation.setParams below) or a fresh Dashboard deep-link landing on an
+  // already-mounted instance of this screen (React Navigation updates route.params in place
+  // rather than remounting).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(load, [JSON.stringify(filter)])
 
   // Item 11: search-as-you-type (debounced) instead of requiring the keyboard's search key -
   // matches web's same change. The backend already substring-matches job card #, customer
@@ -35,6 +65,8 @@ export function JobCardsListScreen({ navigation }: Props) {
     return () => clearTimeout(handle)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q])
+
+  const activeFilterLabel = describeFilter(filter)
 
   return (
     <View style={styles.container}>
@@ -51,6 +83,11 @@ export function JobCardsListScreen({ navigation }: Props) {
           <Text style={styles.newBtnText}>+ New</Text>
         </TouchableOpacity>
       </View>
+      {activeFilterLabel && (
+        <TouchableOpacity style={styles.filterChip} onPress={() => navigation.setParams({ status: undefined, stageKey: undefined, excludeClosed: undefined, overdue: undefined, createdToday: undefined, deliveredToday: undefined, closedThisMonth: undefined, warrantyOnly: undefined, pendingBucket: undefined })}>
+          <Text style={styles.filterChipText}>Filter: {activeFilterLabel} ✕</Text>
+        </TouchableOpacity>
+      )}
       {baplDmsWarning && <Text style={styles.warning}>⚠ {baplDmsWarning}</Text>}
       <FlatList
         data={jobCards}
@@ -90,6 +127,8 @@ const styles = StyleSheet.create({
   newBtn: { backgroundColor: '#2563eb', borderRadius: 8, paddingHorizontal: 14, paddingVertical: 12 },
   newBtnText: { color: '#fff', fontWeight: '700' },
   warning: { fontSize: 12, color: '#92400e', marginBottom: 8 },
+  filterChip: { alignSelf: 'flex-start', backgroundColor: '#eef2ff', borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6, marginBottom: 10 },
+  filterChipText: { color: '#2563eb', fontSize: 12, fontWeight: '700' },
   row: { backgroundColor: '#fff', borderRadius: 10, borderWidth: 1, borderColor: '#e2e6ec', padding: 14, marginBottom: 8, flexDirection: 'row', alignItems: 'center', gap: 10 },
   jcNumber: { fontSize: 15, fontWeight: '700', color: '#101828' },
   muted: { fontSize: 12, color: '#6b7280', marginTop: 2 },

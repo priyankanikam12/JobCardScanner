@@ -26,6 +26,16 @@ export function LabourSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; 
   const [rows, setRows] = useState<BaplDmsLabourRow[]>([])
   const [q, setQ] = useState('')
   const [selectedId, setSelectedId] = useState<number | null>(null)
+  // Holds the actually-picked row's own data, set once at pick time - not re-derived from `rows`.
+  // 2026-09-03 fix (mirrors web's LabourSuggestionCard fix): `rows` is refreshed by the debounced
+  // search above every time `q` changes, including further typing after a pick. If a later search
+  // came back without a row matching the old `selectedId` (e.g. because the user kept typing, or
+  // the cascade filters changed), deriving `selected` as `rows.find(...)` would silently go back
+  // to undefined even though selectedId still looked picked, which either disabled "Add
+  // Suggestion" unexpectedly or (on web, which enabled the button off selectedId rather than
+  // selected) let it silently no-op on press. Storing the picked row directly means a later,
+  // unrelated re-search can no longer un-pick it.
+  const [selected, setSelected] = useState<BaplDmsLabourRow | null>(null)
   const [qty, setQty] = useState('1')
   const [issueType, setIssueType] = useState<(typeof ISSUE_TYPES)[number] | ''>('')
   const [saving, setSaving] = useState(false)
@@ -35,14 +45,21 @@ export function LabourSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; 
     if (jc.baplJobTypeId) params.jobTypeId = jc.baplJobTypeId
     if (jc.baplServiceHeadId) params.serviceHeadId = jc.baplServiceHeadId
     if (jc.baplServiceTypeId) params.serviceTypeId = jc.baplServiceTypeId
+    // 2026-09-03: scopes the PartWiseLabourMaster union (see GetLabourAsync's doc comment, backend)
+    // to this job card's own dealer - without it PartWiseLabourMaster rows are skipped server-side
+    // entirely, so this list would silently stay LabourMaster-only.
+    if (jc.baplDealerCode) params.dealerCode = jc.baplDealerCode
     if (q.trim()) params.q = q.trim()
-    apiClient
-      .get<BaplDmsLabourRow[]>('/api/bapl-dms/labour', { params })
-      .then(({ data }) => setRows(data))
-      .catch(() => setRows([]))
-  }, [jc.baplJobTypeId, jc.baplServiceHeadId, jc.baplServiceTypeId, q])
-
-  const selected = rows.find((r) => r.id === selectedId)
+    // Debounced (300ms) same as every other search-as-you-type box in this app - mirrors web's
+    // same fix on LabourSuggestionCard.
+    const handle = setTimeout(() => {
+      apiClient
+        .get<BaplDmsLabourRow[]>('/api/bapl-dms/labour', { params })
+        .then(({ data }) => setRows(data))
+        .catch(() => setRows([]))
+    }, 300)
+    return () => clearTimeout(handle)
+  }, [jc.baplJobTypeId, jc.baplServiceHeadId, jc.baplServiceTypeId, jc.baplDealerCode, q])
 
   const addSuggestion = async () => {
     if (!selected) return
@@ -60,6 +77,7 @@ export function LabourSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; 
         issueType: issueType || null,
       })
       setSelectedId(null)
+      setSelected(null)
       setQty('1')
       setIssueType('')
       onChanged()
@@ -99,11 +117,14 @@ export function LabourSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; 
       ))}
 
       <Text style={styles.subheading}>Suggest labour (from BAPL DMS LabourMaster)</Text>
+      {/* No separate "Search" label - matches web's LabourSuggestionCard: this field IS the search
+         box, not a distinct extra step. */}
+      <Text style={styles.label}>Labour Code</Text>
       <TextInput
         style={styles.input}
         value={q}
-        onChangeText={setQ}
-        placeholder="Search labour code or description…"
+        onChangeText={(text) => { setQ(text); setSelectedId(null); setSelected(null) }}
+        placeholder="Search by labour code or description…"
       />
 
       {rows.length > 0 && (
@@ -117,11 +138,16 @@ export function LabourSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; 
               <TouchableOpacity
                 key={r.id}
                 style={[styles.pickerRow, isSelected && styles.pickerRowSelected]}
-                onPress={() => setSelectedId(r.id)}
+                onPress={() => { setSelectedId(r.id); setSelected(r) }}
               >
                 <Text style={[styles.pickerRowText, isSelected && styles.pickerRowTextSelected]}>
                   {r.labourCode} - {r.labourDescription ?? 'No description'} (₹{r.labourRate ?? '-'})
                 </Text>
+                {/* 2026-09-03: PartWiseLabourMaster rows are tied to a specific part - shown here
+                   so it's clear this rate applies to that part, not labour in general. */}
+                {!!r.partCode && (
+                  <Text style={styles.muted}>Part: {r.partCode}{r.partDescription ? ` - ${r.partDescription}` : ''}</Text>
+                )}
               </TouchableOpacity>
             )
           })}
@@ -131,6 +157,7 @@ export function LabourSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; 
       {selected && (
         <Text style={styles.muted}>
           Rate ₹{selected.labourRate ?? '-'} · HSN {selected.hsnCode ?? '-'} · SGST {selected.sgst ?? '-'} · CGST {selected.cgst ?? '-'} · IGST {selected.igst ?? '-'}
+          {selected.partCode ? ` · Part: ${selected.partCode}${selected.partDescription ? ' - ' + selected.partDescription : ''}` : ''}
         </Text>
       )}
 

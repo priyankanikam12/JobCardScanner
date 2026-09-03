@@ -153,3 +153,16 @@ public record UpsertWorkflowStageRequest(string StageKey, string Label, int Seq,
 // ---------------- Customer portal ----------------
 public record CustomerOtpRequestDto(string Mobile);
 public record CustomerOtpVerifyRequest(Guid OtpRequestId, string Code, string Mobile);
+
+// ---------------- Customer password login (alongside OTP - see CustomerPortalController) ----------------
+/// <summary>MobileOrEmail matches Customer.Mobile OR Customer.Email - a customer signs in with
+/// whichever one they know, same "email or code" flexibility DealerLoginRequest already allows
+/// for staff.</summary>
+public record CustomerLoginRequest(string MobileOrEmail, string Password);
+public record CustomerForgotPasswordRequest(string MobileOrEmail);
+public record CustomerResetPasswordRequest(string MobileOrEmail, string Token, string NewPassword);
+public record CustomerChangePasswordRequest(string CurrentPassword, string NewPassword);
+/// <summary>A dealer/admin setting a customer's password directly - e.g. the customer is present
+/// in person and wants password login set up, or is locked out and calls the workshop. Mirrors
+/// DealerAdminResetPasswordRequest's shape exactly.</summary>
+public record CustomerAdminResetPasswordRequest(string NewPassword);

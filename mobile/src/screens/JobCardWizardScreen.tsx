@@ -129,22 +129,53 @@ export function JobCardWizardScreen({ navigation }: Props) {
   // Item 12a: a styled inline banner instead of a plain Alert.alert() for "This Vehicle not
   // sold" - matches web's same change.
   const [vehicleNotSoldNotice, setVehicleNotSoldNotice] = useState<string | null>(null)
+  // "This chassis already has an open job card" - mirrors web's same state/flow (see
+  // JobCardWizardPage.tsx's openJobCardNotice doc comment). Shown both as a native Alert (so it
+  // can't be missed/scrolled past) and as a persistent banner.
+  const [openJobCardNotice, setOpenJobCardNotice] = useState<string | null>(null)
   const [vehicleSuggestions, setVehicleSuggestions] = useState<BaplDmsVehicleSuggestion[]>([])
+  // Global (cross-dealer) chassis/reg-no search - offered as a fallback right on the "not found"
+  // flag when a dealer-scoped lookup 404s, mirroring BAPL DMS's own Angular "Search Chassis Across
+  // All Dealers" popup (ebw-invoice component). GET /api/bapl-dms/vehicle-lookup already supports
+  // this - dealerCode is optional server-side and an omitted one searches every dealer (see
+  // IBaplDmsService.LookupVehicleAsync's own doc comment) - so no backend change was needed, just
+  // this fallback UI wired to the same endpoint with dealerCode left out.
+  const [showGlobalSearchOffer, setShowGlobalSearchOffer] = useState(false)
+  const [globalSearchLoading, setGlobalSearchLoading] = useState(false)
+  const [globalHit, setGlobalHit] = useState<BaplDmsVehicleLookup | null>(null)
+  const [globalSearchNotFound, setGlobalSearchNotFound] = useState(false)
+
+  // Scopes chassis/reg-no search to the dealer this job card is being created for - mirrors web's
+  // JobCardWizardPage.tsx same computation. See AuthController.Me's DealerBaplDmsCode doc comment.
+  const vehicleSearchDealerCode = dealers.find((d) => d.id === effectiveDealerId)?.baplDmsDealerCode ?? profile?.dealerBaplDmsCode ?? undefined
 
   useEffect(() => {
     if (chassisOrRegQ.trim().length < 2) { setVehicleSuggestions([]); return }
     const handle = setTimeout(() => {
-      apiClient.get<BaplDmsVehicleSuggestion[]>('/api/bapl-dms/vehicle-suggestions', { params: { q: chassisOrRegQ.trim() } })
+      apiClient.get<BaplDmsVehicleSuggestion[]>('/api/bapl-dms/vehicle-suggestions', { params: { q: chassisOrRegQ.trim(), dealerCode: vehicleSearchDealerCode } })
         .then(({ data }) => setVehicleSuggestions(data))
         .catch(() => setVehicleSuggestions([]))
     }, 300)
     return () => clearTimeout(handle)
-  }, [chassisOrRegQ])
+  }, [chassisOrRegQ, vehicleSearchDealerCode])
 
   const [unlockCustomerFields, setUnlockCustomerFields] = useState(false)
   const [unlockVehicleFields, setUnlockVehicleFields] = useState(false)
   const customerFieldsLocked = !!baplVehicleHit && !unlockCustomerFields
   const vehicleFieldsLocked = !!baplVehicleHit && !unlockVehicleFields
+
+  const applyVehicleHit = (data: BaplDmsVehicleLookup) => {
+    setBaplVehicleHit(data)
+    setNewCustomer((c) => ({
+      ...c,
+      name: data.customerName || c.name,
+      mobile: data.customerMobile ? data.customerMobile.replace(/\D/g, '').slice(0, 10) : c.mobile,
+      city: data.customerCity || c.city,
+      email: data.customerEmail || c.email,
+      address: data.customerAddress || c.address,
+      saleDate: data.saleDate ? data.saleDate.split('T')[0] : c.saleDate,
+    }))
+  }
 
   const lookupByChassisOrReg = async (valueOverride?: string) => {
     const value = (valueOverride ?? chassisOrRegQ).trim()
@@ -153,11 +184,25 @@ export function JobCardWizardScreen({ navigation }: Props) {
     setVehicleLookupLoading(true)
     setVehicleLookupError(null)
     setVehicleNotSoldNotice(null)
+    setOpenJobCardNotice(null)
     setBaplVehicleHit(null)
     setUnlockCustomerFields(false)
     setUnlockVehicleFields(false)
+    setShowGlobalSearchOffer(false)
+    setGlobalHit(null)
+    setGlobalSearchNotFound(false)
     try {
-      const { data } = await apiClient.get<BaplDmsVehicleLookup>('/api/bapl-dms/vehicle-lookup', { params: { value } })
+      const { data } = await apiClient.get<BaplDmsVehicleLookup>('/api/bapl-dms/vehicle-lookup', { params: { value, dealerCode: vehicleSearchDealerCode } })
+      // This chassis already has an open job card somewhere - refuse to auto-fill/proceed with it,
+      // and say exactly where so staff know where to go close it first. Matches web's same check.
+      if (data.openJobCardNumber) {
+        const where = data.openJobCardSource === 'bapl-dms' ? 'in BAPL DMS' : 'here'
+        const status = data.openJobCardStatus ? ` (status: ${data.openJobCardStatus})` : ''
+        const message = `This chassis already has an open job card ${where}: ${data.openJobCardNumber}${status}. It must be closed before this chassis can be used for a new job card.`
+        setOpenJobCardNotice(message)
+        Alert.alert('Chassis already checked in', message)
+        return
+      }
       if (!data.saleDate) {
         // Item 12a/12b: shorter, friendlier wording + a styled inline banner instead of a native
         // Alert.alert() - matches web's same change.
@@ -165,26 +210,62 @@ export function JobCardWizardScreen({ navigation }: Props) {
         setVehicleLookupError(`"${value}" was found in DMS.`)
         return
       }
-      setBaplVehicleHit(data)
-      setNewCustomer((c) => ({
-        ...c,
-        name: data.customerName || c.name,
-        mobile: data.customerMobile ? data.customerMobile.replace(/\D/g, '').slice(0, 10) : c.mobile,
-        city: data.customerCity || c.city,
-        email: data.customerEmail || c.email,
-        address: data.customerAddress || c.address,
-        saleDate: data.saleDate ? data.saleDate.split('T')[0] : c.saleDate,
-      }))
+      applyVehicleHit(data)
     } catch (err: unknown) {
       const response = (err as { response?: { status?: number; data?: { message?: string } } })?.response
-      setVehicleLookupError(response?.status === 404
-        ? `"${value}" wasn't found in BAPL DMS - add the customer/vehicle manually below.`
-        : response?.data?.message
+      if (response?.status === 404) {
+        setVehicleLookupError(`"${value}" wasn't found in BAPL DMS for this dealer.`)
+        // Offer the cross-dealer fallback right on the "not found" flag, instead of only letting
+        // the user give up and add the vehicle manually - see the state block above for why this
+        // needs no new backend endpoint.
+        setShowGlobalSearchOffer(true)
+      } else {
+        setVehicleLookupError(response?.data?.message
           ? `BAPL DMS error: ${response.data.message}`
           : 'Could not reach BAPL DMS right now - add the customer/vehicle manually below.')
+      }
     } finally {
       setVehicleLookupLoading(false)
     }
+  }
+
+  /** "Search across all dealers" - re-runs the exact same lookup with dealerCode omitted, so a
+   * chassis/reg no. sold by a DIFFERENT dealer still turns up instead of silently reading as
+   * "doesn't exist anywhere". Mirrors BAPL DMS's own Angular ebw-invoice component's
+   * searchGlobalChassis()/applyGlobalChassisResult() pair. */
+  const searchGlobalChassis = async () => {
+    const value = chassisOrRegQ.trim()
+    if (!value) return
+    setGlobalSearchLoading(true)
+    setGlobalSearchNotFound(false)
+    setGlobalHit(null)
+    try {
+      const { data } = await apiClient.get<BaplDmsVehicleLookup>('/api/bapl-dms/vehicle-lookup', { params: { value } })
+      setGlobalHit(data)
+    } catch {
+      setGlobalSearchNotFound(true)
+    } finally {
+      setGlobalSearchLoading(false)
+    }
+  }
+
+  const applyGlobalHit = () => {
+    if (!globalHit) return
+    // Same open-job-card block as the dealer-scoped lookup above.
+    if (globalHit.openJobCardNumber) {
+      const where = globalHit.openJobCardSource === 'bapl-dms' ? 'in BAPL DMS' : 'here'
+      const status = globalHit.openJobCardStatus ? ` (status: ${globalHit.openJobCardStatus})` : ''
+      const message = `This chassis already has an open job card ${where}: ${globalHit.openJobCardNumber}${status}. It must be closed before this chassis can be used for a new job card.`
+      setOpenJobCardNotice(message)
+      Alert.alert('Chassis already checked in', message)
+      setShowGlobalSearchOffer(false)
+      setGlobalHit(null)
+      return
+    }
+    applyVehicleHit(globalHit)
+    setVehicleLookupError(null)
+    setShowGlobalSearchOffer(false)
+    setGlobalHit(null)
   }
 
   // ---- Step 1: vehicle ----
@@ -703,8 +784,21 @@ export function JobCardWizardScreen({ navigation }: Props) {
                     <Text style={{ fontWeight: '700' }}>{s.chassisNo}</Text>
                     {s.regNo ? ` · ${s.regNo}` : ''}{s.modelName ? ` — ${s.modelName}` : ''}
                   </Text>
+                  {/* Show Sale Date on every suggestion row, not just after a full Search hit -
+                     mirrors web's same change. */}
+                  <Text style={styles.pickerRowSubText}>
+                    Sale date: {s.saleDate ? new Date(s.saleDate).toLocaleDateString() : 'not sold'}
+                  </Text>
                 </TouchableOpacity>
               ))}
+              {/* Mirrors web's same hint - /api/bapl-dms/vehicle-suggestions caps results (100 by
+                 default), so a dealer whose stock shares one chassis-number prefix may have more
+                 matches than fit here for a short query. */}
+              {vehicleSuggestions.length >= 100 && (
+                <Text style={[styles.pickerRowSubText, { padding: 8 }]}>
+                  Showing the first {vehicleSuggestions.length} matches - keep typing more of the chassis/reg no. to narrow down.
+                </Text>
+              )}
             </ScrollView>
           )}
           {vehicleNotSoldNotice && (
@@ -715,7 +809,41 @@ export function JobCardWizardScreen({ navigation }: Props) {
               </TouchableOpacity>
             </View>
           )}
+          {openJobCardNotice && (
+            <View style={styles.dangerBanner}>
+              <Text style={styles.dangerBannerText}>🚫 {openJobCardNotice}</Text>
+              <TouchableOpacity onPress={() => setOpenJobCardNotice(null)}>
+                <Text style={styles.dangerBannerDismiss}>Dismiss</Text>
+              </TouchableOpacity>
+            </View>
+          )}
           {vehicleLookupError && <Text style={styles.errorText}>{vehicleLookupError}</Text>}
+          {showGlobalSearchOffer && !globalHit && (
+            <View style={styles.noticeBanner}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.noticeBannerText}>🔎 Not found for this dealer. Search BAPL DMS across every dealer?</Text>
+                {globalSearchNotFound && <Text style={[styles.noticeBannerText, { marginTop: 4 }]}>Not found anywhere in BAPL DMS either.</Text>}
+              </View>
+              <TouchableOpacity disabled={globalSearchLoading} onPress={searchGlobalChassis}>
+                <Text style={styles.noticeBannerDismiss}>{globalSearchLoading ? 'Searching…' : 'Search all dealers'}</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+          {globalHit && (
+            <View style={styles.dmsBox}>
+              <Text style={{ fontWeight: '700', color: '#1e3a5f' }}>
+                Found in BAPL DMS{globalHit.dealerCode && globalHit.dealerCode !== vehicleSearchDealerCode ? ` — registered to dealer ${globalHit.dealerCode}, not this workshop` : ''}
+              </Text>
+              <Text style={styles.muted}>
+                {globalHit.customerName || 'Unknown customer'}{globalHit.customerMobile ? ` (${globalHit.customerMobile})` : ''} · {globalHit.modelName || 'Model unknown'}
+                {globalHit.registerNo ? ` · reg no. ${globalHit.registerNo}` : ''}
+                {globalHit.saleDate ? ` · sold ${new Date(globalHit.saleDate).toLocaleDateString()}` : ' · not yet sold'}
+              </Text>
+              <TouchableOpacity style={[styles.btnPrimary, { marginTop: 8 }]} onPress={applyGlobalHit}>
+                <Text style={styles.btnPrimaryText}>Use this vehicle</Text>
+              </TouchableOpacity>
+            </View>
+          )}
           {baplVehicleHit && (
             <Text style={styles.muted}>
               Customer Details : customer-{baplVehicleHit.customerName || 'Unknown customer'}
@@ -1024,6 +1152,11 @@ const styles = StyleSheet.create({
   noticeBanner: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8, padding: 10, borderRadius: 8, backgroundColor: '#fffbeb', borderWidth: 1, borderColor: '#fde68a' },
   noticeBannerText: { flex: 1, fontWeight: '600', color: '#92400e' },
   noticeBannerDismiss: { fontWeight: '600', color: '#92400e' },
+  // Red variant of noticeBanner for "this chassis already has an open job card" - a harder stop
+  // than the yellow "not sold" notice above, so it gets its own color.
+  dangerBanner: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8, padding: 10, borderRadius: 8, backgroundColor: '#fef2f2', borderWidth: 1, borderColor: '#fecaca' },
+  dangerBannerText: { flex: 1, fontWeight: '600', color: '#991b1b' },
+  dangerBannerDismiss: { fontWeight: '600', color: '#991b1b' },
   link: { color: '#2563eb', fontWeight: '600', marginBottom: 8 },
   bold: { fontWeight: '700' },
   reviewLine: { marginBottom: 4, fontSize: 13, color: '#101828' },
@@ -1040,6 +1173,7 @@ const styles = StyleSheet.create({
   pickerBox: { borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 8, maxHeight: 200, marginBottom: 8, overflow: 'hidden' },
   pickerRow: { paddingHorizontal: 10, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: '#f1f3f6' },
   pickerRowText: { color: '#374151' },
+  pickerRowSubText: { color: '#9ca3af', fontSize: 12, marginTop: 2 },
   dmsBox: { backgroundColor: '#eef6ff', borderWidth: 1, borderColor: '#bfdcff', borderRadius: 8, padding: 12, marginBottom: 16 },
   dmsBadge: { backgroundColor: '#1c64f2', color: '#fff', fontSize: 12, fontWeight: '600', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999, overflow: 'hidden' },
   chipRow: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#f4f6f8', borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 8, padding: 10, marginBottom: 6 },

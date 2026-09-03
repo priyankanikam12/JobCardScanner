@@ -58,6 +58,9 @@ public class EstimatesController : ControllerBase
 
         _db.Estimates.Add(estimate);
         jc.Status = JobCardStatus.PendingCustomerApproval;
+        // Workflow Timeline auto-advances to "Estimate Created" the first time one is drafted - see
+        // WorkflowStageAutomation's doc comment.
+        await WorkflowStageAutomation.AdvanceIfAheadAsync(_db, jc, "estimate_created", _currentUser.UserId, "Auto-advanced: estimate created.");
         await _db.SaveChangesAsync();
         await _audit.LogAsync("Estimate.Create", "Estimate", estimate.Id.ToString(), new { estimate.TotalAmount });
 

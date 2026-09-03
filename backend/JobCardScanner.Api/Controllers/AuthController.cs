@@ -47,6 +47,12 @@ public class AuthController : ControllerBase
             Role = user.Role.ToString(),
             user.DealerId,
             DealerName = user.Dealer?.Name,
+            // BAPL DMS's own dealer code (e.g. "CUS0435") - not user.Dealer.Code, which for
+            // BaplImport-sourced dealers is a different code space (see Dealer.BaplDmsDealerCode's
+            // doc comment). Lets the frontend scope chassis/reg-no vehicle search
+            // (BaplDmsController.VehicleLookup/VehicleSuggestions) to only this dealer's own
+            // ChassisDetails rows for a dealer-login user, instead of searching across every dealer.
+            DealerBaplDmsCode = user.Dealer?.BaplDmsDealerCode,
             user.AvatarColor,
             user.LastLoginAt,
             AuthType = user.AuthType.ToString(),

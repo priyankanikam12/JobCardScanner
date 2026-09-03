@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { staffApi } from '../../api/client'
-import type { BaplDmsPartStock, PartMaster } from '../../types'
+import { useStaffAuth } from '../../auth/StaffAuthContext'
+import type { BaplDmsPartStock, BaplDmsWorkshop, PartMaster } from '../../types'
 
 interface PartsSearchResponse {
   localParts: PartMaster[]
@@ -9,8 +10,16 @@ interface PartsSearchResponse {
 }
 
 export function PartsPage() {
+  const { profile } = useStaffAuth()
   const [q, setQ] = useState('')
   const [locationCode, setLocationCode] = useState('')
+  // The dealer's own BAPL DMS workshop location(s) ("W1", "W2", ... under their dealer code - see
+  // LocationMaster's doc comment in BaplDmsService.GetWorkshopsAsync) - fetched once so the Parts
+  // Inventory section can pick one automatically instead of making every dealer user learn and
+  // type their own location code by hand (Item: "without search this Parts Inventory need to
+  // see"). Left empty for a user with no dealer on file (Corporate/System Admin) - they still get
+  // the free-text box below, unchanged.
+  const [workshops, setWorkshops] = useState<BaplDmsWorkshop[]>([])
   const [localParts, setLocalParts] = useState<PartMaster[]>([])
   const [dmsParts, setDmsParts] = useState<BaplDmsPartStock[]>([])
   const [dmsWarning, setDmsWarning] = useState<string | null>(null)
@@ -27,6 +36,20 @@ export function PartsPage() {
       })
 
   useEffect(() => { search() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!profile?.dealerId) return
+    staffApi.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: profile.dealerId } })
+      .then(({ data }) => {
+        setWorkshops(data)
+        // Auto-select this dealer's first workshop location so the DMS Parts Inventory section
+        // below renders as soon as the page loads, with no manual search needed - the debounced
+        // [q, locationCode] effect below picks this up and fires search() itself.
+        if (data.length > 0) setLocationCode((prev) => prev || data[0].locCode)
+      })
+      .catch(() => setWorkshops([]))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile?.dealerId])
 
   // Item 11: search-as-you-type (debounced) instead of requiring Enter/the Search button - the
   // backend (/api/parts?q=) already does a case-insensitive substring match on name/part
@@ -55,8 +78,19 @@ export function PartsPage() {
         <div className="form-row">
           <div className="field"><label>Search catalog</label><input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && search()} placeholder="Part name or number" /></div>
           <div className="field">
-            <label>BAPL DMS workshop location code (optional)</label>
-            <input value={locationCode} onChange={(e) => setLocationCode(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && search()} placeholder="e.g. CUS0435W1" />
+            <label>BAPL DMS workshop location</label>
+            {workshops.length > 0 ? (
+              // Dealer's own location(s) resolved automatically (see the useEffect above) - a
+              // dropdown instead of free text now that we actually know the valid options, and
+              // there's no way to accidentally type/search a different dealer's location code.
+              <select value={locationCode} onChange={(e) => setLocationCode(e.target.value)}>
+                {workshops.map((w) => (
+                  <option key={w.locCode} value={w.locCode}>{w.locCode} — {w.locName}</option>
+                ))}
+              </select>
+            ) : (
+              <input value={locationCode} onChange={(e) => setLocationCode(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && search()} placeholder="e.g. CUS0435W1" />
+            )}
           </div>
           <div className="field"><label>Target Job Card ID (to request a part against)</label><input value={jobCardId} onChange={(e) => setJobCardId(e.target.value)} placeholder="paste from job card URL" /></div>
         </div>
@@ -89,7 +123,7 @@ export function PartsPage() {
           own catalog (no name/price on file) and can't be requested against a job card here - use
           the "Part Suggestion" panel on a specific job card's Detail page for that instead.
         </p>
-        {!locationCode && <p className="muted">Enter a BAPL DMS workshop location code above to see its live stock.</p>}
+        {!locationCode && <p className="muted">Select or enter a BAPL DMS workshop location above to see its live stock.</p>}
         {dmsWarning && <p className="muted" style={{ color: '#b91c1c' }}>{dmsWarning}</p>}
         {locationCode && (
           <table>

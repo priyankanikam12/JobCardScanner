@@ -10,9 +10,24 @@ import { JobCardDetailScreen } from '../screens/JobCardDetailScreen'
 import { JobCardWizardScreen } from '../screens/JobCardWizardScreen'
 import { PartsScreen } from '../screens/PartsScreen'
 
+/** Optional /jobcards-equivalent filters the Dashboard's KPI cards deep-link with - each name
+ * matches JobCardsController.List's own dashboard-filter query params 1:1 (see
+ * DashboardScreen.tsx's KPIS array and web/src/pages/staff/DashboardPage.tsx's same mapping). */
+export type JobCardsListFilter = {
+  status?: string
+  stageKey?: string
+  excludeClosed?: boolean
+  overdue?: boolean
+  createdToday?: boolean
+  deliveredToday?: boolean
+  closedThisMonth?: boolean
+  warrantyOnly?: boolean
+  pendingBucket?: boolean
+}
+
 export type RootStackParamList = {
   Dashboard: undefined
-  JobCardsList: undefined
+  JobCardsList: JobCardsListFilter | undefined
   JobCardDetail: { id: string }
   JobCardWizard: undefined
   Parts: undefined

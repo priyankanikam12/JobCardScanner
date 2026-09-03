@@ -4,9 +4,25 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { apiClient } from '../api/client'
 import { useStaffAuth } from '../auth/StaffAuthContext'
 import type { DashboardKpis } from '../types'
-import type { RootStackParamList } from '../navigation/RootNavigator'
+import type { JobCardsListFilter, RootStackParamList } from '../navigation/RootNavigator'
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Dashboard'>
+
+// Each card's `to` is the exact JobCardsList filter that reproduces its own number - these param
+// names match JobCardsController.List's dashboard-filter query params 1:1 (see
+// web/src/pages/staff/DashboardPage.tsx's same mapping), each mirroring the same WHERE clause
+// DashboardController.Kpis used to compute that number, so tapping a card always lands on the set
+// of job cards that make up the count just shown.
+const KPIS: { key: keyof DashboardKpis; label: string; to: JobCardsListFilter }[] = [
+  { key: 'totalOpen', label: 'Open Job Cards', to: { excludeClosed: true } },
+  { key: 'openToday', label: 'Opened Today', to: { createdToday: true } },
+  { key: 'pendingApproval', label: 'Pending Approval', to: { status: 'PendingCustomerApproval' } },
+  { key: 'overdue', label: 'Overdue', to: { overdue: true } },
+  { key: 'closedThisMonth', label: 'Closed This Month', to: { closedThisMonth: true } },
+  // Avg Turnaround isn't itself a job-card count (it's computed off closed job cards' durations),
+  // but "Closed" job cards is the closest equivalent list to land on.
+  { key: 'avgTurnaroundHours', label: 'Avg Turnaround (h)', to: { status: 'Closed' } },
+]
 
 export function DashboardScreen({ navigation }: Props) {
   const { profile } = useStaffAuth()
@@ -27,12 +43,9 @@ export function DashboardScreen({ navigation }: Props) {
 
       {kpis && (
         <View style={styles.grid}>
-          <Kpi label="Open Job Cards" value={kpis.totalOpen} />
-          <Kpi label="Opened Today" value={kpis.openToday} />
-          <Kpi label="Pending Approval" value={kpis.pendingApproval} />
-          <Kpi label="Overdue" value={kpis.overdue} />
-          <Kpi label="Closed This Month" value={kpis.closedThisMonth} />
-          <Kpi label="Avg Turnaround (h)" value={kpis.avgTurnaroundHours} />
+          {KPIS.map((k) => (
+            <Kpi key={k.key} label={k.label} value={kpis[k.key]} onPress={() => navigation.navigate('JobCardsList', k.to)} />
+          ))}
         </View>
       )}
 
@@ -45,12 +58,12 @@ export function DashboardScreen({ navigation }: Props) {
   )
 }
 
-function Kpi({ label, value }: { label: string; value: string | number }) {
+function Kpi({ label, value, onPress }: { label: string; value: string | number; onPress: () => void }) {
   return (
-    <View style={styles.kpi}>
+    <Pressable style={({ pressed }) => [styles.kpi, pressed && styles.kpiPressed]} onPress={onPress}>
       <Text style={styles.kpiValue}>{value}</Text>
       <Text style={styles.kpiLabel}>{label}</Text>
-    </View>
+    </Pressable>
   )
 }
 
@@ -69,6 +82,7 @@ const styles = StyleSheet.create({
   role: { fontSize: 13, color: '#6b7280', marginBottom: 16 },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 20 },
   kpi: { backgroundColor: '#fff', borderRadius: 10, padding: 14, width: '31%', borderWidth: 1, borderColor: '#e2e6ec' },
+  kpiPressed: { backgroundColor: '#f4f6f9' },
   kpiValue: { fontSize: 20, fontWeight: '700', color: '#101828' },
   kpiLabel: { fontSize: 11, color: '#6b7280', marginTop: 2 },
   actions: { gap: 10 },

@@ -2,6 +2,7 @@ using JobCardScanner.Api.Auth;
 using JobCardScanner.Api.Data;
 using JobCardScanner.Api.Dtos;
 using JobCardScanner.Api.Models;
+using JobCardScanner.Api.Services;
 using JobCardScanner.Api.Services.Integrations;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -18,11 +19,15 @@ public class CustomersController : ControllerBase
 {
     private readonly JobCardScannerDbContext _db;
     private readonly IErpClient _erp;
+    private readonly ICurrentUserService _currentUser;
+    private readonly IAuditLogService _audit;
 
-    public CustomersController(JobCardScannerDbContext db, IErpClient erp)
+    public CustomersController(JobCardScannerDbContext db, IErpClient erp, ICurrentUserService currentUser, IAuditLogService audit)
     {
         _db = db;
         _erp = erp;
+        _currentUser = currentUser;
+        _audit = audit;
     }
 
     [HttpGet("search")]
@@ -119,5 +124,36 @@ public class CustomersController : ControllerBase
     {
         var result = await _erp.FindCustomerByMobileAsync(mobile);
         return result is null ? NotFound() : Ok(result);
+    }
+
+    /// <summary>
+    /// POST /api/customers/{id}/admin-reset-password - a dealer/corporate/system admin setting or
+    /// resetting a customer's PORTAL password directly (e.g. the customer is at the counter and
+    /// wants password login set up, or is locked out and calls in) - mirrors
+    /// DealerAuthController.AdminResetPassword's shape and dealer-scoping exactly. This is the
+    /// admin/dealer side of the customer password-login feature (see CustomerPortalController for
+    /// the customer-facing Login/ForgotPassword/ResetPassword/ChangePassword endpoints) - a plain
+    /// reset (set to a known value), not a "view the current password" (which is never possible -
+    /// only a PBKDF2 hash is ever stored, same as staff Users).
+    /// </summary>
+    [HttpPost("{id:guid}/admin-reset-password")]
+    [Authorize(Policy = Policies.WorkshopManagerUp)]
+    public async Task<IActionResult> AdminResetPassword(Guid id, CustomerAdminResetPasswordRequest req)
+    {
+        var customer = await _db.Customers.FirstOrDefaultAsync(c => c.Id == id);
+        if (customer is null) return NotFound();
+        // Same dealer-scoping rule as DealerAuthController.AdminResetPassword - only
+        // Corporate/System Admin can act across dealers; anyone else must be resetting a password
+        // for a customer under their OWN dealer.
+        if (_currentUser.Role is not (StaffRole.CorporateAdmin or StaffRole.SystemAdmin) && customer.DealerId != _currentUser.DealerId)
+            return Forbid();
+
+        customer.PasswordHash = PasswordHasher.Hash(req.NewPassword);
+        customer.PasswordResetTokenHash = null;
+        customer.PasswordResetExpiresAt = null;
+        await _db.SaveChangesAsync();
+        await _audit.LogAsync("Customer.AdminResetPassword", "Customer", customer.Id.ToString());
+
+        return Ok(new { message = "Customer password set. Share it with them directly - it isn't emailed/texted automatically yet." });
     }
 }

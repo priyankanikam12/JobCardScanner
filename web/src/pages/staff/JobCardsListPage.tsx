@@ -6,10 +6,17 @@ import { StatusBadge } from '../../components/StatusBadge'
 
 const STATUSES: JobCardStatus[] = ['Open', 'InProgress', 'PendingCustomerApproval', 'PendingQc', 'PendingClosure', 'PendingInvoice', 'Closed', 'Cancelled']
 
+// Every boolean Dashboard KPI-card filter JobCardsController.List's own dashboard-filter query
+// params support - see DashboardPage.tsx's TILES/pendingVehicles `to` links and the "Job Cards by
+// Status" chart's onClick. Read straight off the URL below so a deep-link works the same whether
+// it's a fresh navigation or a bookmarked/shared link.
+const DASHBOARD_FILTER_KEYS = ['excludeClosed', 'overdue', 'createdToday', 'deliveredToday', 'closedThisMonth', 'warrantyOnly', 'pendingBucket'] as const
+
 export function JobCardsListPage() {
-  // Dealer Dashboard's Quick Links deep-link here as e.g. /jobcards?status=PendingCustomerApproval
-  // or /jobcards?stageKey=parts_requested - read once on mount so a linked-to filter is applied
-  // immediately instead of showing the unfiltered list first.
+  // Dashboard Quick Links / KPI cards / "Job Cards by Status" chart deep-link here as e.g.
+  // /jobcards?status=PendingCustomerApproval, /jobcards?stageKey=part_suggestion, or
+  // /jobcards?excludeClosed=true - read once on mount so a linked-to filter is applied immediately
+  // instead of showing the unfiltered list first.
   const [searchParams] = useSearchParams()
   const [jobCards, setJobCards] = useState<JobCardSummary[]>([])
   // Non-null only when a real BAPL DMS problem (not "this dealer has no BAPL DMS data", which is
@@ -17,13 +24,23 @@ export function JobCardsListPage() {
   const [baplDmsWarning, setBaplDmsWarning] = useState<string | null>(null)
   const [status, setStatus] = useState<string>(() => searchParams.get('status') ?? '')
   const [stageKey] = useState<string>(() => searchParams.get('stageKey') ?? '')
+  const [dashboardFilter] = useState<Record<string, string>>(() => {
+    const found: Record<string, string> = {}
+    for (const key of DASHBOARD_FILTER_KEYS) {
+      const value = searchParams.get(key)
+      if (value) found[key] = value
+    }
+    return found
+  })
   const [q, setQ] = useState('')
   const [loading, setLoading] = useState(true)
+
+  const clearDashboardFilter = Object.keys(dashboardFilter).length > 0
 
   const load = () => {
     setLoading(true)
     staffApi
-      .get<JobCardListResponse>('/api/jobcards', { params: { status: status || undefined, stageKey: stageKey || undefined, q: q || undefined } })
+      .get<JobCardListResponse>('/api/jobcards', { params: { status: status || undefined, stageKey: stageKey || undefined, q: q || undefined, ...dashboardFilter } })
       .then((res) => { setJobCards(res.data.items); setBaplDmsWarning(res.data.baplDmsWarning ?? null) })
       .finally(() => setLoading(false))
   }
@@ -63,6 +80,18 @@ export function JobCardsListPage() {
         </div>
         <button className="btn" onClick={load}>Search</button>
       </div>
+
+      {clearDashboardFilter && (
+        <p style={{ marginTop: -8 }}>
+          <span className="badge" style={{ marginRight: 8 }}>
+            Filtered from Dashboard: {Object.entries(dashboardFilter).map(([k, v]) => `${k}=${v}`).join(', ')}
+          </span>
+          {/* A full navigation (not client-side routing) - dashboardFilter is only ever read once
+             from the URL on mount, so clearing it needs a fresh page load rather than trying to
+             reset in-place state for what's meant to be a one-off deep-link landing. */}
+          <a href="/jobcards" className="btn btn-sm">Clear filter</a>
+        </p>
+      )}
 
       {baplDmsWarning && <p className="muted" style={{ marginTop: -8 }}>⚠ {baplDmsWarning}</p>}
 

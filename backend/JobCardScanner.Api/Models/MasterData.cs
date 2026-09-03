@@ -125,6 +125,25 @@ public class Customer
     [MaxLength(60)] public string? ErpCustomerId { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
+    // ---------------- Password login (alongside the existing OTP portal - see
+    // CustomerPortalController.Login) - added so a customer can sign in directly with a
+    // mobile/email + password instead of only via OTP, while OTP keeps working unchanged for
+    // customers who never set one. Same PBKDF2 hashing (Auth/PasswordHasher.cs) and reset-token
+    // shape as User's own local login fields above - kept as separate columns here rather than a
+    // shared table since Customer and User are unrelated entities with no login-type overlap.
+    // NEW columns - see deploy/add-customer-password-columns.sql for the manual production
+    // migration this needs (self-healing as of 2026-09-03, see Program.cs - no SSMS step actually
+    // required, the script is kept only as documentation). ----------------
+    /// <summary>PBKDF2 hash (see Auth/PasswordHasher.cs), format "iterations.saltB64.hashB64".
+    /// Null until the customer (or an admin/dealer on their behalf) sets a password for the first
+    /// time - a null value here just means "this customer hasn't set up password login yet", not
+    /// an error; they can still use the OTP flow.</summary>
+    [MaxLength(300)] public string? PasswordHash { get; set; }
+    /// <summary>SHA-256 hash of the current forgot-password reset token, if one was issued and
+    /// hasn't been used/expired yet - same shape as User.PasswordResetTokenHash.</summary>
+    [MaxLength(100)] public string? PasswordResetTokenHash { get; set; }
+    public DateTime? PasswordResetExpiresAt { get; set; }
+
     public ICollection<Vehicle> Vehicles { get; set; } = new List<Vehicle>();
 }
 

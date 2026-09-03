@@ -14,7 +14,6 @@ import * as Sharing from 'expo-sharing'
 import { apiClient } from '../api/client'
 import { useStaffAuth } from '../auth/StaffAuthContext'
 import { Badge } from '../components/Badge'
-import { PickerField, type PickerOption } from '../components/PickerField'
 import { PartSuggestionSection } from '../components/PartSuggestionSection'
 import { LabourSuggestionSection } from '../components/LabourSuggestionSection'
 import { WorkflowTimelineView, type WorkflowTimelineHistoryEntry } from '../components/WorkflowTimelineView'
@@ -66,6 +65,32 @@ function resolveTimelineCurrentStageId(stages: WorkflowStage[], currentStage?: W
   if (!HIDDEN_WORKFLOW_STAGE_KEYS.has(currentStage.stageKey)) return currentStage.id
   const visible = stages.filter((s) => !HIDDEN_WORKFLOW_STAGE_KEYS.has(s.stageKey) && s.seq <= currentStage.seq)
   return visible.sort((a, b) => b.seq - a.seq)[0]?.id
+}
+
+/** Raw chronological stage-history log ("grid") below the visual WorkflowTimelineView stepper -
+ * mirrors web's WorkflowHistoryGrid. Shows every row that's actually happened, in order, including
+ * remarks and who made each change - worth having now that most stage changes are auto-triggered
+ * and carry a system-generated remark (e.g. "Auto-advanced: part suggested.") the stepper alone
+ * doesn't surface. */
+function WorkflowHistoryGrid({ jc }: { jc: JobCardDetail }) {
+  const rows = [...jc.stageHistory].sort((a, b) => new Date(a.enteredAt).getTime() - new Date(b.enteredAt).getTime())
+  if (rows.length === 0) return null
+  const fmt = (iso?: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—')
+  return (
+    <View style={{ marginTop: 12, borderTopWidth: 1, borderTopColor: '#f1f3f6', paddingTop: 10 }}>
+      <Text style={[styles.label, { marginBottom: 6 }]}>Stage History</Text>
+      {rows.map((h) => (
+        <View key={h.id} style={{ marginBottom: 8 }}>
+          <Text style={{ fontWeight: '600', color: '#101828', fontSize: 13 }}>{h.stage?.label ?? '—'}</Text>
+          <Text style={styles.muted}>
+            {fmt(h.enteredAt)}{h.exitedAt ? ` – ${fmt(h.exitedAt)}` : ''}
+            {' · '}{h.changedBy?.name ?? (h.notes?.startsWith('Auto-advanced') ? 'System' : '—')}
+          </Text>
+          {h.notes && <Text style={styles.muted}>{h.notes}</Text>}
+        </View>
+      ))}
+    </View>
+  )
 }
 
 type Run = (fn: () => Promise<unknown>, successMsg?: string) => void
@@ -159,6 +184,7 @@ export function JobCardDetailScreen({ route }: Props) {
           currentStageId={resolveTimelineCurrentStageId(stages, jc.currentStage)}
           history={buildTimelineHistory(jc)}
         />
+        <WorkflowHistoryGrid jc={jc} />
       </View>
 
       {hasRole('ServiceAdvisor', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
@@ -345,9 +371,14 @@ function PhotosCard({ jc, run }: { jc: JobCardDetail; run: Run }) {
   )
 }
 
-/** Interactive counterpart to the read-only WorkflowTimelineView above - moves the job card to a
- * new stage (POST /stage, ServiceAdvisor+) and, for WorkshopManager+, also assigns a technician
- * and expected-completion date (PUT /api/jobcards/{id}) - mirrors web's UpdateWorkflowStageCard. */
+/** Interactive counterpart to the read-only WorkflowTimelineView above - mirrors web's
+ * UpdateWorkflowStageCard. No manual stage picker any more (per explicit request: "dont want
+ * manual whole... stage automatically update") - the job card's stage now advances itself as real
+ * work happens (see backend WorkflowStageAutomation): adding a part/labour suggestion, drafting an
+ * estimate, or starting a technician worklog each auto-advance to the matching stage the first
+ * time they happen. Only "Repair Completed" and "Ready for Delivery" have no such unambiguous
+ * trigger elsewhere in the app, so those stay one explicit button each below. Assign Technician and
+ * Remarks stay manual fields. */
 function UpdateWorkflowStageCard({
   jc, stages, busy, run, canAssignTechnician,
 }: {
@@ -357,52 +388,65 @@ function UpdateWorkflowStageCard({
   run: Run
   canAssignTechnician: boolean
 }) {
-  const nextStageAfterCurrent = (): string => {
-    const visible = stages.filter((s) => !HIDDEN_WORKFLOW_STAGE_KEYS.has(s.stageKey)).sort((a, b) => a.seq - b.seq)
-    if (visible.length === 0) return ''
-    const currentSeq = jc.currentStage && !HIDDEN_WORKFLOW_STAGE_KEYS.has(jc.currentStage.stageKey) ? jc.currentStage.seq : -1
-    return (visible.find((s) => s.seq > currentSeq) ?? visible[visible.length - 1]).id
-  }
-  const [stageId, setStageId] = useState(nextStageAfterCurrent)
   const [technicianName, setTechnicianName] = useState(jc.assignedTechnicianName ?? '')
   const [notes, setNotes] = useState('')
 
   useEffect(() => {
-    setStageId(nextStageAfterCurrent())
     setTechnicianName(jc.assignedTechnicianName ?? '')
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jc.id, jc.currentStage?.id, jc.assignedTechnicianName, stages])
+  }, [jc.id, jc.assignedTechnicianName])
 
-  const stageOptions: PickerOption[] = stages.filter((s) => !HIDDEN_WORKFLOW_STAGE_KEYS.has(s.stageKey)).map((s) => ({ label: s.label, value: s.id }))
+  const saveTechnician = () => apiClient.put(`/api/jobcards/${jc.id}`, { assignedTechnicianName: technicianName || null })
 
-  const submit = async () => {
-    const tasks: Promise<unknown>[] = []
-    if (stageId && stageId !== jc.currentStage?.id) {
-      tasks.push(apiClient.post(`/api/jobcards/${jc.id}/stage`, { stageId, notes: notes || null }))
-    }
-    if (canAssignTechnician) {
-      tasks.push(apiClient.put(`/api/jobcards/${jc.id}`, { assignedTechnicianName: technicianName || null }))
-    }
-    if (tasks.length > 0) await Promise.all(tasks)
+  const currentSeq = jc.currentStage?.seq ?? -1
+  const repairCompletedStage = stages.find((s) => s.stageKey === 'repair_completed')
+  const readyForDeliveryStage = stages.find((s) => s.stageKey === 'ready_for_delivery')
+  const markStage = (stage?: WorkflowStage) => {
+    if (!stage) return Promise.resolve()
+    return apiClient.post(`/api/jobcards/${jc.id}/stage`, { stageId: stage.id, notes: notes || null })
   }
 
   return (
     <View style={styles.card}>
       <Text style={styles.cardTitle}>Update Workflow Stage</Text>
-      <PickerField label="Stage" value={stageId} options={stageOptions} disabled={busy} placeholder="Select new stage…" onChange={setStageId} />
+      <Text style={styles.muted}>
+        The stage above now advances automatically as work happens. Use the two buttons below only
+        for the steps with no automatic trigger.
+      </Text>
       {canAssignTechnician && (
-        <View style={{ marginBottom: 10 }}>
+        <View style={{ marginTop: 10, marginBottom: 10 }}>
           <Text style={styles.label}>Assign Technician</Text>
-          <TextInput style={styles.input} value={technicianName} editable={!busy} onChangeText={setTechnicianName} placeholder="Technician name" />
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <TextInput style={[styles.input, { flex: 1 }]} value={technicianName} editable={!busy} onChangeText={setTechnicianName} placeholder="Technician name" />
+            <TouchableOpacity style={[styles.smallBtn, busy && styles.btnDisabled]} disabled={busy} onPress={() => run(saveTechnician, 'Technician updated.')}>
+              <Text style={styles.smallBtnText}>Save</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       )}
       <View style={{ marginBottom: 10 }}>
-        <Text style={styles.label}>Remarks</Text>
+        <Text style={styles.label}>Remarks (attached to the buttons below)</Text>
         <TextInput style={styles.input} value={notes} onChangeText={setNotes} placeholder="Stage remarks…" />
       </View>
-      <TouchableOpacity style={[styles.btnPrimarySm, busy && styles.btnDisabled]} disabled={busy} onPress={() => run(submit, 'Workflow stage updated.')}>
-        <Text style={styles.btnPrimaryText}>Update Stage</Text>
-      </TouchableOpacity>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+        {repairCompletedStage && (
+          <TouchableOpacity
+            style={[styles.btnPrimarySm, (busy || currentSeq >= repairCompletedStage.seq) && styles.btnDisabled]}
+            disabled={busy || currentSeq >= repairCompletedStage.seq}
+            onPress={() => run(() => markStage(repairCompletedStage), 'Marked Repair Completed.')}
+          >
+            <Text style={styles.btnPrimaryText}>Mark Repair Completed</Text>
+          </TouchableOpacity>
+        )}
+        {readyForDeliveryStage && (
+          <TouchableOpacity
+            style={[styles.btnPrimarySm, (busy || currentSeq >= readyForDeliveryStage.seq) && styles.btnDisabled]}
+            disabled={busy || currentSeq >= readyForDeliveryStage.seq}
+            onPress={() => run(() => markStage(readyForDeliveryStage), 'Marked Ready for Delivery.')}
+          >
+            <Text style={styles.btnPrimaryText}>Mark Ready for Delivery</Text>
+          </TouchableOpacity>
+        )}
+      </View>
     </View>
   )
 }

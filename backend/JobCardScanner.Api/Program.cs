@@ -256,6 +256,374 @@ if (app.Environment.IsDevelopment())
     Console.WriteLine($"[Startup] EnsureCreatedAsync created a new database: {wasCreated}. Current counts -> Dealers: {dealerCount}, Users: {userCount}.");
 }
 
+// ---------------------------------------------------------------------
+// SELF-HEALING COLUMN MIGRATIONS - runs every startup, every environment (not just Development,
+// unlike the EnsureCreatedAsync block above - this database is shared across every environment
+// this app has run in so far, and the whole point of this block is to stop relying on someone
+// remembering to run a .sql script by hand).
+//
+// WHY THIS EXISTS: EnsureCreatedAsync() only creates schema on a brand-new empty database (see the
+// NOTE above it) - on an existing database it is a permanent no-op, so every column added to a
+// model AFTER the database first existed (JobCardPartSuggestions.Quantity/Description/HsnCode/Mrp,
+// Customers.State) needs its own manual ALTER TABLE, previously shipped only as a deploy/*.sql
+// script the user had to remember to run against the right database. That's exactly what went
+// wrong here: the part-suggestions 500 error kept recurring across multiple test sessions because
+// the migration was communicated but never actually executed against the database the backend was
+// pointed at - a bare "500 Internal Server Error" in the browser Network tab gave no hint that a
+// missing column was the cause (see AddPartSuggestion/AddLabourSuggestion's new catch blocks in
+// JobCardsController.cs for the other half of this fix - surfacing the real exception message).
+//
+// Each ALTER below is guarded by the exact same "does this column already exist" check as its
+// deploy/*.sql counterpart (kept in the repo as human-readable documentation of what changed and
+// why), so running this on every startup is safe and cheap - a few sub-millisecond metadata
+// lookups once the columns already exist, everywhere except the one real run that actually adds
+// them.
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
+    try
+    {
+        await db.Database.ExecuteSqlRawAsync(@"
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[JobCardPartSuggestions]') AND name = 'Quantity')
+                ALTER TABLE [dbo].[JobCardPartSuggestions] ADD [Quantity] int NOT NULL CONSTRAINT DF_JobCardPartSuggestions_Quantity DEFAULT (1);
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[JobCardPartSuggestions]') AND name = 'Description')
+                ALTER TABLE [dbo].[JobCardPartSuggestions] ADD [Description] nvarchar(400) NULL;
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[JobCardPartSuggestions]') AND name = 'HsnCode')
+                ALTER TABLE [dbo].[JobCardPartSuggestions] ADD [HsnCode] nvarchar(20) NULL;
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[JobCardPartSuggestions]') AND name = 'Mrp')
+                ALTER TABLE [dbo].[JobCardPartSuggestions] ADD [Mrp] decimal(12,2) NULL;
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Customers]') AND name = 'State')
+                ALTER TABLE [dbo].[Customers] ADD [State] nvarchar(100) NULL;
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Customers]') AND name = 'PasswordHash')
+                ALTER TABLE [dbo].[Customers] ADD [PasswordHash] nvarchar(300) NULL;
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Customers]') AND name = 'PasswordResetTokenHash')
+                ALTER TABLE [dbo].[Customers] ADD [PasswordResetTokenHash] nvarchar(100) NULL;
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Customers]') AND name = 'PasswordResetExpiresAt')
+                ALTER TABLE [dbo].[Customers] ADD [PasswordResetExpiresAt] datetime2 NULL;
+        ");
+        Console.WriteLine("[Startup] Self-healing column migrations checked/applied.");
+    }
+    catch (Exception ex)
+    {
+        // Never let a migration hiccup take the whole app down - log it loudly instead, same
+        // reasoning as every other best-effort block in this file. Worst case, the app starts with
+        // the same "missing column" 500 it already had, now at least logged clearly at startup
+        // instead of only surfacing later as an opaque request failure.
+        Console.WriteLine($"[Startup] WARNING: self-healing column migrations failed - {ex.Message}");
+    }
+}
+
+// ---------------------------------------------------------------------
+// SELF-HEALING SCHEMA CATCH-UP (2026-09-03) - folds EVERY previously-manual add-*.sql /
+// apply-all-pending-jobcardscannerdb-changes.sql / redefine-workflow-stages-to-7-steps.sql script
+// sitting at the repo root into one self-applying block, same reasoning as the column-migration
+// block above (and the exact same root cause it was written for): this project has no EF Core
+// migrations, so every schema/data change since the database was first created shipped as its own
+// loose .sql file the user had to remember to run by hand against the real RDS database. Several of
+// these were confirmed NOT actually applied yet (that's what caused the recurring part-suggestions
+// 500 the block above fixes) - rather than trust that every other loose script WAS run, this block
+// re-applies all of them here too. Every statement is guarded (IF NOT EXISTS / COL_LENGTH /
+// OBJECT_ID), copied from the already-idempotent source scripts, so this is safe and cheap to run
+// on every startup regardless of which of the original scripts were or weren't run by hand:
+//   - apply-all-pending-jobcardscannerdb-changes.sql (Dealers/Vehicles/JobCards/JobCardPhotos BAPL
+//     DMS columns, the JobCardPartSuggestions table + its own self-heal, the Invoices unique index)
+//   - add-jobcard-labour-suggestions-table.sql (the JobCardLabourSuggestions table itself - if this
+//     was never run, EVERY labour suggestion save/read fails, which is likely why "Add Suggestion"
+//     under Labour Suggestion was reported as not working even after the part-suggestions fix)
+//   - redefine-workflow-stages-to-7-steps.sql (the 7-step workflow: Vehicle Check-In, Work In
+//     Progress, Part Suggestion, Labour Suggestion, Repair Completed, Ready for Delivery, Invoice
+//     Generated)
+//   - NEW: an 8th stage, "Estimate Created", inserted right after Labour Suggestion and before
+//     Repair Completed, per explicit request - see JobCardsController.cs/EstimatesController.cs's
+//     calls into WorkflowStageAutomation for what now auto-advances a job card onto it.
+// Deliberately NOT included: add-bapldms-jobcard-media-table.sql and
+// add-bapldms-jobcardheader-priority-column.sql target BAPLDMSvad (BAPL DMS's own database, a
+// separate connection this DbContext does not own) - those still need running by hand against that
+// database specifically if not already applied.
+// ---------------------------------------------------------------------
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
+    try
+    {
+        await db.Database.ExecuteSqlRawAsync(@"
+            -- ---- from apply-all-pending-jobcardscannerdb-changes.sql ----
+            IF COL_LENGTH('dbo.Dealers', 'BaplDmsDealerCode') IS NULL
+                ALTER TABLE [dbo].[Dealers] ADD [BaplDmsDealerCode] nvarchar(30) NULL;
+            IF COL_LENGTH('dbo.Vehicles', 'ControllerNo') IS NULL
+                ALTER TABLE [dbo].[Vehicles] ADD [ControllerNo] nvarchar(50) NULL;
+            IF COL_LENGTH('dbo.Vehicles', 'ConverterNo') IS NULL
+                ALTER TABLE [dbo].[Vehicles] ADD [ConverterNo] nvarchar(50) NULL;
+            IF COL_LENGTH('dbo.Vehicles', 'ChargerNo') IS NULL
+                ALTER TABLE [dbo].[Vehicles] ADD [ChargerNo] nvarchar(50) NULL;
+            IF COL_LENGTH('dbo.Vehicles', 'InsuranceExpiry') IS NULL
+                ALTER TABLE [dbo].[Vehicles] ADD [InsuranceExpiry] date NULL;
+            IF COL_LENGTH('dbo.Vehicles', 'NextServiceDueDate') IS NULL
+                ALTER TABLE [dbo].[Vehicles] ADD [NextServiceDueDate] date NULL;
+            IF COL_LENGTH('dbo.JobCards', 'BaplJobType') IS NULL
+                ALTER TABLE [dbo].[JobCards] ADD [BaplJobType] nvarchar(60) NULL;
+            IF COL_LENGTH('dbo.JobCards', 'BaplServiceLocation') IS NULL
+                ALTER TABLE [dbo].[JobCards] ADD [BaplServiceLocation] nvarchar(200) NULL;
+            IF COL_LENGTH('dbo.JobCards', 'BaplSupervisorName') IS NULL
+                ALTER TABLE [dbo].[JobCards] ADD [BaplSupervisorName] nvarchar(120) NULL;
+            IF COL_LENGTH('dbo.JobCards', 'BaplTechnicianName') IS NULL
+                ALTER TABLE [dbo].[JobCards] ADD [BaplTechnicianName] nvarchar(120) NULL;
+            IF COL_LENGTH('dbo.JobCards', 'BaplManualJobNo') IS NULL
+                ALTER TABLE [dbo].[JobCards] ADD [BaplManualJobNo] nvarchar(40) NULL;
+            IF COL_LENGTH('dbo.JobCardPhotos', 'Latitude') IS NULL
+                ALTER TABLE [dbo].[JobCardPhotos] ADD [Latitude] float NULL;
+            IF COL_LENGTH('dbo.JobCardPhotos', 'Longitude') IS NULL
+                ALTER TABLE [dbo].[JobCardPhotos] ADD [Longitude] float NULL;
+            IF COL_LENGTH('JobCards', 'BaplJobTypeId') IS NULL
+                ALTER TABLE JobCards ADD BaplJobTypeId INT NULL;
+            IF COL_LENGTH('JobCards', 'BaplJobSourceId') IS NULL
+                ALTER TABLE JobCards ADD BaplJobSourceId INT NULL;
+            IF COL_LENGTH('JobCards', 'BaplJobSourceName') IS NULL
+                ALTER TABLE JobCards ADD BaplJobSourceName NVARCHAR(60) NULL;
+            IF COL_LENGTH('JobCards', 'BaplServiceHeadId') IS NULL
+                ALTER TABLE JobCards ADD BaplServiceHeadId INT NULL;
+            IF COL_LENGTH('JobCards', 'BaplServiceHeadName') IS NULL
+                ALTER TABLE JobCards ADD BaplServiceHeadName NVARCHAR(120) NULL;
+            IF COL_LENGTH('JobCards', 'BaplServiceTypeId') IS NULL
+                ALTER TABLE JobCards ADD BaplServiceTypeId INT NULL;
+            IF COL_LENGTH('JobCards', 'BaplServiceTypeName') IS NULL
+                ALTER TABLE JobCards ADD BaplServiceTypeName NVARCHAR(120) NULL;
+            IF COL_LENGTH('JobCards', 'BaplServiceLocationCode') IS NULL
+                ALTER TABLE JobCards ADD BaplServiceLocationCode NVARCHAR(20) NULL;
+            IF COL_LENGTH('JobCards', 'BaplJobCardHeaderId') IS NULL
+                ALTER TABLE JobCards ADD BaplJobCardHeaderId INT NULL;
+            IF COL_LENGTH('JobCards', 'BaplJobNo') IS NULL
+                ALTER TABLE JobCards ADD BaplJobNo INT NULL;
+            IF COL_LENGTH('JobCards', 'BaplSyncStatus') IS NULL
+                ALTER TABLE JobCards ADD BaplSyncStatus NVARCHAR(20) NULL;
+            IF COL_LENGTH('JobCards', 'BaplSyncError') IS NULL
+                ALTER TABLE JobCards ADD BaplSyncError NVARCHAR(1000) NULL;
+            IF COL_LENGTH('JobCards', 'AssignedTechnicianName') IS NULL
+                ALTER TABLE JobCards ADD AssignedTechnicianName NVARCHAR(120) NULL;
+            IF OBJECT_ID('dbo.JobCardPartSuggestions', 'U') IS NULL
+            BEGIN
+                CREATE TABLE dbo.JobCardPartSuggestions (
+                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+                    JobCardId UNIQUEIDENTIFIER NOT NULL,
+                    ItemCode NVARCHAR(60) NOT NULL,
+                    AvailableQtyAtSuggestion INT NULL,
+                    Status NVARCHAR(20) NOT NULL DEFAULT 'Paid',
+                    SuggestedById UNIQUEIDENTIFIER NULL,
+                    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+                    CONSTRAINT FK_JobCardPartSuggestions_JobCards FOREIGN KEY (JobCardId) REFERENCES dbo.JobCards(Id) ON DELETE CASCADE,
+                    CONSTRAINT FK_JobCardPartSuggestions_Users FOREIGN KEY (SuggestedById) REFERENCES dbo.Users(Id)
+                );
+                CREATE INDEX IX_JobCardPartSuggestions_JobCardId ON dbo.JobCardPartSuggestions(JobCardId);
+            END
+            IF COL_LENGTH('dbo.JobCardPartSuggestions', 'AvailableQtyAtSuggestion') IS NULL
+                ALTER TABLE [dbo].[JobCardPartSuggestions] ADD [AvailableQtyAtSuggestion] INT NULL;
+            IF COL_LENGTH('dbo.JobCardPartSuggestions', 'SuggestedById') IS NULL
+                ALTER TABLE [dbo].[JobCardPartSuggestions] ADD [SuggestedById] UNIQUEIDENTIFIER NULL;
+            IF COL_LENGTH('dbo.JobCardPartSuggestions', 'SuggestedById') IS NOT NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM sys.foreign_keys
+                   WHERE name = 'FK_JobCardPartSuggestions_Users' AND parent_object_id = OBJECT_ID('dbo.JobCardPartSuggestions')
+               )
+            BEGIN
+                ALTER TABLE [dbo].[JobCardPartSuggestions]
+                    ADD CONSTRAINT [FK_JobCardPartSuggestions_Users] FOREIGN KEY ([SuggestedById]) REFERENCES [dbo].[Users]([Id]);
+            END
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.indexes WHERE name = 'IX_Invoices_JobCardId' AND object_id = OBJECT_ID('dbo.Invoices')
+            )
+            BEGIN
+                CREATE UNIQUE INDEX [IX_Invoices_JobCardId] ON [dbo].[Invoices] ([JobCardId]);
+            END
+
+            -- ---- from add-jobcard-labour-suggestions-table.sql ----
+            IF OBJECT_ID('dbo.JobCardLabourSuggestions', 'U') IS NULL
+            BEGIN
+                CREATE TABLE dbo.JobCardLabourSuggestions (
+                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+                    JobCardId UNIQUEIDENTIFIER NOT NULL,
+                    LabourCode NVARCHAR(60) NOT NULL,
+                    LabourDescription NVARCHAR(400) NULL,
+                    HsnCode NVARCHAR(20) NULL,
+                    Sgst DECIMAL(5,2) NULL,
+                    Cgst DECIMAL(5,2) NULL,
+                    Igst DECIMAL(5,2) NULL,
+                    RateAtSuggestion DECIMAL(12,2) NULL,
+                    Quantity INT NOT NULL DEFAULT 1,
+                    IssueType NVARCHAR(120) NULL,
+                    SuggestedById UNIQUEIDENTIFIER NULL,
+                    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+                    CONSTRAINT FK_JobCardLabourSuggestions_JobCards FOREIGN KEY (JobCardId) REFERENCES dbo.JobCards(Id) ON DELETE CASCADE,
+                    CONSTRAINT FK_JobCardLabourSuggestions_Users FOREIGN KEY (SuggestedById) REFERENCES dbo.Users(Id)
+                );
+                CREATE INDEX IX_JobCardLabourSuggestions_JobCardId ON dbo.JobCardLabourSuggestions(JobCardId);
+            END
+            IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'LabourDescription') IS NULL
+                ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [LabourDescription] NVARCHAR(400) NULL;
+            IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'HsnCode') IS NULL
+                ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [HsnCode] NVARCHAR(20) NULL;
+            IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'Sgst') IS NULL
+                ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [Sgst] DECIMAL(5,2) NULL;
+            IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'Cgst') IS NULL
+                ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [Cgst] DECIMAL(5,2) NULL;
+            IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'Igst') IS NULL
+                ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [Igst] DECIMAL(5,2) NULL;
+            IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'RateAtSuggestion') IS NULL
+                ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [RateAtSuggestion] DECIMAL(12,2) NULL;
+            IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'Quantity') IS NULL
+                ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [Quantity] INT NOT NULL DEFAULT 1;
+            IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'IssueType') IS NULL
+                ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [IssueType] NVARCHAR(120) NULL;
+            IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'SuggestedById') IS NULL
+                ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [SuggestedById] UNIQUEIDENTIFIER NULL;
+            IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'SuggestedById') IS NOT NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM sys.foreign_keys
+                   WHERE name = 'FK_JobCardLabourSuggestions_Users' AND parent_object_id = OBJECT_ID('dbo.JobCardLabourSuggestions')
+               )
+            BEGIN
+                ALTER TABLE [dbo].[JobCardLabourSuggestions]
+                    ADD CONSTRAINT [FK_JobCardLabourSuggestions_Users] FOREIGN KEY ([SuggestedById]) REFERENCES [dbo].[Users]([Id]);
+            END
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_JobCardLabourSuggestions_JobCardId' AND object_id = OBJECT_ID('dbo.JobCardLabourSuggestions'))
+                CREATE INDEX IX_JobCardLabourSuggestions_JobCardId ON dbo.JobCardLabourSuggestions(JobCardId);
+
+            -- ---- from redefine-workflow-stages-to-7-steps.sql ----
+            UPDATE dbo.WorkflowStages SET Label = 'Vehicle Check-In / Job Card Created', Seq = 1, Active = 1, IsTerminal = 0
+                WHERE DealerId IS NULL AND StageKey = 'check_in';
+            UPDATE dbo.WorkflowStages SET Label = 'Work In Progress', Seq = 2, Active = 1, IsTerminal = 0
+                WHERE DealerId IS NULL AND StageKey = 'in_repair';
+            UPDATE dbo.WorkflowStages SET Label = 'Repair Completed', Active = 1, IsTerminal = 0
+                WHERE DealerId IS NULL AND StageKey = 'repair_completed';
+            UPDATE dbo.WorkflowStages SET Label = 'Ready for Delivery', Active = 1, IsTerminal = 0
+                WHERE DealerId IS NULL AND StageKey = 'ready_for_delivery';
+            UPDATE dbo.WorkflowStages SET Label = 'Invoice Generated', Active = 1, IsTerminal = 1
+                WHERE DealerId IS NULL AND StageKey = 'invoice_generated';
+            IF NOT EXISTS (SELECT 1 FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'part_suggestion')
+                INSERT INTO dbo.WorkflowStages (Id, DealerId, StageKey, Label, Seq, Icon, Active, IsTerminal, CreatedAt)
+                VALUES (NEWID(), NULL, 'part_suggestion', 'Part Suggestion', 3, 'package', 1, 0, SYSUTCDATETIME());
+            IF NOT EXISTS (SELECT 1 FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'labour_suggestion')
+                INSERT INTO dbo.WorkflowStages (Id, DealerId, StageKey, Label, Seq, Icon, Active, IsTerminal, CreatedAt)
+                VALUES (NEWID(), NULL, 'labour_suggestion', 'Labour Suggestion', 4, 'tool', 1, 0, SYSUTCDATETIME());
+            UPDATE dbo.WorkflowStages SET Active = 0
+                WHERE DealerId IS NULL AND StageKey IN ('job_card_created', 'inspection', 'diagnosis', 'estimate_prep', 'customer_approval',
+                                    'parts_requested', 'parts_issued', 'quality_check', 'rework', 'closed');
+
+            -- ---- NEW: 'Estimate Created' stage, inserted right after Labour Suggestion ----
+            IF NOT EXISTS (SELECT 1 FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'estimate_created')
+                INSERT INTO dbo.WorkflowStages (Id, DealerId, StageKey, Label, Seq, Icon, Active, IsTerminal, CreatedAt)
+                VALUES (NEWID(), NULL, 'estimate_created', 'Estimate Created', 5, 'file-text', 1, 0, SYSUTCDATETIME());
+            -- Final order: 1 check_in, 2 in_repair, 3 part_suggestion, 4 labour_suggestion,
+            -- 5 estimate_created, 6 repair_completed, 7 ready_for_delivery, 8 invoice_generated.
+            UPDATE dbo.WorkflowStages SET Seq = 6 WHERE DealerId IS NULL AND StageKey = 'repair_completed';
+            UPDATE dbo.WorkflowStages SET Seq = 7 WHERE DealerId IS NULL AND StageKey = 'ready_for_delivery';
+            UPDATE dbo.WorkflowStages SET Seq = 8 WHERE DealerId IS NULL AND StageKey = 'invoice_generated';
+
+            -- Re-point any job card still sitting on a now-retired GLOBAL stage onto its nearest
+            -- surviving replacement (history rows are left untouched - see
+            -- redefine-workflow-stages-to-7-steps.sql's own step 4 for the full narrative).
+            DECLARE @checkIn UNIQUEIDENTIFIER = (SELECT Id FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'check_in');
+            DECLARE @inRepair UNIQUEIDENTIFIER = (SELECT Id FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'in_repair');
+            DECLARE @partSuggestion UNIQUEIDENTIFIER = (SELECT Id FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'part_suggestion');
+            DECLARE @repairCompleted UNIQUEIDENTIFIER = (SELECT Id FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'repair_completed');
+            DECLARE @invoiceGenerated UNIQUEIDENTIFIER = (SELECT Id FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'invoice_generated');
+            UPDATE j SET CurrentStageId = @checkIn
+                FROM dbo.JobCards j JOIN dbo.WorkflowStages s ON j.CurrentStageId = s.Id
+                WHERE s.DealerId IS NULL AND s.StageKey = 'job_card_created';
+            UPDATE j SET CurrentStageId = @inRepair
+                FROM dbo.JobCards j JOIN dbo.WorkflowStages s ON j.CurrentStageId = s.Id
+                WHERE s.DealerId IS NULL AND s.StageKey IN ('inspection', 'diagnosis', 'estimate_prep', 'customer_approval');
+            UPDATE j SET CurrentStageId = @partSuggestion
+                FROM dbo.JobCards j JOIN dbo.WorkflowStages s ON j.CurrentStageId = s.Id
+                WHERE s.DealerId IS NULL AND s.StageKey IN ('parts_requested', 'parts_issued');
+            UPDATE j SET CurrentStageId = @repairCompleted
+                FROM dbo.JobCards j JOIN dbo.WorkflowStages s ON j.CurrentStageId = s.Id
+                WHERE s.DealerId IS NULL AND s.StageKey IN ('quality_check', 'rework');
+            UPDATE j SET CurrentStageId = @invoiceGenerated
+                FROM dbo.JobCards j JOIN dbo.WorkflowStages s ON j.CurrentStageId = s.Id
+                WHERE s.DealerId IS NULL AND s.StageKey = 'closed';
+        ");
+        Console.WriteLine("[Startup] Self-healing schema catch-up (BAPL columns, Labour Suggestions table, 8-step workflow) checked/applied.");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Startup] WARNING: self-healing schema catch-up failed - {ex.Message}");
+    }
+}
+
+// ---------------------------------------------------------------------
+// COLUMN TYPE-REPAIR (2026-09-03) - the IF OBJECT_ID(...)/COL_LENGTH(...) guards in the block
+// above (and the one before it) only detect a MISSING table/column - they cannot detect or fix a
+// column that already exists with the WRONG type. Confirmed live via a pasted server log: on this
+// database, JobCardPartSuggestions.Status is INT (not NVARCHAR(20) as the CREATE TABLE above and
+// the JobCardPartSuggestion C# model assume), so every "Add Suggestion" save under Part Suggestion
+// failed with "Conversion failed when converting the nvarchar value 'Paid' to data type int." -
+// the app always writes the string 'Paid' or 'U/W' into this column (see AddPartSuggestion's
+// req.Status check in JobCardsController.cs). This almost certainly happened because
+// JobCardPartSuggestions already existed - created earlier by a different ad hoc script with
+// Status typed as INT - before this app's own guarded CREATE TABLE ever ran, so IF OBJECT_ID(...)
+// IS NULL was already false and the correct NVARCHAR(20) definition was silently never applied.
+// This is a SEPARATE try/catch block (its own ExecuteSqlRawAsync call), not folded into the block
+// above, because a mid-batch error aborts every remaining statement in that same batch - a bug
+// here must not be able to prevent the BAPL-columns/Labour-table/workflow-stage statements above
+// it from applying.
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
+    try
+    {
+        await db.Database.ExecuteSqlRawAsync(@"
+            DECLARE @actualType NVARCHAR(50);
+            SELECT @actualType = ty.name
+                FROM sys.columns c
+                JOIN sys.types ty ON c.user_type_id = ty.user_type_id
+                WHERE c.object_id = OBJECT_ID('dbo.JobCardPartSuggestions') AND c.name = 'Status';
+
+            IF @actualType IS NOT NULL AND @actualType <> 'nvarchar'
+            BEGIN
+                -- Drop any default constraint bound to Status first - ALTER COLUMN fails while one
+                -- is attached, and the constraint's autogenerated name isn't known up front.
+                DECLARE @dfName SYSNAME, @dynSql NVARCHAR(400);
+                SELECT @dfName = dc.name
+                    FROM sys.default_constraints dc
+                    JOIN sys.columns c ON c.default_object_id = dc.object_id
+                    WHERE dc.parent_object_id = OBJECT_ID('dbo.JobCardPartSuggestions') AND c.name = 'Status';
+                IF @dfName IS NOT NULL
+                BEGIN
+                    SET @dynSql = N'ALTER TABLE [dbo].[JobCardPartSuggestions] DROP CONSTRAINT [' + @dfName + N']';
+                    EXEC sp_executesql @dynSql;
+                END
+
+                -- Widen first (int -> nvarchar(20) is a safe conversion - SQL Server turns each
+                -- existing value into its string form automatically) and only translate values
+                -- afterwards - doing the value translation while the column is still INT would
+                -- throw this exact same conversion error.
+                ALTER TABLE [dbo].[JobCardPartSuggestions] ALTER COLUMN [Status] NVARCHAR(20) NULL;
+
+                -- Legacy numeric-as-string values -> the two values the app actually understands
+                -- (AddPartSuggestion rejects anything else - req.Status must be 'Paid' or 'U/W').
+                -- Adjust this mapping if this dealer's original int codes meant something else;
+                -- anything unrecognized falls back to 'Paid' rather than being left in a state the
+                -- UI/API can't handle.
+                UPDATE [dbo].[JobCardPartSuggestions]
+                    SET [Status] = CASE
+                        WHEN [Status] IN ('Paid', 'U/W') THEN [Status]
+                        WHEN [Status] IN ('2', 'UW', 'U-W', 'Warranty') THEN 'U/W'
+                        ELSE 'Paid'
+                    END;
+
+                ALTER TABLE [dbo].[JobCardPartSuggestions] ALTER COLUMN [Status] NVARCHAR(20) NOT NULL;
+                ALTER TABLE [dbo].[JobCardPartSuggestions]
+                    ADD CONSTRAINT [DF_JobCardPartSuggestions_Status] DEFAULT ('Paid') FOR [Status];
+            END
+        ");
+        Console.WriteLine("[Startup] Column type-repair (JobCardPartSuggestions.Status) checked/applied.");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Startup] WARNING: JobCardPartSuggestions.Status type-repair failed - {ex.Message}");
+    }
+}
+
 // Opens Swagger in the default browser automatically once Kestrel has actually started
 // listening. launchSettings.json's "launchBrowser"/"launchUrl": "swagger" ONLY takes effect when
 // launched from Visual Studio or `dotnet watch run` - plain `dotnet run` (what you get typing it

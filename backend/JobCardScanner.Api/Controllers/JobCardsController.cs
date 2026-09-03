@@ -47,7 +47,14 @@ public class JobCardsController : ControllerBase
 
     // ---------------- List / search / global search ----------------
     [HttpGet]
-    public async Task<IActionResult> List([FromQuery] Guid? dealerId, [FromQuery] JobCardStatus? status, [FromQuery] Guid? technicianId, [FromQuery] string? q, [FromQuery] string? stageKey)
+    public async Task<IActionResult> List(
+        [FromQuery] Guid? dealerId, [FromQuery] JobCardStatus? status, [FromQuery] Guid? technicianId, [FromQuery] string? q, [FromQuery] string? stageKey,
+        // Dashboard KPI-card/chart deep-links (see DashboardPage.tsx/DashboardScreen.tsx and
+        // DashboardController.Kpis - each of these names matches one of that endpoint's own
+        // computed fields exactly, so a KPI card and this list filter always agree on what counts).
+        [FromQuery] bool? excludeClosed, [FromQuery] bool? overdue, [FromQuery] bool? createdToday,
+        [FromQuery] bool? deliveredToday, [FromQuery] bool? closedThisMonth, [FromQuery] bool? warrantyOnly,
+        [FromQuery] bool? pendingBucket)
     {
         var query = _db.JobCards.AsNoTracking()
             .Include(j => j.Customer).Include(j => j.Vehicle).Include(j => j.CurrentStage)
@@ -87,6 +94,19 @@ public class JobCardsController : ControllerBase
         if (!string.IsNullOrWhiteSpace(q))
             query = query.Where(j => j.JobCardNumber.Contains(q) || j.Customer!.Name.Contains(q) || j.Customer!.Mobile.Contains(q) || (j.Vehicle!.RegNo != null && j.Vehicle.RegNo.Contains(q)));
 
+        // Dashboard KPI-card deep-link filters - each mirrors the exact same WHERE clause
+        // DashboardController.Kpis uses to compute the matching card's number, so clicking a card
+        // always lands on the same set of job cards it just counted.
+        if (excludeClosed == true) query = query.Where(j => j.Status != JobCardStatus.Closed && j.Status != JobCardStatus.Cancelled);
+        if (overdue == true) query = query.Where(j => j.ExpectedDeliveryAt < DateTime.UtcNow && j.Status != JobCardStatus.Closed && j.Status != JobCardStatus.Cancelled);
+        if (createdToday == true) { var todayStart = DateTime.UtcNow.Date; query = query.Where(j => j.CreatedAt >= todayStart); }
+        if (deliveredToday == true) { var todayStart = DateTime.UtcNow.Date; var tomorrowStart = todayStart.AddDays(1); query = query.Where(j => j.ActualDeliveryAt >= todayStart && j.ActualDeliveryAt < tomorrowStart); }
+        if (closedThisMonth == true) { var monthStart = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1, 0, 0, 0, DateTimeKind.Utc); query = query.Where(j => j.ClosedAt >= monthStart); }
+        if (warrantyOnly == true) query = query.Where(j => j.ServiceType == ServiceType.Warranty);
+        if (pendingBucket == true) query = query.Where(j =>
+            j.Status == JobCardStatus.PendingCustomerApproval || j.Status == JobCardStatus.PendingQc ||
+            j.Status == JobCardStatus.PendingClosure || j.Status == JobCardStatus.PendingInvoice);
+
         var results = await query.OrderByDescending(j => j.CreatedAt).Take(200).ToListAsync();
         var localRows = results.Select(j => (SortKey: j.CreatedAt, Row: Summarize(j)));
 
@@ -100,7 +120,12 @@ public class JobCardsController : ControllerBase
         // browsing both work fine against BAPL DMS too.
         var baplRows = Enumerable.Empty<(DateTime SortKey, object Row)>();
         string? baplDmsWarning = null;
-        if (!status.HasValue && !technicianId.HasValue && string.IsNullOrWhiteSpace(stageKey))
+        // Same reasoning as status/technicianId/stageKey above - every new dashboard filter is
+        // also a JobCardScanner-specific concept BAPL DMS rows can't be evaluated against, so any
+        // of them being set means "local job cards only".
+        var anyDashboardFilterActive = excludeClosed == true || overdue == true || createdToday == true ||
+            deliveredToday == true || closedThisMonth == true || warrantyOnly == true || pendingBucket == true;
+        if (!status.HasValue && !technicianId.HasValue && string.IsNullOrWhiteSpace(stageKey) && !anyDashboardFilterActive)
         {
             string? baplDealerCode = null;
             var canSearchBapl = true;
@@ -193,6 +218,31 @@ public class JobCardsController : ControllerBase
             .FirstOrDefaultAsync();
         if (openJobCardForChassis is not null)
             return BadRequest(new { message = $"This chassis already has an open job card ({openJobCardForChassis}). It must be closed before a new job card can be created for it." });
+
+        // Same check, but against BAPL DMS's own job cards - catches a job card opened directly in
+        // BAPL DMS (outside JobCardScanner entirely), which the local-only check above can never
+        // see. Best-effort: a BAPL DMS outage here should never block creating a job card locally,
+        // it just means this particular safety check couldn't run this time. Deliberately read-only
+        // - a BAPL DMS-only job card is never written into JobCardScanner's own database by this or
+        // any other check; the local JobCards table only ever gets a row for a job card actually
+        // created through this endpoint.
+        if (!string.IsNullOrWhiteSpace(vehicle.Vin))
+        {
+            try
+            {
+                var dealerBaplCode = await _db.Dealers.AsNoTracking().Where(d => d.Id == req.DealerId).Select(d => d.BaplDmsDealerCode).FirstOrDefaultAsync();
+                var openInDms = await _baplDms.GetOpenJobCardForChassisAsync(vehicle.Vin, dealerBaplCode);
+                if (openInDms is not null)
+                {
+                    var dmsJobNumber = $"{openInDms.JobPrefix}{openInDms.JobNo}";
+                    return BadRequest(new { message = $"This chassis already has an open job card in BAPL DMS ({dmsJobNumber}, status: {openInDms.JobStatus}). It must be closed there before a new job card can be created for it here." });
+                }
+            }
+            catch (InvalidOperationException ex)
+            {
+                _logger.LogWarning(ex, "Could not check BAPL DMS for an open job card on chassis {ChassisNo} - proceeding without this check", vehicle.Vin);
+            }
+        }
 
         var firstStage = await _db.WorkflowStages.AsNoTracking()
             .Where(s => (s.DealerId == null || s.DealerId == req.DealerId) && s.Active)
@@ -516,6 +566,9 @@ public class JobCardsController : ControllerBase
         var log = new JobCardWorklog { JobCardId = id, TechnicianId = req.TechnicianId, TaskDescription = req.TaskDescription };
         _db.JobCardWorklogs.Add(log);
         if (jc.Status != JobCardStatus.InProgress) jc.Status = JobCardStatus.InProgress;
+        // Workflow Timeline auto-advances to "Work In Progress" the first time a technician starts a
+        // worklog - see WorkflowStageAutomation's doc comment.
+        await WorkflowStageAutomation.AdvanceIfAheadAsync(_db, jc, "in_repair", _currentUser.UserId, "Auto-advanced: work started.");
         await _db.SaveChangesAsync();
         return Ok(log);
     }
@@ -617,6 +670,12 @@ public class JobCardsController : ControllerBase
         .Include(j => j.ServiceAdvisor).Include(j => j.AssignedTechnician)
         .Include(j => j.Complaints).Include(j => j.Inspections)
         .Include(j => j.Photos).Include(j => j.StageHistory).ThenInclude(h => h.Stage)
+        // ChangedBy - a second Include(...).ThenInclude(...) chain off the same StageHistory
+        // collection, since ThenInclude only continues from its own immediately-preceding
+        // Include/ThenInclude and Stage/ChangedBy are sibling properties on JobCardStageHistory, not
+        // nested off each other. Needed so the Workflow Timeline's history grid (JobCardDetailPage's
+        // WorkflowHistoryGrid) can show who made each change, not just what/when.
+        .Include(j => j.StageHistory).ThenInclude(h => h.ChangedBy)
         .Include(j => j.Worklogs).Include(j => j.QcChecklistItems)
         .Include(j => j.Estimates).ThenInclude(e => e.Lines)
         .Include(j => j.Parts).ThenInclude(p => p.Part)
@@ -708,6 +767,12 @@ public class JobCardsController : ControllerBase
         Customer = j.Customer,
         Vehicle = j.Vehicle,
         Dealer = j.Dealer is null ? null : new { j.Dealer.Id, j.Dealer.Name, j.Dealer.Code },
+        // 2026-09-03: this job card's own dealer, resolved to BAPL DMS's own dealer code (distinct
+        // from j.Dealer.Code above, which is JobCardScanner's own local code) - needed so the
+        // Labour Suggestion panel's GET /api/bapl-dms/labour?dealerCode=... call can scope the new
+        // PartWiseLabourMaster union to the right dealer, the same way baplServiceLocationCode
+        // already scopes Part Suggestion's PartsInventory lookup.
+        BaplDealerCode = j.Dealer == null ? null : j.Dealer.BaplDmsDealerCode,
         CurrentStage = j.CurrentStage,
         ServiceAdvisor = j.ServiceAdvisor is null ? null : new { j.ServiceAdvisor.Id, j.ServiceAdvisor.Name },
         AssignedTechnician = j.AssignedTechnician is null ? null : new { j.AssignedTechnician.Id, j.AssignedTechnician.Name },
@@ -733,7 +798,8 @@ public class JobCardsController : ControllerBase
     [Authorize(Policy = Policies.ServiceAdvisorUp)]
     public async Task<IActionResult> AddPartSuggestion(Guid id, AddPartSuggestionRequest req)
     {
-        if (!await _db.JobCards.AnyAsync(j => j.Id == id)) return NotFound();
+        var jc = await _db.JobCards.FirstOrDefaultAsync(j => j.Id == id);
+        if (jc is null) return NotFound();
         if (string.IsNullOrWhiteSpace(req.ItemCode)) return BadRequest(new { message = "itemCode is required." });
         if (req.Status != "Paid" && req.Status != "U/W") return BadRequest(new { message = "status must be 'Paid' or 'U/W'." });
 
@@ -750,7 +816,26 @@ public class JobCardsController : ControllerBase
             SuggestedById = _currentUser.UserId,
         };
         _db.JobCardPartSuggestions.Add(suggestion);
-        await _db.SaveChangesAsync();
+        try
+        {
+            // Workflow Timeline auto-advances to "Part Suggestion" the first time one is added - see
+            // WorkflowStageAutomation's doc comment. No-ops (stays put) on every suggestion after the
+            // first, or if the job card has already moved further along.
+            await WorkflowStageAutomation.AdvanceIfAheadAsync(_db, jc, "part_suggestion", _currentUser.UserId, "Auto-advanced: part suggested.");
+            await _db.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            // This save writes into the Quantity/Description/HsnCode/Mrp columns added by
+            // deploy/add-part-suggestion-columns.sql - on a database that migration was never run
+            // against, SQL Server throws "Invalid column name" here, which without this catch just
+            // surfaces as an opaque 500 in the browser Network tab with no way to tell that apart
+            // from any other failure. Log the full exception and echo its message back so the
+            // actual cause (missing column vs. something else) is visible without digging through
+            // server logs.
+            _logger.LogError(ex, "Could not save part suggestion for job card {JobCardId}", id);
+            return StatusCode(500, new { message = "Could not save the part suggestion.", detail = ex.GetBaseException().Message });
+        }
         return Ok(suggestion);
     }
 
@@ -791,7 +876,8 @@ public class JobCardsController : ControllerBase
     [Authorize(Policy = Policies.ServiceAdvisorUp)]
     public async Task<IActionResult> AddLabourSuggestion(Guid id, AddLabourSuggestionRequest req)
     {
-        if (!await _db.JobCards.AnyAsync(j => j.Id == id)) return NotFound();
+        var jc = await _db.JobCards.FirstOrDefaultAsync(j => j.Id == id);
+        if (jc is null) return NotFound();
         if (string.IsNullOrWhiteSpace(req.LabourCode)) return BadRequest(new { message = "labourCode is required." });
         if (req.Quantity < 1) return BadRequest(new { message = "quantity must be at least 1." });
 
@@ -810,7 +896,20 @@ public class JobCardsController : ControllerBase
             SuggestedById = _currentUser.UserId,
         };
         _db.JobCardLabourSuggestions.Add(suggestion);
-        await _db.SaveChangesAsync();
+        try
+        {
+            // Workflow Timeline auto-advances to "Labour Suggestion" the first time one is added -
+            // see WorkflowStageAutomation's doc comment.
+            await WorkflowStageAutomation.AdvanceIfAheadAsync(_db, jc, "labour_suggestion", _currentUser.UserId, "Auto-advanced: labour suggested.");
+            await _db.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            // Same reasoning as AddPartSuggestion's catch above - surface the real cause instead of
+            // a bare 500.
+            _logger.LogError(ex, "Could not save labour suggestion for job card {JobCardId}", id);
+            return StatusCode(500, new { message = "Could not save the labour suggestion.", detail = ex.GetBaseException().Message });
+        }
         return Ok(suggestion);
     }
 
