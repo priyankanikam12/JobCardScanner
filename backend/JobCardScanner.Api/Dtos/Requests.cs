@@ -94,6 +94,10 @@ public class UploadPhotoForm
     public string? Caption { get; set; }
     public double? Latitude { get; set; }
     public double? Longitude { get; set; }
+    /// <summary>Set only by the Part Suggestion grid's Picture column upload (2026-09-03) - links
+    /// the uploaded photo/video to that specific suggestion row. Null for every other uploader
+    /// (the general Photos card never sends this).</summary>
+    public Guid? PartSuggestionId { get; set; }
 }
 
 /// <summary>PUT /api/jobcards/photos/{photoId} - edits a photo's caption after it's already been

@@ -1,8 +1,16 @@
 import { useEffect, useState } from 'react'
-import { Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'
+import * as ImagePicker from 'expo-image-picker'
+import { Alert, Image, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'
 import { apiClient } from '../api/client'
 import { Badge } from './Badge'
-import type { BaplDmsPartStock, JobCardDetail } from '../types'
+import type { BaplDmsPartStock, JobCardDetail, JobCardPhoto } from '../types'
+
+// Photo/video URLs come back from the API as a relative path (e.g.
+// "/uploads/jobcard-photos/.../x.jpg") - same origin as the API itself, not the app's own bundle.
+// Mirrors JobCardDetailScreen.tsx's own local photoSrc helper (not exported from there, so
+// duplicated here rather than importing across an unrelated screen file).
+const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? ''
+const photoSrc = (url: string) => (url.startsWith('http') ? url : `${API_BASE_URL}${url}`)
 
 /**
  * "Part Suggestion" panel - mirrors web/src/pages/staff/JobCardDetailPage.tsx's PartSuggestionCard
@@ -83,6 +91,12 @@ export function PartSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; on
           <View style={{ flex: 1 }}>
             <Text style={styles.rowTitle}>{i + 1}. {p.itemCode} {p.description ? `- ${p.description}` : ''}</Text>
             <Text style={styles.muted}>MRP {p.mrp != null ? `₹${p.mrp}` : '-'} · Qty {p.quantity}</Text>
+            <PartPictureRow
+              jcId={jc.id}
+              suggestionId={p.id}
+              photos={jc.photos.filter((ph) => ph.partSuggestionId === p.id)}
+              onChanged={onChanged}
+            />
           </View>
           <Badge status={p.status === 'Paid' ? 'Closed' : 'InProgress'} />
           <TouchableOpacity style={styles.smallBtn} onPress={() => removeSuggestion(p.id)}>
@@ -160,6 +174,86 @@ export function PartSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; on
   )
 }
 
+const isVideoPhoto = (ph: JobCardPhoto) => /\.(mp4|mov|webm|3gp|avi)$/i.test(ph.url)
+
+/** Part Suggestion row's "Picture" strip (2026-09-03 - "which partcode we added after added we
+ * upload phtoos and video"), mirroring web's PartPictureCell. Shown per already-added suggestion:
+ * small thumbnails for whatever's already uploaded against it (a "▶" badge stands in for video,
+ * same as web, rather than an inline player), plus a "+ Picture" button offering the same
+ * Take Photo/Video vs Choose from Library choice as the job card's general Photos card. Uploads
+ * straight to POST /api/jobcards/{id}/photos/upload with PartSuggestionId set to this row's id and
+ * Stage fixed to 'PartSuggestion' - no caption/GPS capture here, this is just "attach evidence to
+ * this part". */
+function PartPictureRow({
+  jcId, suggestionId, photos, onChanged,
+}: {
+  jcId: string
+  suggestionId: string
+  photos: JobCardPhoto[]
+  onChanged: () => void
+}) {
+  const [uploading, setUploading] = useState(false)
+
+  const uploadResult = async (result: ImagePicker.ImagePickerResult) => {
+    if (result.canceled || !result.assets?.[0]) return
+    const asset = result.assets[0]
+    setUploading(true)
+    try {
+      const form = new FormData()
+      const isVideo = asset.type === 'video'
+      // @ts-expect-error - RN's FormData accepts {uri,name,type} file parts
+      form.append('File', {
+        uri: asset.uri,
+        name: asset.fileName || `${isVideo ? 'video' : 'photo'}-${Date.now()}.${isVideo ? 'mp4' : 'jpg'}`,
+        type: asset.mimeType || (isVideo ? 'video/mp4' : 'image/jpeg'),
+      })
+      form.append('Stage', 'PartSuggestion')
+      form.append('PartSuggestionId', suggestionId)
+      await apiClient.post(`/api/jobcards/${jcId}/photos/upload`, form, { headers: { 'Content-Type': 'multipart/form-data' } })
+      onChanged()
+    } catch {
+      Alert.alert('Could not upload the file for this part.')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const takePhotoOrVideo = async () => {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync()
+    if (status !== 'granted') { Alert.alert('Camera permission is needed to capture a photo or video.'); return }
+    await uploadResult(await ImagePicker.launchCameraAsync({ mediaTypes: ['images', 'videos'], quality: 0.8 }))
+  }
+
+  const pickFromLibrary = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync()
+    if (status !== 'granted') { Alert.alert('Photo library permission is needed to add a photo or video.'); return }
+    await uploadResult(await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images', 'videos'], quality: 0.8 }))
+  }
+
+  const choose = () => {
+    Alert.alert('Add Picture / Video', undefined, [
+      { text: 'Take Photo/Video', onPress: takePhotoOrVideo },
+      { text: 'Choose from Library', onPress: pickFromLibrary },
+      { text: 'Cancel', style: 'cancel' },
+    ])
+  }
+
+  return (
+    <View style={styles.pictureRow}>
+      {photos.map((ph) => (
+        isVideoPhoto(ph) ? (
+          <View key={ph.id} style={styles.videoBadge}><Text style={styles.videoBadgeText}>▶</Text></View>
+        ) : (
+          <Image key={ph.id} source={{ uri: photoSrc(ph.url) }} style={styles.pictureThumb} />
+        )
+      ))}
+      <TouchableOpacity style={styles.smallBtn} onPress={choose} disabled={uploading}>
+        <Text style={styles.smallBtnText}>{uploading ? 'Uploading…' : '+ Picture'}</Text>
+      </TouchableOpacity>
+    </View>
+  )
+}
+
 const styles = StyleSheet.create({
   card: { backgroundColor: '#fff', borderRadius: 10, borderWidth: 1, borderColor: '#e2e6ec', padding: 14, marginBottom: 10 },
   cardTitle: { fontWeight: '700', marginBottom: 8, color: '#101828' },
@@ -182,4 +276,8 @@ const styles = StyleSheet.create({
   addBtn: { backgroundColor: '#2563eb', borderRadius: 8, paddingVertical: 10, alignItems: 'center' },
   addBtnDisabled: { backgroundColor: '#93c5fd' },
   addBtnText: { color: '#fff', fontWeight: '700' },
+  pictureRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 6 },
+  pictureThumb: { width: 32, height: 32, borderRadius: 4, borderWidth: 1, borderColor: '#e2e6ec' },
+  videoBadge: { width: 32, height: 32, borderRadius: 4, backgroundColor: '#101828', alignItems: 'center', justifyContent: 'center' },
+  videoBadgeText: { color: '#fff', fontSize: 12 },
 })

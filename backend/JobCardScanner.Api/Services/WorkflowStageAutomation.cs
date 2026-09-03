@@ -17,7 +17,17 @@ namespace JobCardScanner.Api.Services;
 ///   - "in_repair"        - JobCardsController.StartWorklog (first technician worklog started)
 ///   - "part_suggestion"  - JobCardsController.AddPartSuggestion (first part suggested)
 ///   - "labour_suggestion"- JobCardsController.AddLabourSuggestion (first labour suggested)
-///   - "estimate_created" - EstimatesController.Create (first estimate drafted)
+///   - "estimate_created" - JobCardsController.AddPartSuggestion AND AddLabourSuggestion, each
+///                          right after their own part_suggestion/labour_suggestion advance above
+///                          (2026-09-03 - EITHER one means the Estimates Amount tab now has real
+///                          content, i.e. an estimate genuinely exists; a job card commonly only
+///                          ever gets one of the two, so this can't be gated on both). REPLACES the
+///                          old trigger point, EstimatesController.Create (the "Send Estimate to
+///                          Customer" OTP flow) - that flow's own UI was already removed from
+///                          EstimatesCard (see its doc comment) in favor of reading Part/Labour
+///                          Suggestions directly, which left "Estimate Created" with no way to ever
+///                          actually fire even though Estimates Amount kept filling in - reported as
+///                          "Estimate Created stage doesn't update after adding suggestions".
 /// "check_in" is already set at job-card creation (Create's own stage-history seed) and
 /// "invoice_generated" already happens from InvoiceCard's Generate Invoice action via the existing
 /// ChangeStage endpoint - neither needed a new automatic trigger.

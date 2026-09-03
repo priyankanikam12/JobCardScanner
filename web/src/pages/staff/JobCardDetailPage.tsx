@@ -5,7 +5,7 @@ import { useStaffAuth } from '../../auth/StaffAuthContext'
 import { PasswordInput } from '../../components/PasswordInput'
 import { StatusBadge } from '../../components/StatusBadge'
 import { WorkflowTimeline, type WorkflowTimelineHistoryEntry } from '../../components/WorkflowTimeline'
-import type { BaplDmsJobCardHistory, BaplDmsLabourRow, BaplDmsPartStock, JobCardDetail, StaffRole, WorkflowStage } from '../../types'
+import type { BaplDmsJobCardHistory, BaplDmsLabourRow, BaplDmsPartStock, JobCardDetail, JobCardPhoto, StaffRole, WorkflowStage } from '../../types'
 import { buildEstimatePrintHtml, buildJobCardPrintHtml } from '../../lib/jobCardPrintHtml'
 
 // Photo URLs come back from the API as a relative path (e.g. "/uploads/jobcard-photos/.../x.jpg" -
@@ -205,8 +205,17 @@ function PrintMenu({ jc, hasRole, setMsg }: { jc: JobCardDetail; hasRole: (...ro
   const printWindow = (html: string, popupBlockedMsg: string) => {
     const win = window.open('', '_blank', 'width=900,height=650')
     if (!win) { setMsg(popupBlockedMsg); return }
+    win.document.open()
     win.document.write(html)
     win.document.close()
+    win.focus()
+    // 2026-09-03 fix ("print option not came") - this used to stop at just opening the preview
+    // and left the user to trigger printing themselves (Ctrl+P). The wizard's own print button
+    // (JobCardWizardPage.printPreview, same buildJobCardPrintHtml) always auto-opened the
+    // browser's native print dialog via win.onload = () => win.print() - this menu's Estimate/
+    // JobCard print options were missing that one line, so the preview opened but nothing looked
+    // like a "print" action actually happened.
+    win.onload = () => win.print()
   }
 
   const printEstimate = () => {
@@ -284,13 +293,25 @@ function PrintMenu({ jc, hasRole, setMsg }: { jc: JobCardDetail; hasRole: (...ro
     setOpen(false)
     setInvoiceBusy(true)
     setMsg(null)
+    // 2026-09-03 fix ("invoice not added/opened") - this used to call window.open(url, ...) only
+    // AFTER the `await staffApi.get(...)` below finished. Opening a new window/tab is only ever
+    // reliably allowed by the browser's popup blocker when it happens synchronously inside the
+    // click handler that started it - once an `await` has run, the browser no longer counts it as
+    // a direct response to the click, so this window.open call was getting silently blocked in
+    // some browsers even though `if (!win)` should have caught that (some browsers still hand back
+    // a non-null but effectively inert window object here). Opening the window FIRST, synchronously,
+    // then loading the PDF into it once the fetch finishes - same pattern printWindow above and the
+    // standalone InvoiceCard's own download() already use - sidesteps the whole issue.
+    const win = window.open('', '_blank')
+    if (!win) { setMsg('Please allow popups to view/print the invoice.'); setInvoiceBusy(false); return }
+    win.document.write('<p style="font-family:sans-serif;padding:20px;color:#555;">Loading invoice…</p>')
     try {
       const { data } = await staffApi.get(`/api/jobcards/${jc.id}/invoice-pdf`, { responseType: 'blob' })
       const url = URL.createObjectURL(data as Blob)
-      const win = window.open(url, '_blank')
-      if (!win) setMsg('Please allow popups to view/print the invoice.')
+      win.location.href = url
       setTimeout(() => URL.revokeObjectURL(url), 60_000)
     } catch (err: unknown) {
+      win.close()
       const status = (err as { response?: { status?: number } })?.response?.status
       if (status === 404) setMsg('No repair bill saved in BAPL DMS for this job yet.')
       else setMsg('Could not open the invoice from BAPL DMS. Please try again.')
@@ -975,7 +996,7 @@ function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Pr
     <div className="card">
       <h3>Part Suggestion</h3>
       <table>
-        <thead><tr><th>Sr no.</th><th>Item Code</th><th>Description</th><th>MRP</th><th>QTY</th><th>Issue Type (Status)</th><th></th></tr></thead>
+        <thead><tr><th>Sr no.</th><th>Item Code</th><th>Description</th><th>MRP</th><th>QTY</th><th>Issue Type (Status)</th><th>Picture</th><th></th></tr></thead>
         <tbody>
           {jc.partSuggestions.map((p, i) => (
             <tr key={p.id}>
@@ -985,6 +1006,14 @@ function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Pr
               <td>{p.mrp != null ? `₹${p.mrp}` : '-'}</td>
               <td>{p.quantity}</td>
               <td><StatusBadge status={p.status} /></td>
+              <td>
+                <PartPictureCell
+                  jcId={jc.id}
+                  suggestionId={p.id}
+                  photos={jc.photos.filter((ph) => ph.partSuggestionId === p.id)}
+                  run={run}
+                />
+              </td>
               <td style={{ display: 'flex', gap: 4 }}>
                 <button
                   className="btn btn-sm"
@@ -997,7 +1026,7 @@ function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Pr
             </tr>
           ))}
           {jc.partSuggestions.length === 0 && (
-            <tr><td colSpan={7} className="muted">No parts suggested yet.</td></tr>
+            <tr><td colSpan={8} className="muted">No parts suggested yet.</td></tr>
           )}
         </tbody>
       </table>
@@ -1074,6 +1103,88 @@ function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Pr
       {selectedPart && (
         <p className="muted">MRP {selectedPart.mrp != null ? `₹${selectedPart.mrp}` : '-'} · HSN {selectedPart.hsnCode ?? '-'} · Available {selectedPart.availableQty}</p>
       )}
+    </div>
+  )
+}
+
+/** Part Suggestion grid's "Picture" column (2026-09-03 - "which partcode we added after added we
+ * upload phtoos and video"). One cell per already-added suggestion row: shows whatever
+ * photos/videos have already been uploaded against it (small clickable thumbnails - a video shows
+ * a "▶" badge instead of trying to render a full inline player in a table cell) plus a small "+"
+ * button that opens the file picker straight to POST /api/jobcards/{id}/photos/upload with
+ * PartSuggestionId set to this row's id and Stage fixed to 'PartSuggestion'. Deliberately has no
+ * caption/GPS capture like the general Photos card - this is just "attach evidence to this part",
+ * not a dated site-visit record. */
+function PartPictureCell({
+  jcId, suggestionId, photos, run,
+}: {
+  jcId: string
+  suggestionId: string
+  photos: JobCardPhoto[]
+  run: (fn: () => Promise<unknown>, successMsg?: string) => void
+}) {
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [uploading, setUploading] = useState(false)
+
+  const onFilesChosen = async (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    setUploading(true)
+    try {
+      for (const file of Array.from(files)) {
+        const form = new FormData()
+        form.append('File', file)
+        form.append('Stage', 'PartSuggestion')
+        form.append('PartSuggestionId', suggestionId)
+        // eslint-disable-next-line no-await-in-loop -- uploads one file at a time on purpose, so a
+        // failure partway through a multi-file pick still keeps the ones that already succeeded
+        // (run() reloads jc after every call, so each upload shows up as soon as it lands).
+        await run(() => staffApi.post(`/api/jobcards/${jcId}/photos/upload`, form, { headers: { 'Content-Type': 'multipart/form-data' } }))
+      }
+    } finally {
+      setUploading(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  const isVideo = (ph: JobCardPhoto) => /\.(mp4|mov|webm|3gp|avi)$/i.test(ph.url)
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+      {photos.map((ph) => (
+        // 2026-09-03 fix ("uploaded photos not shown") - JobCardPhoto.Url is a relative path
+        // (e.g. "/uploads/jobcard-photos/..."), served by the BACKEND, not the Vite dev server
+        // this page itself runs on - a bare `src={ph.url}` resolves against the page's own origin
+        // (localhost:5173) and 404s there. Every other photo on this page already goes through the
+        // photoSrc() helper (see the top of this file) for exactly this reason; this cell was the
+        // one place that used ph.url directly instead.
+        <a key={ph.id} href={photoSrc(ph.url)} target="_blank" rel="noreferrer" title={isVideo(ph) ? 'View video' : 'View photo'}>
+          {isVideo(ph) ? (
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28,
+              borderRadius: 4, background: '#101828', color: '#fff', fontSize: 12,
+            }}>▶</span>
+          ) : (
+            <img src={photoSrc(ph.url)} alt="" style={{ width: 28, height: 28, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)' }} />
+          )}
+        </a>
+      ))}
+      <button
+        type="button"
+        className="btn btn-sm"
+        disabled={uploading}
+        onClick={() => fileInputRef.current?.click()}
+        title="Upload photo or video"
+      >
+        {uploading ? '…' : '+'}
+      </button>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*,video/*"
+        multiple
+        style={{ display: 'none' }}
+        onChange={(e) => onFilesChosen(e.target.files)}
+      />
     </div>
   )
 }

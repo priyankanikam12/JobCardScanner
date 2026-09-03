@@ -24,7 +24,7 @@ export type JobCardStatus =
 export type ServiceType = 'FreeService' | 'PaidService' | 'Warranty' | 'AccidentRepair' | 'Breakdown' | 'Pdi' | 'GoodwillService'
 export type JobCardSource = 'WalkIn' | 'PickupAndDrop' | 'Breakdown' | 'Scheduled' | 'Online'
 export type JobCardPriority = 'Normal' | 'High' | 'Urgent'
-export type PhotoStage = 'CheckIn' | 'Inspection' | 'Repair' | 'Qc' | 'Delivery'
+export type PhotoStage = 'CheckIn' | 'Inspection' | 'Repair' | 'Qc' | 'Delivery' | 'PartSuggestion'
 
 export interface CurrentUser {
   id: string
@@ -312,6 +312,9 @@ export interface JobCardPhoto {
   caption?: string | null
   latitude?: number | null
   longitude?: number | null
+  // 2026-09-03: set only for photos/videos uploaded from the Part Suggestion grid's Picture
+  // column - links this photo back to that specific JobCardPartSuggestion row.
+  partSuggestionId?: string | null
   createdAt?: string
 }
 

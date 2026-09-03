@@ -209,7 +209,10 @@ public class JobCardInspection
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 
-public enum PhotoStage { CheckIn, Inspection, Repair, Qc, Delivery }
+/// <summary>"PartSuggestion" added 2026-09-03 for the Part Suggestion grid's own Picture column
+/// (JobCardPhoto.PartSuggestionId below) - distinct from the other five stages so these don't get
+/// mixed into the general Photos card's own CheckIn/Inspection/Repair/Qc/Delivery history.</summary>
+public enum PhotoStage { CheckIn, Inspection, Repair, Qc, Delivery, PartSuggestion }
 
 public class JobCardPhoto
 {
@@ -224,6 +227,15 @@ public class JobCardPhoto
     /// BAPL DMS sync) or when the device/browser denied location access.</summary>
     public double? Latitude { get; set; }
     public double? Longitude { get; set; }
+    /// <summary>Set when this photo/video was uploaded from the Part Suggestion grid's Picture
+    /// column (2026-09-03 - "which partcode we added after added we upload photos and video"),
+    /// linking it back to that specific JobCardPartSuggestion row instead of just the job card as a
+    /// whole. Null for every other photo (the general Photos card never sets this). Deliberately
+    /// NOT a DB-enforced foreign key (no ON DELETE rule wired up) - JobCardPartSuggestions rows are
+    /// hard-deleted by DeletePartSuggestion with no cascade cleanup of their photos today, so a real
+    /// FK constraint would make that delete throw; an orphaned PartSuggestionId here just stops
+    /// matching anything client-side, which is harmless.</summary>
+    public Guid? PartSuggestionId { get; set; }
     public Guid? UploadedById { get; set; }
     public User? UploadedBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

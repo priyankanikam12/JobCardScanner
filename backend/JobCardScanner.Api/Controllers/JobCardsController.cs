@@ -451,6 +451,11 @@ public class JobCardsController : ControllerBase
     }
 
     private static readonly string[] AllowedPhotoContentTypes = { "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif" };
+    /// <summary>2026-09-03 - the Part Suggestion grid's Picture column ("upload photos and video")
+    /// needs video too, unlike the general Photos card above which stays images-only. Kept as its
+    /// own list rather than widening AllowedPhotoContentTypes itself, so the general Photos card's
+    /// error message/behavior is unaffected.</summary>
+    private static readonly string[] AllowedVideoContentTypes = { "video/mp4", "video/quicktime", "video/webm", "video/3gpp", "video/x-msvideo" };
 
     /// <summary>
     /// POST /api/jobcards/{id}/photos/upload - the real "capture and upload" behind the Job Card
@@ -473,11 +478,15 @@ public class JobCardsController : ControllerBase
         var jobCardForPhoto = await _db.JobCards.FirstOrDefaultAsync(j => j.Id == id);
         if (jobCardForPhoto is null) return NotFound();
         if (form.File is null || form.File.Length == 0) return BadRequest(new { message = "A photo file is required." });
-        if (!AllowedPhotoContentTypes.Contains(form.File.ContentType, StringComparer.OrdinalIgnoreCase))
-            return BadRequest(new { message = $"Unsupported file type '{form.File.ContentType}'. Upload a photo (JPEG, PNG, WEBP, or HEIC)." });
+        // 2026-09-03: video is only ever sent by the Part Suggestion grid's Picture column today,
+        // but this check is intentionally not gated on PartSuggestionId being set - no reason to
+        // reject a video from a future caller that also has a legitimate reason to upload one.
+        var isVideo = AllowedVideoContentTypes.Contains(form.File.ContentType, StringComparer.OrdinalIgnoreCase);
+        if (!isVideo && !AllowedPhotoContentTypes.Contains(form.File.ContentType, StringComparer.OrdinalIgnoreCase))
+            return BadRequest(new { message = $"Unsupported file type '{form.File.ContentType}'. Upload a photo (JPEG, PNG, WEBP, or HEIC) or a video (MP4, MOV, WEBM, 3GP, or AVI)." });
 
         var ext = Path.GetExtension(form.File.FileName);
-        if (string.IsNullOrWhiteSpace(ext) || ext.Length > 10) ext = ".jpg";
+        if (string.IsNullOrWhiteSpace(ext) || ext.Length > 10) ext = isVideo ? ".mp4" : ".jpg";
         var fileName = $"{Guid.NewGuid():N}{ext}";
         var webRoot = _env.WebRootPath ?? Path.Combine(_env.ContentRootPath, "wwwroot");
         var relativeDir = Path.Combine("uploads", "jobcard-photos", id.ToString());
@@ -502,6 +511,7 @@ public class JobCardsController : ControllerBase
             Caption = form.Caption,
             Latitude = form.Latitude,
             Longitude = form.Longitude,
+            PartSuggestionId = form.PartSuggestionId,
             UploadedById = _currentUser.UserId,
         };
         _db.JobCardPhotos.Add(photo);
@@ -822,6 +832,18 @@ public class JobCardsController : ControllerBase
             // WorkflowStageAutomation's doc comment. No-ops (stays put) on every suggestion after the
             // first, or if the job card has already moved further along.
             await WorkflowStageAutomation.AdvanceIfAheadAsync(_db, jc, "part_suggestion", _currentUser.UserId, "Auto-advanced: part suggested.");
+            // 2026-09-03: also push straight on to "Estimate Created" - a part suggestion is exactly
+            // what makes the Estimates Amount tab non-empty (see EstimatesCard on the frontend), so
+            // an estimate now genuinely exists the moment this is added. The OLD trigger for this
+            // stage (EstimatesController.Create, the "Send Estimate to Customer" OTP flow) is no
+            // longer reachable from the UI - that whole flow was replaced by EstimatesCard reading
+            // Part/Labour Suggestions directly - which meant "Estimate Created" could never actually
+            // fire any more even though Part/Labour Suggestions kept landing in Estimates Amount.
+            // Chained (not "either/or" with the part_suggestion advance above): AdvanceIfAheadAsync
+            // only ever moves forward, using jc.CurrentStageId as already updated by the call above,
+            // so a job card that was behind both stages correctly lands on Estimate Created in one
+            // request, and one already at/past it is untouched either way.
+            await WorkflowStageAutomation.AdvanceIfAheadAsync(_db, jc, "estimate_created", _currentUser.UserId, "Auto-advanced: estimate created (part suggested).");
             await _db.SaveChangesAsync();
         }
         catch (Exception ex)
@@ -901,6 +923,9 @@ public class JobCardsController : ControllerBase
             // Workflow Timeline auto-advances to "Labour Suggestion" the first time one is added -
             // see WorkflowStageAutomation's doc comment.
             await WorkflowStageAutomation.AdvanceIfAheadAsync(_db, jc, "labour_suggestion", _currentUser.UserId, "Auto-advanced: labour suggested.");
+            // 2026-09-03: also push straight on to "Estimate Created" - see the matching comment in
+            // AddPartSuggestion above for why (Estimates Amount now has content either way).
+            await WorkflowStageAutomation.AdvanceIfAheadAsync(_db, jc, "estimate_created", _currentUser.UserId, "Auto-advanced: estimate created (labour suggested).");
             await _db.SaveChangesAsync();
         }
         catch (Exception ex)

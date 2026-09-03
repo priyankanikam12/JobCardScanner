@@ -374,6 +374,8 @@ if (app.Environment.IsDevelopment())
                 ALTER TABLE [dbo].[JobCardPhotos] ADD [Latitude] float NULL;
             IF COL_LENGTH('dbo.JobCardPhotos', 'Longitude') IS NULL
                 ALTER TABLE [dbo].[JobCardPhotos] ADD [Longitude] float NULL;
+            IF COL_LENGTH('dbo.JobCardPhotos', 'PartSuggestionId') IS NULL
+                ALTER TABLE [dbo].[JobCardPhotos] ADD [PartSuggestionId] UNIQUEIDENTIFIER NULL;
             IF COL_LENGTH('JobCards', 'BaplJobTypeId') IS NULL
                 ALTER TABLE JobCards ADD BaplJobTypeId INT NULL;
             IF COL_LENGTH('JobCards', 'BaplJobSourceId') IS NULL

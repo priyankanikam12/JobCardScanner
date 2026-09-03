@@ -26,7 +26,7 @@ export type JobCardPriority = 'Normal' | 'High' | 'Urgent'
 export type EstimateStatus = 'Draft' | 'PendingCustomerApproval' | 'Approved' | 'Rejected' | 'Expired'
 export type InvoiceStatus = 'Draft' | 'Generated' | 'Paid' | 'Cancelled'
 export type PaymentMode = 'Cash' | 'Card' | 'Upi' | 'NetBanking' | 'Wallet' | 'Pending'
-export type PhotoStage = 'CheckIn' | 'Inspection' | 'Repair' | 'Qc' | 'Delivery'
+export type PhotoStage = 'CheckIn' | 'Inspection' | 'Repair' | 'Qc' | 'Delivery' | 'PartSuggestion'
 
 export interface Dealer {
   id: string
@@ -357,6 +357,9 @@ export interface JobCardPhoto {
   caption?: string | null
   latitude?: number | null
   longitude?: number | null
+  // 2026-09-03: set only for photos/videos uploaded from the Part Suggestion grid's Picture
+  // column - links this photo back to that specific JobCardPartSuggestion row.
+  partSuggestionId?: string | null
   createdAt?: string
 }
 
