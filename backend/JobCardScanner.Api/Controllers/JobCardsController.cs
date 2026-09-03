@@ -491,6 +491,20 @@ public class JobCardsController : ControllerBase
         return Ok(photo);
     }
 
+    /// <summary>PUT /api/jobcards/photos/{photoId} - edits a photo's caption after upload. Added so
+    /// the Photos card can offer a caption box under each already-uploaded photo instead of only
+    /// letting the caption be typed once before choosing the file.</summary>
+    [HttpPut("photos/{photoId:guid}")]
+    [Authorize(Policy = Policies.ServiceAdvisorUp)]
+    public async Task<IActionResult> UpdatePhotoCaption(Guid photoId, UpdatePhotoCaptionRequest req)
+    {
+        var photo = await _db.JobCardPhotos.FirstOrDefaultAsync(p => p.Id == photoId);
+        if (photo is null) return NotFound();
+        photo.Caption = string.IsNullOrWhiteSpace(req.Caption) ? null : req.Caption.Trim();
+        await _db.SaveChangesAsync();
+        return Ok(photo);
+    }
+
     // ---------------- Technician worklog (start/stop timer) ----------------
     [HttpPost("{id:guid}/worklogs/start")]
     [Authorize(Policy = Policies.ServiceAdvisorUp)]

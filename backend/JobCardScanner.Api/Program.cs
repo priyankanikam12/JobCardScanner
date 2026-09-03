@@ -1,5 +1,8 @@
+using System.Diagnostics;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Identity.Web;
 using Microsoft.IdentityModel.Tokens;
@@ -190,12 +193,17 @@ if (!builder.Configuration.GetValue<bool>("DisableHttpsRedirection"))
 app.UseCors("AppCors");
 
 // Serves job card photos uploaded via POST /api/jobcards/{id}/photos/upload (JobCardsController)
-// from wwwroot/uploads/... at the matching /uploads/... URL, plus part-suggestion photos (see
-// POST /api/jobcards/{id}/part-suggestions/{suggestionId}/photos/upload). No [Authorize] on
-// static files themselves (ASP.NET Core static file middleware doesn't support that) - the file
-// names are unguessable GUIDs, same tradeoff as most "public CDN link" photo storage.
+// from wwwroot/uploads/... at the matching /uploads/... URL. No [Authorize] on static files
+// themselves (ASP.NET Core static file middleware doesn't support that) - the file names are
+// unguessable GUIDs, same tradeoff as most "public CDN link" photo storage.
 Directory.CreateDirectory(Path.Combine(app.Environment.ContentRootPath, "wwwroot", "uploads", "jobcard-photos"));
-Directory.CreateDirectory(Path.Combine(app.Environment.ContentRootPath, "wwwroot", "uploads", "jobcard-part-photos"));
+
+// Default FileExtensionContentTypeProvider doesn't know ".apk" - without this, UseStaticFiles()
+// returns a plain 404 for wwwroot/app/JobCardScanner.apk (self-hosted Android distribution,
+// see deploy/ANDROID_DEPLOYMENT.md) instead of serving it. Note: web.config's IIS-level
+// <staticContent><mimeMap> for .apk has NO effect here - the site's handler mapping forwards
+// every request (path="*") to AspNetCoreModuleV2, so IIS's own static file handler never runs;
+// this app's own middleware is what actually serves wwwroot.
 var staticFileProvider = new Microsoft.AspNetCore.StaticFiles.FileExtensionContentTypeProvider();
 staticFileProvider.Mappings[".apk"] = "application/vnd.android.package-archive";
 app.UseStaticFiles(new StaticFileOptions { ContentTypeProvider = staticFileProvider });
@@ -213,37 +221,65 @@ app.MapControllers();
 // wwwroot/index.html doesn't exist (the Vite dev server owns the frontend there instead).
 app.MapFallbackToFile("index.html");
 
-// ---------------------------------------------------------------------
-// Schema: real EF Core migrations, not EnsureCreatedAsync()/DbSeeder.
+// Create the schema automatically on startup in Development, so `dotnet run` against a fresh
+// local SQL Server produces a ready-to-use JobCardScanner database with zero manual steps.
+// No demo/seed data is inserted - real staff are added via Admin -> Users (see AZURE_AD_SETUP.md
+// for how the very first admin gets provisioned when starting from a genuinely empty database).
 //
-// EnsureCreatedAsync() only creates a schema on a database that doesn't exist yet - it can never
-// apply an incremental change (a new table, a new column) to a database that's already there, so
-// every table added since JobCardScannerDb was first created (JobCardPartSuggestion,
-// JobCardPartSuggestionPhoto, JobCardLabourSuggestion, JobCard.AssignedTechnicianName, etc.) would
-// silently never appear. MigrateAsync() below applies whatever migrations exist in the
-// Migrations/ folder, in order, and is safe to run on every startup - it's a no-op once the
-// database is already up to date.
-//
-// DbSeeder.SeedAsync() (demo dealers/users) is intentionally NOT called here any more. If you
-// still want seed data on a brand-new database, run it manually once via a one-off script rather
-// than automatically on every startup.
-//
-// One-time setup, if you haven't already:
+// NOTE ON EF CORE MIGRATIONS: this project ships without a checked-in Migrations/ folder,
+// because scaffolding one requires `dotnet ef migrations add`, which in turn requires a
+// successful `dotnet restore` - something this project was built without the ability to run
+// (see README "About this build" section). EnsureCreatedAsync() below creates the schema
+// directly from the model, which is sufficient for local development and evaluation.
+// Before deploying to Azure SQL / a shared environment, replace this with real migrations:
 //   dotnet ef migrations add InitialCreate
-//   dotnet ef database update
-// From then on, whenever the model changes:
-//   dotnet ef migrations add <DescriptiveName>
-// MigrateAsync() below applies it automatically on the next run - no separate `database update`
-// step needed in any environment this API itself starts up in.
-// ---------------------------------------------------------------------
-using (var scope = app.Services.CreateScope())
+// then swap EnsureCreatedAsync() for db.Database.MigrateAsync() so schema changes are
+// tracked and repeatable across environments.
+if (app.Environment.IsDevelopment())
 {
+    using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
-    await db.Database.MigrateAsync();
+
+    // IMPORTANT: EnsureCreatedAsync() only creates the schema if the DATABASE ITSELF doesn't
+    // exist yet. If you (or anyone) already connected to this database and ran so much as one
+    // CREATE TABLE against it - e.g. testing a Users table by hand in SSMS/Azure Data Studio -
+    // then from that point on EnsureCreatedAsync() sees "database exists" and silently does
+    // NOTHING on every future startup: no tables at all, even though the app logs no error.
+    // The logging below makes that state visible instead of silent - if you ever see "0 dealers
+    // / 0 users" here on what should be a populated database, the fix is to drop and let this
+    // block recreate the schema from scratch (see backend/README.md / AZURE_AD_SETUP.md), not to
+    // hand-edit tables.
+    var wasCreated = await db.Database.EnsureCreatedAsync();
 
     var dealerCount = await db.Dealers.CountAsync();
     var userCount = await db.Users.CountAsync();
-    Console.WriteLine($"[Startup] Migrations applied. Current counts -> Dealers: {dealerCount}, Users: {userCount}.");
+    Console.WriteLine($"[Startup] EnsureCreatedAsync created a new database: {wasCreated}. Current counts -> Dealers: {dealerCount}, Users: {userCount}.");
+}
+
+// Opens Swagger in the default browser automatically once Kestrel has actually started
+// listening. launchSettings.json's "launchBrowser"/"launchUrl": "swagger" ONLY takes effect when
+// launched from Visual Studio or `dotnet watch run` - plain `dotnet run` (what you get typing it
+// straight into a terminal, e.g. PowerShell) ignores both, which is why nothing opened. This
+// covers that path too - Development only, and best-effort (never lets a failed browser launch,
+// e.g. running headless in a container/CI, take down the app).
+if (app.Environment.IsDevelopment())
+{
+    app.Lifetime.ApplicationStarted.Register(() =>
+    {
+        try
+        {
+            var addresses = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()?.Addresses;
+            var url = addresses?.FirstOrDefault(a => a.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) ?? addresses?.FirstOrDefault();
+            if (url != null)
+            {
+                Process.Start(new ProcessStartInfo($"{url}/swagger") { UseShellExecute = true });
+            }
+        }
+        catch (Exception ex)
+        {
+            app.Logger.LogInformation(ex, "Could not auto-open Swagger in the browser (harmless - open it manually instead).");
+        }
+    });
 }
 
 app.Run();

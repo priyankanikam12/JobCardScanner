@@ -11,6 +11,13 @@ export function PartsScreen() {
 
   useEffect(() => { search() }, [])
 
+  // Item 11: search-as-you-type (debounced) instead of requiring the keyboard's search key.
+  useEffect(() => {
+    const handle = setTimeout(search, 300)
+    return () => clearTimeout(handle)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q])
+
   return (
     <View style={styles.container}>
       <TextInput style={styles.search} placeholder="Search parts" value={q} onChangeText={setQ} onSubmitEditing={search} returnKeyType="search" />

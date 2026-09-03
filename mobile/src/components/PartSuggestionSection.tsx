@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'
+import { Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'
 import { apiClient } from '../api/client'
 import { Badge } from './Badge'
 import type { BaplDmsPartStock, JobCardDetail } from '../types'
@@ -102,8 +102,11 @@ export function PartSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; on
         placeholder="Start typing an item code or description…"
         onChangeText={(v) => { setSearch(v); setItemCode('') }}
       />
-      {matches.length > 0 && (
-        <View style={styles.pickerBox}>
+      {q.length > 0 && matches.length > 0 && (
+        // Item: dropdown scroll wasn't working on Android - a plain View with maxHeight clips
+        // overflow instead of scrolling it. nestedScrollEnabled is required on Android for a
+        // ScrollView inside another ScrollView (this whole card sits inside one) to scroll at all.
+        <ScrollView style={styles.pickerBox} nestedScrollEnabled keyboardShouldPersistTaps="handled">
           {matches.map((p) => (
             <TouchableOpacity key={p.itemCode} style={styles.pickerRow} onPress={() => pickPart(p)}>
               <Text style={styles.pickerRowText}>
@@ -111,6 +114,18 @@ export function PartSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; on
               </Text>
             </TouchableOpacity>
           ))}
+        </ScrollView>
+      )}
+      {/* Item 4: was silently blank when nothing matched - now says explicitly why. */}
+      {q.length > 0 && matches.length === 0 && (
+        <View style={styles.pickerBox}>
+          <View style={styles.pickerRow}>
+            <Text style={[styles.pickerRowText, styles.muted]}>
+              {jc.baplServiceLocationCode
+                ? `Part number "${search.trim()}" does not exist for dealer location ${jc.baplServiceLocationCode}.`
+                : 'No BAPL DMS service location on this job card - part list unavailable.'}
+            </Text>
+          </View>
         </View>
       )}
 

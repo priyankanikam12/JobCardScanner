@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { staffApi } from '../../api/client'
 
 interface SearchResults {
@@ -21,6 +21,16 @@ export function ReportsPage() {
   const [results, setResults] = useState<SearchResults | null>(null)
 
   const search = () => staffApi.get<SearchResults>('/api/search', { params: { q } }).then((r) => setResults(r.data))
+
+  // Item 11: search-as-you-type (debounced) instead of requiring Enter/the Search button - the
+  // backend already substring-matches job card #/customer name/mobile/reg no/invoice #, once q
+  // is at least 2 characters.
+  useEffect(() => {
+    if (q.trim().length < 2) { setResults(null); return }
+    const handle = setTimeout(search, 300)
+    return () => clearTimeout(handle)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q])
 
   const exportJobCards = async () => {
     const res = await staffApi.get('/api/reports/jobcards/export', { responseType: 'blob' })

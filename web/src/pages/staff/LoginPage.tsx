@@ -4,6 +4,7 @@ import { Navigate, Link, useNavigate } from 'react-router-dom'
 import { apiLoginRequest } from '../../auth/msalConfig'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
 import { dealerLogin, forgotDealerPassword, resetDealerPassword } from '../../services/dealerAuthService'
+import { PasswordInput } from '../../components/PasswordInput'
 import bgaussLogo from '../../assets/BGauss_Logo.png'
 import scootyImg from '../../assets/Bg0-scooty.png'
 import './LoginPage.css'
@@ -178,7 +179,7 @@ export function LoginPage() {
                   </label>
                   <label className="jcs-field">
                     <span>Password</span>
-                    <input type="password" required autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
+                    <PasswordInput required autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
                   </label>
                   <button type="submit" className="btn btn-primary jcs-submit" disabled={submitting}>
                     {submitting ? 'Signing in…' : 'Sign in'}
@@ -227,7 +228,7 @@ export function LoginPage() {
                   </label>
                   <label className="jcs-field">
                     <span>New password</span>
-                    <input type="password" required minLength={8} autoComplete="new-password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="At least 8 characters" />
+                    <PasswordInput required minLength={8} autoComplete="new-password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="At least 8 characters" />
                   </label>
                   <button type="submit" className="btn btn-primary jcs-submit" disabled={submitting}>
                     {submitting ? 'Updating…' : 'Reset password'}

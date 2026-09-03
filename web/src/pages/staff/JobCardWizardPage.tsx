@@ -414,6 +414,9 @@ export function JobCardWizardPage() {
   const [vehicleLookupLoading, setVehicleLookupLoading] = useState(false)
   const [vehicleLookupError, setVehicleLookupError] = useState<string | null>(null)
   const [baplVehicleHit, setBaplVehicleHit] = useState<BaplDmsVehicleLookup | null>(null)
+  // Item 12a: a styled inline banner instead of a plain window.alert() for "This Vehicle not
+  // sold" - a native browser alert can't be styled and blocks the page until dismissed.
+  const [vehicleNotSoldNotice, setVehicleNotSoldNotice] = useState<string | null>(null)
   // Item 2: live search-as-you-type suggestions under the chassis/reg-no box (e.g. typing "P6"
   // lists every matching ChassisDetails row so the user can pick one, instead of only supporting
   // Enter/Search for a single exact match). Debounced so it doesn't fire a request per keystroke;
@@ -444,6 +447,7 @@ export function JobCardWizardPage() {
     setVehicleSuggestions([])
     setVehicleLookupLoading(true)
     setVehicleLookupError(null)
+    setVehicleNotSoldNotice(null)
     setBaplVehicleHit(null)
     setUnlockCustomerFields(false)
     setUnlockVehicleFields(false)
@@ -452,8 +456,11 @@ export function JobCardWizardPage() {
       // Item 3: a hit with no SaleDate on file isn't auto-fetched - alert and leave the customer/
       // vehicle fields for manual entry instead of pre-filling from an incomplete BAPL DMS record.
       if (!data.saleDate) {
-        window.alert('Sale date not defined')
-        setVehicleLookupError(`"${value}" was found in BAPL DMS but has no sale date on file - add the customer/vehicle manually below.`)
+        // Item 12a/12b: shorter, friendlier wording - "This Vehicle not sold" instead of the
+        // internal-sounding "Sale date not defined", shown as a styled banner instead of a native
+        // window.alert() (which can't be styled and blocks the page) - and a shorter inline error.
+        setVehicleNotSoldNotice('This Vehicle not sold')
+        setVehicleLookupError(`"${value}" was found in DMS.`)
         return
       }
       setBaplVehicleHit(data)
@@ -981,7 +988,7 @@ export function JobCardWizardPage() {
               )}
             </div>
           )}
-          <h3>Registered customer Details</h3>
+          <h3>(Registered customer Details)</h3>
           {/* "Search by mobile number or name" commented out per your request - chassis/reg no.
              search (below) is now the only way to look up a customer here. */}
           {/* <div className="field">
@@ -1027,19 +1034,40 @@ export function JobCardWizardPage() {
                 ))}
               </ul>
             )}
+            {vehicleNotSoldNotice && (
+              <p
+                role="alert"
+                style={{
+                  marginTop: 8, padding: '10px 14px', borderRadius: 8,
+                  background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e',
+                  fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8,
+                }}
+              >
+                ⚠️ {vehicleNotSoldNotice}
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  style={{ marginLeft: 'auto', border: 'none', background: 'transparent', color: '#92400e' }}
+                  onClick={() => setVehicleNotSoldNotice(null)}
+                >
+                  Dismiss
+                </button>
+              </p>
+            )}
             {vehicleLookupError && <p className="error-text">{vehicleLookupError}</p>}
             {baplVehicleHit && (
               <p className="muted" style={{ marginTop: 4 }}>
                 Customer Details : customer-{baplVehicleHit.customerName || 'Unknown customer'}
                 {baplVehicleHit.customerMobile ? ` (${baplVehicleHit.customerMobile})` : ''} - model- {baplVehicleHit.modelName || 'Model unknown'}
-                {baplVehicleHit.registerNo ? `, reg no. ${baplVehicleHit.registerNo}.` : '.'}
+                {baplVehicleHit.registerNo ? `, reg no. ${baplVehicleHit.registerNo}` : ''}
+                {baplVehicleHit.saleDate ? `, sale date ${new Date(baplVehicleHit.saleDate).toLocaleDateString()}.` : '.'}
               </p>
             )}
           </div>
           <h3 style={{ marginTop: 24 }}>Registered Customer</h3>
           {customerFieldsLocked && (
             <p className="muted" style={{ marginTop: -4, marginBottom: 12 }}>
-              🔒 Name, Mobile, Email, City and Address were auto-fetched from DMS and are locked to prevent accidental changes.{' '}
+              🔒 Name, Mobile, Email, City and Address were auto-fetched from BAPL DMS and are locked to prevent accidental changes.{' '}
               <a href="#" onClick={(e) => { e.preventDefault(); setUnlockCustomerFields(true) }}>Edit anyway</a>
             </p>
           )}
@@ -1282,7 +1310,7 @@ export function JobCardWizardPage() {
                     <span>{c}</span>
                     <button
                       className="btn btn-sm"
-                      style={{ background: 'transparent', color: '#ff0404', border: '1px solid var(--border)' }}
+                      style={{ background: 'transparent', color: '#64748b', border: '1px solid var(--border)' }}
                       onClick={() => removeComplaint(c)}
                     >
                       Remove
@@ -1368,7 +1396,7 @@ export function JobCardWizardPage() {
 
           {!createdJobCard && (
             <div className="field">
-              <label>Photos (required)</label>
+              <label>Photos (required - captured now, uploaded once the job card is created; up to 1 GB each)</label>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: pendingPhotos.length > 0 ? 12 : 0 }}>
                 <label className="btn btn-sm" style={{ cursor: capturingPhoto ? 'default' : 'pointer', opacity: capturingPhoto ? 0.6 : 1 }}>
                   {capturingPhoto ? 'Adding…' : '📷 Take / Upload Photo'}
@@ -1398,7 +1426,8 @@ export function JobCardWizardPage() {
                         style={{ marginTop: 6, fontSize: 12, padding: '4px 6px' }}
                         onChange={(e) => setPendingPhotos((prev) => prev.map((x) => (x.id === p.id ? { ...x, caption: e.target.value } : x)))}
                       />
-                    <button className="btn btn-sm" style={{ marginTop: 6, width: '100%', color: 'red' }} onClick={() => removePendingPhoto(p.id)}>Remove</button>                    </div>
+                      <button className="btn btn-sm" style={{ marginTop: 6, width: '100%' }} onClick={() => removePendingPhoto(p.id)}>Remove</button>
+                    </div>
                   ))}
                 </div>
               )}

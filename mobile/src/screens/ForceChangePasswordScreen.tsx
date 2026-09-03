@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native'
 import { changeMyPassword } from '../services/dealerAuthService'
 import { clearMustChangePassword } from '../auth/dealerSession'
 import { useStaffAuth } from '../auth/StaffAuthContext'
+import { PasswordField } from '../components/PasswordField'
 
 /**
  * Forced first-sign-in / post-admin-reset password change for local "Dealer / Workshop Login"
@@ -65,15 +66,15 @@ export function ForceChangePasswordScreen() {
 
           <View style={styles.field}>
             <Text style={styles.fieldLabel}>Current (temporary) password</Text>
-            <TextInput style={styles.input} secureTextEntry value={currentPassword} onChangeText={setCurrentPassword} />
+            <PasswordField style={styles.input} value={currentPassword} onChangeText={setCurrentPassword} />
           </View>
           <View style={styles.field}>
             <Text style={styles.fieldLabel}>New password</Text>
-            <TextInput style={styles.input} secureTextEntry value={newPassword} onChangeText={setNewPassword} placeholder="At least 8 characters" />
+            <PasswordField style={styles.input} value={newPassword} onChangeText={setNewPassword} placeholder="At least 8 characters" />
           </View>
           <View style={styles.field}>
             <Text style={styles.fieldLabel}>Confirm new password</Text>
-            <TextInput style={styles.input} secureTextEntry value={confirmPassword} onChangeText={setConfirmPassword} />
+            <PasswordField style={styles.input} value={confirmPassword} onChangeText={setConfirmPassword} />
           </View>
 
           <TouchableOpacity

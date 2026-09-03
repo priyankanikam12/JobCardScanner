@@ -30,6 +30,16 @@ export function JobCardsListPage() {
 
   useEffect(load, [status, stageKey])
 
+  // Item 11: search-as-you-type (debounced) instead of requiring Enter/the Search button -
+  // matches the type-ahead pattern used elsewhere in the app (chassis/reg-no lookup, Part/Labour
+  // Suggestion). The backend query (/api/jobcards?q=) already does a substring Contains() match
+  // on job card #, customer name/mobile and reg no, so this just makes it fire automatically.
+  useEffect(() => {
+    const handle = setTimeout(load, 300)
+    return () => clearTimeout(handle)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q])
+
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>

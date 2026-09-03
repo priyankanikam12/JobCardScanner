@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'
+import { Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'
 import { apiClient } from '../api/client'
 import type { BaplDmsLabourRow, JobCardDetail } from '../types'
 
@@ -107,7 +107,10 @@ export function LabourSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; 
       />
 
       {rows.length > 0 && (
-        <View style={styles.pickerBox}>
+        // See PartSuggestionSection.tsx's same fix - a plain View with maxHeight clips instead of
+        // scrolling on Android; nestedScrollEnabled lets this ScrollView scroll inside the card's
+        // own outer ScrollView.
+        <ScrollView style={styles.pickerBox} nestedScrollEnabled keyboardShouldPersistTaps="handled">
           {rows.map((r) => {
             const isSelected = r.id === selectedId
             return (
@@ -122,7 +125,7 @@ export function LabourSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; 
               </TouchableOpacity>
             )
           })}
-        </View>
+        </ScrollView>
       )}
 
       {selected && (

@@ -27,6 +27,15 @@ export function JobCardsListScreen({ navigation }: Props) {
 
   useEffect(load, [])
 
+  // Item 11: search-as-you-type (debounced) instead of requiring the keyboard's search key -
+  // matches web's same change. The backend already substring-matches job card #, customer
+  // name/mobile and reg no.
+  useEffect(() => {
+    const handle = setTimeout(load, 300)
+    return () => clearTimeout(handle)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q])
+
   return (
     <View style={styles.container}>
       <View style={styles.headerRow}>

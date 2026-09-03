@@ -1,11 +1,10 @@
-// web\src\pages\staff\JobCardDetailPage.tsx
 import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
 import { StatusBadge } from '../../components/StatusBadge'
 import { WorkflowTimeline, type WorkflowTimelineHistoryEntry } from '../../components/WorkflowTimeline'
-import type { BaplDmsJobCardHistory, BaplDmsLabourRow, BaplDmsPartStock, JobCardDetail, PhotoStage, WorkflowStage } from '../../types'
+import type { BaplDmsJobCardHistory, BaplDmsLabourRow, BaplDmsPartStock, JobCardDetail, WorkflowStage } from '../../types'
 
 // Photo URLs come back from the API as a relative path (e.g. "/uploads/jobcard-photos/.../x.jpg" -
 // see JobCardsController.UploadPhoto), same origin as the API itself, not the frontend dev server.
@@ -278,10 +277,14 @@ function BaplServiceHistoryCard({ chassisNo, dealerCode }: { chassisNo?: string 
  * POST /api/jobcards/{id}/photos/upload as one multipart/form-data request; location is best-effort
  * and the upload still proceeds without it (denied permission, no GPS fix, desktop browser, etc). */
 function PhotosCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => void }) {
-  const [stage, setStage] = useState<PhotoStage>('CheckIn')
+  // Item 8: Stage field removed from this card entirely (still sent to the API as a fixed
+  // default, since JobCardPhoto.Stage is a required column - it's just no longer something the
+  // user picks or sees here). Caption moved from "pre-upload only" to editable per-photo below.
   const [caption, setCaption] = useState('')
   const [uploading, setUploading] = useState(false)
   const [locationNote, setLocationNote] = useState<string | null>(null)
+  const [captionEdits, setCaptionEdits] = useState<Record<string, string>>({})
+  const [savingCaptionId, setSavingCaptionId] = useState<string | null>(null)
 
   const getLocation = (): Promise<GeolocationPosition | null> =>
     new Promise((resolve) => {
@@ -303,7 +306,7 @@ function PhotosCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<un
 
       const form = new FormData()
       form.append('File', file)
-      form.append('Stage', stage)
+      form.append('Stage', 'CheckIn')
       if (caption) form.append('Caption', caption)
       if (pos) {
         form.append('Latitude', String(pos.coords.latitude))
@@ -318,18 +321,20 @@ function PhotosCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<un
     }
   }
 
-  const stages: PhotoStage[] = ['CheckIn', 'Inspection', 'Repair', 'Qc', 'Delivery']
+  const saveCaption = async (photoId: string) => {
+    const value = captionEdits[photoId] ?? ''
+    setSavingCaptionId(photoId)
+    try {
+      await run(() => staffApi.put(`/api/jobcards/photos/${photoId}`, { caption: value || null }))
+    } finally {
+      setSavingCaptionId(null)
+    }
+  }
 
   return (
     <div className="card" id="photos">
       <h3>Photos</h3>
       <div className="form-row">
-        <div className="field">
-          <label>Stage</label>
-          <select disabled={uploading} value={stage} onChange={(e) => setStage(e.target.value as PhotoStage)}>
-            {stages.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-        </div>
         <div className="field">
           <label>Caption (optional)</label>
           <input disabled={uploading} value={caption} onChange={(e) => setCaption(e.target.value)} placeholder="e.g. Left mirror scratch" />
@@ -355,16 +360,34 @@ function PhotosCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<un
       {jc.photos.length > 0 && (
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 16 }}>
           {jc.photos.map((p) => (
-            <div key={p.id} style={{ width: 160 }}>
+            <div key={p.id} style={{ width: 180 }}>
               <a href={photoSrc(p.url)} target="_blank" rel="noreferrer">
-                <img src={photoSrc(p.url)} alt={p.caption ?? p.stage} style={{ width: '100%', height: 120, objectFit: 'cover', borderRadius: 6, border: '1px solid #ddd' }} />
+                <img src={photoSrc(p.url)} alt={p.caption ?? 'Job card photo'} style={{ width: '100%', height: 120, objectFit: 'cover', borderRadius: 6, border: '1px solid #ddd' }} />
               </a>
-              <p className="muted" style={{ margin: '4px 0 0', fontSize: 12 }}>
-                {p.stage}{p.caption ? ` · ${p.caption}` : ''}
-                {p.latitude != null && p.longitude != null && (
-                  <><br /><a href={`https://maps.google.com/?q=${p.latitude},${p.longitude}`} target="_blank" rel="noreferrer">📍 {p.latitude.toFixed(5)}, {p.longitude.toFixed(5)}</a></>
-                )}
-              </p>
+              {/* Item 8: Caption now lives here, editable per photo, instead of only being set
+                 once before upload. */}
+              <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
+                <input
+                  value={captionEdits[p.id] ?? p.caption ?? ''}
+                  onChange={(e) => setCaptionEdits((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                  placeholder="Add a caption…"
+                  style={{ fontSize: 12, padding: '4px 6px' }}
+                  disabled={savingCaptionId === p.id}
+                />
+                <button
+                  className="btn btn-sm"
+                  style={{ fontSize: 11, padding: '4px 8px' }}
+                  disabled={savingCaptionId === p.id || (captionEdits[p.id] ?? p.caption ?? '') === (p.caption ?? '')}
+                  onClick={() => saveCaption(p.id)}
+                >
+                  {savingCaptionId === p.id ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+              {p.latitude != null && p.longitude != null && (
+                <p className="muted" style={{ margin: '4px 0 0', fontSize: 12 }}>
+                  <a href={`https://maps.google.com/?q=${p.latitude},${p.longitude}`} target="_blank" rel="noreferrer">📍 {p.latitude.toFixed(5)}, {p.longitude.toFixed(5)}</a>
+                </p>
+              )}
             </div>
           ))}
         </div>
@@ -704,7 +727,10 @@ function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Pr
 
       <h4>Suggest a part (from BAPL DMS PartsInventory)</h4>
       {!jc.baplServiceLocationCode && <p className="muted">No BAPL DMS service location on this job card - part list unavailable.</p>}
-      <div className="form-row">
+      {/* Item-code/description, QTY, Issue Type and the Add Suggestion button all in one row now,
+         matching Suggest labour's layout below - Add sits at the end of the row instead of on its
+         own line underneath. */}
+      <div className="form-row" style={{ alignItems: 'flex-end' }}>
         <div className="field" style={{ position: 'relative' }}>
           <label>Item Code / Description</label>
           <input
@@ -715,25 +741,41 @@ function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Pr
             onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
             autoComplete="off"
           />
-          {showSuggestions && matches.length > 0 && (
-            <ul style={{
-              position: 'absolute', zIndex: 10, top: '100%', left: 0, right: 0, marginTop: 2,
-              background: 'var(--card-bg, #fff)', border: '1px solid var(--border)', borderRadius: 8,
-              maxHeight: 220, overflowY: 'auto', listStyle: 'none', padding: 4, boxShadow: '0 6px 18px rgba(0,0,0,.12)',
-            }}>
-              {matches.map((p) => (
-                <li key={p.itemCode}>
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    style={{ width: '100%', textAlign: 'left', border: 'none', background: 'transparent', padding: '6px 8px' }}
-                    onMouseDown={(e) => { e.preventDefault(); pickPart(p) }}
-                  >
-                    <strong>{p.itemCode}</strong>{p.description ? ` — ${p.description}` : ''} <span className="muted">(avail. {p.availableQty})</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
+          {showSuggestions && q.length > 0 && (
+            matches.length > 0 ? (
+              <ul style={{
+                position: 'absolute', zIndex: 10, top: '100%', left: 0, right: 0, marginTop: 2,
+                background: 'var(--card-bg, #fff)', border: '1px solid var(--border)', borderRadius: 8,
+                maxHeight: 220, overflowY: 'auto', listStyle: 'none', padding: 4, boxShadow: '0 6px 18px rgba(0,0,0,.12)',
+              }}>
+                {matches.map((p) => (
+                  <li key={p.itemCode}>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      style={{ width: '100%', textAlign: 'left', border: 'none', background: 'transparent', padding: '6px 8px' }}
+                      onMouseDown={(e) => { e.preventDefault(); pickPart(p) }}
+                    >
+                      <strong>{p.itemCode}</strong>{p.description ? ` — ${p.description}` : ''} <span className="muted">(avail. {p.availableQty})</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              // Item 4: was silently blank when nothing matched - now says explicitly why, instead
+              // of looking like the search itself is broken.
+              <div style={{
+                position: 'absolute', zIndex: 10, top: '100%', left: 0, right: 0, marginTop: 2,
+                background: 'var(--card-bg, #fff)', border: '1px solid var(--border)', borderRadius: 8,
+                padding: '8px 10px', boxShadow: '0 6px 18px rgba(0,0,0,.12)',
+              }}>
+                <span className="muted" style={{ fontSize: 13 }}>
+                  {jc.baplServiceLocationCode
+                    ? `Part number "${search.trim()}" does not exist for dealer location ${jc.baplServiceLocationCode}.`
+                    : 'No BAPL DMS service location on this job card - part list unavailable.'}
+                </span>
+              </div>
+            )
           )}
         </div>
         <div className="field">
@@ -747,11 +789,13 @@ function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Pr
             <option value="U/W">U/W</option>
           </select>
         </div>
+        <div className="field">
+          <button className="btn btn-sm btn-primary" disabled={!itemCode} onClick={() => run(addSuggestion, 'Part suggestion added.')}>Add Suggestion</button>
+        </div>
       </div>
       {selectedPart && (
         <p className="muted">MRP {selectedPart.mrp != null ? `₹${selectedPart.mrp}` : '-'} · HSN {selectedPart.hsnCode ?? '-'} · Available {selectedPart.availableQty}</p>
       )}
-      <button className="btn btn-sm btn-primary" disabled={!itemCode} onClick={() => run(addSuggestion, 'Part suggestion added.')}>Add Suggestion</button>
     </div>
   )
 }

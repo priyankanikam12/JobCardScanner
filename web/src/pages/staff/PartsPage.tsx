@@ -28,6 +28,15 @@ export function PartsPage() {
 
   useEffect(() => { search() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Item 11: search-as-you-type (debounced) instead of requiring Enter/the Search button - the
+  // backend (/api/parts?q=) already does a case-insensitive substring match on name/part
+  // number/category and, when locationCode is set, on the BAPL DMS item code too.
+  useEffect(() => {
+    const handle = setTimeout(search, 300)
+    return () => clearTimeout(handle)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, locationCode])
+
   const request = async (partId: string) => {
     if (!jobCardId) { setMsg('Enter a Job Card ID first (from the job card detail page URL).'); return }
     setMsg(null)

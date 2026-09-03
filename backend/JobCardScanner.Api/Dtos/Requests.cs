@@ -96,6 +96,12 @@ public class UploadPhotoForm
     public double? Longitude { get; set; }
 }
 
+/// <summary>PUT /api/jobcards/photos/{photoId} - edits a photo's caption after it's already been
+/// uploaded (see JobCardsController.UpdatePhotoCaption). Added because the Photos card no longer
+/// takes a caption up front only - a caption can now be added/changed under an already-uploaded
+/// photo too, not just typed in before choosing the file.</summary>
+public record UpdatePhotoCaptionRequest(string? Caption);
+
 public record StartWorklogRequest(Guid TechnicianId, string? TaskDescription);
 public record EndWorklogRequest(string? Notes);
 

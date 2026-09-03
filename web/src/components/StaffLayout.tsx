@@ -1,4 +1,3 @@
-// web\src\components\StaffLayout.tsx
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useMsal } from '@azure/msal-react'
@@ -25,11 +24,23 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/admin/workflow', label: 'Admin: Workflow', roles: ['CorporateAdmin', 'SystemAdmin'] },
 ]
 
+/** Item 5: "add a back button at the start/top of every page". A single button in the topbar,
+ * shown on every staff page except the Dashboard (nothing to go "back" to from the app's own
+ * home) - resolves to that page's logical parent rather than raw browser history, so it behaves
+ * predictably even when a page was opened via a direct link/refresh rather than in-app
+ * navigation (where plain browser-back could leave the app entirely). */
+function resolveBackTarget(pathname: string): string | null {
+  if (pathname === '/dashboard' || pathname === '/') return null
+  if (pathname.startsWith('/jobcards')) return pathname === '/jobcards' ? '/dashboard' : '/jobcards'
+  return '/dashboard'
+}
+
 export function StaffLayout() {
   const { profile, hasRole, authMode } = useStaffAuth()
   const { instance } = useMsal()
   const navigate = useNavigate()
   const location = useLocation()
+  const backTarget = resolveBackTarget(location.pathname)
 
   // Sidebar drawer state - applies at every screen width (see global.css). Toggled via the
   // hamburger button; .main gets a matching "sidebar-open" class so the page content shifts over
@@ -92,6 +103,16 @@ export function StaffLayout() {
           >
             ☰
           </button>
+          {backTarget && (
+            <button
+              className="btn btn-sm back-btn"
+              aria-label="Back"
+              onClick={(e) => { e.stopPropagation(); navigate(backTarget) }}
+              style={{ marginLeft: 8 }}
+            >
+              ← Back
+            </button>
+          )}
           <div className="profile-menu" ref={profileRef} onClick={(e) => e.stopPropagation()}>
             <button className="profile-trigger" onClick={() => setProfileOpen((v) => !v)}>
               <div style={{ textAlign: 'right' }}>

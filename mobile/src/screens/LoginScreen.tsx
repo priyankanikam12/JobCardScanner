@@ -6,6 +6,7 @@ import {
 import { useAuth } from '../auth/AuthContext'
 import { useStaffAuth } from '../auth/StaffAuthContext'
 import { dealerLogin, forgotDealerPassword, resetDealerPassword } from '../services/dealerAuthService'
+import { PasswordField } from '../components/PasswordField'
 
 type Mode = 'dealer' | 'staff'
 type DealerStep = 'login' | 'forgot' | 'reset'
@@ -170,9 +171,8 @@ export function LoginScreen() {
                     />
                   </Field>
                   <Field label="Password">
-                    <TextInput
+                    <PasswordField
                       style={[styles.input, focusedField === 'password' && styles.inputFocused]}
-                      secureTextEntry
                       value={password}
                       onChangeText={setPassword}
                       onFocus={() => setFocusedField('password')}
@@ -244,9 +244,8 @@ export function LoginScreen() {
                     />
                   </Field>
                   <Field label="New password">
-                    <TextInput
+                    <PasswordField
                       style={[styles.input, focusedField === 'newPassword' && styles.inputFocused]}
-                      secureTextEntry
                       value={newPassword}
                       onChangeText={setNewPassword}
                       onFocus={() => setFocusedField('newPassword')}

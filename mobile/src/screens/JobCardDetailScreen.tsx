@@ -18,7 +18,7 @@ import { PickerField, type PickerOption } from '../components/PickerField'
 import { PartSuggestionSection } from '../components/PartSuggestionSection'
 import { LabourSuggestionSection } from '../components/LabourSuggestionSection'
 import { WorkflowTimelineView, type WorkflowTimelineHistoryEntry } from '../components/WorkflowTimelineView'
-import type { BaplDmsJobCardHistory, JobCardDetail, PhotoStage, WorkflowStage } from '../types'
+import type { BaplDmsJobCardHistory, JobCardDetail, WorkflowStage } from '../types'
 import type { RootStackParamList } from '../navigation/RootNavigator'
 
 type Props = NativeStackScreenProps<RootStackParamList, 'JobCardDetail'>
@@ -223,12 +223,14 @@ function BaplServiceHistoryCard({ chassisNo, dealerCode }: { chassisNo?: string 
  * decision) - geotags each photo with the device's GPS location (best-effort) before uploading
  * via POST /api/jobcards/{id}/photos/upload. */
 function PhotosCard({ jc, run }: { jc: JobCardDetail; run: Run }) {
-  const [stage, setStage] = useState<PhotoStage>('CheckIn')
+  // Item 8: Stage field removed from this card entirely (still sent to the API as a fixed
+  // default, since JobCardPhoto.Stage is a required column - it's just no longer something the
+  // user picks or sees here). Caption moved from "pre-upload only" to editable per-photo below.
   const [caption, setCaption] = useState('')
   const [uploading, setUploading] = useState(false)
   const [locationNote, setLocationNote] = useState<string | null>(null)
-
-  const stageOptions: PickerOption[] = (['CheckIn', 'Inspection', 'Repair', 'Qc', 'Delivery'] as PhotoStage[]).map((s) => ({ label: s, value: s }))
+  const [captionEdits, setCaptionEdits] = useState<Record<string, string>>({})
+  const [savingCaptionId, setSavingCaptionId] = useState<string | null>(null)
 
   const getLocation = async (): Promise<{ latitude: number; longitude: number } | null> => {
     try {
@@ -252,7 +254,7 @@ function PhotosCard({ jc, run }: { jc: JobCardDetail; run: Run }) {
       const form = new FormData()
       // @ts-expect-error - RN's FormData accepts {uri,name,type} file parts
       form.append('File', { uri: asset.uri, name: asset.fileName || `photo-${Date.now()}.jpg`, type: asset.mimeType || 'image/jpeg' })
-      form.append('Stage', stage)
+      form.append('Stage', 'CheckIn')
       if (caption) form.append('Caption', caption)
       if (pos) {
         form.append('Latitude', String(pos.latitude))
@@ -278,10 +280,19 @@ function PhotosCard({ jc, run }: { jc: JobCardDetail; run: Run }) {
     await uploadResult(await ImagePicker.launchImageLibraryAsync({ quality: 0.8 }))
   }
 
+  const saveCaption = async (photoId: string) => {
+    const value = captionEdits[photoId] ?? ''
+    setSavingCaptionId(photoId)
+    try {
+      await run(() => apiClient.put(`/api/jobcards/photos/${photoId}`, { caption: value || null }))
+    } finally {
+      setSavingCaptionId(null)
+    }
+  }
+
   return (
     <View style={styles.card}>
       <Text style={styles.cardTitle}>Photos</Text>
-      <PickerField label="Stage" value={stage} options={stageOptions} disabled={uploading} onChange={(v) => setStage(v as PhotoStage)} />
       <View style={{ marginBottom: 10 }}>
         <Text style={styles.label}>Caption (optional)</Text>
         <TextInput style={styles.input} value={caption} editable={!uploading} onChangeText={setCaption} placeholder="e.g. Left mirror scratch" />
@@ -299,11 +310,28 @@ function PhotosCard({ jc, run }: { jc: JobCardDetail; run: Run }) {
       {jc.photos.length > 0 && (
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 14 }}>
           {jc.photos.map((p) => (
-            <View key={p.id} style={{ width: 150 }}>
+            <View key={p.id} style={{ width: 160 }}>
               <TouchableOpacity onPress={() => Linking.openURL(photoSrc(p.url))}>
                 <Image source={{ uri: photoSrc(p.url) }} style={{ width: '100%', height: 110, borderRadius: 6, borderWidth: 1, borderColor: '#ddd' }} />
               </TouchableOpacity>
-              <Text style={styles.muted}>{p.stage}{p.caption ? ` · ${p.caption}` : ''}</Text>
+              {/* Item 8: Caption now lives here, editable per photo, instead of only being set
+                 once before upload. */}
+              <View style={{ flexDirection: 'row', gap: 4, marginTop: 6 }}>
+                <TextInput
+                  style={[styles.input, { flex: 1, fontSize: 12, paddingVertical: 4 }]}
+                  value={captionEdits[p.id] ?? p.caption ?? ''}
+                  editable={savingCaptionId !== p.id}
+                  onChangeText={(v) => setCaptionEdits((prev) => ({ ...prev, [p.id]: v }))}
+                  placeholder="Add a caption…"
+                />
+                <TouchableOpacity
+                  style={[styles.smallBtn, (savingCaptionId === p.id || (captionEdits[p.id] ?? p.caption ?? '') === (p.caption ?? '')) && styles.btnDisabled]}
+                  disabled={savingCaptionId === p.id || (captionEdits[p.id] ?? p.caption ?? '') === (p.caption ?? '')}
+                  onPress={() => saveCaption(p.id)}
+                >
+                  <Text style={styles.smallBtnText}>{savingCaptionId === p.id ? '…' : 'Save'}</Text>
+                </TouchableOpacity>
+              </View>
               {p.latitude != null && p.longitude != null && (
                 <TouchableOpacity onPress={() => Linking.openURL(`https://maps.google.com/?q=${p.latitude},${p.longitude}`)}>
                   <Text style={styles.link}>📍 {p.latitude.toFixed(5)}, {p.longitude.toFixed(5)}</Text>
@@ -606,6 +634,8 @@ const styles = StyleSheet.create({
   btnPrimarySm: { backgroundColor: '#2563eb', borderRadius: 8, paddingHorizontal: 14, paddingVertical: 10, alignItems: 'center', alignSelf: 'flex-start' },
   btnPrimaryText: { color: '#fff', fontWeight: '700' },
   btnDisabled: { opacity: 0.5 },
+  smallBtn: { backgroundColor: '#f4f6f9', borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 6, paddingHorizontal: 8, justifyContent: 'center' },
+  smallBtnText: { fontSize: 12, fontWeight: '600', color: '#374151' },
   dmsBadge: { backgroundColor: '#1c64f2', color: '#fff', fontSize: 11, fontWeight: '700', borderRadius: 999, overflow: 'hidden' },
   historyRow: { paddingVertical: 8, borderTopWidth: 1, borderTopColor: '#f1f3f6' },
   rowTitle: { fontWeight: '600', color: '#101828' },

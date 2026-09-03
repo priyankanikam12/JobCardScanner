@@ -1,9 +1,9 @@
-// web\src\pages\staff\ForceChangePasswordPage.tsx
 import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { changeMyPassword } from '../../services/dealerAuthService'
 import { clearMustChangePassword } from '../../auth/dealerSession'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
+import { PasswordInput } from '../../components/PasswordInput'
 import bgaussLogo from '../../assets/BGauss_Logo.png'
 import scootyImg from '../../assets/Bg0-scooty.png'
 import './LoginPage.css'
@@ -64,6 +64,7 @@ export function ForceChangePasswordPage() {
       <div className="jcs-login-hero">
         <img src={bgaussLogo} alt="BGauss" className="jcs-hero-logo" />
         <h2>EV Two-Wheeler Workshop Management</h2>
+        <p>Job cards, estimates, parts, invoicing and reporting for every BGauss service workshop - in one place.</p>
         <img src={scootyImg} alt="" aria-hidden="true" className="jcs-hero-scooter" />
       </div>
 
@@ -84,15 +85,15 @@ export function ForceChangePasswordPage() {
             <form onSubmit={handleSubmit}>
               <label className="jcs-field">
                 <span>Current (temporary) password</span>
-                <input type="password" required autoComplete="current-password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} />
+                <PasswordInput required autoComplete="current-password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} />
               </label>
               <label className="jcs-field">
                 <span>New password</span>
-                <input type="password" required minLength={8} autoComplete="new-password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="At least 8 characters" />
+                <PasswordInput required minLength={8} autoComplete="new-password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="At least 8 characters" />
               </label>
               <label className="jcs-field">
                 <span>Confirm new password</span>
-                <input type="password" required minLength={8} autoComplete="new-password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
+                <PasswordInput required minLength={8} autoComplete="new-password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
               </label>
 
               <button type="submit" className="btn btn-primary jcs-submit" disabled={submitting}>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
-  ActivityIndicator, Alert, Image, ScrollView, StyleSheet, Text,
+  ActivityIndicator, Alert, Image, Platform, ScrollView, StyleSheet, Text,
   TextInput, TouchableOpacity, View,
 } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
@@ -8,7 +8,10 @@ import * as ImagePicker from 'expo-image-picker'
 import * as Location from 'expo-location'
 import * as Print from 'expo-print'
 import * as Sharing from 'expo-sharing'
-import { DateTimePickerAndroid } from '@react-native-community/datetimepicker'
+// See JobCardDetailScreen.tsx's import of this same subpath - expo-file-system 54+ moved the old
+// imperative writeAsStringAsync/EncodingType/StorageAccessFramework API here.
+import * as FileSystem from 'expo-file-system/legacy'
+import { DateTimePickerAndroid, type DateTimePickerEvent } from '@react-native-community/datetimepicker'
 import { apiClient } from '../api/client'
 import { useStaffAuth } from '../auth/StaffAuthContext'
 import { PickerField, type PickerOption } from '../components/PickerField'
@@ -123,6 +126,9 @@ export function JobCardWizardScreen({ navigation }: Props) {
   const [vehicleLookupLoading, setVehicleLookupLoading] = useState(false)
   const [vehicleLookupError, setVehicleLookupError] = useState<string | null>(null)
   const [baplVehicleHit, setBaplVehicleHit] = useState<BaplDmsVehicleLookup | null>(null)
+  // Item 12a: a styled inline banner instead of a plain Alert.alert() for "This Vehicle not
+  // sold" - matches web's same change.
+  const [vehicleNotSoldNotice, setVehicleNotSoldNotice] = useState<string | null>(null)
   const [vehicleSuggestions, setVehicleSuggestions] = useState<BaplDmsVehicleSuggestion[]>([])
 
   useEffect(() => {
@@ -146,14 +152,17 @@ export function JobCardWizardScreen({ navigation }: Props) {
     setVehicleSuggestions([])
     setVehicleLookupLoading(true)
     setVehicleLookupError(null)
+    setVehicleNotSoldNotice(null)
     setBaplVehicleHit(null)
     setUnlockCustomerFields(false)
     setUnlockVehicleFields(false)
     try {
       const { data } = await apiClient.get<BaplDmsVehicleLookup>('/api/bapl-dms/vehicle-lookup', { params: { value } })
       if (!data.saleDate) {
-        Alert.alert('Sale date not defined')
-        setVehicleLookupError(`"${value}" was found in BAPL DMS but has no sale date on file - add the customer/vehicle manually below.`)
+        // Item 12a/12b: shorter, friendlier wording + a styled inline banner instead of a native
+        // Alert.alert() - matches web's same change.
+        setVehicleNotSoldNotice('This Vehicle not sold')
+        setVehicleLookupError(`"${value}" was found in DMS.`)
         return
       }
       setBaplVehicleHit(data)
@@ -337,13 +346,13 @@ export function JobCardWizardScreen({ navigation }: Props) {
     DateTimePickerAndroid.open({
       value: expectedDeliveryAt,
       mode: 'date',
-      onChange: (_e, date) => {
+      onChange: (_e: DateTimePickerEvent, date?: Date) => {
         if (!date) return
         DateTimePickerAndroid.open({
           value: date,
           mode: 'time',
           is24Hour: true,
-          onChange: (_e2, time) => {
+          onChange: (_e2: DateTimePickerEvent, time?: Date) => {
             if (!time) return
             const combined = new Date(date)
             combined.setHours(time.getHours(), time.getMinutes())
@@ -361,6 +370,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
   const [photoUploadWarning, setPhotoUploadWarning] = useState<string | null>(null)
   const [createdJobCard, setCreatedJobCard] = useState<{ id: string; jobCardNumber: string } | null>(null)
   const [sharingPdf, setSharingPdf] = useState(false)
+  const [downloadingPdf, setDownloadingPdf] = useState(false)
 
   const getPhotoLocation = async (): Promise<{ latitude: number; longitude: number; accuracy: number | null } | null> => {
     try {
@@ -530,46 +540,49 @@ export function JobCardWizardScreen({ navigation }: Props) {
     }
   }
 
-  // Web's "Print" opens a browser print popup; there's no such thing on Android, so per an
-  // explicit decision this instead builds the same Job Card + Gate Pass HTML, renders it to a
-  // local PDF (expo-print) and hands it straight to the native share sheet (expo-sharing) - "Save
-  // to Drive/Files", AirDrop-equivalent, WhatsApp, a printer app, whatever the phone offers.
+  // Web's "Print" opens a browser print popup, whose own dialog covers both printing AND "Save
+  // as PDF" in one place; there's no such single dialog on Android, so this builds the same Job
+  // Card + Gate Pass HTML and offers it two separate ways - Share (native share sheet: Drive/
+  // Files, WhatsApp, a printer app, whatever the phone offers) and Download (saves the PDF
+  // directly, so it doesn't depend on picking the right share target).
+  const buildPrintHtml = () =>
+    buildJobCardPrintHtml({
+      dealerName: dealers.find((d) => d.id === effectiveDealerId)?.name ?? profile?.dealerName,
+      dealerCode: dealers.find((d) => d.id === effectiveDealerId)?.code ?? baplVehicleHit?.dealerCode,
+      jobinDate: new Date().toISOString(),
+      jobtype: baplJobType,
+      jobsource: jobSources.find((s) => s.id === selectedJobSourceId)?.name,
+      serviceHead: serviceHeads.find((h) => h.id === selectedServiceHeadId)?.name,
+      serviceType: serviceTypes.find((t) => t.id === selectedServiceTypeId)?.name,
+      estdelDate: expectedDeliveryAt.toISOString(),
+      vehiclekms: vehicle?.odometer,
+      manualjobNo: baplManualJobNo,
+      supervisor: baplSupervisorName,
+      technician: baplTechnicianName,
+      customerName: customer?.name,
+      customerMobile: customer?.mobile,
+      address: customer?.address,
+      city: customer?.city,
+      chassisNo: vehicle?.vin,
+      batteryNo: vehicle?.batteryNo,
+      chargerNo: vehicle?.chargerNo,
+      controllerNo: vehicle?.controllerNo,
+      registerNo: vehicle?.regNo,
+      modelName: vehicle?.model,
+      colour: vehicle?.color,
+      saleDate: baplVehicleHit?.saleDate,
+      insuranceExpiry: vehicle?.insuranceExpiry ?? baplVehicleHit?.insuranceExpDate,
+      batteryChemical: baplVehicleHit?.batteryChemical,
+      batteryCapacity: baplVehicleHit?.batteryCapacity,
+      batteryMake: baplVehicleHit?.batteryMake,
+      complaints: complaints.filter((c) => c.trim()),
+      jobCardNumber: createdJobCard?.jobCardNumber,
+    })
+
   const sharePdf = async () => {
     setSharingPdf(true)
     try {
-      const html = buildJobCardPrintHtml({
-        dealerName: dealers.find((d) => d.id === effectiveDealerId)?.name ?? profile?.dealerName,
-        dealerCode: dealers.find((d) => d.id === effectiveDealerId)?.code ?? baplVehicleHit?.dealerCode,
-        jobinDate: new Date().toISOString(),
-        jobtype: baplJobType,
-        jobsource: jobSources.find((s) => s.id === selectedJobSourceId)?.name,
-        serviceHead: serviceHeads.find((h) => h.id === selectedServiceHeadId)?.name,
-        serviceType: serviceTypes.find((t) => t.id === selectedServiceTypeId)?.name,
-        estdelDate: expectedDeliveryAt.toISOString(),
-        vehiclekms: vehicle?.odometer,
-        manualjobNo: baplManualJobNo,
-        supervisor: baplSupervisorName,
-        technician: baplTechnicianName,
-        customerName: customer?.name,
-        customerMobile: customer?.mobile,
-        address: customer?.address,
-        city: customer?.city,
-        chassisNo: vehicle?.vin,
-        batteryNo: vehicle?.batteryNo,
-        chargerNo: vehicle?.chargerNo,
-        controllerNo: vehicle?.controllerNo,
-        registerNo: vehicle?.regNo,
-        modelName: vehicle?.model,
-        colour: vehicle?.color,
-        saleDate: baplVehicleHit?.saleDate,
-        insuranceExpiry: vehicle?.insuranceExpiry ?? baplVehicleHit?.insuranceExpDate,
-        batteryChemical: baplVehicleHit?.batteryChemical,
-        batteryCapacity: baplVehicleHit?.batteryCapacity,
-        batteryMake: baplVehicleHit?.batteryMake,
-        complaints: complaints.filter((c) => c.trim()),
-        jobCardNumber: createdJobCard?.jobCardNumber,
-      })
-      const { uri } = await Print.printToFileAsync({ html })
+      const { uri } = await Print.printToFileAsync({ html: buildPrintHtml() })
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `Job Card ${createdJobCard?.jobCardNumber ?? ''}` })
       } else {
@@ -579,6 +592,36 @@ export function JobCardWizardScreen({ navigation }: Props) {
       Alert.alert('Could not generate the Job Card PDF. Please try again.')
     } finally {
       setSharingPdf(false)
+    }
+  }
+
+  // Item: "download pdf and share pdf both option" for Android. Android sandboxes app-private
+  // storage, so a real "save to Downloads" needs the Storage Access Framework (lets the user pick
+  // a folder, then writes straight into it) rather than expo-file-system's normal document
+  // directory, which nothing outside the app can see. iOS has no equivalent public Downloads
+  // folder/SAF, so there this just opens the same share sheet (its own "Save to Files" option
+  // covers the same need).
+  const downloadPdf = async () => {
+    setDownloadingPdf(true)
+    try {
+      const { uri } = await Print.printToFileAsync({ html: buildPrintHtml() })
+      const fileName = `JobCard-${createdJobCard?.jobCardNumber ?? Date.now()}.pdf`
+      if (Platform.OS === 'android') {
+        const perm = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync()
+        if (!perm.granted) return
+        const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 })
+        const destUri = await FileSystem.StorageAccessFramework.createFileAsync(perm.directoryUri, fileName, 'application/pdf')
+        await FileSystem.writeAsStringAsync(destUri, base64, { encoding: FileSystem.EncodingType.Base64 })
+        Alert.alert('Downloaded', `${fileName} was saved to the folder you chose.`)
+      } else if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: fileName })
+      } else {
+        Alert.alert('Downloading is not available on this device.')
+      }
+    } catch {
+      Alert.alert('Could not download the Job Card PDF. Please try again.')
+    } finally {
+      setDownloadingPdf(false)
     }
   }
 
@@ -650,7 +693,10 @@ export function JobCardWizardScreen({ navigation }: Props) {
             </TouchableOpacity>
           </View>
           {vehicleSuggestions.length > 0 && (
-            <View style={styles.pickerBox}>
+            // Dropdown scroll wasn't working on Android - a plain View with maxHeight clips
+            // overflow instead of scrolling it. nestedScrollEnabled is required on Android for a
+            // ScrollView inside another ScrollView (this whole screen is one) to scroll at all.
+            <ScrollView style={styles.pickerBox} nestedScrollEnabled keyboardShouldPersistTaps="handled">
               {vehicleSuggestions.map((s) => (
                 <TouchableOpacity key={s.chassisNo} style={styles.pickerRow} onPress={() => { setChassisOrRegQ(s.chassisNo); lookupByChassisOrReg(s.chassisNo) }}>
                   <Text style={styles.pickerRowText}>
@@ -659,6 +705,14 @@ export function JobCardWizardScreen({ navigation }: Props) {
                   </Text>
                 </TouchableOpacity>
               ))}
+            </ScrollView>
+          )}
+          {vehicleNotSoldNotice && (
+            <View style={styles.noticeBanner}>
+              <Text style={styles.noticeBannerText}>⚠️ {vehicleNotSoldNotice}</Text>
+              <TouchableOpacity onPress={() => setVehicleNotSoldNotice(null)}>
+                <Text style={styles.noticeBannerDismiss}>Dismiss</Text>
+              </TouchableOpacity>
             </View>
           )}
           {vehicleLookupError && <Text style={styles.errorText}>{vehicleLookupError}</Text>}
@@ -666,7 +720,8 @@ export function JobCardWizardScreen({ navigation }: Props) {
             <Text style={styles.muted}>
               Customer Details : customer-{baplVehicleHit.customerName || 'Unknown customer'}
               {baplVehicleHit.customerMobile ? ` (${baplVehicleHit.customerMobile})` : ''} - model- {baplVehicleHit.modelName || 'Model unknown'}
-              {baplVehicleHit.registerNo ? `, reg no. ${baplVehicleHit.registerNo}.` : '.'}
+              {baplVehicleHit.registerNo ? `, reg no. ${baplVehicleHit.registerNo}` : ''}
+              {baplVehicleHit.saleDate ? `, sale date ${new Date(baplVehicleHit.saleDate).toLocaleDateString()}.` : '.'}
             </Text>
           )}
 
@@ -894,9 +949,14 @@ export function JobCardWizardScreen({ navigation }: Props) {
               {photoUploadWarning && <Text style={styles.muted}>{photoUploadWarning}</Text>}
               {baplSyncWarning && <Text style={styles.muted}>{baplSyncWarning}</Text>}
               <View style={styles.btnRow}>
+                <TouchableOpacity style={styles.btn} disabled={downloadingPdf} onPress={downloadPdf}>
+                  {downloadingPdf ? <ActivityIndicator color="#374151" /> : <Text style={styles.btnText}>⬇️ Download PDF</Text>}
+                </TouchableOpacity>
                 <TouchableOpacity style={styles.btn} disabled={sharingPdf} onPress={sharePdf}>
                   {sharingPdf ? <ActivityIndicator color="#374151" /> : <Text style={styles.btnText}>🖨️ Share PDF</Text>}
                 </TouchableOpacity>
+              </View>
+              <View style={[styles.btnRow, { marginTop: 8 }]}>
                 <TouchableOpacity style={styles.btnPrimary} onPress={() => navigation.replace('JobCardDetail', { id: createdJobCard.id })}>
                   <Text style={styles.btnPrimaryText}>Continue to Job Card {createdJobCard.jobCardNumber}</Text>
                 </TouchableOpacity>
@@ -961,6 +1021,9 @@ const styles = StyleSheet.create({
   inputDisabled: { backgroundColor: '#f4f6f9', color: '#6b7280' },
   muted: { fontSize: 12, color: '#6b7280', marginTop: 4, marginBottom: 4 },
   errorText: { fontSize: 12, color: '#dc2626', marginTop: 4, marginBottom: 4 },
+  noticeBanner: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8, padding: 10, borderRadius: 8, backgroundColor: '#fffbeb', borderWidth: 1, borderColor: '#fde68a' },
+  noticeBannerText: { flex: 1, fontWeight: '600', color: '#92400e' },
+  noticeBannerDismiss: { fontWeight: '600', color: '#92400e' },
   link: { color: '#2563eb', fontWeight: '600', marginBottom: 8 },
   bold: { fontWeight: '700' },
   reviewLine: { marginBottom: 4, fontSize: 13, color: '#101828' },

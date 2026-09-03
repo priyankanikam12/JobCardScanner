@@ -1,3 +1,4 @@
+// web\src\services\dealerAuthService.ts
 // API calls for the "Dealer / Workshop Login" tab - see backend Controllers/DealerAuthController.cs.
 // Uses a bare axios call (not `staffApi`) for login/forgot/reset because those three endpoints
 // are anonymous and must run *before* a session/token exists; everything after login goes back
