@@ -460,11 +460,12 @@ function ComplaintsCard({ jc, run }: { jc: JobCardDetail; run: Run }) {
       {jc.complaints.map((c) => <Text key={c.id}>- {c.description}</Text>)}
       <View style={[styles.searchRow, { marginTop: 10 }]}>
         <TextInput style={[styles.input, { flex: 1 }]} value={text} onChangeText={setText} placeholder="Add inspection note" />
+        {/* 2026-09-03: blue now, matching web's "Log Inspection Note" button. */}
         <TouchableOpacity
-          style={styles.btn}
+          style={styles.btnPrimarySm}
           onPress={() => { run(() => apiClient.post(`/api/jobcards/${jc.id}/inspections`, { component: 'General', condition: 'NeedsAttention', notes: text })); setText('') }}
         >
-          <Text style={styles.btnText}>Log Note</Text>
+          <Text style={styles.btnPrimaryText}>Log Note</Text>
         </TouchableOpacity>
       </View>
       {jc.inspections.length > 0 && (

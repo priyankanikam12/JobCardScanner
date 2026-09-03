@@ -12,6 +12,13 @@ import { buildJobCardPrintHtml } from '../../lib/jobCardPrintHtml'
 
 const STEPS = ['Customer', 'Vehicle', 'Service Details', 'Review & Create']
 
+/** Red "*" marker for required-field labels (2026-09-03 - "all required feild are red star"),
+ * used everywhere a label needs one instead of a plain " *" that just inherited the label's own
+ * text color (which read as just as easy to miss as no marker at all). */
+function Req() {
+  return <span style={{ color: '#dc2626' }}> *</span>
+}
+
 // JobCardScanner's own ServiceType/JobCardSource enums are still required internally (dashboards,
 // filters, the Status Badge, ...) but showing them as their own pickers next to BAPL DMS's real
 // Job Type and JobSource dropdowns was pure duplication - two "what kind of service is this"
@@ -238,9 +245,10 @@ export function JobCardWizardPage() {
       if (!data.saleDate) {
         // Item 12a/12b: shorter, friendlier wording - "This Vehicle not sold" instead of the
         // internal-sounding "Sale date not defined", shown as a styled banner instead of a native
-        // window.alert() (which can't be styled and blocks the page) - and a shorter inline error.
+        // window.alert() (which can't be styled and blocks the page). 2026-09-03: dropped the
+        // extra "'X' was found in DMS." line that used to show right below it too, per explicit
+        // request - the banner alone says enough; the second line just duplicated the same fact.
         setVehicleNotSoldNotice('This Vehicle not sold')
-        setVehicleLookupError(`"${value}" was found in DMS.`)
         return
       }
       applyVehicleHit(data)
@@ -389,10 +397,12 @@ export function JobCardWizardPage() {
   // "Continue to Review" stays disabled until all of them are filled in, so a job card can no
   // longer reach Review with a half-filled BAPL DMS section.
   // Manual Job No. is no longer required (Item 5) - every other BAPL DMS field still is.
+  // 2026-09-03: Expected delivery and Customer complaints (Customer Voice) are now required too,
+  // per explicit request - both got a red * label to match.
   const serviceDetailsValid = !!(
     selectedJobTypeId && selectedServiceHeadId && selectedServiceTypeId &&
     selectedWorkshopLocCode && baplSupervisorName.trim() && baplTechnicianName.trim() &&
-    selectedJobSourceId
+    selectedJobSourceId && expectedDeliveryAt && complaints.length > 0
   )
 
   // Job Type/JobSource masters + Complaint master are all small, session-wide lists - fetched once
@@ -936,19 +946,19 @@ export function JobCardWizardPage() {
                 <button type="button" className="btn btn-sm btn-primary" onClick={applyGlobalHit}>Use this vehicle</button>
               </div>
             )}
-            {baplVehicleHit && (
+            {/* {baplVehicleHit && (
               <p className="muted" style={{ marginTop: 4 }}>
                 Customer Details : customer-{baplVehicleHit.customerName || 'Unknown customer'}
                 {baplVehicleHit.customerMobile ? ` (${baplVehicleHit.customerMobile})` : ''} - model- {baplVehicleHit.modelName || 'Model unknown'}
                 {baplVehicleHit.registerNo ? `, reg no. ${baplVehicleHit.registerNo}` : ''}
                 {baplVehicleHit.saleDate ? `, sale date ${new Date(baplVehicleHit.saleDate).toLocaleDateString()}.` : '.'}
               </p>
-            )}
+            )} */}
           </div>
           <h3 style={{ marginTop: 24 }}>Registered Customer</h3>
           {customerFieldsLocked && (
             <p className="muted" style={{ marginTop: -4, marginBottom: 12 }}>
-              🔒 Name, Mobile, Email, City and Address were auto-fetched from BAPL DMS and are locked to prevent accidental changes.{' '}
+              🔒 Name, Mobile, Email, City and Address were auto-fetched from DMS and are locked to prevent accidental changes.{' '}
               <a href="#" onClick={(e) => { e.preventDefault(); setUnlockCustomerFields(true) }}>Edit anyway</a>
             </p>
           )}
@@ -975,7 +985,16 @@ export function JobCardWizardPage() {
             <div className="field"><label>Sale Date</label><input type="date" value={newCustomer.saleDate} disabled={customerFieldsLocked} onChange={(e) => setNewCustomer({ ...newCustomer, saleDate: e.target.value })} /></div>
           </div>
           {error && <p className="error-text">{error}</p>}
-          <button className="btn btn-primary" disabled={!newCustomer.name || newCustomer.mobile.length !== 10 || !effectiveDealerId} onClick={createCustomer}>Create & Continue</button>
+          <button
+            className="btn btn-primary"
+            // 2026-09-03: also blocked while "This Vehicle not sold" is showing, per explicit
+            // request - Dismissing the banner (the only way to clear vehicleNotSoldNotice) is what
+            // re-enables this, so it still reads as "acknowledge, then proceed if you really mean to".
+            disabled={!newCustomer.name || newCustomer.mobile.length !== 10 || !effectiveDealerId || !!vehicleNotSoldNotice}
+            onClick={createCustomer}
+          >
+            Create & Continue
+          </button>
         </div>
       )}
 
@@ -1018,7 +1037,7 @@ export function JobCardWizardPage() {
           )}
           {vehicleFieldsLocked && (
             <p className="muted" style={{ marginTop: -4, marginBottom: 12 }}>
-              🔒 Model, Reg No and VIN were auto-fetched from BAPL DMS and are locked to prevent accidental changes.{' '}
+              🔒 Model, Reg No and VIN were auto-fetched from DMS and are locked to prevent accidental changes.{' '}
               <a href="#" onClick={(e) => { e.preventDefault(); setUnlockVehicleFields(true) }}>Edit anyway</a>
             </p>
           )}
@@ -1063,7 +1082,7 @@ export function JobCardWizardPage() {
             <div className="field"><label>Reg No</label><input value={newVehicle.regNo} disabled={vehicleFieldsLocked} onChange={(e) => setNewVehicle({ ...newVehicle, regNo: e.target.value })} /></div>
             <div className="field"><label>VIN</label><input value={newVehicle.vin} disabled={vehicleFieldsLocked} onChange={(e) => setNewVehicle({ ...newVehicle, vin: e.target.value })} /></div>
             <div className="field">
-              <label>Odometer (km) *{previousOdometer != null ? ` (Previous: ${previousOdometer} km)` : ''}</label>
+              <label>Odometer (km)<Req />{previousOdometer != null ? ` (Previous: ${previousOdometer} km)` : ''}</label>
               <input type="number" value={newVehicle.odometer} onChange={(e) => setNewVehicle({ ...newVehicle, odometer: Number(e.target.value) })} />
               {previousOdometer != null && newVehicle.odometer > 0 && newVehicle.odometer <= previousOdometer && (
                 <p className="error-text" style={{ margin: '4px 0 0', fontSize: 12 }}>Must be greater than the previous odometer reading ({previousOdometer} km).</p>
@@ -1095,28 +1114,28 @@ export function JobCardWizardPage() {
             {baplMastersError && <p className="error-text" style={{ marginTop: 0 }}>{baplMastersError}</p>}
             <div className="form-row">
               <div className="field">
-                <label>Job Type *</label>
+                <label>Job Type<Req /></label>
                 <select value={selectedJobTypeId ?? ''} onChange={(e) => onJobTypeChange(e.target.value)}>
                   <option value="">Select job type…</option>
                   {jobTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                 </select>
               </div>
               <div className="field">
-                <label>Service Head *</label>
+                <label>Service Head<Req /></label>
                 <select value={selectedServiceHeadId ?? ''} disabled={!selectedJobTypeId} onChange={(e) => onServiceHeadChange(e.target.value)}>
                   <option value="">{selectedJobTypeId ? 'Select service head…' : 'Select a job type first'}</option>
                   {serviceHeads.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
                 </select>
               </div>
               <div className="field">
-                <label>Service Type *</label>
+                <label>Service Type<Req /></label>
                 <select value={selectedServiceTypeId ?? ''} disabled={!selectedServiceHeadId} onChange={(e) => setSelectedServiceTypeId(e.target.value ? Number(e.target.value) : null)}>
                   <option value="">{selectedServiceHeadId ? 'Select service type…' : 'Select a service head first'}</option>
                   {serviceTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                 </select>
               </div>
               <div className="field">
-                <label>Priority *</label>
+                <label>Priority<Req /></label>
                 <select value={priority} onChange={(e) => setPriority(e.target.value as JobCardPriority)}>
                   {(['Normal', 'High', 'Urgent'] as JobCardPriority[]).map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
@@ -1124,18 +1143,18 @@ export function JobCardWizardPage() {
             </div>
             <div className="form-row" style={{ marginBottom: 0 }}>
               <div className="field">
-                <label>Service Location (workshop) *</label>
+                <label>Service Location (workshop)<Req /></label>
                 <select value={selectedWorkshopLocCode} disabled={!effectiveDealerId} onChange={(e) => onWorkshopChange(e.target.value)}>
                   <option value="">{workshops.length ? 'Select workshop…' : 'No workshops found for this dealer yet'}</option>
                   {workshops.map((w) => <option key={w.locCode} value={w.locCode}>{w.locName} ({w.locCode})</option>)}
                 </select>
               </div>
               <div className="field">
-                <label>Supervisor *</label>
+                <label>Supervisor<Req /></label>
                 <input value={baplSupervisorName} onChange={(e) => setBaplSupervisorName(e.target.value)} placeholder="Supervisor name" />
               </div>
               <div className="field">
-                <label>Technician *</label>
+                <label>Technician<Req /></label>
                 <input value={baplTechnicianName} onChange={(e) => setBaplTechnicianName(e.target.value)} placeholder="Technician name" />
               </div>
               <div className="field">
@@ -1143,7 +1162,7 @@ export function JobCardWizardPage() {
                 <input value={baplManualJobNo} onChange={(e) => setBaplManualJobNo(e.target.value)} placeholder="e.g. 0" />
               </div>
               <div className="field">
-                <label>Source *</label>
+                <label>Source<Req /></label>
                 <select value={selectedJobSourceId ?? ''} onChange={(e) => onJobSourceChange(e.target.value)}>
                   <option value="">Select source…</option>
                   {jobSources.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
@@ -1157,11 +1176,11 @@ export function JobCardWizardPage() {
 
           <div className="form-row">
             <div className="field"><label>Battery level at check-in (%)</label><input type="number" min={0} max={100} value={batteryLevel} onChange={(e) => setBatteryLevel(e.target.value === '' ? '' : Number(e.target.value))} /></div>
-            <div className="field"><label>Expected delivery</label><input type="datetime-local" value={expectedDeliveryAt} onChange={(e) => setExpectedDeliveryAt(e.target.value)} /></div>
+            <div className="field"><label>Expected delivery<Req /></label><input type="datetime-local" value={expectedDeliveryAt} onChange={(e) => setExpectedDeliveryAt(e.target.value)} /></div>
           </div>
 
           <div className="field">
-            <label>Customer complaints (Customer Voice)</label>
+            <label>Customer complaints (Customer Voice)<Req /></label>
             {/* Manual "+ Add complaint" free-text flow removed per your request - the BAPL DMS
                ComplaintMaster dropdown below is now the only way to add one, and it supports adding
                several (pick, Add, pick another, Add again). */}
@@ -1172,10 +1191,10 @@ export function JobCardWizardPage() {
                   {complaintOptions.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
                 <button
-                  className="btn btn-sm"
+                  className="btn btn-sm btn-primary"
                   disabled={!selectedComplaintId}
                   onClick={addComplaintFromDropdown}
-                  style={{ background: '#16a34a', color: '#fff', border: '1px solid #16a34a', fontWeight: 600 }}
+                  style={{ fontWeight: 600 }}
                 >
                   + Add
                 </button>
@@ -1191,7 +1210,7 @@ export function JobCardWizardPage() {
                     <span>{c}</span>
                     <button
                       className="btn btn-sm"
-                      style={{ background: 'transparent', color: '#64748b', border: '1px solid var(--border)' }}
+                      style={{ background: '#dc2626', color: '#fff', border: '1px solid #dc2626' }}
                       onClick={() => removeComplaint(c)}
                     >
                       Remove
@@ -1214,7 +1233,7 @@ export function JobCardWizardPage() {
             <button className="btn btn-primary" disabled={!serviceDetailsValid} onClick={() => setStep(3)}>Continue to Review</button>
           </div>
           {!serviceDetailsValid && (
-            <p className="muted" style={{ marginTop: 8, fontSize: 12 }}>Fill in every field marked * in "Job Card fields" above to continue.</p>
+            <p className="muted" style={{ marginTop: 8, fontSize: 12 }}>Fill in every field marked with a red * on this step to continue.</p>
           )}
         </div>
       )}
@@ -1236,18 +1255,18 @@ export function JobCardWizardPage() {
             <p>
               <strong>DMS fields:</strong>{' '}
               {baplJobType && <><strong>Job Type:</strong> {baplJobType}. </>}
-              {serviceHeads.find((h) => h.id === selectedServiceHeadId)?.name && `Service Head: ${serviceHeads.find((h) => h.id === selectedServiceHeadId)?.name}. `}
-              {serviceTypes.find((t) => t.id === selectedServiceTypeId)?.name && `Service Type: ${serviceTypes.find((t) => t.id === selectedServiceTypeId)?.name}. `}
-              {baplServiceLocation && `Location: ${baplServiceLocation}. `}
-              {baplSupervisorName && `Supervisor: ${baplSupervisorName}. `}
-              {baplTechnicianName && `Technician: ${baplTechnicianName}. `}
-              {baplManualJobNo && `Manual Job No.: ${baplManualJobNo}.`}
+              {serviceHeads.find((h) => h.id === selectedServiceHeadId)?.name && <><strong>Service Head:</strong> {serviceHeads.find((h) => h.id === selectedServiceHeadId)?.name}. </>}
+              {serviceTypes.find((t) => t.id === selectedServiceTypeId)?.name && <><strong>Service Type:</strong> {serviceTypes.find((t) => t.id === selectedServiceTypeId)?.name}. </>}
+              {baplServiceLocation && <><strong>Location:</strong> {baplServiceLocation}. </>}
+              {baplSupervisorName && <><strong>Supervisor:</strong> {baplSupervisorName}. </>}
+              {baplTechnicianName && <><strong>Technician:</strong> {baplTechnicianName}. </>}
+              {baplManualJobNo && <><strong>Manual Job No.:</strong> {baplManualJobNo}.</>}
             </p>
           )}
 
           {!createdJobCard && (
             <div className="field">
-              <label>Photos (required - captured now, uploaded once the job card is created; up to 1 GB each)</label>
+              <label>Photos<Req /></label>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: pendingPhotos.length > 0 ? 12 : 0 }}>
                 <label className="btn btn-sm" style={{ cursor: capturingPhoto ? 'default' : 'pointer', opacity: capturingPhoto ? 0.6 : 1 }}>
                   {capturingPhoto ? 'Adding…' : '📷 Take / Upload Photo'}
@@ -1277,7 +1296,13 @@ export function JobCardWizardPage() {
                         style={{ marginTop: 6, fontSize: 12, padding: '4px 6px' }}
                         onChange={(e) => setPendingPhotos((prev) => prev.map((x) => (x.id === p.id ? { ...x, caption: e.target.value } : x)))}
                       />
-                      <button className="btn btn-sm" style={{ marginTop: 6, width: '100%' }} onClick={() => removePendingPhoto(p.id)}>Remove</button>
+                      <button
+                        className="btn btn-sm"
+                        style={{ marginTop: 6, width: '100%', background: '#dc2626', color: '#fff', border: '1px solid #dc2626' }}
+                        onClick={() => removePendingPhoto(p.id)}
+                      >
+                        Remove
+                      </button>
                     </div>
                   ))}
                 </div>

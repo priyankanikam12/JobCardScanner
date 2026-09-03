@@ -205,9 +205,10 @@ export function JobCardWizardScreen({ navigation }: Props) {
       }
       if (!data.saleDate) {
         // Item 12a/12b: shorter, friendlier wording + a styled inline banner instead of a native
-        // Alert.alert() - matches web's same change.
+        // Alert.alert() - matches web's same change. 2026-09-03: dropped the extra "'X' was found
+        // in DMS." line that used to show right below it too, per explicit request - matches web's
+        // same fix (JobCardWizardPage.tsx's own lookupByChassisOrReg).
         setVehicleNotSoldNotice('This Vehicle not sold')
-        setVehicleLookupError(`"${value}" was found in DMS.`)
         return
       }
       applyVehicleHit(data)
@@ -324,10 +325,16 @@ export function JobCardWizardScreen({ navigation }: Props) {
 
   const [baplSyncWarning, setBaplSyncWarning] = useState<string | null>(null)
 
+  // 2026-09-03: Customer complaints (Customer Voice) is now required too, matching web's same
+  // change - both got a red * label. Expected delivery isn't included here: unlike web's
+  // datetime-local input (which the user can clear to empty), this screen's date picker always
+  // holds a real Date (defaults to "now" and can only be changed to another real date/time, never
+  // cleared) - so there's nothing to actually enforce there, but the label still gets the same red
+  // * for visual consistency with web.
   const serviceDetailsValid = !!(
     selectedJobTypeId && selectedServiceHeadId && selectedServiceTypeId &&
     selectedWorkshopLocCode && baplSupervisorName.trim() && baplTechnicianName.trim() &&
-    selectedJobSourceId
+    selectedJobSourceId && complaints.length > 0
   )
 
   useEffect(() => {
@@ -870,8 +877,11 @@ export function JobCardWizardScreen({ navigation }: Props) {
 
           {error && <Text style={styles.errorText}>{error}</Text>}
           <TouchableOpacity
-            style={[styles.btnPrimary, (!newCustomer.name || newCustomer.mobile.length !== 10 || !effectiveDealerId) && styles.btnDisabled]}
-            disabled={!newCustomer.name || newCustomer.mobile.length !== 10 || !effectiveDealerId}
+            // 2026-09-03: also blocked while "This Vehicle not sold" is showing, matching web's
+            // same change - the banner's own Dismiss button (below) is what re-enables this, same
+            // "acknowledge, then proceed if you really mean to" pattern as web.
+            style={[styles.btnPrimary, (!newCustomer.name || newCustomer.mobile.length !== 10 || !effectiveDealerId || !!vehicleNotSoldNotice) && styles.btnDisabled]}
+            disabled={!newCustomer.name || newCustomer.mobile.length !== 10 || !effectiveDealerId || !!vehicleNotSoldNotice}
             onPress={createCustomer}
           >
             <Text style={styles.btnPrimaryText}>Create & Continue</Text>
@@ -989,13 +999,13 @@ export function JobCardWizardScreen({ navigation }: Props) {
 
           <Field label="Battery level at check-in (%)" value={batteryLevel} keyboardType="numeric" onChangeText={setBatteryLevel} />
           <View>
-            <Text style={styles.label}>Expected delivery</Text>
+            <Text style={styles.label}>Expected delivery<Text style={styles.requiredStar}> *</Text></Text>
             <TouchableOpacity style={styles.field} onPress={openExpectedDeliveryPicker}>
               <Text style={styles.fieldText}>{expectedDeliveryAt.toLocaleString()}</Text>
             </TouchableOpacity>
           </View>
 
-          <Text style={[styles.label, { marginTop: 12 }]}>Customer complaints (Customer Voice)</Text>
+          <Text style={[styles.label, { marginTop: 12 }]}>Customer complaints (Customer Voice)<Text style={styles.requiredStar}> *</Text></Text>
           {complaintPickOptions.length > 0 && (
             <View style={styles.searchRow}>
               <View style={{ flex: 1 }}>
@@ -1026,7 +1036,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
               <Text style={styles.btnPrimaryText}>Continue to Review</Text>
             </TouchableOpacity>
           </View>
-          {!serviceDetailsValid && <Text style={styles.muted}>Fill in every field marked * in "Job Card fields" above to continue.</Text>}
+          {!serviceDetailsValid && <Text style={styles.muted}>Fill in every field marked with a red * on this step to continue.</Text>}
         </View>
       )}
 
@@ -1040,7 +1050,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
 
           {!createdJobCard && (
             <View style={{ marginTop: 12 }}>
-              <Text style={styles.label}>Photos (required - captured now, uploaded once the job card is created)</Text>
+              <Text style={styles.label}>Photos<Text style={styles.requiredStar}> *</Text></Text>
               <View style={{ flexDirection: 'row', gap: 10, marginBottom: 10 }}>
                 <TouchableOpacity style={styles.btn} disabled={capturingPhoto} onPress={takePhoto}>
                   <Text style={styles.btnText}>{capturingPhoto ? 'Adding…' : '📷 Take Photo'}</Text>
@@ -1061,8 +1071,11 @@ export function JobCardWizardScreen({ navigation }: Props) {
                       placeholder="Caption (optional)"
                       onChangeText={(v) => setPendingPhotos((prev) => prev.map((x) => (x.id === p.id ? { ...x, caption: v } : x)))}
                     />
-                    <TouchableOpacity style={[styles.btn, { marginTop: 6 }]} onPress={() => removePendingPhoto(p.id)}>
-                      <Text style={styles.btnText}>Remove</Text>
+                    <TouchableOpacity
+                      style={[styles.btn, { marginTop: 6, backgroundColor: '#dc2626', borderColor: '#dc2626' }]}
+                      onPress={() => removePendingPhoto(p.id)}
+                    >
+                      <Text style={[styles.btnText, { color: '#fff' }]}>Remove</Text>
                     </TouchableOpacity>
                   </View>
                 ))}
@@ -1115,9 +1128,17 @@ function Field({
   maxLength?: number
   placeholder?: string
 }) {
+  // 2026-09-03: labels ending in " *" (e.g. "Supervisor *", "Odometer (km) *(Previous: ...)")
+  // now render that asterisk in red instead of the same gray as the rest of the label - matches
+  // web's Req() helper (JobCardWizardPage.tsx) and PickerField's own required handling below.
+  const starMatch = /^(.*?)\s\*(.*)$/.exec(label)
   return (
     <View style={{ marginBottom: 10 }}>
-      <Text style={styles.label}>{label}</Text>
+      <Text style={styles.label}>
+        {starMatch ? (
+          <>{starMatch[1]}<Text style={styles.requiredStar}> *</Text>{starMatch[2]}</>
+        ) : label}
+      </Text>
       <TextInput
         style={[styles.input, disabled && styles.inputDisabled]}
         value={value}
@@ -1177,8 +1198,12 @@ const styles = StyleSheet.create({
   dmsBox: { backgroundColor: '#eef6ff', borderWidth: 1, borderColor: '#bfdcff', borderRadius: 8, padding: 12, marginBottom: 16 },
   dmsBadge: { backgroundColor: '#1c64f2', color: '#fff', fontSize: 12, fontWeight: '600', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999, overflow: 'hidden' },
   chipRow: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#f4f6f8', borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 8, padding: 10, marginBottom: 6 },
-  smallBtn: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
-  smallBtnText: { fontSize: 12, fontWeight: '600', color: '#374151' },
-  addBtnSm: { backgroundColor: '#16a34a', borderRadius: 6, paddingHorizontal: 12, justifyContent: 'center', marginTop: 18 },
+  // 2026-09-03: was plain white/gray - now red, matching web's same change (only used for the
+  // complaint "Remove" chip button on this screen).
+  smallBtn: { backgroundColor: '#dc2626', borderWidth: 1, borderColor: '#dc2626', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
+  smallBtnText: { fontSize: 12, fontWeight: '600', color: '#fff' },
+  // 2026-09-03: was green (#16a34a) - now blue, matching web's same change (JobCardWizardPage.tsx).
+  addBtnSm: { backgroundColor: '#2563eb', borderRadius: 6, paddingHorizontal: 12, justifyContent: 'center', marginTop: 18 },
   addBtnSmText: { color: '#fff', fontWeight: '700' },
+  requiredStar: { color: '#dc2626' },
 })

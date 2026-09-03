@@ -196,8 +196,10 @@ const styles = StyleSheet.create({
   muted: { fontSize: 12, color: '#6b7280', marginTop: 2 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#f1f3f6' },
   rowTitle: { fontWeight: '600', color: '#101828' },
-  smallBtn: { backgroundColor: '#f4f6f9', borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
-  smallBtnText: { fontSize: 12, fontWeight: '600', color: '#374151' },
+  // 2026-09-03: was plain gray - now red, matching web's Labour Suggestion Remove button. Only
+  // ever used for the Remove button in this file.
+  smallBtn: { backgroundColor: '#dc2626', borderWidth: 1, borderColor: '#dc2626', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
+  smallBtnText: { fontSize: 12, fontWeight: '600', color: '#fff' },
   pickerBox: { borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 8, maxHeight: 160, marginTop: 8, marginBottom: 8, overflow: 'hidden' },
   pickerRow: { paddingHorizontal: 10, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: '#f1f3f6' },
   pickerRowSelected: { backgroundColor: '#eef2ff' },

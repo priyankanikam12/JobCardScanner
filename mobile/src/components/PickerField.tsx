@@ -26,10 +26,16 @@ export function PickerField({
 }) {
   const [open, setOpen] = useState(false)
   const selected = options.find((o) => o.value === value)
+  // 2026-09-03: some call sites still pass the "*" baked into `label` itself (e.g.
+  // "Job Type *") rather than using the `required` prop - handled either way so the asterisk
+  // renders in red instead of the same gray as the rest of the label, matching web's Req() helper.
+  const starMatch = /^(.*?)\s\*$/.exec(label)
+  const baseLabel = starMatch ? starMatch[1] : label
+  const isRequired = required || !!starMatch
 
   return (
     <View style={{ flex: 1 }}>
-      <Text style={styles.label}>{label}{required ? ' *' : ''}</Text>
+      <Text style={styles.label}>{baseLabel}{isRequired ? <Text style={styles.requiredStar}> *</Text> : null}</Text>
       <TouchableOpacity
         style={[styles.field, disabled && styles.fieldDisabled]}
         disabled={disabled}
@@ -44,7 +50,7 @@ export function PickerField({
         <Pressable style={styles.backdrop} onPress={() => setOpen(false)}>
           <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
             <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>{label}</Text>
+              <Text style={styles.sheetTitle}>{baseLabel}</Text>
               <TouchableOpacity onPress={() => setOpen(false)}><Text style={styles.close}>Close</Text></TouchableOpacity>
             </View>
             <FlatList
@@ -70,6 +76,7 @@ export function PickerField({
 
 const styles = StyleSheet.create({
   label: { fontSize: 12, color: '#6b7280', marginBottom: 4 },
+  requiredStar: { color: '#dc2626' },
   field: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 8, padding: 10, minHeight: 42, justifyContent: 'center' },
   fieldDisabled: { backgroundColor: '#f4f6f9' },
   fieldText: { color: '#101828', fontSize: 14 },

@@ -1332,8 +1332,13 @@ public class BaplDmsService : IBaplDmsService
         // ever appear once regardless of how many raw LocationMaster rows exist for it, so this
         // keeps the first row seen per LocCode and drops the rest, rather than a SQL-side DISTINCT
         // (which wouldn't dedupe two rows whose LocName/City/State text differs even slightly).
+        // 2026-09-03: dedupe key also trimmed now (was OrdinalIgnoreCase alone) - reported as
+        // still showing duplicate rows in the Android app after this same fix already shipped for
+        // web, and mobile hits this exact same endpoint with no filtering of its own, so a leading/
+        // trailing-space difference between two LocationMaster rows for the "same" LocCode (which
+        // OrdinalIgnoreCase alone doesn't catch) is the only realistic way that could still happen.
         return results
-            .GroupBy(r => r.LocCode, StringComparer.OrdinalIgnoreCase)
+            .GroupBy(r => r.LocCode.Trim(), StringComparer.OrdinalIgnoreCase)
             .Select(g => g.First())
             .ToList();
     }

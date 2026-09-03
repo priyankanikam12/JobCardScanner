@@ -99,8 +99,11 @@ export function PartSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; on
             />
           </View>
           <Badge status={p.status === 'Paid' ? 'Closed' : 'InProgress'} />
-          <TouchableOpacity style={styles.smallBtn} onPress={() => removeSuggestion(p.id)}>
-            <Text style={styles.smallBtnText}>Remove</Text>
+          {/* 2026-09-03: red now, matching web's Part Suggestion Remove button - its own style
+             (removeBtn), not the shared smallBtn the "+ Picture" button below uses, so that one
+             doesn't turn red too. */}
+          <TouchableOpacity style={styles.removeBtn} onPress={() => removeSuggestion(p.id)}>
+            <Text style={styles.removeBtnText}>Remove</Text>
           </TouchableOpacity>
         </View>
       ))}
@@ -263,6 +266,8 @@ const styles = StyleSheet.create({
   rowTitle: { fontWeight: '600', color: '#101828' },
   smallBtn: { backgroundColor: '#f4f6f9', borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
   smallBtnText: { fontSize: 12, fontWeight: '600', color: '#374151' },
+  removeBtn: { backgroundColor: '#dc2626', borderWidth: 1, borderColor: '#dc2626', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
+  removeBtnText: { fontSize: 12, fontWeight: '600', color: '#fff' },
   pickerBox: { borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 8, maxHeight: 200, marginTop: 6, marginBottom: 8, overflow: 'hidden' },
   pickerRow: { paddingHorizontal: 10, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: '#f1f3f6' },
   pickerRowText: { color: '#374151' },

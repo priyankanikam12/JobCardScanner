@@ -787,7 +787,7 @@ function ComplaintsCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promis
       <ul>{jc.complaints.map((c) => <li key={c.id}>{c.description}</li>)}</ul>
       <div style={{ display: 'flex', gap: 8 }}>
         <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Add complaint" />
-        <button className="btn btn-sm" onClick={() => { run(() => staffApi.post(`/api/jobcards/${jc.id}/inspections`, { component: 'General', condition: 'NeedsAttention', notes: text })); setText('') }}>Log Inspection Note</button>
+        <button className="btn btn-sm btn-primary" onClick={() => { run(() => staffApi.post(`/api/jobcards/${jc.id}/inspections`, { component: 'General', condition: 'NeedsAttention', notes: text })); setText('') }}>Log Inspection Note</button>
       </div>
       {jc.inspections.length > 0 && (
         <table style={{ marginTop: 12 }}>
@@ -894,7 +894,9 @@ function EstimatesCard({ jc }: { jc: JobCardDetail; run: (fn: () => Promise<unkn
 
       <h4>Part Details</h4>
       <table>
-        <thead><tr><th>Sr no.</th><th>Part No. (Item Code)</th><th>Description</th><th>HSN</th><th>MRP</th><th>Qty</th><th>Amount</th></tr></thead>
+        {/* 2026-09-03: header text matched to Part Suggestion's own "Item Code" column above (was
+           "Part No. (Item Code)") - same table, same field, should read the same everywhere. */}
+        <thead><tr><th>Sr no.</th><th>Item Code</th><th>Description</th><th>HSN</th><th>MRP</th><th>Qty</th><th>Amount</th></tr></thead>
         <tbody>
           {partRows.map((r) => (
             <tr key={r.sr}>
@@ -1021,7 +1023,13 @@ function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Pr
                 >
                   Mark {p.status === 'Paid' ? 'U/W' : 'Paid'}
                 </button>
-                <button className="btn btn-sm" onClick={() => run(() => staffApi.delete(`/api/jobcards/part-suggestions/${p.id}`))}>Remove</button>
+                <button
+                  className="btn btn-sm"
+                  style={{ background: '#dc2626', color: '#fff', border: '1px solid #dc2626' }}
+                  onClick={() => run(() => staffApi.delete(`/api/jobcards/part-suggestions/${p.id}`))}
+                >
+                  Remove
+                </button>
               </td>
             </tr>
           ))}
@@ -1337,7 +1345,13 @@ function LabourSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => 
                 <td>{l.issueType ?? '-'}</td>
                 <td>
                   <button className="btn btn-sm" onClick={() => setEditing({ id: l.id, qty: l.quantity, issueType: l.issueType ?? '' })}>Edit</button>{' '}
-                  <button className="btn btn-sm" onClick={() => run(() => staffApi.delete(`/api/jobcards/labour-suggestions/${l.id}`))}>Remove</button>
+                  <button
+                    className="btn btn-sm"
+                    style={{ background: '#dc2626', color: '#fff', border: '1px solid #dc2626' }}
+                    onClick={() => run(() => staffApi.delete(`/api/jobcards/labour-suggestions/${l.id}`))}
+                  >
+                    Remove
+                  </button>
                 </td>
               </tr>
             )
