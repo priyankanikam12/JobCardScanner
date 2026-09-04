@@ -1269,7 +1269,7 @@ export function JobCardWizardPage() {
               <label>Photos<Req /></label>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: pendingPhotos.length > 0 ? 12 : 0 }}>
                 <label className="btn btn-sm" style={{ cursor: capturingPhoto ? 'default' : 'pointer', opacity: capturingPhoto ? 0.6 : 1 }}>
-                  {capturingPhoto ? 'Adding…' : '📷 Take / Upload Photo'}
+                  {capturingPhoto ? 'Adding…' : '📷 Capture / Upload Photo'}
                   <input
                     type="file"
                     accept="image/*"

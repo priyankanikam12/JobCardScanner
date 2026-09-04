@@ -5,8 +5,15 @@ import { apiClient } from '../api/client'
 import { useStaffAuth } from '../auth/StaffAuthContext'
 import type { DashboardKpis } from '../types'
 import type { JobCardsListFilter, RootStackParamList } from '../navigation/RootNavigator'
+import { colors } from '../theme/colors'
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Dashboard'>
+
+// Each KPI tile gets a left-border accent color, cycling through this palette (mirrors web's
+// kpi-a1..a6 rotation in global.css) so a busy dashboard stays visually distinguishable at a
+// glance - part of the 2026-09-04 "Hub Pulse" reskin. 'overdue' always renders amber regardless
+// of its position in the rotation, matching the reference app's "amber = needs attention" accent.
+const ACCENTS = [colors.primary, colors.success, colors.amber, '#7c3aed', '#db2777', '#0891b2']
 
 // Each card's `to` is the exact JobCardsList filter that reproduces its own number - these param
 // names match JobCardsController.List's dashboard-filter query params 1:1 (see
@@ -37,31 +44,39 @@ export function DashboardScreen({ navigation }: Props) {
   useEffect(load, [])
 
   return (
-    <ScrollView style={styles.container} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={load} />}>
-      <Text style={styles.hello}>Hi, {profile?.name?.split(' ')[0]}</Text>
-      <Text style={styles.role}>{profile?.role} - {profile?.dealerName ?? 'All Dealers'}</Text>
+    <View style={styles.screen}>
+      <ScrollView style={styles.container} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={load} />}>
+        <Text style={styles.hello}>Hi, {profile?.name?.split(' ')[0]}</Text>
+        <Text style={styles.role}>{profile?.role} · {profile?.dealerName ?? 'All Dealers'}</Text>
 
-      {kpis && (
-        <View style={styles.grid}>
-          {KPIS.map((k) => (
-            <Kpi key={k.key} label={k.label} value={kpis[k.key]} onPress={() => navigation.navigate('JobCardsList', k.to)} />
-          ))}
+        {kpis && (
+          <View style={styles.grid}>
+            {KPIS.map((k, i) => (
+              <Kpi
+                key={k.key}
+                label={k.label}
+                value={kpis[k.key]}
+                accent={k.key === 'overdue' ? colors.amber : ACCENTS[i % ACCENTS.length]}
+                onPress={() => navigation.navigate('JobCardsList', k.to)}
+              />
+            ))}
+          </View>
+        )}
+
+        <View style={styles.actions}>
+          <ActionCard title="+ New Job Card" subtitle="Start a new vehicle check-in" onPress={() => navigation.navigate('JobCardWizard')} />
+          <ActionCard title="Job Cards" subtitle="View & update assigned job cards" onPress={() => navigation.navigate('JobCardsList')} />
+          <ActionCard title="Parts Catalog" subtitle="Search spare parts" onPress={() => navigation.navigate('Parts')} />
         </View>
-      )}
-
-      <View style={styles.actions}>
-        <ActionCard title="+ New Job Card" subtitle="Start a new vehicle check-in" onPress={() => navigation.navigate('JobCardWizard')} />
-        <ActionCard title="Job Cards" subtitle="View & update assigned job cards" onPress={() => navigation.navigate('JobCardsList')} />
-        <ActionCard title="Parts Catalog" subtitle="Search spare parts" onPress={() => navigation.navigate('Parts')} />
-      </View>
-    </ScrollView>
+      </ScrollView>
+    </View>
   )
 }
 
-function Kpi({ label, value, onPress }: { label: string; value: string | number; onPress: () => void }) {
+function Kpi({ label, value, accent, onPress }: { label: string; value: string | number; accent: string; onPress: () => void }) {
   return (
-    <Pressable style={({ pressed }) => [styles.kpi, pressed && styles.kpiPressed]} onPress={onPress}>
-      <Text style={styles.kpiValue}>{value}</Text>
+    <Pressable style={({ pressed }) => [styles.kpi, { borderLeftColor: accent }, pressed && styles.kpiPressed]} onPress={onPress}>
+      <Text style={[styles.kpiValue, accent === colors.amber && { color: colors.amberDark }]}>{value}</Text>
       <Text style={styles.kpiLabel}>{label}</Text>
     </Pressable>
   )
@@ -77,16 +92,17 @@ function ActionCard({ title, subtitle, onPress }: { title: string; subtitle: str
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f4f6f9', padding: 16 },
-  hello: { fontSize: 22, fontWeight: '700', color: '#101828' },
-  role: { fontSize: 13, color: '#6b7280', marginBottom: 16 },
+  screen: { flex: 1, backgroundColor: colors.bg },
+  container: { flex: 1, padding: 16 },
+  hello: { fontSize: 22, fontWeight: '700', color: colors.text },
+  role: { fontSize: 13, color: colors.textMuted, marginTop: 2, marginBottom: 16 },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 20 },
-  kpi: { backgroundColor: '#fff', borderRadius: 10, padding: 14, width: '31%', borderWidth: 1, borderColor: '#e2e6ec' },
-  kpiPressed: { backgroundColor: '#f4f6f9' },
-  kpiValue: { fontSize: 20, fontWeight: '700', color: '#101828' },
-  kpiLabel: { fontSize: 11, color: '#6b7280', marginTop: 2 },
+  kpi: { backgroundColor: colors.surface, borderRadius: 10, padding: 14, width: '31%', borderWidth: 1, borderColor: colors.border, borderLeftWidth: 4 },
+  kpiPressed: { backgroundColor: colors.bg },
+  kpiValue: { fontSize: 20, fontWeight: '700', color: colors.text },
+  kpiLabel: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
   actions: { gap: 10 },
-  actionCard: { backgroundColor: '#fff', borderRadius: 10, padding: 16, borderWidth: 1, borderColor: '#e2e6ec' },
-  actionTitle: { fontSize: 16, fontWeight: '700', color: '#101828' },
-  actionSubtitle: { fontSize: 13, color: '#6b7280', marginTop: 2 },
+  actionCard: { backgroundColor: colors.surface, borderRadius: 10, padding: 16, borderWidth: 1, borderColor: colors.border },
+  actionTitle: { fontSize: 16, fontWeight: '700', color: colors.text },
+  actionSubtitle: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
 })

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { FlatList, Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native'
+import { colors } from '../theme/colors'
 
 /**
  * A labeled tap-to-open picker, used everywhere the web app has a plain HTML <select> - React
@@ -87,8 +88,10 @@ const styles = StyleSheet.create({
   sheetTitle: { fontSize: 15, fontWeight: '700', color: '#101828' },
   close: { color: '#2563eb', fontWeight: '600' },
   option: { paddingHorizontal: 16, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: '#f1f3f6' },
-  optionSelected: { backgroundColor: '#eef2ff' },
+  // Selected option uses the navy "chip-selected" treatment (Hub Pulse reskin) instead of the old
+  // soft-blue tint, matching the chip states used elsewhere (filter chips, DMS badges).
+  optionSelected: { backgroundColor: colors.navy },
   optionText: { fontSize: 14, color: '#374151' },
-  optionTextSelected: { color: '#2563eb', fontWeight: '700' },
+  optionTextSelected: { color: '#fff', fontWeight: '700' },
   empty: { padding: 16, color: '#6b7280' },
 })

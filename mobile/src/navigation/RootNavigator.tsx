@@ -9,6 +9,7 @@ import { JobCardsListScreen } from '../screens/JobCardsListScreen'
 import { JobCardDetailScreen } from '../screens/JobCardDetailScreen'
 import { JobCardWizardScreen } from '../screens/JobCardWizardScreen'
 import { PartsScreen } from '../screens/PartsScreen'
+import { colors } from '../theme/colors'
 
 /** Optional /jobcards-equivalent filters the Dashboard's KPI cards deep-link with - each name
  * matches JobCardsController.List's own dashboard-filter query params 1:1 (see
@@ -61,7 +62,19 @@ export function RootNavigator() {
       ) : showForceChangePassword ? (
         <ForceChangePasswordScreen />
       ) : (
-        <Stack.Navigator screenOptions={{ headerRight: () => <Button title="Sign out" onPress={signOut} /> }}>
+        <Stack.Navigator
+          // Dark navy native header (Hub Pulse reskin, 2026-09-04) - applies across every screen
+          // from one place, matching the sister BGauss "Hub Downtime Captain"/"Hub Pulse" app's
+          // dark phone-header bars. Individual screens no longer render their own duplicate
+          // in-content navy band for the page title - see DashboardScreen/JobCardsListScreen/
+          // JobCardDetailScreen, whose top sections now sit directly below this native header.
+          screenOptions={{
+            headerRight: () => <Button title="Sign out" color={colors.amber} onPress={signOut} />,
+            headerStyle: { backgroundColor: colors.navy },
+            headerTintColor: '#fff',
+            headerTitleStyle: { color: '#fff', fontWeight: '700' },
+          }}
+        >
           <Stack.Screen name="Dashboard" component={DashboardScreen} options={{ title: 'JobCardScanner' }} />
           <Stack.Screen name="JobCardsList" component={JobCardsListScreen} options={{ title: 'Job Cards' }} />
           <Stack.Screen name="JobCardDetail" component={JobCardDetailScreen} options={{ title: 'Job Card' }} />

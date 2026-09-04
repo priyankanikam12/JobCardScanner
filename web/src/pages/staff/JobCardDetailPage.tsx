@@ -629,7 +629,7 @@ function PhotosCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<un
         {/* capture="environment" hints the rear camera on a phone; still falls back to a normal
            file picker on desktop, where "capture" is simply ignored. */}
         <label className="btn btn-sm btn-primary" style={{ cursor: uploading ? 'default' : 'pointer', opacity: uploading ? 0.6 : 1 }}>
-          {uploading ? 'Uploading…' : 'Take / Upload Photo'}
+          {uploading ? 'Uploading…' : 'Capture / Upload Photo'}
           <input
             type="file"
             accept="image/*"
@@ -747,7 +747,7 @@ function UpdateWorkflowStageCard({
             <input type="datetime-local" disabled={busy} value={expectedDeliveryAt} onChange={(e) => setExpectedDeliveryAt(e.target.value)} />
           </div>
           <div className="field">
-            <button className="btn btn-sm" disabled={busy} onClick={() => run(saveDetails, 'Technician & completion date updated.')}>Save</button>
+            <button className="btn btn-sm" style={{ backgroundColor: '#2563EB', color: '#fff' }} disabled={busy} onClick={() => run(saveDetails, 'Technician & completion date updated.')}>Save</button>
           </div>
         </div>
       )}
@@ -1018,7 +1018,7 @@ function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Pr
               </td>
               <td style={{ display: 'flex', gap: 4 }}>
                 <button
-                  className="btn btn-sm"
+                  className="btn btn-sm" style={{ backgroundColor: '#2563EB', color: '#fff' }}
                   onClick={() => run(() => staffApi.put(`/api/jobcards/part-suggestions/${p.id}`, { status: p.status === 'Paid' ? 'U/W' : 'Paid' }))}
                 >
                   Mark {p.status === 'Paid' ? 'U/W' : 'Paid'}

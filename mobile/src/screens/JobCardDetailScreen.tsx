@@ -23,6 +23,7 @@ import { WorkflowTimelineView, type WorkflowTimelineHistoryEntry } from '../comp
 import { buildEstimatePrintHtml, buildJobCardPrintHtml } from '../utils/printJobCard'
 import type { BaplDmsJobCardHistory, JobCardDetail, StaffRole, WorkflowStage } from '../types'
 import type { RootStackParamList } from '../navigation/RootNavigator'
+import { colors } from '../theme/colors'
 
 type Props = NativeStackScreenProps<RootStackParamList, 'JobCardDetail'>
 
@@ -152,7 +153,9 @@ export function JobCardDetailScreen({ route }: Props) {
   ].filter(Boolean).join(' · ')
 
   return (
-    <ScrollView style={styles.container}>
+    <View style={styles.screen}>
+      {/* Toolbar strip below the native navy header (Hub Pulse reskin) - kept light, matching
+          JobCardsList's toolbar, so it doesn't double up with the navigator's own navy header. */}
       <View style={styles.header}>
         <Text style={styles.title}>{jc.jobCardNumber}</Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -160,6 +163,7 @@ export function JobCardDetailScreen({ route }: Props) {
           <PrintMenu jc={jc} hasRole={hasRole} />
         </View>
       </View>
+      <ScrollView style={styles.container}>
       {msg && <Text style={styles.muted}>{msg}</Text>}
 
       <View style={styles.card}>
@@ -176,11 +180,11 @@ export function JobCardDetailScreen({ route }: Props) {
         )}
         {jc.baplSyncStatus === 'Synced' && jc.baplJobCardHeaderId && (
           <Text style={[styles.muted, { marginTop: 4 }]}>
-            ✅ Synced to DMS as {jc.baplJobNo != null ? `job card #${jc.baplJobNo}` : 'a job card (DMS sync pending)'}.
+            ✅ Synced to BAPL DMS as {jc.baplJobNo != null ? `job card #${jc.baplJobNo}` : 'a job card (BAPL DMS sync pending)'}.
           </Text>
         )}
         {jc.baplSyncStatus === 'Failed' && (
-          <Text style={[styles.errorText, { marginTop: 4 }]}>⚠ Not yet synced to DMS{jc.baplSyncError ? `: ${jc.baplSyncError}` : '.'}</Text>
+          <Text style={[styles.errorText, { marginTop: 4 }]}>⚠ Not yet synced to BAPL DMS{jc.baplSyncError ? `: ${jc.baplSyncError}` : '.'}</Text>
         )}
       </View>
 
@@ -207,7 +211,8 @@ export function JobCardDetailScreen({ route }: Props) {
       <EstimatesCard jc={jc} />
       <BaplServiceHistoryCard chassisNo={jc.vehicle?.vin} dealerCode={jc.dealer?.code} />
       <ClosureCard jc={jc} run={run} />
-    </ScrollView>
+      </ScrollView>
+    </View>
   )
 }
 
@@ -226,7 +231,7 @@ function BaplServiceHistoryCard({ chassisNo, dealerCode }: { chassisNo?: string 
     apiClient.get<BaplDmsJobCardHistory[]>('/api/bapl-dms/service-history', { params: { chassisNo, dealerCode: dealerCode || undefined } })
       .then(({ data }) => setRows(data))
       .catch((err: any) => {
-        if (err?.response?.status === 502) setError(err?.response?.data?.message ?? 'Could not reach DMS.')
+        if (err?.response?.status === 502) setError(err?.response?.data?.message ?? 'Could not reach BAPL DMS.')
         setRows([])
       })
   }, [chassisNo, dealerCode])
@@ -235,10 +240,10 @@ function BaplServiceHistoryCard({ chassisNo, dealerCode }: { chassisNo?: string 
 
   return (
     <View style={styles.card}>
-      <Text style={styles.cardTitle}>DMS Service History</Text>
+      <Text style={styles.cardTitle}>BAPL DMS Service History</Text>
       {error && <Text style={styles.muted}>{error}</Text>}
       {rows === null && !error && <Text style={styles.muted}>Loading…</Text>}
-      {rows !== null && rows.length === 0 && !error && <Text style={styles.muted}>No prior DMS job cards found for this chassis.</Text>}
+      {rows !== null && rows.length === 0 && !error && <Text style={styles.muted}>No prior BAPL DMS job cards found for this chassis.</Text>}
       {rows !== null && rows.map((r) => (
         <View key={r.jobCardHeaderId} style={styles.historyRow}>
           <Text style={styles.rowTitle}>{r.jobPrefix}{r.jobNo} · {r.jobInDate ? new Date(r.jobInDate).toLocaleDateString() : '-'}</Text>
@@ -331,7 +336,7 @@ function PhotosCard({ jc, run }: { jc: JobCardDetail; run: Run }) {
       </View>
       <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
         <TouchableOpacity style={styles.btn} disabled={uploading} onPress={takePhoto}>
-          <Text style={styles.btnText}>{uploading ? 'Uploading…' : '📷 Take Photo'}</Text>
+          <Text style={styles.btnText}>{uploading ? 'Uploading…' : '📷 Capture Photo'}</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.btn} disabled={uploading} onPress={pickPhoto}>
           <Text style={styles.btnText}>🖼️ Choose Photo</Text>
@@ -711,8 +716,8 @@ function PrintMenu({ jc, hasRole }: { jc: JobCardDetail; hasRole: (...roles: Sta
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status
       setError(status === 404
-        ? 'No repair bill saved in DMS for this job yet.'
-        : 'Could not open the invoice from DMS. Please try again.')
+        ? 'No repair bill saved in BAPL DMS for this job yet.'
+        : 'Could not open the invoice from BAPL DMS. Please try again.')
     } finally {
       setBusy(null)
     }
@@ -784,10 +789,13 @@ function ClosureCard({ jc, run }: { jc: JobCardDetail; run: Run }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f4f6f9', padding: 12 },
-  loadingContainer: { flex: 1, backgroundColor: '#f4f6f9', alignItems: 'center', justifyContent: 'center' },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  title: { fontSize: 20, fontWeight: '700', color: '#101828' },
+  screen: { flex: 1, backgroundColor: colors.bg },
+  container: { flex: 1, padding: 12 },
+  loadingContainer: { flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center' },
+  // Light toolbar strip (Hub Pulse reskin) - was previously an inline row scrolling with the page
+  // content; now a fixed band below the native navy header, matching JobCardsList's toolbar.
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: colors.surface, paddingTop: 12, paddingBottom: 12, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: colors.border },
+  title: { fontSize: 20, fontWeight: '700', color: colors.text },
   card: { backgroundColor: '#fff', borderRadius: 10, borderWidth: 1, borderColor: '#e2e6ec', padding: 14, marginBottom: 10 },
   cardTitle: { fontWeight: '700', marginBottom: 8, color: '#101828' },
   subheading: { fontWeight: '600', marginBottom: 6, color: '#101828' },
@@ -804,8 +812,10 @@ const styles = StyleSheet.create({
   btnPrimaryText: { color: '#fff', fontWeight: '700' },
   btnDisabled: { opacity: 0.5 },
   smallBtn: { backgroundColor: '#f4f6f9', borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 6, paddingHorizontal: 8, justifyContent: 'center' },
-  smallBtnText: { fontSize: 12, fontWeight: '600', color: '#374151' },
-  dmsBadge: { backgroundColor: '#1c64f2', color: '#fff', fontSize: 11, fontWeight: '700', borderRadius: 999, overflow: 'hidden' },
+  smallBtnText: { fontSize: 12, fontWeight: '600', color: '#2563EB' },
+  // Amber "done/confirmed" chip treatment (Hub Pulse reskin) - this data is confirmed
+  // synced-from-DMS, same semantic as the list screen's DMS badge.
+  dmsBadge: { backgroundColor: colors.amber, color: '#fff', fontSize: 11, fontWeight: '700', borderRadius: 999, overflow: 'hidden' },
   historyRow: { paddingVertical: 8, borderTopWidth: 1, borderTopColor: '#f1f3f6' },
   rowTitle: { fontWeight: '600', color: '#101828' },
   estimateRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: '#f1f3f6' },

@@ -28,6 +28,17 @@
   --accent-4: #7c3aed; --accent-4-soft: #f3eefe;
   --accent-5: #db2777; --accent-5-soft: #fdf0f6;
   --accent-6: #0891b2; --accent-6-soft: #ecfeff;
+  /* "Hub Pulse" reskin (2026-09-04): dark navy header/sidebar chrome + an amber highlight accent,
+     matching the sister BGauss "Hub Downtime Captain" app's visual language. --navy already
+     matched the sidebar's pre-existing #101828, just promoted to a named token so .topbar and
+     other chrome can share it instead of hardcoding the hex. --amber is the "highlighted digits /
+     badge" accent color (e.g. plate numbers, day counts) from that reference app. */
+  --navy: #101828;
+  --navy-light: #1e293b;
+  --navy-lighter: #334155;
+  --amber: #f59e0b;
+  --amber-dark: #b45309;
+  --amber-soft: #fef3e2;
   font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
 }
 
@@ -96,7 +107,7 @@ button {
   width: 240px;
   max-width: 80vw;
   height: 100vh;
-  background: #101828;
+  background: var(--navy);
   color: #e5e7eb;
   padding: 20px 12px;
   transform: translateX(-100%);
@@ -153,15 +164,26 @@ button {
    the left always matches how wide the drawer actually rendered, even on a very narrow screen. */
 .main { flex: 1; min-width: 0; overflow-x: hidden; transition: margin-left 0.25s ease; }
 .main.sidebar-open { margin-left: min(240px, 80vw); }
+/* Dark navy topbar (Hub Pulse reskin) - matches the sidebar's navy so the whole app frame reads
+   as one consistent dark chrome around a light content area, same as the reference app's dark
+   phone-header bars. */
 .topbar {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
   padding: 14px 24px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
+  background: var(--navy);
+  border-bottom: 1px solid var(--navy-light);
 }
+.topbar .hamburger-btn { background: none; border: 1px solid var(--navy-lighter); color: #e5e7eb; }
+.topbar .hamburger-btn:hover { background: var(--navy-light); }
+.topbar .back-btn { background: var(--navy-light); border-color: var(--navy-lighter); color: #e5e7eb; box-shadow: none; }
+.topbar .back-btn:hover { background: var(--navy-lighter); border-color: var(--navy-lighter); color: #fff; }
+.topbar .profile-trigger:hover { background: var(--navy-light); }
+.topbar .profile-trigger > div > div:first-child { color: #fff; }
+.topbar .profile-trigger .muted { color: #94a3b8; }
+.topbar .profile-caret { color: #94a3b8; }
 
 /* Navbar profile: click-to-open dropdown showing full login details + a Sign out action,
    instead of the old plain name/role text with a separate always-visible button.
@@ -279,6 +301,51 @@ tr:hover td { background: #f8fafc; }
 .badge-warning { background: var(--warning-soft); color: var(--warning); }
 .badge-danger { background: var(--danger-soft); color: var(--danger); }
 .badge-muted { background: #f3f4f6; color: var(--text-muted); }
+/* Amber "highlighted" badge (Hub Pulse reskin) - the reference app's treatment for things that
+   need to grab the eye at a glance (day-counts, flagged plate digits) without being an outright
+   error/danger state. Use sparingly, same as the reference app does. */
+.badge-amber { background: var(--amber-soft); color: var(--amber-dark); }
+.text-amber { color: var(--amber-dark); font-weight: 700; }
+
+/* Chip-style multi-select pills (Hub Pulse reskin) - three visual states matching the reference
+   app: an outlined default, a solid dark-navy "selected", and a solid amber "done/confirmed".
+   Used for filter rows (status/date-range filters) and any multi-pick control - swap the
+   className rather than restyling per-page. */
+.chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.chip:hover { border-color: var(--navy-lighter); }
+.chip-selected { background: var(--navy); border-color: var(--navy); color: #fff; }
+.chip-selected:hover { background: var(--navy-light); border-color: var(--navy-light); }
+.chip-done { background: var(--amber); border-color: var(--amber); color: #fff; }
+.chip-done:hover { background: var(--amber-dark); border-color: var(--amber-dark); }
+
+/* Card with a colored left-border accent, for status banners (Hub Pulse reskin) - pair with an
+   accent color inline (e.g. style={{ borderLeftColor: 'var(--danger)' }}) or one of the modifier
+   classes below. */
+.banner-card { border-left: 4px solid var(--primary); }
+.banner-card.banner-danger { border-left-color: var(--danger); }
+.banner-card.banner-warning { border-left-color: var(--warning); }
+.banner-card.banner-amber { border-left-color: var(--amber); }
+.banner-card.banner-success { border-left-color: var(--success); }
+
+/* Graded green/amber/red horizontal progress bar (Hub Pulse reskin) - set --pct (0-100) inline. */
+.grade-bar { height: 8px; border-radius: 999px; background: #e5e7eb; overflow: hidden; }
+.grade-bar > span { display: block; height: 100%; width: var(--pct, 0%); border-radius: 999px; transition: width 0.2s ease; }
+.grade-bar.grade-good > span { background: var(--success); }
+.grade-bar.grade-warn > span { background: var(--amber); }
+.grade-bar.grade-bad > span { background: var(--danger); }
 
 input, select, textarea {
   width: 100%;

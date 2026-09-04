@@ -23,6 +23,7 @@ import type {
   Customer, Dealer, JobCardPriority, JobCardSource, PhotoStage, ServiceType, Vehicle,
 } from '../types'
 import type { RootStackParamList } from '../navigation/RootNavigator'
+import { colors } from '../theme/colors'
 
 type Props = NativeStackScreenProps<RootStackParamList, 'JobCardWizard'>
 
@@ -93,7 +94,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
       setBaplDealerResults(data)
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
-      setDealerSearchError(msg ? `DMS error: ${msg}` : 'Could not reach DMS right now - try the dropdown above, or again shortly.')
+      setDealerSearchError(msg ? `BAPL DMS error: ${msg}` : 'Could not reach BAPL DMS right now - try the dropdown above, or again shortly.')
     }
   }
 
@@ -112,7 +113,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
       }
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
-      setDealerSearchError(msg ? `DMS error: ${msg}` : `Could not add "${row.dealerName}" from DMS - try again shortly.`)
+      setDealerSearchError(msg ? `BAPL DMS error: ${msg}` : `Could not add "${row.dealerName}" from BAPL DMS - try again shortly.`)
     } finally {
       setResolvingDealer(false)
     }
@@ -204,7 +205,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
       // This chassis already has an open job card somewhere - refuse to auto-fill/proceed with it,
       // and say exactly where so staff know where to go close it first. Matches web's same check.
       if (data.openJobCardNumber) {
-        const where = data.openJobCardSource === 'bapl-dms' ? 'in DMS' : 'here'
+        const where = data.openJobCardSource === 'bapl-dms' ? 'in BAPL DMS' : 'here'
         const status = data.openJobCardStatus ? ` (status: ${data.openJobCardStatus})` : ''
         const message = `This chassis already has an open job card ${where}: ${data.openJobCardNumber}${status}. It must be closed before this chassis can be used for a new job card.`
         setOpenJobCardNotice(message)
@@ -223,15 +224,15 @@ export function JobCardWizardScreen({ navigation }: Props) {
     } catch (err: unknown) {
       const response = (err as { response?: { status?: number; data?: { message?: string } } })?.response
       if (response?.status === 404) {
-        setVehicleLookupError(`"${value}" wasn't found in DMS for this dealer.`)
+        setVehicleLookupError(`"${value}" wasn't found in BAPL DMS for this dealer.`)
         // Offer the cross-dealer fallback right on the "not found" flag, instead of only letting
         // the user give up and add the vehicle manually - see the state block above for why this
         // needs no new backend endpoint.
         setShowGlobalSearchOffer(true)
       } else {
         setVehicleLookupError(response?.data?.message
-          ? `DMS error: ${response.data.message}`
-          : 'Could not reach DMS right now - add the customer/vehicle manually below.')
+          ? `BAPL DMS error: ${response.data.message}`
+          : 'Could not reach BAPL DMS right now - add the customer/vehicle manually below.')
       }
     } finally {
       setVehicleLookupLoading(false)
@@ -262,7 +263,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
     if (!globalHit) return
     // Same open-job-card block as the dealer-scoped lookup above.
     if (globalHit.openJobCardNumber) {
-      const where = globalHit.openJobCardSource === 'bapl-dms' ? 'in DMS' : 'here'
+      const where = globalHit.openJobCardSource === 'bapl-dms' ? 'in BAPL DMS' : 'here'
       const status = globalHit.openJobCardStatus ? ` (status: ${globalHit.openJobCardStatus})` : ''
       const message = `This chassis already has an open job card ${where}: ${globalHit.openJobCardNumber}${status}. It must be closed before this chassis can be used for a new job card.`
       setOpenJobCardNotice(message)
@@ -348,7 +349,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
   useEffect(() => {
     apiClient.get<BaplDmsJobType[]>('/api/bapl-dms/job-types')
       .then(({ data }) => setJobTypes(data))
-      .catch(() => setBaplMastersError("Could not load DMS's Job Type list - Service Details will only capture JobCardScanner's own fields."))
+      .catch(() => setBaplMastersError("Could not load BAPL DMS's Job Type list - Service Details will only capture JobCardScanner's own fields."))
     apiClient.get<BaplDmsComplaint[]>('/api/bapl-dms/complaints')
       .then(({ data }) => setComplaintOptions(data))
       .catch(() => setComplaintOptions([]))
@@ -737,7 +738,9 @@ export function JobCardWizardScreen({ navigation }: Props) {
       <View style={styles.stepper}>
         {STEPS.map((s, i) => (
           <View key={s} style={[styles.stepChip, i === step && styles.stepChipActive, i < step && styles.stepChipDone]}>
-            <Text style={[styles.stepChipText, i === step && styles.stepChipTextActive]}>{i + 1}. {s}</Text>
+            <Text style={[styles.stepChipText, i === step && styles.stepChipTextActive, i < step && styles.stepChipTextDone]}>
+              {i < step ? '✓ ' : `${i + 1}. `}{s}
+            </Text>
           </View>
         ))}
       </View>
@@ -747,9 +750,9 @@ export function JobCardWizardScreen({ navigation }: Props) {
           {needsDealerPicker && (
             <View style={{ marginBottom: 16 }}>
               <PickerField label="Dealer WorkShop Location" value={selectedDealerId} options={dealerOptions} onChange={setSelectedDealerId} placeholder="Select the dealer/workshop this job card is for…" />
-              <Text style={styles.muted}>Your account isn't tied to a single dealer, so pick which workshop this job card belongs to. Not in the list yet? Search DMS below.</Text>
+              <Text style={styles.muted}>Your account isn't tied to a single dealer, so pick which workshop this job card belongs to. Not in the list yet? Search BAPL DMS below.</Text>
               <View style={styles.searchRow}>
-                <TextInput style={[styles.input, { flex: 1 }]} value={dealerSearchQ} onChangeText={setDealerSearchQ} placeholder="Search Dealer WorkShop Location (DMS)" />
+                <TextInput style={[styles.input, { flex: 1 }]} value={dealerSearchQ} onChangeText={setDealerSearchQ} placeholder="Search Dealer WorkShop Location (BAPL DMS)" />
                 <TouchableOpacity style={[styles.btn, dealerSearchQ.trim().length < 2 && styles.btnDisabled]} disabled={dealerSearchQ.trim().length < 2} onPress={searchBaplDealers}>
                   <Text style={styles.btnText}>Search</Text>
                 </TouchableOpacity>
@@ -772,7 +775,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
             </View>
           )}
 
-          <Text style={styles.h3}>Registered customer Details</Text>
+          <Text style={styles.h3}>(Registered customer Details)</Text>
           <Text style={styles.label}>Search by chassis no. / registration no.</Text>
           <View style={styles.searchRow}>
             <TextInput
@@ -841,8 +844,8 @@ export function JobCardWizardScreen({ navigation }: Props) {
           {showGlobalSearchOffer && !globalHit && (
             <View style={styles.noticeBanner}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.noticeBannerText}>🔎 Not found for this dealer. Search DMS across every dealer?</Text>
-                {globalSearchNotFound && <Text style={[styles.noticeBannerText, { marginTop: 4 }]}>Not found anywhere in DMS either.</Text>}
+                <Text style={styles.noticeBannerText}>🔎 Not found for this dealer. Search BAPL DMS across every dealer?</Text>
+                {globalSearchNotFound && <Text style={[styles.noticeBannerText, { marginTop: 4 }]}>Not found anywhere in BAPL DMS either.</Text>}
               </View>
               <TouchableOpacity disabled={globalSearchLoading} onPress={searchGlobalChassis}>
                 <Text style={styles.noticeBannerDismiss}>{globalSearchLoading ? 'Searching…' : 'Search all dealers'}</Text>
@@ -852,7 +855,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
           {globalHit && (
             <View style={styles.dmsBox}>
               <Text style={{ fontWeight: '700', color: '#1e3a5f' }}>
-                Found in DMS{globalHit.dealerCode && globalHit.dealerCode !== vehicleSearchDealerCode ? ` — registered to dealer ${globalHit.dealerCode}, not this workshop` : ''}
+                Found in BAPL DMS{globalHit.dealerCode && globalHit.dealerCode !== vehicleSearchDealerCode ? ` — registered to dealer ${globalHit.dealerCode}, not this workshop` : ''}
               </Text>
               <Text style={styles.muted}>
                 {globalHit.customerName || 'Unknown customer'}{globalHit.customerMobile ? ` (${globalHit.customerMobile})` : ''} · {globalHit.modelName || 'Model unknown'}
@@ -876,7 +879,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
           <Text style={[styles.h3, { marginTop: 20 }]}>Registered Customer</Text>
           {customerFieldsLocked && (
             <View>
-              <Text style={styles.muted}>🔒 Name, Mobile, Email, City and Address were auto-fetched from DMS and are locked.</Text>
+              <Text style={styles.muted}>🔒 Name, Mobile, Email, City and Address were auto-fetched from BAPL DMS and are locked.</Text>
               <TouchableOpacity onPress={() => setUnlockCustomerFields(true)}><Text style={styles.link}>Edit anyway</Text></TouchableOpacity>
             </View>
           )}
@@ -932,7 +935,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
           )}
           {vehicleFieldsLocked && (
             <View>
-              <Text style={styles.muted}>🔒 Model, Reg No and VIN were auto-fetched from DMS and are locked.</Text>
+              <Text style={styles.muted}>🔒 Model, Reg No and VIN were auto-fetched from BAPL DMS and are locked.</Text>
               <TouchableOpacity onPress={() => setUnlockVehicleFields(true)}><Text style={styles.link}>Edit anyway</Text></TouchableOpacity>
             </View>
           )}
@@ -1007,7 +1010,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
             <Field label="Technician *" value={baplTechnicianName} onChangeText={setBaplTechnicianName} placeholder="Technician name" />
             <Field label="Manual Job No." value={baplManualJobNo} onChangeText={setBaplManualJobNo} placeholder="e.g. 0" />
             <PickerField label="Source *" value={selectedJobSourceId != null ? String(selectedJobSourceId) : ''} options={jobSourceOptions} placeholder="Select source…" onChange={onJobSourceChange} />
-            <Text style={styles.muted}>All fields above are required - they are what let this job card also be created directly inside DMS's own database.</Text>
+            <Text style={styles.muted}>All fields above are required - they are what let this job card also be created directly inside BAPL DMS's own database.</Text>
           </View>
 
           <Field label="Battery level at check-in (%)" value={batteryLevel} keyboardType="numeric" onChangeText={setBatteryLevel} />
@@ -1066,7 +1069,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
               <Text style={styles.label}>Photos<Text style={styles.requiredStar}> *</Text></Text>
               <View style={{ flexDirection: 'row', gap: 10, marginBottom: 10 }}>
                 <TouchableOpacity style={styles.btn} disabled={capturingPhoto} onPress={takePhoto}>
-                  <Text style={styles.btnText}>{capturingPhoto ? 'Adding…' : '📷 Take Photo'}</Text>
+                  <Text style={styles.btnText}>{capturingPhoto ? 'Adding…' : '📷 Capture Photo'}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.btn} disabled={capturingPhoto} onPress={pickPhoto}>
                   <Text style={styles.btnText}>🖼️ Choose Photo</Text>
@@ -1168,11 +1171,15 @@ function Field({
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f4f6f9', padding: 12 },
   stepper: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 12 },
-  stepChip: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e6ec' },
-  stepChipActive: { backgroundColor: '#2563eb', borderColor: '#2563eb' },
-  stepChipDone: { backgroundColor: '#ecfdf5', borderColor: '#bbf7d0' },
+  // 3-state step chips (Hub Pulse reskin): outlined default (not yet reached), solid navy
+  // "selected" (current step), solid amber "✓ done" (completed step) - matches the reference
+  // app's chip-state pattern for multi-step selection controls.
+  stepChip: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
+  stepChipActive: { backgroundColor: colors.navy, borderColor: colors.navy },
+  stepChipDone: { backgroundColor: colors.amber, borderColor: colors.amber },
   stepChipText: { fontSize: 12, fontWeight: '600', color: '#374151' },
   stepChipTextActive: { color: '#fff' },
+  stepChipTextDone: { color: '#fff' },
   card: { backgroundColor: '#fff', borderRadius: 10, borderWidth: 1, borderColor: '#e2e6ec', padding: 14, marginBottom: 24 },
   h3: { fontSize: 16, fontWeight: '700', color: '#101828', marginBottom: 10 },
   subheading: { fontWeight: '600', color: '#101828', marginBottom: 6 },
