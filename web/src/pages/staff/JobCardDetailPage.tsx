@@ -313,8 +313,8 @@ function PrintMenu({ jc, hasRole, setMsg }: { jc: JobCardDetail; hasRole: (...ro
     } catch (err: unknown) {
       win.close()
       const status = (err as { response?: { status?: number } })?.response?.status
-      if (status === 404) setMsg('No repair bill saved in BAPL DMS for this job yet.')
-      else setMsg('Could not open the invoice from BAPL DMS. Please try again.')
+      if (status === 404) setMsg('No repair bill saved in DMS for this job yet.')
+      else setMsg('Could not open the invoice from DMS. Please try again.')
     } finally {
       setInvoiceBusy(false)
     }
@@ -443,18 +443,18 @@ export function JobCardDetailPage() {
           )}
           {jc.baplSyncStatus === 'Synced' && jc.baplJobCardHeaderId && (
             <p className="muted" style={{ marginTop: 4 }}>
-              {/* Show BAPL DMS's own JobNo (what BAPL DMS's own Job Card List calls "JobNo") - not
+              {/* Show DMS's own JobNo (what DMS's own Job Card List calls "JobNo") - not
                  baplJobCardHeaderId, which is only JobCardScanner's internal reference to the row
-                 and means nothing to a user looking at BAPL DMS's own screens. */}
-              ✅ Synced to BAPL DMS as{' '}
+                 and means nothing to a user looking at DMS's own screens. */}
+              ✅ Synced to DMS as{' '}
               <a href={`/jobcards/bapl/${jc.baplJobCardHeaderId}`}>
-                {jc.baplJobNo != null ? `job card #${jc.baplJobNo}` : 'a job card (BAPL DMS sync pending)'}
+                {jc.baplJobNo != null ? `job card #${jc.baplJobNo}` : 'a job card (DMS sync pending)'}
               </a>.
             </p>
           )}
           {jc.baplSyncStatus === 'Failed' && (
             <p className="error-text" style={{ marginTop: 4 }}>
-              ⚠ Not yet synced to BAPL DMS{jc.baplSyncError ? `: ${jc.baplSyncError}` : '.'}
+              ⚠ Not yet synced to DMS{jc.baplSyncError ? `: ${jc.baplSyncError}` : '.'}
             </p>
           )}
         </div>
@@ -518,7 +518,7 @@ function BaplServiceHistoryCard({ chassisNo, dealerCode }: { chassisNo?: string 
         const msg = err?.response?.data?.message
         // A 502 here is a real BAPL DMS problem; anything else (404/network hiccup) just means
         // "nothing to show", which is normal and not worth alarming the service advisor over.
-        if (err?.response?.status === 502) setError(msg ?? 'Could not reach BAPL DMS.')
+        if (err?.response?.status === 502) setError(msg ?? 'Could not reach DMS.')
         setRows([])
       })
   }, [chassisNo, dealerCode])
@@ -527,10 +527,10 @@ function BaplServiceHistoryCard({ chassisNo, dealerCode }: { chassisNo?: string 
 
   return (
     <div className="card">
-      <h3>BAPL DMS Service History</h3>
+      <h3>DMS Service History</h3>
       {error && <p className="muted">{error}</p>}
       {rows === null && !error && <p className="muted">Loading…</p>}
-      {rows !== null && rows.length === 0 && !error && <p className="muted">No prior BAPL DMS job cards found for this chassis.</p>}
+      {rows !== null && rows.length === 0 && !error && <p className="muted">No prior DMS job cards found for this chassis.</p>}
       {rows !== null && rows.length > 0 && (
         <table>
           <thead>
@@ -940,11 +940,11 @@ function EstimatesCard({ jc }: { jc: JobCardDetail; run: (fn: () => Promise<unkn
 }
 
 /** "Part Suggestion" panel (renamed from "Parts Used" - see JobCardPartSuggestion's doc comment in
- * types/index.ts). Parts come from BAPL DMS's own PartsInventory for this job card's service
- * location (GET /api/bapl-dms/parts?locationCode=...), fetched once on mount the same way
+ * types/index.ts). Parts come from DMS's own PartsInventory for this job card's service
+ * location (GET /api/dms/parts?locationCode=...), fetched once on mount the same way
  * BaplServiceHistoryCard above fetches its supplementary data; suggesting one just records an
  * itemCode + a Paid/U-W status in JobCardScannerDb (POST .../part-suggestions) - nothing is written
- * back into BAPL DMS itself. Status can be flipped afterwards (PUT .../part-suggestions/{id}). */
+ * back into DMS itself. Status can be flipped afterwards (PUT .../part-suggestions/{id}). */
 /** Item 16: reworked into a type-ahead Item Code search (bound to description, so typing either
  * the code or a word of the description narrows the list), a Qty field (distinct from the
  * available-stock number, which is only shown as a hint), and multi add/remove - each suggested
@@ -1039,8 +1039,8 @@ function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Pr
         </tbody>
       </table>
 
-      <h4>Suggest a part (from BAPL DMS PartsInventory)</h4>
-      {!jc.baplServiceLocationCode && <p className="muted">No BAPL DMS service location on this job card - part list unavailable.</p>}
+      <h4>Suggest a part (from DMS PartsInventory)</h4>
+      {!jc.baplServiceLocationCode && <p className="muted">No DMS service location on this job card - part list unavailable.</p>}
       {/* Item-code/description, QTY, Issue Type and the Add Suggestion button all in one row now,
          matching Suggest labour's layout below - Add sits at the end of the row instead of on its
          own line underneath. .suggest-row (not .form-row) so the search field grows and Qty/Issue
@@ -1087,7 +1087,7 @@ function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Pr
                 <span className="muted" style={{ fontSize: 13 }}>
                   {jc.baplServiceLocationCode
                     ? `Part number "${search.trim()}" does not exist for dealer location ${jc.baplServiceLocationCode}.`
-                    : 'No BAPL DMS service location on this job card - part list unavailable.'}
+                    : 'No DMS service location on this job card - part list unavailable.'}
                 </span>
               </div>
             )
@@ -1362,7 +1362,7 @@ function LabourSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => 
         </tbody>
       </table>
 
-      <h4>Suggest labour (from BAPL DMS LabourMaster)</h4>
+      <h4>Suggest labour (from DMS LabourMaster)</h4>
       {/* Item 17: Labour Code, Qty, Issue Type and the Add Suggestion button all in one row now -
          no separate "Search" field/label any more, same as Item Code / Description above: the
          Labour Code field itself IS the search box (typing filters the dropdown below it), matching
@@ -1413,7 +1413,7 @@ function LabourSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => 
                 background: 'var(--card-bg, #fff)', border: '1px solid var(--border)', borderRadius: 8,
                 padding: '8px 10px', boxShadow: '0 6px 18px rgba(0,0,0,.12)',
               }}>
-                <span className="muted" style={{ fontSize: 13 }}>No labour found in BAPL DMS matching "{q.trim()}".</span>
+                <span className="muted" style={{ fontSize: 13 }}>No labour found in DMS matching "{q.trim()}".</span>
               </div>
             )
           )}
@@ -1443,11 +1443,11 @@ function LabourSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => 
   )
 }
 
-/** "Download Invoice from DMS" - BAPL DMS's own repair bill is the source of truth for a job
+/** "Download Invoice from DMS" - DMS's own repair bill is the source of truth for a job
  * card's invoice. Streams the PDF through staffApi so the same Bearer token every other call on
  * this page carries is attached (see api/client.ts's interceptor) - a plain <a href> pointed at
  * the API would 401 instead of downloading anything - then hands the blob to the browser via a
- * temporary <a download> element. Re-added 2026-09-03 as its own card below BAPL DMS Service
+ * temporary <a download> element. Re-added 2026-09-03 as its own card below DMS Service
  * History (it briefly lived only inside the header's Print menu - see PrintMenu's "Invoice"
  * option, which stays too and opens the same PDF in a new tab instead of forcing a download). */
 function InvoiceCard({ jc }: { jc: JobCardDetail }) {
@@ -1471,8 +1471,8 @@ function InvoiceCard({ jc }: { jc: JobCardDetail }) {
       setTimeout(() => URL.revokeObjectURL(url), 60_000)
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status
-      if (status === 404) setNotice('No repair bill saved in BAPL DMS for this job yet.')
-      else setError('Could not download the invoice from BAPL DMS. Please try again.')
+      if (status === 404) setNotice('No repair bill saved in DMS for this job yet.')
+      else setError('Could not download the invoice from DMS. Please try again.')
     } finally {
       setBusy(false)
     }

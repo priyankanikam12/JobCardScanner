@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
-  ActivityIndicator, Alert, Image, Linking, ScrollView, StyleSheet, Text, TextInput,
-  TouchableOpacity, View,
+  ActivityIndicator, Alert, Image, Linking, Modal, Pressable, ScrollView, StyleSheet, Text,
+  TextInput, TouchableOpacity, View,
 } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import * as ImagePicker from 'expo-image-picker'
@@ -10,14 +10,18 @@ import * as Location from 'expo-location'
 // subpath keeps writeAsStringAsync/cacheDirectory/EncodingType working exactly as before - used
 // here since it's the simplest fit for "base64 PDF bytes in, a file on disk out".
 import * as FileSystem from 'expo-file-system/legacy'
-import * as Sharing from 'expo-sharing'
+// PrintMenu below uses this for a real OS print dialog (Print.printAsync), same as the wizard's
+// own Share/Download PDF buttons use Print.printToFileAsync - the mobile equivalent of web's
+// window.print().
+import * as Print from 'expo-print'
 import { apiClient } from '../api/client'
 import { useStaffAuth } from '../auth/StaffAuthContext'
 import { Badge } from '../components/Badge'
 import { PartSuggestionSection } from '../components/PartSuggestionSection'
 import { LabourSuggestionSection } from '../components/LabourSuggestionSection'
 import { WorkflowTimelineView, type WorkflowTimelineHistoryEntry } from '../components/WorkflowTimelineView'
-import type { BaplDmsJobCardHistory, JobCardDetail, WorkflowStage } from '../types'
+import { buildEstimatePrintHtml, buildJobCardPrintHtml } from '../utils/printJobCard'
+import type { BaplDmsJobCardHistory, JobCardDetail, StaffRole, WorkflowStage } from '../types'
 import type { RootStackParamList } from '../navigation/RootNavigator'
 
 type Props = NativeStackScreenProps<RootStackParamList, 'JobCardDetail'>
@@ -151,7 +155,10 @@ export function JobCardDetailScreen({ route }: Props) {
     <ScrollView style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>{jc.jobCardNumber}</Text>
-        <Badge status={jc.status} />
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Badge status={jc.status} />
+          <PrintMenu jc={jc} hasRole={hasRole} />
+        </View>
       </View>
       {msg && <Text style={styles.muted}>{msg}</Text>}
 
@@ -169,11 +176,11 @@ export function JobCardDetailScreen({ route }: Props) {
         )}
         {jc.baplSyncStatus === 'Synced' && jc.baplJobCardHeaderId && (
           <Text style={[styles.muted, { marginTop: 4 }]}>
-            ✅ Synced to BAPL DMS as {jc.baplJobNo != null ? `job card #${jc.baplJobNo}` : 'a job card (BAPL DMS sync pending)'}.
+            ✅ Synced to DMS as {jc.baplJobNo != null ? `job card #${jc.baplJobNo}` : 'a job card (DMS sync pending)'}.
           </Text>
         )}
         {jc.baplSyncStatus === 'Failed' && (
-          <Text style={[styles.errorText, { marginTop: 4 }]}>⚠ Not yet synced to BAPL DMS{jc.baplSyncError ? `: ${jc.baplSyncError}` : '.'}</Text>
+          <Text style={[styles.errorText, { marginTop: 4 }]}>⚠ Not yet synced to DMS{jc.baplSyncError ? `: ${jc.baplSyncError}` : '.'}</Text>
         )}
       </View>
 
@@ -198,7 +205,6 @@ export function JobCardDetailScreen({ route }: Props) {
       <PartSuggestionSection jc={jc} onChanged={load} />
       <LabourSuggestionSection jc={jc} onChanged={load} />
       <EstimatesCard jc={jc} />
-      {hasRole('Cashier', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && <InvoiceCard jc={jc} />}
       <BaplServiceHistoryCard chassisNo={jc.vehicle?.vin} dealerCode={jc.dealer?.code} />
       <ClosureCard jc={jc} run={run} />
     </ScrollView>
@@ -220,7 +226,7 @@ function BaplServiceHistoryCard({ chassisNo, dealerCode }: { chassisNo?: string 
     apiClient.get<BaplDmsJobCardHistory[]>('/api/bapl-dms/service-history', { params: { chassisNo, dealerCode: dealerCode || undefined } })
       .then(({ data }) => setRows(data))
       .catch((err: any) => {
-        if (err?.response?.status === 502) setError(err?.response?.data?.message ?? 'Could not reach BAPL DMS.')
+        if (err?.response?.status === 502) setError(err?.response?.data?.message ?? 'Could not reach DMS.')
         setRows([])
       })
   }, [chassisNo, dealerCode])
@@ -229,10 +235,10 @@ function BaplServiceHistoryCard({ chassisNo, dealerCode }: { chassisNo?: string 
 
   return (
     <View style={styles.card}>
-      <Text style={styles.cardTitle}>BAPL DMS Service History</Text>
+      <Text style={styles.cardTitle}>DMS Service History</Text>
       {error && <Text style={styles.muted}>{error}</Text>}
       {rows === null && !error && <Text style={styles.muted}>Loading…</Text>}
-      {rows !== null && rows.length === 0 && !error && <Text style={styles.muted}>No prior BAPL DMS job cards found for this chassis.</Text>}
+      {rows !== null && rows.length === 0 && !error && <Text style={styles.muted}>No prior DMS job cards found for this chassis.</Text>}
       {rows !== null && rows.map((r) => (
         <View key={r.jobCardHeaderId} style={styles.historyRow}>
           <Text style={styles.rowTitle}>{r.jobPrefix}{r.jobNo} · {r.jobInDate ? new Date(r.jobInDate).toLocaleDateString() : '-'}</Text>
@@ -574,18 +580,124 @@ function EstimatesCard({ jc }: { jc: JobCardDetail }) {
   )
 }
 
-/** "Download Invoice from DMS" - BAPL DMS's own repair bill is the source of truth for a job
- * card's invoice, same as web's InvoiceCard. Downloads the PDF bytes, writes them to a local file
- * (expo-file-system) and hands that off to the native share sheet (expo-sharing) - the mobile
- * equivalent of web's browser download. */
-function InvoiceCard({ jc }: { jc: JobCardDetail }) {
-  const [busy, setBusy] = useState(false)
-  const [notice, setNotice] = useState<string | null>(null)
+/** "Print ▾" menu (2026-09-04) - mirrors web/src/pages/staff/JobCardDetailPage.tsx's PrintMenu,
+ * next to the status badge: 3 options -
+ *   1. Estimate    - customer/dealer/vehicle identity + the Estimates Amount tables only (Part
+ *                    Details, Labour Details, Grand Total) - see buildEstimatePrintHtml.
+ *   2. JobCard print - the same BAPL DMS "Job Card + Gate Pass" paper layout the wizard's own
+ *                    pre-creation Print button uses, filled from this job card's real saved data.
+ *   3. Invoice     - BAPL DMS's own repair bill PDF (GET /api/jobcards/{id}/invoice-pdf) - this
+ *                    REPLACES the old standalone "Download Invoice from DMS" card that used to sit
+ *                    further down the page, same as web's own PrintMenu replaced its old
+ *                    standalone InvoiceCard - same role gate that card had (Cashier/DealerAdmin/
+ *                    CorporateAdmin/SystemAdmin).
+ * A phone has no browser print popup, so each option calls Print.printAsync (Estimate/JobCard
+ * print pass `html` straight in; Invoice writes the fetched PDF bytes to a local file first, then
+ * passes that file's `uri` - Print.printAsync accepts either) which opens the OS's own native
+ * print dialog (its own "Save as PDF"/pick-a-printer options cover what web's window.print() and
+ * Ctrl+P give a desktop user).
+ *
+ * Deliberately built as a tap-to-open Modal (like PickerField), NOT a focus/blur-driven dropdown -
+ * only an explicit press on the "Print ▾" button ever opens it, and only an explicit press on an
+ * item or the backdrop ever closes it. A web-style hover/focus-driven menu doesn't have a clean
+ * touch equivalent and risks a menu popping open on its own from an unrelated focus event (see the
+ * chassis-suggestions dropdown fix in JobCardWizardScreen.tsx for the same class of bug on
+ * Android) - this sidesteps that entirely.
+ */
+function PrintMenu({ jc, hasRole }: { jc: JobCardDetail; hasRole: (...roles: StaffRole[]) => boolean }) {
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState<'estimate' | 'jobcard' | 'invoice' | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  const download = async () => {
-    setBusy(true)
-    setNotice(null)
+  const printEstimate = async () => {
+    setOpen(false)
+    setBusy('estimate')
+    setError(null)
+    try {
+      const partRows = jc.partSuggestions.map((p, i) => {
+        const mrp = p.mrp ?? 0
+        const qty = p.quantity ?? 1
+        return { sr: i + 1, code: p.itemCode, description: p.description ?? '-', hsn: p.hsnCode ?? '-', mrp, qty, amount: mrp * qty }
+      })
+      const labourRows = jc.labourSuggestions.map((l, i) => {
+        const rate = l.rateAtSuggestion ?? 0
+        const qty = l.quantity ?? 1
+        return { sr: i + 1, code: l.labourCode, description: l.labourDescription ?? '-', hsn: l.hsnCode ?? '-', rate, qty, amount: rate * qty }
+      })
+      const partsTotal = partRows.reduce((sum, r) => sum + r.amount, 0)
+      const labourTotal = labourRows.reduce((sum, r) => sum + r.amount, 0)
+      const html = buildEstimatePrintHtml({
+        dealerName: jc.dealer?.name,
+        dealerCode: jc.dealer?.code,
+        jobCardNumber: jc.jobCardNumber,
+        printDate: jc.createdAt ? new Date(jc.createdAt).toLocaleDateString('en-GB') : '-',
+        customerName: jc.customer?.name,
+        customerMobile: jc.customer?.mobile,
+        address: jc.customer?.address,
+        city: jc.customer?.city,
+        vehicleModel: jc.vehicle?.model,
+        vehicleVariant: jc.vehicle?.variant,
+        registerNo: jc.vehicle?.regNo,
+        chassisNo: jc.vehicle?.vin,
+        odometer: jc.odometerAtCheckIn,
+        partRows,
+        labourRows,
+        partsTotal,
+        labourTotal,
+        grandTotal: partsTotal + labourTotal,
+      })
+      await Print.printAsync({ html })
+    } catch {
+      setError('Could not print the estimate. Please try again.')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const printJobCard = async () => {
+    setOpen(false)
+    setBusy('jobcard')
+    setError(null)
+    try {
+      const html = buildJobCardPrintHtml({
+        dealerName: jc.dealer?.name,
+        dealerCode: jc.dealer?.code,
+        jobinDate: jc.createdAt ?? new Date().toISOString(),
+        jobtype: jc.baplJobType,
+        jobsource: jc.baplJobSourceName,
+        serviceHead: jc.baplServiceHeadName,
+        serviceType: jc.baplServiceTypeName,
+        estdelDate: jc.expectedDeliveryAt,
+        vehiclekms: jc.odometerAtCheckIn,
+        manualjobNo: jc.baplManualJobNo,
+        supervisor: jc.baplSupervisorName,
+        technician: jc.baplTechnicianName,
+        customerName: jc.customer?.name,
+        customerMobile: jc.customer?.mobile,
+        address: jc.customer?.address,
+        city: jc.customer?.city,
+        chassisNo: jc.vehicle?.vin,
+        batteryNo: jc.vehicle?.batteryNo,
+        chargerNo: jc.vehicle?.chargerNo,
+        controllerNo: jc.vehicle?.controllerNo,
+        registerNo: jc.vehicle?.regNo,
+        modelName: jc.vehicle?.model,
+        colour: jc.vehicle?.color,
+        insuranceExpiry: jc.vehicle?.insuranceExpiry,
+        complaints: jc.complaints.map((c) => c.description),
+        jobCardNumber: jc.baplJobNo != null ? String(jc.baplJobNo) : jc.jobCardNumber,
+      })
+      await Print.printAsync({ html })
+    } catch {
+      setError('Could not print the job card. Please try again.')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const printInvoice = async () => {
+    setOpen(false)
+    setBusy('invoice')
     setError(null)
     try {
       const res = await apiClient.get(`/api/jobcards/${jc.id}/invoice-pdf`, { responseType: 'arraybuffer' })
@@ -595,28 +707,40 @@ function InvoiceCard({ jc }: { jc: JobCardDetail }) {
       const base64 = btoa(binary)
       const fileUri = `${FileSystem.cacheDirectory}invoice-${jc.baplJobNo ?? jc.id}.pdf`
       await FileSystem.writeAsStringAsync(fileUri, base64, { encoding: FileSystem.EncodingType.Base64 })
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(fileUri, { mimeType: 'application/pdf', dialogTitle: 'Invoice' })
-      } else {
-        Alert.alert('Sharing is not available on this device.')
-      }
+      await Print.printAsync({ uri: fileUri })
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status
-      if (status === 404) setNotice('No repair bill saved in BAPL DMS for this job yet.')
-      else setError('Could not download the invoice from BAPL DMS. Please try again.')
+      setError(status === 404
+        ? 'No repair bill saved in DMS for this job yet.'
+        : 'Could not open the invoice from DMS. Please try again.')
     } finally {
-      setBusy(false)
+      setBusy(null)
     }
   }
 
   return (
-    <View style={styles.card}>
-      <Text style={styles.cardTitle}>Invoice</Text>
-      <TouchableOpacity style={[styles.btnPrimarySm, busy && styles.btnDisabled]} disabled={busy} onPress={download}>
-        {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnPrimaryText}>Download Invoice from DMS</Text>}
+    <View>
+      <TouchableOpacity style={[styles.printToggleBtn, !!busy && styles.btnDisabled]} disabled={!!busy} onPress={() => setOpen(true)}>
+        <Text style={styles.printToggleBtnText}>🖨️ {busy ? 'Opening…' : 'Print'} ▾</Text>
       </TouchableOpacity>
-      {notice && <Text style={styles.muted}>{notice}</Text>}
-      {error && <Text style={styles.errorText}>{error}</Text>}
+      {error && <Text style={[styles.errorText, { textAlign: 'right' }]}>{error}</Text>}
+      <Modal visible={open} animationType="fade" transparent onRequestClose={() => setOpen(false)}>
+        <Pressable style={styles.printBackdrop} onPress={() => setOpen(false)}>
+          <Pressable style={styles.printSheet} onPress={(e) => e.stopPropagation()}>
+            <TouchableOpacity style={styles.printMenuItem} onPress={printEstimate}>
+              <Text style={styles.printMenuItemText}>Estimate</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.printMenuItem} onPress={printJobCard}>
+              <Text style={styles.printMenuItemText}>JobCard print</Text>
+            </TouchableOpacity>
+            {hasRole('Cashier', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
+              <TouchableOpacity style={[styles.printMenuItem, { borderBottomWidth: 0 }]} onPress={printInvoice}>
+                <Text style={styles.printMenuItemText}>Invoice</Text>
+              </TouchableOpacity>
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   )
 }
@@ -687,4 +811,11 @@ const styles = StyleSheet.create({
   estimateRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: '#f1f3f6' },
   estimateTotalRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6, marginTop: 2 },
   grandTotalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 14, paddingTop: 10, borderTopWidth: 2, borderTopColor: '#e2e6ec' },
+  // PrintMenu (2026-09-04) - the header's "Print ▾" toggle plus its tap-to-open action sheet.
+  printToggleBtn: { borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7, backgroundColor: '#fff' },
+  printToggleBtnText: { fontSize: 13, fontWeight: '600', color: '#374151' },
+  printBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' },
+  printSheet: { backgroundColor: '#fff', borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingVertical: 6, paddingBottom: 24 },
+  printMenuItem: { paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#f1f3f6' },
+  printMenuItemText: { fontSize: 15, color: '#101828', fontWeight: '600' },
 })
