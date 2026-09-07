@@ -33,7 +33,7 @@ const IST_TIME_ZONE = 'Asia/Kolkata'
 
 /** A date/time in real IST (UTC+05:30), not whatever timezone the device happens to be set to -
  * per explicit request "Current time in IST (UTC+05:30) use everywhere on ui". Used for the
- * Expected delivery picker's displayed value and BAPL DMS sale dates below. */
+ * Expected delivery picker's displayed value and DMS sale dates below. */
 function formatIST(value: Date | string, opts: Intl.DateTimeFormatOptions): string {
   const d = typeof value === 'string' ? new Date(value) : value
   return d.toLocaleString('en-IN', { timeZone: IST_TIME_ZONE, ...opts })

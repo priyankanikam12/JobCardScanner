@@ -771,7 +771,7 @@ function UpdateWorkflowStageCard({
             <input type="datetime-local" disabled={busy} value={expectedDeliveryAt} onChange={(e) => setExpectedDeliveryAt(e.target.value)} />
           </div>
           <div className="field">
-            <button className="btn btn-sm" disabled={busy} onClick={() => run(saveDetails, 'Technician & completion date updated.')}>Save</button>
+            <button className="btn btn-sm" style={{ backgroundColor: '#2563EB', color: '#fff', border: '1px solid #2563EB' }} disabled={busy} onClick={() => run(saveDetails, 'Technician & completion date updated.')}>Save</button>
           </div>
         </div>
       )}
@@ -1162,7 +1162,7 @@ function PartSuggestionCard({ jc, run, estimatesLocked, totalLockReached }: { jc
         </p>
       ) : (
       <>
-      <h4>Suggest a part (from DMS PartsInventory)</h4>
+      <h4>Suggest a part</h4>
       {!jc.baplServiceLocationCode && <p className="muted">No DMS service location on this job card - part list unavailable.</p>}
       {/* Item-code/description, QTY, Issue Type and the Add Suggestion button all in one row now,
          matching Suggest labour's layout below - Add sits at the end of the row instead of on its

@@ -61,7 +61,7 @@ function nowForDatetimeLocalInput(): string {
   return new Date(Date.now() + IST_OFFSET_MINUTES * 60 * 1000).toISOString().slice(0, 16)
 }
 
-/** A date (e.g. a vehicle's DMS sale date) in real IST, not the browser's own timezone -
+/** A date (e.g. a vehicle's BAPL DMS sale date) in real IST, not the browser's own timezone -
  * same reasoning as nowForDatetimeLocalInput above. */
 function formatISTDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-IN', { timeZone: IST_TIME_ZONE })

@@ -17,7 +17,7 @@ WHAT CHANGED AND WHY
 ---------------------
 
 1) Coupon No. + Job Category in the Job Card Wizard's Vehicle step
-   (placed right before Odometer (km), matching BAPL DMS's own form):
+   (placed right before Odometer (km), matching DMS's own form):
      - web/src/pages/staff/JobCardWizardPage.tsx
      - mobile/src/screens/JobCardWizardScreen.tsx
      - backend/JobCardScanner.Api/Dtos/Requests.cs
@@ -58,7 +58,7 @@ WHAT CHANGED AND WHY
    PDF you sent (matches the MAGNEMITE MOTO LLP-DELHI sample layout):
      - backend/JobCardScanner.Api/Services/EstimatePdfService.cs
          (This is the file behind the "Estimates Amount" -> email PDF
-         attachment. It is NOT used for BAPL DMS's own repair-bill PDF
+         attachment. It is NOT used for DMS's own repair-bill PDF
          (InvoicePdfService, unchanged) - only for JobCardScanner's own
          Part/Labour Suggestion estimate.)
 
@@ -81,8 +81,8 @@ WHAT CHANGED AND WHY
 6) Job Cards list: local job cards are now closed automatically once BAPL
    DMS closes/bills them there, instead of staying stuck at whatever local
    status they had. Reported directly as "the biggest issue": closing a job
-   card in BAPL DMS closed it there, but JobCardScanner's own list kept
-   showing it as still open, because nothing ever synced BAPL DMS's status
+   card in DMS closed it there, but JobCardScanner's own list kept
+   showing it as still open, because nothing ever synced DMS's status
    back into JobCardScanner's own JobCard.Status - it was only ever changed
    by JobCardScanner's own actions (worklog start, the closure-OTP flow,
    workflow stage automation). Fixed with a sync-on-read: GET /api/jobcards
@@ -101,11 +101,11 @@ WHAT CHANGED AND WHY
    Note on "why don't all my dealer's DMS job cards show up": checked
    against the JobCardHeader rows you pasted for CUS0288 (ids 79, 80, 87,
    99, 100) - only id 80 has IsDelete = 0; the other four (79, 87, 99, 100)
-   are soft-deleted in BAPL DMS itself (IsDelete = 1). The list/search code
-   already excludes IsDelete = 1 rows everywhere (same as BAPL DMS's own
+   are soft-deleted in DMS itself (IsDelete = 1). The list/search code
+   already excludes IsDelete = 1 rows everywhere (same as DMS's own
    convention), so this isn't a bug on our side - those four just don't
-   exist in BAPL DMS anymore. Only id 80's job card (your "2 / DMS" row) is
-   real from BAPL DMS's own point of view.
+   exist in DMS anymore. Only id 80's job card (your "2 / DMS" row) is
+   real from DMS's own point of view.
 
    Note on Technician Work Log: it already auto-advances the Workflow Stage
    to "Work In Progress" when a technician's timer is started - this was
@@ -179,9 +179,9 @@ WHAT CHANGED AND WHY
    in the row (its list is built from Pressable rows, not a single inner
    link per row) - only the web table needed this fix.
 
-9) "BAPL DMS" renamed to just "DMS" everywhere it appeared in user-visible
+9) "DMS" renamed to just "DMS" everywhere it appeared in user-visible
    text (error messages, headings, placeholders, locked-field notices) -
-   "from next dont add any where BAPL DMS only DMS". This was a plain
+   "from next dont add any where DMS only DMS". This was a plain
    text find-and-replace, no logic changed anywhere it touched:
      - web/src/pages/staff/JobCardWizardPage.tsx
      - mobile/src/screens/JobCardWizardScreen.tsx
@@ -202,7 +202,7 @@ WHAT CHANGED AND WHY
        InvoicePdfService.cs
      - backend/JobCardScanner.Api/Dtos/Requests.cs
    A handful of internal code COMMENTS (not shown on any screen) still say
-   "BAPL DMS" - e.g. Models/JobCard.cs, Models/MasterData.cs, Program.cs,
+   "DMS" - e.g. Models/JobCard.cs, Models/MasterData.cs, Program.cs,
    and two comments in the wizard files - these are developer documentation,
    never rendered in the app, so they were intentionally left alone rather
    than rewritten for no user-visible benefit.
@@ -255,7 +255,7 @@ WHAT CHANGED AND WHY
     separately.
 
 13) Job Cards list showing 2 rows for 1 job card created: "still 2 job
-    cards shown from only 1 create". Since BAPL DMS became the sole source
+    cards shown from only 1 create". Since DMS became the sole source
     of truth (job cards can now only be created via DMS - see the
     2026-09-05 comments already in JobCardsController.cs), every
     JobCardScanner-native job card row is now ALSO a DMS job card by
@@ -280,6 +280,33 @@ WHAT CHANGED AND WHY
     DMS marks it Closed on JobCardScanner's own side too - that's existing,
     intended behavior (SyncClosedFromDmsAsync), not the duplicate-row bug
     this section fixes.
+
+14) Part Suggestion / Parts &amp; Inventory: items from DMS's ItemMaster catalog
+    now show up even if this workshop location has never stocked/transacted
+    them. You asked "from SELECT * FROM ItemMaster why Part Suggestion not
+    shown?" then "from ItemMaster also show". Cause: GetPartsInventoryAsync
+    previously started from PartsInventory (this location's own stock
+    ledger) and only used ItemMaster afterward to fill in each match's
+    name/price/HSN - so an item had to already have a stock transaction row
+    at this specific location before it could appear as a suggestion at
+    all, no matter what ItemMaster itself had. Fixed by flipping the query:
+    it now starts from ItemMaster (every item in the shared catalog) LEFT
+    JOINed to this location's aggregated PartsInventory stock, so every
+    catalog item is suggestable - one that's never been stocked here just
+    shows AvailableQty = 0, the same as a sold-out item already does, rather
+    than not appearing at all:
+      - backend/JobCardScanner.Api/Services/BaplDmsService.cs
+          (GetPartsInventoryAsync(): single query now, ItemMaster as the
+          base table with a LEFT JOIN subquery for this location's stock,
+          replacing the old PartsInventory-then-enrich-from-ItemMaster
+          two-query approach)
+    Worth knowing: ItemMaster is DMS's shared catalog (not scoped to one
+    location the way PartsInventory is), so this can return more rows than
+    before - every item DMS knows about, not just ones this location has
+    touched. If that list turns out to be too large or shows items from
+    other dealers/locations that shouldn't be suggestable here, let me know
+    and I can look at adding a narrower scope or server-side search
+    filtering.
 
 DIAGNOSING THE CURRENT 502 ON /estimates/email
 ------------------------------------------------

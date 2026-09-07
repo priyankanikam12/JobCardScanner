@@ -261,26 +261,32 @@ public record BaplDmsJobCardDetailRow(
 /// independently confirmed, so it's deliberately left out rather than guessed.</summary>
 public record BaplDmsRepairBillRow(int Id, string? RepairBillStatus, decimal? TotalNetAmount);
 
-/// <summary>One item's available stock at one workshop location, from DMS's own PartsInventory
-/// - for the Job Card Detail page's "Part Suggestion" panel (and now the general Parts &amp;
-/// Inventory catalog - see PartsController.Search). CONFIRMED business rule (you ran
-/// `SELECT * FROM PartsInventory` and shared the full column list plus three real rows): each
-/// physical batch of an item accumulates transaction rows (TransType 'P' purchase-in / 'S' sale-out,
-/// each carrying that batch's BatchOpeningQty/BatchTransQty/BatchClosingQty), and exactly one row
-/// per batch is marked FinalStockFlag = 'Y' - the batch's current/latest state. Example confirmed
-/// from your data: item 22GE370010AS at CUS0435W1 has a 'P' row (closing qty 1, Flag 'N' - since a
-/// later row supersedes it) followed by an 'S' row (closing qty 0, Flag 'Y') - so its real available
-/// qty is correctly 0 (sold out). Summing BatchClosingQty across every Flag='Y' row per ItemCode (one
-/// such row per batch) gives the item's true total remaining stock across all its batches at that
-/// location - this CAN come out to zero or negative (oversold/adjustment). GetPartsInventoryAsync
-/// deliberately does NOT filter these out any more (previously a `HAVING SUM(...) > 0`, removed
-/// 2026-09-03): a workshop still needs to be able to suggest a part it's temporarily out of stock on
-/// (e.g. to flag it needs reordering, or to record it as Under Warranty pending stock) - hiding every
-/// zero/negative-stock item from the search made the "Suggest a part" box come up empty for exactly
-/// the items staff were most likely to be searching for right after they'd just sold the last unit,
-/// which read as "Add Suggestion is broken" rather than "this item has none left". The frontend
-/// (PartSuggestionCard) already shows the real AvailableQty next to each match either way, so an
-/// out-of-stock item is still clearly labelled as such - it's just no longer invisible.</summary>
+/// <summary>One item from DMS's own item catalog (ItemMaster), with its available stock at one
+/// workshop location (PartsInventory) - for the Job Card Detail page's "Part Suggestion" panel
+/// (and now the general Parts &amp; Inventory catalog - see PartsController.Search). CONFIRMED
+/// business rule for the stock side (you ran `SELECT * FROM PartsInventory` and shared the full
+/// column list plus three real rows): each physical batch of an item accumulates transaction rows
+/// (TransType 'P' purchase-in / 'S' sale-out, each carrying that batch's BatchOpeningQty/
+/// BatchTransQty/BatchClosingQty), and exactly one row per batch is marked FinalStockFlag = 'Y' -
+/// the batch's current/latest state. Example confirmed from your data: item 22GE370010AS at
+/// CUS0435W1 has a 'P' row (closing qty 1, Flag 'N' - since a later row supersedes it) followed by
+/// an 'S' row (closing qty 0, Flag 'Y') - so its real available qty is correctly 0 (sold out).
+/// Summing BatchClosingQty across every Flag='Y' row per ItemCode (one such row per batch) gives
+/// the item's true total remaining stock across all its batches at that location - this CAN come
+/// out to zero or negative (oversold/adjustment).
+///
+/// 2026-09-07 ("from ItemMaster also show"): GetPartsInventoryAsync's base list is now every item
+/// in ItemMaster (DMS's shared item catalog), LEFT JOINed to this one location's own aggregated
+/// PartsInventory stock - so an item shows up here even if this particular location has never
+/// transacted it at all (AvailableQty comes back 0 for those, same as an out-of-stock item, rather
+/// than the item being missing from the list entirely). Previously PartsInventory was the base and
+/// ItemMaster only enriched matching item codes afterward - meaning an item had to already have a
+/// stock transaction row at this location before it could be suggested at all, which is why an
+/// item that clearly existed in `SELECT * FROM ItemMaster` still wasn't showing up. Zero/negative
+/// stock is deliberately still shown rather than filtered out (a workshop still needs to be able to
+/// suggest a part it's temporarily out of stock on, or flag it needs reordering) - the frontend
+/// (PartSuggestionCard) already shows the real AvailableQty next to each match, so a zero-stock or
+/// never-stocked-here item is still clearly labelled as such rather than invisible.</summary>
 /// <summary>
 /// Description/Mrp/HsnCode are a SEPARATE best-effort enrichment (see GetPartsInventoryAsync), NOT
 /// part of the confirmed PartsInventory query above - PartsInventory itself was only confirmed to
@@ -1792,17 +1798,30 @@ public class BaplDmsService : IBaplDmsService
     {
         if (string.IsNullOrWhiteSpace(locationCode)) return Array.Empty<BaplDmsPartStockRow>();
 
-        // See BaplDmsPartStockRow's doc comment - CONFIRMED rule: FinalStockFlag = 'Y' marks each
-        // batch's current transaction row, summed by ItemCode. Every item tracked at this location
-        // is returned (no HAVING > 0 filter any more - see the doc comment above on why hiding
-        // zero/negative-stock items made "Suggest a part" look broken); AvailableQty can legitimately
-        // be 0 or negative, and the frontend shows it plainly next to each result either way.
+        // 2026-09-07 ("from ItemMaster also show") - see BaplDmsPartStockRow's doc comment for the
+        // full story. ItemMaster (the shared item catalog) is now the base list, LEFT JOINed to
+        // this one location's own aggregated PartsInventory stock (same CONFIRMED
+        // FinalStockFlag='Y'-per-batch summing rule as before, just computed in a subquery instead
+        // of as the outer query). ISNULL(...,0) means an item ItemMaster knows about but this
+        // location has never transacted at all still comes back with AvailableQty = 0 instead of
+        // being absent from the list - previously PartsInventory was the base, so an item had to
+        // already have a stock movement here before it could be suggested at all. ItemName/
+        // CustPrice/HsnCode columns were CONFIRMED to exist on ItemMaster 2026-09-03 (you ran
+        // `SELECT * FROM ItemMaster WHERE itemcode=...` and shared the real columns) - there's no
+        // column literally named "Mrp" on ItemMaster, so CustPrice (price charged to the customer,
+        // as opposed to DlrPrice, the dealer's own cost) is aliased to Mrp here, same choice as
+        // before.
         const string sql = @"
-            SELECT ItemCode, SUM(BatchClosingQty) AS AvailableQty
-            FROM [dbo].[PartsInventory]
-            WHERE DealerLocation = @loc AND FinalStockFlag = 'Y'
-            GROUP BY ItemCode
-            ORDER BY ItemCode";
+            SELECT im.ItemCode, ISNULL(pi.AvailableQty, 0) AS AvailableQty,
+                   im.ItemName AS Description, im.CustPrice AS Mrp, im.HsnCode
+            FROM [dbo].[ItemMaster] im
+            LEFT JOIN (
+                SELECT ItemCode, SUM(BatchClosingQty) AS AvailableQty
+                FROM [dbo].[PartsInventory]
+                WHERE DealerLocation = @loc AND FinalStockFlag = 'Y'
+                GROUP BY ItemCode
+            ) pi ON pi.ItemCode = im.ItemCode
+            ORDER BY im.ItemCode";
         var results = new List<BaplDmsPartStockRow>();
         try
         {
@@ -1812,55 +1831,16 @@ public class BaplDmsService : IBaplDmsService
             cmd.Parameters.AddWithValue("@loc", locationCode.Trim());
             await using var rdr = await cmd.ExecuteReaderAsync(ct);
             while (await rdr.ReadAsync(ct))
-                results.Add(new BaplDmsPartStockRow(rdr["ItemCode"] as string ?? "", Convert.ToInt32(rdr["AvailableQty"])));
-
-            // ----- ENRICHMENT: Description/Mrp/HsnCode per item code, from [dbo].[ItemMaster].
-            // Batched into one query for every item code this location returned, rather than one
-            // query per row.
-            // CONFIRMED 2026-09-03 (you ran `SELECT * FROM ItemMaster WHERE itemcode=...` and shared
-            // the real columns) - ItemMaster has itemcode/itemname/hsncode (case-insensitive match to
-            // the ItemCode/ItemName/HsnCode this was already selecting - fine as-is), but there is NO
-            // column literally named "Mrp". That's why Description/HSN were coming back blank too,
-            // not just MRP: SQL Server rejects the whole SELECT with "Invalid column name 'Mrp'",
-            // which the catch block below swallows, discarding the entire enrichment for every part
-            // in the list. There's no single "printed MRP" column either - the two price columns are
-            // dlrprice (dealer's own cost) and custprice (price charged to the customer), so custprice
-            // is what's shown as MRP here, aliased back to Mrp so the rest of this method/the
-            // BaplDmsPartStockRow record don't need to change. Swallowed on failure (logged) exactly
-            // like LookupVehicleAsync's LedgerMaster.Address/Email guess - a wrong table/column name
-            // here must never break the part list itself, which already works off the confirmed
-            // PartsInventory query above. -----
-            if (results.Count > 0)
-            {
-                try
-                {
-                    var itemCodes = results.Select(r => r.ItemCode).Distinct().ToList();
-                    var paramNames = itemCodes.Select((_, i) => $"@i{i}").ToList();
-                    var enrichSql = $@"
-                        SELECT ItemCode, ItemName, CustPrice AS Mrp, HsnCode
-                        FROM [dbo].[ItemMaster]
-                        WHERE ItemCode IN ({string.Join(",", paramNames)})";
-                    await using var enrichCmd = new SqlCommand(enrichSql, conn) { CommandTimeout = 30 };
-                    for (var i = 0; i < itemCodes.Count; i++)
-                        enrichCmd.Parameters.AddWithValue(paramNames[i], itemCodes[i]);
-                    var byItemCode = new Dictionary<string, (string? Description, decimal? Mrp, string? HsnCode)>(StringComparer.OrdinalIgnoreCase);
-                    await using var enrichRdr = await enrichCmd.ExecuteReaderAsync(ct);
-                    while (await enrichRdr.ReadAsync(ct))
-                        byItemCode[enrichRdr["ItemCode"] as string ?? ""] = (enrichRdr["ItemName"] as string, enrichRdr["Mrp"] as decimal?, enrichRdr["HsnCode"] as string);
-
-                    for (var i = 0; i < results.Count; i++)
-                        if (byItemCode.TryGetValue(results[i].ItemCode, out var extra))
-                            results[i] = results[i] with { Description = extra.Description, Mrp = extra.Mrp, HsnCode = extra.HsnCode };
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogInformation(ex, "DMS ItemMaster description/MRP enrichment skipped for location {LocationCode} (unconfirmed table/column names)", locationCode);
-                }
-            }
+                results.Add(new BaplDmsPartStockRow(
+                    rdr["ItemCode"] as string ?? "",
+                    Convert.ToInt32(rdr["AvailableQty"]),
+                    rdr["Description"] as string,
+                    rdr["Mrp"] as decimal?,
+                    rdr["HsnCode"] as string));
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not read DMS's parts inventory (PartsInventory) for location '{locationCode}': {ex.Message}", ex);
+            throw new InvalidOperationException($"Could not read DMS's item catalog (ItemMaster) joined to parts inventory for location '{locationCode}': {ex.Message}", ex);
         }
         return results;
     }
