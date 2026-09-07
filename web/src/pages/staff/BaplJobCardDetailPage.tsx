@@ -4,10 +4,10 @@ import { staffApi } from '../../api/client'
 import type { BaplDmsJobCardDetail } from '../../types'
 
 /**
- * Read-only view of one BAPL DMS job card (GET /api/bapl-dms/job-cards/{id}) - what a BAPL DMS row
+ * Read-only view of one DMS job card (GET /api/bapl-dms/job-cards/{id}) - what a DMS row
  * on the /jobcards list links to (JobCardsListPage.tsx), since that row has no JobCardScanner
- * record of its own to open. Nothing here is editable - this is BAPL DMS's own data, not
- * JobCardScanner's, so there's no workflow/complaints/photos/etc. to act on, just what BAPL DMS
+ * record of its own to open. Nothing here is editable - this is DMS's own data, not
+ * JobCardScanner's, so there's no workflow/complaints/photos/etc. to act on, just what DMS
  * already has on file.
  */
 export function BaplJobCardDetailPage() {
@@ -22,7 +22,7 @@ export function BaplJobCardDetailPage() {
     setError(null)
     staffApi.get<BaplDmsJobCardDetail>(`/api/bapl-dms/job-cards/${jobCardHeaderId}`)
       .then(({ data }) => setRow(data))
-      .catch((err) => setError(err?.response?.data?.message ?? 'Could not load this BAPL DMS job card.'))
+      .catch((err) => setError(err?.response?.data?.message ?? 'Could not load this DMS job card.'))
       .finally(() => setLoading(false))
   }, [jobCardHeaderId])
 

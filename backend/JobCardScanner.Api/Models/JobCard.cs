@@ -41,14 +41,14 @@ public enum JobCardPriority { Normal, High, Urgent }
 /// The central record of the customer service journey: created by the 6-step Job Card Opening
 /// Wizard, driven through <see cref="WorkflowStage"/>s, and closed via OTP + invoiced.
 ///
-/// 2026-09-05: BAPL DMS is now the sole source of truth for whether a job card exists at all -
-/// see JobCardsController.Create, which calls BAPL DMS's own CreateJobCardAsync FIRST and only
+/// 2026-09-05: DMS is now the sole source of truth for whether a job card exists at all -
+/// see JobCardsController.Create, which calls DMS's own CreateJobCardAsync FIRST and only
 /// ever creates a row here as a direct, same-request consequence of that succeeding
 /// (BaplJobCardHeaderId/BaplJobNo below are always set for any row created this way; a row that
 /// somehow lacks them predates this change and is hidden from the list/detail endpoints, never
 /// deleted). This row is therefore no longer an independent save path or "the" record of the job
 /// card - JobCardNumber itself is DMS's own JobPrefix+JobNo, not a JobCardScanner-generated
-/// number. What this row IS still for: (1) a stable local id for everything BAPL DMS has no table
+/// number. What this row IS still for: (1) a stable local id for everything DMS has no table
 /// for and that must keep working exactly as before - Photos, Complaints, Inspections,
 /// StageHistory, Worklogs, QcChecklistItems, PartSuggestions, LabourSuggestions, Invoice,
 /// Estimates, Parts (all FK'd to this row's Id below, unchanged) - and (2) JobCardScanner-only
@@ -104,40 +104,40 @@ public class JobCard
     /// <summary>Mirrors the originating ERP/DMS job-card id when this record was pushed/pulled.</summary>
     [MaxLength(60)] public string? ErpJobCardId { get; set; }
 
-    // ---------------- BAPL DMS-style fields (captured locally; not yet synced) ----------------
-    // These mirror fields on BAPL DMS's own JobCardHeader (JobType/Supervisor/Technician - see
+    // ---------------- DMS-style fields (captured locally; not yet synced) ----------------
+    // These mirror fields on DMS's own JobCardHeader (JobType/Supervisor/Technician - see
     // BaplDmsService's confirmed-schema queries - and the "Service Location" seen on their Job Card
     // List screen, e.g. "BM ENTERPRISES-TIRUPATHUR") so the wizard can capture the same information
     // your team is used to entering there. They are plain free-text/label fields for now, NOT
-    // foreign keys and NOT yet written back into BAPL DMS's own database - that write-back needs
-    // BAPL DMS's real insert requirements (identity/JobNo-generation logic, required columns,
+    // foreign keys and NOT yet written back into DMS's own database - that write-back needs
+    // DMS's real insert requirements (identity/JobNo-generation logic, required columns,
     // defaults) before it can be built safely; see the project notes on this. BaplSupervisorName/
     // BaplTechnicianName are deliberately separate from ServiceAdvisorId/AssignedTechnicianId above
     // - those are real JobCardScanner User accounts driving the workflow, these are just the
     // BAPL-DMS-style names typed in at intake.
-    /// <summary>BAPL DMS's JobType label (PDI / Accidental / In Warranty Period / Post Warranty
-    /// Period / In test - from BAPL DMS's own JobType master) chosen at intake, alongside
+    /// <summary>DMS's JobType label (PDI / Accidental / In Warranty Period / Post Warranty
+    /// Period / In test - from DMS's own JobType master) chosen at intake, alongside
     /// JobCardScanner's own <see cref="ServiceType"/>.</summary>
     [MaxLength(60)] public string? BaplJobType { get; set; }
-    /// <summary>Free-text service location/branch, as seen on BAPL DMS's own job card list (e.g.
+    /// <summary>Free-text service location/branch, as seen on DMS's own job card list (e.g.
     /// "BM ENTERPRISES-TIRUPATHUR") - separate from the Dealer/Workshop this job card belongs to.</summary>
     [MaxLength(200)] public string? BaplServiceLocation { get; set; }
     [MaxLength(120)] public string? BaplSupervisorName { get; set; }
     [MaxLength(120)] public string? BaplTechnicianName { get; set; }
-    /// <summary>BAPL DMS's own "ManualJobNo." column (a separate manually-entered reference number,
-    /// distinct from BAPL DMS's system-generated JobNo and from JobCardScanner's own
+    /// <summary>DMS's own "ManualJobNo." column (a separate manually-entered reference number,
+    /// distinct from DMS's system-generated JobNo and from JobCardScanner's own
     /// JobCardNumber) - free text since some dealers may leave it as "0" or blank.</summary>
     [MaxLength(40)] public string? BaplManualJobNo { get; set; }
 
-    // ---------------- BAPL DMS write-back (JobType/ServiceHead/ServiceType cascade + sync result) ----------------
-    // IDs into BAPL DMS's own JobType/ServiceHead/ServiceType master tables (see BaplDmsService's
+    // ---------------- DMS write-back (JobType/ServiceHead/ServiceType cascade + sync result) ----------------
+    // IDs into DMS's own JobType/ServiceHead/ServiceType master tables (see BaplDmsService's
     // GetJobTypesAsync/GetServiceHeadsAsync/GetServiceTypesAsync) - captured so Create() can actually
-    // write this job card into BAPL DMS's own JobCardHeader (BaplJobType above stays as a plain
+    // write this job card into DMS's own JobCardHeader (BaplJobType above stays as a plain
     // display label for backward compatibility with job cards created before this cascade existed).
     public int? BaplJobTypeId { get; set; }
-    /// <summary>BAPL DMS's JobSource.Id (Walk In/RSA/Mega Camp/...) - replaces the wizard's old
+    /// <summary>DMS's JobSource.Id (Walk In/RSA/Mega Camp/...) - replaces the wizard's old
     /// hardcoded WalkIn/PickupAndDrop/Breakdown/Scheduled/Online "Source" dropdown, which was
-    /// JobCardScanner's own invented list rather than anything BAPL DMS tracks. The plain
+    /// JobCardScanner's own invented list rather than anything DMS tracks. The plain
     /// <see cref="Source"/> enum above is still set too (auto-derived from this, not shown as its
     /// own picker any more - see JobCardWizardPage's mapBaplSourceToLocal) since it's used by
     /// existing dashboards/filters that expect one of JobCardSource's fixed values.</summary>
@@ -147,15 +147,15 @@ public class JobCard
     [MaxLength(120)] public string? BaplServiceHeadName { get; set; }
     public int? BaplServiceTypeId { get; set; }
     [MaxLength(120)] public string? BaplServiceTypeName { get; set; }
-    /// <summary>BAPL DMS's LocationMaster.Loccode for the workshop this job card was serviced at
-    /// (e.g. "CUS0435W1") - the actual value written to BAPL DMS's JobCardHeader.Serviceloc.
+    /// <summary>DMS's LocationMaster.Loccode for the workshop this job card was serviced at
+    /// (e.g. "CUS0435W1") - the actual value written to DMS's JobCardHeader.Serviceloc.
     /// BaplServiceLocation above stays as the plain display name shown before this dropdown existed.</summary>
     [MaxLength(20)] public string? BaplServiceLocationCode { get; set; }
-    /// <summary>Set once this job card has been written into BAPL DMS's own database (see
+    /// <summary>Set once this job card has been written into DMS's own database (see
     /// BaplDmsService.CreateJobCardAsync) - lets the Job Card Detail page link straight to the BAPL
     /// DMS record it created, the same way a BaplDms-sourced /jobcards row does.</summary>
     public int? BaplJobCardHeaderId { get; set; }
-    /// <summary>BAPL DMS's own JobNo (e.g. 22) - what BAPL DMS's own Job Card List screen shows as
+    /// <summary>DMS's own JobNo (e.g. 22) - what DMS's own Job Card List screen shows as
     /// "JobNo / JobDate", as opposed to BaplJobCardHeaderId (e.g. 70) which is only the internal
     /// JobCardHeader.Id primary key. Set alongside BaplJobCardHeaderId from the same
     /// BaplDmsCreateJobCardResult - kept separate because the Detail page shows this number to
@@ -163,7 +163,7 @@ public class JobCard
     public int? BaplJobNo { get; set; }
     /// <summary>"Synced" once BaplJobCardHeaderId is set, "Failed" if the write-back was attempted
     /// and threw (see BaplSyncError), or null if it was never attempted (dealer not yet linked to
-    /// BAPL DMS, or the wizard's Job Type/Service Head/Service Type weren't filled in).</summary>
+    /// DMS, or the wizard's Job Type/Service Head/Service Type weren't filled in).</summary>
     [MaxLength(20)] public string? BaplSyncStatus { get; set; }
     [MaxLength(1000)] public string? BaplSyncError { get; set; }
 
@@ -180,12 +180,12 @@ public class JobCard
     public ICollection<QcChecklistItem> QcChecklistItems { get; set; } = new List<QcChecklistItem>();
     public ICollection<Estimate> Estimates { get; set; } = new List<Estimate>();
     public ICollection<JobCardPart> Parts { get; set; } = new List<JobCardPart>();
-    /// <summary>"Part Suggestion" rows (see JobCardPartSuggestion) - suggested from BAPL DMS's own
+    /// <summary>"Part Suggestion" rows (see JobCardPartSuggestion) - suggested from DMS's own
     /// PartsInventory for this job card's Service Location, with a locally-tracked Paid/U-W status.
     /// Deliberately separate from Parts above (JobCardPart), which needs a real local PartMaster FK
     /// this BAPL-sourced ItemCode has no mapping to yet.</summary>
     public ICollection<JobCardPartSuggestion> PartSuggestions { get; set; } = new List<JobCardPartSuggestion>();
-    /// <summary>"Labour Suggestion" rows (see JobCardLabourSuggestion) - suggested from BAPL DMS's
+    /// <summary>"Labour Suggestion" rows (see JobCardLabourSuggestion) - suggested from DMS's
     /// own LabourMaster for this job card, same pattern as PartSuggestions above but for labour.</summary>
     public ICollection<JobCardLabourSuggestion> LabourSuggestions { get; set; } = new List<JobCardLabourSuggestion>();
 
@@ -237,7 +237,7 @@ public class JobCardPhoto
     [MaxLength(200)] public string? Caption { get; set; }
     /// <summary>GPS location the photo was captured at (browser Geolocation API, Job Card Detail
     /// page) - null for photos added the old way (a plain Url with no capture step, e.g. a future
-    /// BAPL DMS sync) or when the device/browser denied location access.</summary>
+    /// DMS sync) or when the device/browser denied location access.</summary>
     public double? Latitude { get; set; }
     public double? Longitude { get; set; }
     /// <summary>Set when this photo/video was uploaded from the Part Suggestion grid's Picture
@@ -297,25 +297,25 @@ public class QcChecklistItem
     public DateTime? CheckedAt { get; set; }
 }
 
-/// <summary>A part suggested for this job card from BAPL DMS's own PartsInventory (see
+/// <summary>A part suggested for this job card from DMS's own PartsInventory (see
 /// BaplDmsService.GetPartsInventoryAsync), scoped to the job card's Service Location. Stored
 /// locally purely for JobCardScanner's own history/reporting ("Paid" vs "U/W" - under warranty) -
-/// this does NOT write anything back into BAPL DMS, and is deliberately separate from the existing
+/// this does NOT write anything back into DMS, and is deliberately separate from the existing
 /// JobCardPart (which requires a real local PartMaster row this BAPL ItemCode has no mapping to).</summary>
 public class JobCardPartSuggestion
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid JobCardId { get; set; }
     public JobCard? JobCard { get; set; }
-    /// <summary>BAPL DMS's PartsInventory.ItemCode - not a local PartMaster.PartNumber.</summary>
+    /// <summary>DMS's PartsInventory.ItemCode - not a local PartMaster.PartNumber.</summary>
     [Required, MaxLength(60)] public string ItemCode { get; set; } = default!;
     /// <summary>PartsInventory's available quantity at the time this was suggested (informational -
-    /// not re-checked live once saved, since BAPL DMS's own stock moves independently of this).</summary>
+    /// not re-checked live once saved, since DMS's own stock moves independently of this).</summary>
     public int? AvailableQtyAtSuggestion { get; set; }
     /// <summary>"Paid" or "U/W" (under warranty) - the only two options on the dropdown.</summary>
     [Required, MaxLength(20)] public string Status { get; set; } = "Paid";
     /// <summary>How many units of this part are actually being used on this job card - distinct
-    /// from AvailableQtyAtSuggestion above (that's BAPL DMS's stock level at suggestion time, not a
+    /// from AvailableQtyAtSuggestion above (that's DMS's stock level at suggestion time, not a
     /// quantity requested). Added for Items 16/18 (Part Suggestion grid's QTY column, and the
     /// Estimates Amount calculation's Part Details table - Amount = Mrp x Quantity). Defaults to 1,
     /// same convention as JobCardLabourSuggestion.Quantity. NEW column - see
@@ -323,7 +323,7 @@ public class JobCardPartSuggestion
     /// (Database.EnsureCreatedAsync() in Program.cs does nothing on a database that already
     /// exists).</summary>
     public int Quantity { get; set; } = 1;
-    /// <summary>Snapshot of the item's description/MRP/HSN at suggestion time, from BAPL DMS's own
+    /// <summary>Snapshot of the item's description/MRP/HSN at suggestion time, from DMS's own
     /// best-effort ItemMaster enrichment (see BaplDmsPartStockRow's doc comment in
     /// BaplDmsService.cs - these may be null even for a real item if that table/columns turn out to
     /// be named differently). Snapshotted rather than live-linked, same reasoning as
@@ -338,24 +338,24 @@ public class JobCardPartSuggestion
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 
-/// <summary>A labour line suggested for this job card from BAPL DMS's own LabourMaster (see
+/// <summary>A labour line suggested for this job card from DMS's own LabourMaster (see
 /// BaplDmsService.GetLabourAsync), mirroring JobCardPartSuggestion's pattern but for labour instead
 /// of parts. Snapshots LabourDescription/HsnCode/Sgst/Cgst/Igst/RateAtSuggestion from the matched
 /// LabourMaster row AT THE TIME it was suggested (confirmed via a live `SELECT * FROM LabourMaster`
 /// dump) - not live-linked, so a later change to LabourMaster's own rate/GST doesn't retroactively
 /// change what was already suggested on this job card, and so this doesn't need a live join back
-/// into BAPL DMS every time the job card is displayed. Quantity is staff-editable (defaults to 1);
+/// into DMS every time the job card is displayed. Quantity is staff-editable (defaults to 1);
 /// RateAtSuggestion is NOT editable once suggested (locked from LabourMaster's own rate card,
 /// matching how a labour rate card normally works). IssueType is a free-text field (not a Paid/U-W
 /// dropdown like JobCardPartSuggestion.Status - this app doesn't have a fixed set of labour issue
 /// reasons) capturing why this labour is being billed. This does NOT write anything back into
-/// BAPL DMS - JobCardScanner-only history/reporting, same as JobCardPartSuggestion.</summary>
+/// DMS - JobCardScanner-only history/reporting, same as JobCardPartSuggestion.</summary>
 public class JobCardLabourSuggestion
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid JobCardId { get; set; }
     public JobCard? JobCard { get; set; }
-    /// <summary>BAPL DMS's LabourMaster.LabourCode.</summary>
+    /// <summary>DMS's LabourMaster.LabourCode.</summary>
     [Required, MaxLength(60)] public string LabourCode { get; set; } = default!;
     /// <summary>Snapshot of LabourMaster.LabourDescription at suggestion time.</summary>
     [MaxLength(400)] public string? LabourDescription { get; set; }
@@ -370,7 +370,7 @@ public class JobCardLabourSuggestion
     /// <summary>How many units of this labour code - staff-editable, defaults to 1.</summary>
     public int Quantity { get; set; } = 1;
     /// <summary>Free-text reason/issue type for this labour line (e.g. "Warranty", "Accident",
-    /// "General Service") - not a fixed dropdown, since BAPL DMS doesn't define a closed set of
+    /// "General Service") - not a fixed dropdown, since DMS doesn't define a closed set of
     /// these for LabourMaster.</summary>
     [MaxLength(120)] public string? IssueType { get; set; }
     public Guid? SuggestedById { get; set; }

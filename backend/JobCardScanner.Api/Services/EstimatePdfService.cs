@@ -20,8 +20,8 @@ public interface IEstimatePdfService
 
 /// <summary>See IEstimatePdfService. Deliberately a thin, separate service rather than another
 /// method bolted onto InvoicePdfService - this PDF is JobCardScanner's own Part/Labour Suggestion
-/// data (JobCardPartSuggestion/JobCardLabourSuggestion), not BAPL DMS's repair bill, so it doesn't
-/// share InvoicePdfService's BAPL DMS dependency at all.</summary>
+/// data (JobCardPartSuggestion/JobCardLabourSuggestion), not DMS's repair bill, so it doesn't
+/// share InvoicePdfService's DMS dependency at all.</summary>
 public class EstimatePdfService : IEstimatePdfService
 {
     private readonly JobCardScannerDbContext _db;

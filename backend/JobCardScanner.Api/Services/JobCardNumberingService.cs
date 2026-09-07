@@ -23,7 +23,7 @@ public class JobCardNumberingService : IJobCardNumberingService
     public Task<string> NextInvoiceNumberAsync(Guid dealerId) => NextAsync(dealerId, "Invoice", "INV");
 
     /// <summary>
-    /// JC/{last 3 digits of the dealer's BAPL DMS dealer code}/{Indian FY, e.g. "26-27"}/
+    /// JC/{last 3 digits of the dealer's DMS dealer code}/{Indian FY, e.g. "26-27"}/
     /// {4-digit sequence} - e.g. "JC/487/26-27/0001" for dealer CUS0487's first job card of
     /// FY2026-27. Deliberately keyed off a per-financial-year CounterType ("JobCard-FY26-27"
     /// etc.) rather than a schema change: this app creates its schema with

@@ -155,7 +155,7 @@ export function LoginScreen() {
               {step === 'login' && (
                 <>
                   <Text style={styles.copy}>
-                    For dealer workshop staff signing in with the email/dealer code & password issued by your admin, or your BAPL DMS login.
+                    For dealer workshop staff signing in with the email/dealer code & password issued by your admin, or your DMS login.
                   </Text>
                   <Field label="Email or Dealer Code">
                     <TextInput

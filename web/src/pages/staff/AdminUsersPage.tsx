@@ -1,4 +1,3 @@
-// web\src\pages\staff\AdminUsersPage.tsx
 import { useEffect, useState } from 'react'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
@@ -61,10 +60,10 @@ interface BaplImportResult {
   dealers: { customerCode: string; customerName: string; city: string; state: string; email: string }[]
 }
 
-// One row of BAPL DMS's own AspNetUsers (GET /api/bapl-dms/aspnet-users), cross-referenced
+// One row of DMS's own AspNetUsers (GET /api/bapl-dms/aspnet-users), cross-referenced
 // server-side against JobCardScannerDb's own Dealers/Users - see BaplDmsController.AspNetUsers's
 // doc comment. Read-only browse: there's no PasswordHash here, and no add/resolve action - it
-// exists purely so an admin can see why a given BAPL DMS login is or isn't working yet (no
+// exists purely so an admin can see why a given DMS login is or isn't working yet (no
 // DealerCode on file, a DealerCode that doesn't resolve to a known local Dealer, or simply never
 // signed in) without pasting SQL dumps back and forth.
 interface BaplAspNetUser {
@@ -234,7 +233,7 @@ export function AdminUsersPage() {
     finally { setBaplLoading(null) }
   }
 
-  // ---------------- BAPL DMS Logins (browse AspNetUsers) ----------------
+  // ---------------- DMS Logins (browse AspNetUsers) ----------------
   const [baplUsersQuery, setBaplUsersQuery] = useState('')
   const [baplUsers, setBaplUsers] = useState<BaplAspNetUser[]>([])
   const [baplUsersLoading, setBaplUsersLoading] = useState(false)
@@ -250,7 +249,7 @@ export function AdminUsersPage() {
       setBaplUsersLoaded(true)
     } catch (err: unknown) {
       const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
-        ?? 'Could not reach BAPL DMS right now.'
+        ?? 'Could not reach DMS right now.'
       setBaplUsersError(message)
       setBaplUsers([])
     } finally {
@@ -461,14 +460,14 @@ export function AdminUsersPage() {
 
       {hasRole('DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
       <div className="card">
-        <h3>BAPL DMS Logins</h3>
+        <h3>DMS Logins</h3>
         <p className="muted">
-          Browses BAPL DMS's own AspNetUsers directly (the same table the "Dealer / Workshop Login"
-          page's BAPL DMS fallback checks) - search by email, username, or dealer code to see
+          Browses DMS's own AspNetUsers directly (the same table the "Dealer / Workshop Login"
+          page's DMS fallback checks) - search by email, username, or dealer code to see
           whether a login's DealerCode already resolves to a Dealer here, and whether that person
           has actually signed in yet. Read-only - passwords are never shown or read here; sign-in
           still only ever happens on the Dealer / Workshop Login page itself with that person's real
-          BAPL DMS password.
+          DMS password.
         </p>
         <div className="form-row">
           <div className="field" style={{ flex: 1 }}>
@@ -481,7 +480,7 @@ export function AdminUsersPage() {
             />
           </div>
           <button className="btn btn-sm" style={{ alignSelf: 'flex-end' }} disabled={baplUsersLoading} onClick={() => loadBaplUsers(baplUsersQuery)}>
-            {baplUsersLoading ? 'Loading…' : baplUsersLoaded ? 'Search' : 'Load BAPL DMS Logins'}
+            {baplUsersLoading ? 'Loading…' : baplUsersLoaded ? 'Search' : 'Load DMS Logins'}
           </button>
         </div>
 

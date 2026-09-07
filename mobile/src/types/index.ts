@@ -33,7 +33,7 @@ export interface CurrentUser {
   role: StaffRole
   dealerId?: string | null
   dealerName?: string | null
-  /** BAPL DMS's own dealer code (e.g. "CUS0435") - used to scope chassis/reg-no vehicle search to
+  /** DMS's own dealer code (e.g. "CUS0435") - used to scope chassis/reg-no vehicle search to
    * this user's own dealer. See AuthController.Me's DealerBaplDmsCode doc comment. */
   dealerBaplDmsCode?: string | null
 }
@@ -46,7 +46,7 @@ export interface Dealer {
   baplDmsDealerCode?: string | null
 }
 
-// ---------------- BAPL DMS integration (Job Card Wizard dealer/vehicle auto-fill - mirrors
+// ---------------- DMS integration (Job Card Wizard dealer/vehicle auto-fill - mirrors
 // web/src/types/index.ts's same-named interfaces field for field). ----------------
 export interface BaplDealerResolveResult extends Dealer {
   loginCreated?: boolean
@@ -89,7 +89,7 @@ export interface BaplDmsVehicleLookup {
   locationCode?: string | null
   dealerCode?: string | null
   // Set server-side (BaplDmsController.VehicleLookup) when this chassis already has an open job
-  // card - either in JobCardScanner's own JobCards (openJobCardSource "local") or in BAPL DMS's own
+  // card - either in JobCardScanner's own JobCards (openJobCardSource "local") or in DMS's own
   // job card history (openJobCardSource "bapl-dms") - matches web's same field. See
   // BaplDmsVehicleRow's doc comment on the backend.
   openJobCardNumber?: string | null
@@ -97,7 +97,7 @@ export interface BaplDmsVehicleLookup {
   openJobCardStatus?: string | null
   customerAddress?: string | null
   customerEmail?: string | null
-  // Battery Details fields sourced from BAPL DMS's ChassisBatteryDetails table.
+  // Battery Details fields sourced from DMS's ChassisBatteryDetails table.
   batteryChemical?: string | null
   batteryCapacity?: string | null
   batteryMake?: string | null
@@ -112,7 +112,7 @@ export interface BaplDmsVehicleSuggestion {
   saleDate?: string | null
 }
 
-/// One active "W" series workshop location from BAPL DMS's own LocationMaster.
+/// One active "W" series workshop location from DMS's own LocationMaster.
 export interface BaplDmsWorkshop {
   locCode: string
   locName: string
@@ -144,7 +144,7 @@ export interface BaplDmsComplaint {
   groupName?: number | null
 }
 
-/// One row from BAPL DMS's JobSource master (Walk In / RSA / Mega Camp / ...).
+/// One row from DMS's JobSource master (Walk In / RSA / Mega Camp / ...).
 export interface BaplDmsJobSource {
   id: number
   name: string
@@ -166,7 +166,7 @@ export interface BaplDmsJobCardHistory {
 
 // ---- Part Suggestion / Labour Suggestion ----
 
-/// One part-availability row from BAPL DMS's own PartsInventory for a given service location -
+/// One part-availability row from DMS's own PartsInventory for a given service location -
 /// GET /api/bapl-dms/parts?locationCode=... .
 export interface BaplDmsPartStock {
   itemCode: string
@@ -190,7 +190,7 @@ export interface JobCardPartSuggestion {
   createdAt?: string
 }
 
-/// One labour rate-card row from BAPL DMS's own LabourMaster, OR from PartWiseLabourMaster (a
+/// One labour rate-card row from DMS's own LabourMaster, OR from PartWiseLabourMaster (a
 /// second, part-linked rate card unioned in as of 2026-09-03) - GET /api/bapl-dms/labour?... .
 /// IMPORTANT: labourCode is NOT unique per row - always key/select UI lists by `id`.
 export interface BaplDmsLabourRow {
@@ -270,7 +270,7 @@ export interface WorkflowStage {
 export interface JobCardSummary {
   id: string
   jobCardNumber: string
-  // A BaplDms row's status is BAPL DMS's own free-text JobStatus, not one of JobCardStatus's fixed
+  // A BaplDms row's status is DMS's own free-text JobStatus, not one of JobCardStatus's fixed
   // values - widened to `string` for BaplDms rows (only JobCardScanner rows get the fixed Badge).
   status: JobCardStatus | string
   priority?: string
@@ -365,7 +365,7 @@ export interface JobCardDetail extends Omit<JobCardSummary, 'customerName' | 've
   customer?: Customer
   vehicle?: Vehicle
   dealer?: { id: string; name: string; code: string } | null
-  /// This job card's dealer, resolved to BAPL DMS's own dealer code (distinct from dealer.code
+  /// This job card's dealer, resolved to DMS's own dealer code (distinct from dealer.code
   /// above, which is JobCardScanner's own local code) - used to scope the Labour Suggestion
   /// panel's PartWiseLabourMaster search to the right dealer.
   baplDealerCode?: string | null
@@ -381,13 +381,37 @@ export interface JobCardDetail extends Omit<JobCardSummary, 'customerName' | 've
   labourSuggestions: JobCardLabourSuggestion[]
 }
 
+export interface CsatSummary {
+  average: number | null
+  ratingsCount: number
+}
+
+// 2026-09-07: brought up to parity with web's DashboardKpis (web/src/types/index.ts) - this was
+// missing every field DashboardScreen.tsx's tiles/status-breakdown/revenue row now read
+// (revenuePaidInvoices, byStatus, csat, and all nine Dealer Dashboard tile fields below), even
+// though /api/dashboard/kpis has always returned them - the mobile type just hadn't been updated
+// to match since DashboardController.Kpis grew those fields for web.
 export interface DashboardKpis {
   totalOpen: number
   openToday: number
   closedThisMonth: number
   pendingApproval: number
   overdue: number
+  revenueToday: number
+  revenueThisMonth: number
+  revenuePaidInvoices: number
   avgTurnaroundHours: number
+  byStatus: { status: string; count: number }[]
+  // Dealer Dashboard tiles
+  vehiclesReceivedToday: number
+  underService: number
+  waitingForParts: number
+  waitingCustomerApproval: number
+  vehiclesReady: number
+  vehiclesDeliveredToday: number
+  pendingJobCards: number
+  warrantyJobsOpen: number
+  csat: CsatSummary
 }
 
 export interface PartMaster {

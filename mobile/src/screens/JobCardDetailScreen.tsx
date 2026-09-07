@@ -308,7 +308,7 @@ function CustomerPasswordResetButton({ customerId, customerName }: { customerId:
 }
 
 /** "Download Invoice from DMS" (Cashier/DealerAdmin/CorporateAdmin/SystemAdmin) - mirrors web's
- * standalone InvoiceCard, restored below BAPL DMS Service History alongside the header's Print
+ * standalone InvoiceCard, restored below DMS Service History alongside the header's Print
  * menu (which also has its own Invoice option - see PrintMenu's doc comment on why both exist).
  * Fetches the same PDF PrintMenu's printInvoice does, then hands it to the OS share sheet
  * (Sharing.shareAsync) rather than the OS print dialog - "download/save this" instead of "print
@@ -357,10 +357,10 @@ function InvoiceCard({ jc }: { jc: JobCardDetail }) {
   )
 }
 
-/** Read-only reference panel showing BAPL DMS's own service/job-card history for this vehicle's
+/** Read-only reference panel showing DMS's own service/job-card history for this vehicle's
  * chassis (GET /api/bapl-dms/service-history) - mirrors web's BaplServiceHistoryCard. Silently
- * shows nothing if the vehicle has no VIN/chassis on file, or BAPL DMS has never seen this
- * chassis; only a real BAPL DMS problem (502) surfaces as an error. */
+ * shows nothing if the vehicle has no VIN/chassis on file, or DMS has never seen this
+ * chassis; only a real DMS problem (502) surfaces as an error. */
 function BaplServiceHistoryCard({ chassisNo, dealerCode }: { chassisNo?: string | null; dealerCode?: string | null }) {
   const [rows, setRows] = useState<BaplDmsJobCardHistory[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -848,9 +848,9 @@ function EstimatesCard({
  * next to the status badge: 3 options -
  *   1. Estimate    - customer/dealer/vehicle identity + the Estimates Amount tables only (Part
  *                    Details, Labour Details, Grand Total) - see buildEstimatePrintHtml.
- *   2. JobCard print - the same BAPL DMS "Job Card + Gate Pass" paper layout the wizard's own
+ *   2. JobCard print - the same DMS "Job Card + Gate Pass" paper layout the wizard's own
  *                    pre-creation Print button uses, filled from this job card's real saved data.
- *   3. Invoice     - BAPL DMS's own repair bill PDF (GET /api/jobcards/{id}/invoice-pdf) - this
+ *   3. Invoice     - DMS's own repair bill PDF (GET /api/jobcards/{id}/invoice-pdf) - this
  *                    REPLACES the old standalone "Download Invoice from DMS" card that used to sit
  *                    further down the page, same as web's own PrintMenu replaced its old
  *                    standalone InvoiceCard - same role gate that card had (Cashier/DealerAdmin/
@@ -975,8 +975,8 @@ function PrintMenu({ jc, hasRole }: { jc: JobCardDetail; hasRole: (...roles: Sta
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status
       setError(status === 404
-        ? 'No repair bill saved in BAPL DMS for this job yet.'
-        : 'Could not open the invoice from BAPL DMS. Please try again.')
+        ? 'No repair bill saved in DMS for this job yet.'
+        : 'Could not open the invoice from DMS. Please try again.')
     } finally {
       setBusy(null)
     }

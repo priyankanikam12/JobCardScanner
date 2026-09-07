@@ -35,14 +35,14 @@ public class PartsController : ControllerBase
     /// <summary>
     /// GET /api/parts?q=...&amp;locationCode=... - the Parts &amp; Inventory catalog page. Always
     /// searches JobCardScanner's own local PartMaster catalog (unchanged from before); ADDITIONALLY
-    /// searches BAPL DMS's own PartsInventory (see BaplDmsService.GetPartsInventoryAsync) whenever a
-    /// BAPL DMS workshop location code is supplied - unlike PartMaster, PartsInventory is scoped to
+    /// searches DMS's own PartsInventory (see BaplDmsService.GetPartsInventoryAsync) whenever a
+    /// DMS workshop location code is supplied - unlike PartMaster, PartsInventory is scoped to
     /// one workshop location (e.g. "CUS0435W1"), not a dealer-wide catalog, so there's no location
     /// to search without one being given. dmsParts entries carry only ItemCode + AvailableQty (no
-    /// confirmed name/price/category master table exists for BAPL DMS parts anywhere in this
+    /// confirmed name/price/category master table exists for DMS parts anywhere in this
     /// codebase - see BaplDmsRepairBillDetailRow's doc comment on the same gap) and are NOT tied to
     /// a local PartMaster.Id, so they can't be "Request"-ed against a job card the way a local part
-    /// can - a job card that needs a specific BAPL DMS item uses the Job Card Detail page's own
+    /// can - a job card that needs a specific DMS item uses the Job Card Detail page's own
     /// "Part Suggestion" panel instead (POST /api/jobcards/{id}/part-suggestions), which is already
     /// scoped to that job card's own BaplServiceLocationCode.
     /// </summary>
@@ -67,8 +67,8 @@ public class PartsController : ControllerBase
             }
             catch (InvalidOperationException ex)
             {
-                _logger.LogWarning(ex, "Could not read BAPL DMS parts inventory for location {LocationCode}", locationCode);
-                dmsWarning = "Could not reach BAPL DMS's parts inventory right now - showing JobCardScanner's own catalog only.";
+                _logger.LogWarning(ex, "Could not read DMS parts inventory for location {LocationCode}", locationCode);
+                dmsWarning = "Could not reach DMS's parts inventory right now - showing JobCardScanner's own catalog only.";
             }
         }
 

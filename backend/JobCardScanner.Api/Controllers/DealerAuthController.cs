@@ -56,10 +56,10 @@ public class DealerAuthController : ControllerBase
     /// POST /api/dealer-auth/login - email + password sign-in for local staff. Tries
     /// JobCardScanner's own local Users table FIRST (exactly as before, unchanged) - only when
     /// that fails (no such local user, or the password doesn't verify) does this fall back to
-    /// checking the SAME email+password against BAPL DMS's own AspNetUsers (standard ASP.NET Core
+    /// checking the SAME email+password against DMS's own AspNetUsers (standard ASP.NET Core
     /// Identity table, read via the existing BAPLDMSvadConnection - see
     /// BaplDmsService.VerifyDealerCredentialsAsync). A dealer/workshop user who already has real
-    /// credentials in BAPL DMS can sign in here with them, and a local Users row is auto-provisioned
+    /// credentials in DMS can sign in here with them, and a local Users row is auto-provisioned
     /// (or reused, if one already exists for that email) the same way
     /// BaplDmsController.CreateDealerLoginAsync provisions one for the ERP dealer-resolve flow - so
     /// every downstream DealerJwt-authenticated endpoint keeps working unchanged.
@@ -75,9 +75,9 @@ public class DealerAuthController : ControllerBase
 
         if (!localOk)
         {
-            // ---------------- Fallback: verify against BAPL DMS's own AspNetUsers ----------------
+            // ---------------- Fallback: verify against DMS's own AspNetUsers ----------------
             // Never throws (see VerifyDealerCredentialsAsync's doc comment) - a null here just means
-            // "not a valid BAPL DMS login either", falling through to the existing Unauthorized
+            // "not a valid DMS login either", falling through to the existing Unauthorized
             // response below exactly as before this fallback was added.
             BaplDmsDealerCredential? baplCred = null;
             try
@@ -86,7 +86,7 @@ public class DealerAuthController : ControllerBase
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "BAPL DMS credential fallback failed unexpectedly for {Email}", req.Email);
+                _logger.LogWarning(ex, "DMS credential fallback failed unexpectedly for {Email}", req.Email);
             }
 
             if (baplCred is null)
@@ -95,7 +95,7 @@ public class DealerAuthController : ControllerBase
             var email = baplCred.Email.Trim().ToLower();
             // Only ever match/reuse an existing LOCAL user for this email - an email that already
             // belongs to an AzureAd-authenticated staff account must never be logged in here just
-            // because it happens to also be a valid BAPL DMS login; that would let a BAPL DMS
+            // because it happens to also be a valid DMS login; that would let a DMS
             // password grant access to an account meant to be gated by Azure AD instead.
             var existingNonLocal = await _db.Users.AnyAsync(u => u.Email.ToLower() == email && u.AuthType != UserAuthType.Local);
             if (existingNonLocal)
@@ -103,7 +103,7 @@ public class DealerAuthController : ControllerBase
 
             // ---------------- Resolve the role + Dealer/Corporate scope this login gets ----------------
             // Simple case: baplCred.DealerCode straight off AspNetUsers -> a single Dealer, DealerAdmin.
-            // BAPL DMS "Employee"-role case (regional/zone BG staff - see ResolveAssignmentAsync): scope
+            // DMS "Employee"-role case (regional/zone BG staff - see ResolveAssignmentAsync): scope
             // comes from BgEmployeeMaster/EmployeeMaster instead, and can span MULTIPLE dealer codes, in
             // which case this account gets CorporateAdmin (org-wide, DealerId=null) rather than being
             // arbitrarily pinned to just one of their dealers - see ResolveAssignmentAsync's doc comment.
@@ -122,7 +122,7 @@ public class DealerAuthController : ControllerBase
                     Role = assignment.Role,
                     DealerId = assignment.DealerId,
                     AuthType = UserAuthType.Local,
-                    // Real authentication now happens against BAPL DMS's own AspNetUsers above, not
+                    // Real authentication now happens against DMS's own AspNetUsers above, not
                     // this hash - it's set to a random, unguessable value purely so PasswordHash
                     // (which this table treats as required for a Local user) is never null/blank.
                     PasswordHash = PasswordHasher.Hash(Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N")),
@@ -136,8 +136,8 @@ public class DealerAuthController : ControllerBase
                 await _db.SaveChangesAsync();
                 _logger.LogInformation(
                     assignment.Active
-                        ? "Auto-provisioned local User {UserId} for {Email} as {Role} (Dealer {DealerId}, BAPL code {DealerCode}) on first BAPL DMS-backed dealer login"
-                        : "Auto-provisioned (INACTIVE, pending Dealer assignment) local User {UserId} for {Email} on first BAPL DMS-backed dealer login",
+                        ? "Auto-provisioned local User {UserId} for {Email} as {Role} (Dealer {DealerId}, BAPL code {DealerCode}) on first DMS-backed dealer login"
+                        : "Auto-provisioned (INACTIVE, pending Dealer assignment) local User {UserId} for {Email} on first DMS-backed dealer login",
                     user.Id, email, assignment.Role, assignment.DealerId, baplCred.DealerCode);
             }
             else if (!user.Active)
@@ -151,7 +151,7 @@ public class DealerAuthController : ControllerBase
                 // multi-dealer Employee case, so "!DealerId.HasValue" alone can't tell "never
                 // resolved" apart from "was a resolved CorporateAdmin"), means an admin deliberately
                 // deactivated this account (e.g. offboarding), which must NEVER be silently reversed
-                // just because their BAPL DMS credentials still work. Safe because a still-pending
+                // just because their DMS credentials still work. Safe because a still-pending
                 // row's Role is always the DealerAdmin default - ResolveAssignmentAsync only ever
                 // returns CorporateAdmin together with Active=true.
                 if (assignment.Active && !user.DealerId.HasValue && user.Role != StaffRole.CorporateAdmin)
@@ -173,7 +173,7 @@ public class DealerAuthController : ControllerBase
                     {
                         message = user.DealerId.HasValue
                             ? "Your account is deactivated. Contact a Corporate/System Admin."
-                            : "Your BAPL DMS credentials are valid, but your account isn't linked to a dealer in JobCardScanner yet (BAPL DMS has no DealerCode on file for this login). Ask a Corporate/System Admin to assign your dealer and activate your account from Admin → Users, then sign in again.",
+                            : "Your DMS credentials are valid, but your account isn't linked to a dealer in JobCardScanner yet (DMS has no DealerCode on file for this login). Ask a Corporate/System Admin to assign your dealer and activate your account from Admin → Users, then sign in again.",
                         pendingDealerAssignment = !user.DealerId.HasValue,
                     });
                 }
@@ -204,23 +204,23 @@ public class DealerAuthController : ControllerBase
         });
     }
 
-    /// <summary>Outcome of ResolveAssignmentAsync - the role/dealer scope a BAPL DMS-backed login
+    /// <summary>Outcome of ResolveAssignmentAsync - the role/dealer scope a DMS-backed login
     /// should get. Active=false means "credentials are good but there's nothing to assign yet",
     /// which Login's caller turns into the existing pending-assignment 403 safety net rather than
     /// ever creating/reactivating an Active user with no scope.</summary>
     private record ResolvedAssignment(StaffRole Role, Guid? DealerId, bool Active);
 
     /// <summary>
-    /// Decides the StaffRole + DealerId a BAPL DMS-backed login should get, per the two shapes BAPL
+    /// Decides the StaffRole + DealerId a DMS-backed login should get, per the two shapes BAPL
     /// DMS's own AuthController.Login itself distinguishes (you pasted its real source):
     ///   - The simple case (not the "Employee" role): AspNetUsers.DealerCode names exactly one
     ///     dealer -> DealerAdmin scoped to that one Dealer, same as before this method existed.
     ///   - The "Employee" role case (regional/zone BG staff, e.g. BgEmployeeMaster row "Mayank
     ///     Maheshwari": DealerCode = "CUS0347,CUS0440"): scope comes from
     ///     BaplDmsService.ResolveEmployeeDealerScopeAsync (BgEmployeeMaster/EmployeeMaster by email),
-    ///     never from AspNetUsers.DealerCode directly, mirroring BAPL DMS's own
+    ///     never from AspNetUsers.DealerCode directly, mirroring DMS's own
     ///     ResolveEmployeeLoginInfo branch. A rejected/not-found/inactive Employee row returns null
-    ///     here (Login then 401s immediately), mirroring BAPL DMS's own rejection of the same case.
+    ///     here (Login then 401s immediately), mirroring DMS's own rejection of the same case.
     ///     One mapped dealer code -> DealerAdmin scoped to that Dealer, same as the simple case.
     ///     MULTIPLE mapped dealer codes -> CorporateAdmin with DealerId=null (org-wide visibility) -
     ///     JobCardScanner has no way to represent "scoped to exactly these N dealers", and pinning to
@@ -229,7 +229,7 @@ public class DealerAuthController : ControllerBase
     ///     Zero mapped dealer codes (an active BG employee row exists, but with no DealerCode at all)
     ///     -> DealerAdmin with DealerId=null and Active=false, same pending-assignment shape as the
     ///     simple case's unresolved DealerCode - an admin has to sort out that mapping manually.
-    /// Never throws - every BAPL DMS call inside here already degrades to a safe default/false on its
+    /// Never throws - every DMS call inside here already degrades to a safe default/false on its
     /// own (see VerifyDealerCredentialsAsync/ResolveEmployeeDealerScopeAsync's own doc comments), so
     /// nothing here needs its own additional try/catch.
     /// </summary>
@@ -238,7 +238,7 @@ public class DealerAuthController : ControllerBase
         if (cred.IsBgEmployeeRole)
         {
             var scope = await _baplDms.ResolveEmployeeDealerScopeAsync(cred.Email, ct);
-            if (!scope.Found || !scope.IsActive) return null; // mirrors BAPL DMS's own "Employee account not found or inactive" rejection
+            if (!scope.Found || !scope.IsActive) return null; // mirrors DMS's own "Employee account not found or inactive" rejection
 
             if (scope.DealerCodes.Count > 1)
                 return new ResolvedAssignment(StaffRole.CorporateAdmin, null, true);
@@ -259,12 +259,12 @@ public class DealerAuthController : ControllerBase
     }
 
     /// <summary>
-    /// Resolves a BAPL DMS DealerCode (e.g. "CUS0001", from AspNetUsers.DealerCode) to a local
+    /// Resolves a DMS DealerCode (e.g. "CUS0001", from AspNetUsers.DealerCode) to a local
     /// <see cref="Dealer"/> row, find-or-create - same fields/Source as
     /// BaplDmsController.ResolveDealer's own dealer-creation path, kept independent (not a shared
     /// helper) since that controller's version also creates a separate DealerAdmin login this path
     /// doesn't need (Login is already creating/updating the User itself). Returns null when the
-    /// code can't be found locally OR in BAPL DMS's own DealerMaster (including on any BAPL DMS
+    /// code can't be found locally OR in DMS's own DealerMaster (including on any DMS
     /// error - this must never throw, since a real failure here should degrade a login to the
     /// pending-assignment safety net, not a 500).
     /// </summary>
@@ -293,12 +293,12 @@ public class DealerAuthController : ControllerBase
             };
             _db.Dealers.Add(dealer);
             await _db.SaveChangesAsync();
-            _logger.LogInformation("Created Dealer {DealerId} from BAPL DMS dealer {DealerCode} via dealer-login resolve", dealer.Id, code);
+            _logger.LogInformation("Created Dealer {DealerId} from DMS dealer {DealerCode} via dealer-login resolve", dealer.Id, code);
             return dealer;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not resolve BAPL DMS dealer code {DealerCode} while logging in", code);
+            _logger.LogWarning(ex, "Could not resolve DMS dealer code {DealerCode} while logging in", code);
             return null;
         }
     }

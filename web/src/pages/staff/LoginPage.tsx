@@ -5,7 +5,7 @@ import { apiLoginRequest } from '../../auth/msalConfig'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
 import { dealerLogin, forgotDealerPassword, resetDealerPassword } from '../../services/dealerAuthService'
 import { PasswordInput } from '../../components/PasswordInput'
-import bgaussLogo from '../../assets/BG_Logo.png'
+import bgaussLogo from '../../assets/BGauss_Logo.png'
 import scootyImg from '../../assets/Bg0-scooty.png'
 import './LoginPage.css'
 
@@ -167,11 +167,11 @@ export function LoginPage() {
             <div className="jcs-mode-body">
               {step === 'login' && (
                 <form onSubmit={handleDealerLogin}>
-                  <p className="jcs-mode-copy">For dealer workshop staff signing in with the email/dealer code &amp; password issued by your admin, or your BAPL DMS login.</p>
+                  <p className="jcs-mode-copy">For dealer workshop staff signing in with the email/dealer code &amp; password issued by your admin, or your DMS login.</p>
                   <label className="jcs-field">
                     <span>Email or Dealer Code</span>
-                    {/* Plain text, not type="email" - a BAPL DMS login can be signed in with a
-                       bare dealer code as its username (e.g. "CUS0486"), same as BAPL DMS's own
+                    {/* Plain text, not type="email" - a DMS login can be signed in with a
+                       bare dealer code as its username (e.g. "CUS0486"), same as DMS's own
                        site accepts (see DealerAuthController.Login's fallback to
                        BaplDmsService.VerifyDealerCredentialsAsync) - the browser's built-in email
                        format validation would otherwise silently block submitting that. */}

@@ -102,7 +102,7 @@ public class CustomersController : ControllerBase
         };
         _db.Vehicles.Add(vehicle);
 
-        // Only when the vehicle step was auto-filled from a BAPL DMS lookup that actually returned
+        // Only when the vehicle step was auto-filled from a DMS lookup that actually returned
         // warranty info - a manually-added vehicle has none of this, so nothing extra is created.
         if (req.WarrantyExpiryDate.HasValue || req.WarrantyOdoReading.HasValue)
         {

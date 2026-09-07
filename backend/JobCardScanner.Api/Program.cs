@@ -371,7 +371,7 @@ if (app.Environment.IsDevelopment())
 //     Repair Completed, per explicit request - see JobCardsController.cs/EstimatesController.cs's
 //     calls into WorkflowStageAutomation for what now auto-advances a job card onto it.
 // Deliberately NOT included: add-bapldms-jobcard-media-table.sql and
-// add-bapldms-jobcardheader-priority-column.sql target BAPLDMSvad (BAPL DMS's own database, a
+// add-bapldms-jobcardheader-priority-column.sql target BAPLDMSvad (DMS's own database, a
 // separate connection this DbContext does not own) - those still need running by hand against that
 // database specifically if not already applied.
 // ---------------------------------------------------------------------

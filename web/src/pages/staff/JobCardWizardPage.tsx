@@ -20,11 +20,11 @@ function Req() {
 }
 
 // JobCardScanner's own ServiceType/JobCardSource enums are still required internally (dashboards,
-// filters, the Status Badge, ...) but showing them as their own pickers next to BAPL DMS's real
+// filters, the Status Badge, ...) but showing them as their own pickers next to DMS's real
 // Job Type and JobSource dropdowns was pure duplication - two "what kind of service is this"
 // fields and two "where did this job come from" fields for the same job card. These best-effort
-// mappings derive JobCardScanner's own value from whichever BAPL DMS option was actually picked,
-// so only one of each is shown to the user; there's no clean 1:1 correspondence between BAPL DMS's
+// mappings derive JobCardScanner's own value from whichever DMS option was actually picked,
+// so only one of each is shown to the user; there's no clean 1:1 correspondence between DMS's
 // free-form master data and JobCardScanner's fixed enum, so treat this as "close enough for
 // internal reporting", not an authoritative translation.
 function mapBaplJobTypeToServiceType(baplJobTypeName: string): ServiceType {
@@ -44,12 +44,27 @@ function mapBaplJobSourceToSource(baplJobSourceName: string): JobCardSource {
   return 'WalkIn'
 }
 
-/** "YYYY-MM-DDTHH:mm" in the browser's local time, for a datetime-local input's default value -
- * used so "Expected delivery" defaults to today rather than starting blank. */
+const IST_TIME_ZONE = 'Asia/Kolkata'
+const IST_OFFSET_MINUTES = 330 // UTC+05:30
+
+/** "YYYY-MM-DDTHH:mm" for a datetime-local input's default value - used so "Expected delivery"
+ * defaults to today rather than starting blank. Always real IST (UTC+05:30) time, not whatever
+ * timezone the browser happens to be set to - per explicit request "Current time in IST
+ * (UTC+05:30) use everywhere on ui". A datetime-local input carries no timezone info of its own
+ * (it's just a wall-clock string), so shifting the underlying instant by exactly +5:30 before
+ * slicing off the ISO string's own UTC marker is the only way to guarantee this always shows the
+ * actual IST time, regardless of the browser/OS's configured zone - previously this read
+ * `d.getTimezoneOffset()`, which only produced IST if the browser itself happened to be set to
+ * IST already. Mirrors the same +330-minute convention already used server-side
+ * (EstimatePdfService) for "show actual IST time". */
 function nowForDatetimeLocalInput(): string {
-  const d = new Date()
-  d.setMinutes(d.getMinutes() - d.getTimezoneOffset())
-  return d.toISOString().slice(0, 16)
+  return new Date(Date.now() + IST_OFFSET_MINUTES * 60 * 1000).toISOString().slice(0, 16)
+}
+
+/** A date (e.g. a vehicle's DMS sale date) in real IST, not the browser's own timezone -
+ * same reasoning as nowForDatetimeLocalInput above. */
+function formatISTDate(iso: string): string {
+  return new Date(iso).toLocaleDateString('en-IN', { timeZone: IST_TIME_ZONE })
 }
 
 export function JobCardWizardPage() {
@@ -73,17 +88,17 @@ export function JobCardWizardPage() {
 
   useEffect(() => {
     if (!needsDealerPicker) return
-    // Only dealers/workshops already known to BAPL DMS (a resolved BaplDmsDealerCode) are shown
+    // Only dealers/workshops already known to DMS (a resolved BaplDmsDealerCode) are shown
     // here - a dealer imported only from the BAPL ERP warehouse (BaplDealerService's bulk import,
-    // a different data source entirely) has no BAPL DMS job card history/master data behind it, so
+    // a different data source entirely) has no DMS job card history/master data behind it, so
     // showing it in this picker would silently break the chassis lookup, Service Location dropdown,
-    // and the BAPL DMS write-back further down this wizard. Not in the list? Search BAPL DMS below.
+    // and the DMS write-back further down this wizard. Not in the list? Search DMS below.
     staffApi.get<Dealer[]>('/api/dealers')
       .then(({ data }) => setDealers(data.filter((d) => !!d.baplDmsDealerCode)))
       .catch(() => setDealers([]))
   }, [needsDealerPicker])
 
-  // Live search against BAPL DMS's own DealerMaster (Controllers/BaplDmsController.cs), for staff
+  // Live search against DMS's own DealerMaster (Controllers/BaplDmsController.cs), for staff
   // whose workshop isn't already a local Dealer row (or who'd rather find it by BAPL's own name/
   // code than scroll the plain dropdown above). Selecting a hit resolves-or-creates the matching
   // local Dealer (no login - see the controller's doc comment) and adds it to the picker.
@@ -104,7 +119,7 @@ export function JobCardWizardPage() {
       setBaplDealerResults(data)
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
-      setDealerSearchError(msg ? `BAPL DMS error: ${msg}` : 'Could not reach BAPL DMS right now - try the dropdown above, or again shortly.')
+      setDealerSearchError(msg ? `DMS error: ${msg}` : 'Could not reach DMS right now - try the dropdown above, or again shortly.')
     }
   }
 
@@ -123,7 +138,7 @@ export function JobCardWizardPage() {
       }
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
-      setDealerSearchError(msg ? `BAPL DMS error: ${msg}` : `Could not add "${row.dealerName}" from BAPL DMS - try again shortly.`)
+      setDealerSearchError(msg ? `DMS error: ${msg}` : `Could not add "${row.dealerName}" from DMS - try again shortly.`)
     } finally {
       setResolvingDealer(false)
     }
@@ -134,13 +149,13 @@ export function JobCardWizardPage() {
   // state/saleDate: added per Item 3/7 - state is stored on the customer (Customer.State - see
   // deploy/add-customer-state-column.sql for the manual production migration this needs);
   // saleDate has nowhere of its own to live on Customer, so it's carried forward and saved as the
-  // vehicle's PurchaseDate at step 2 (see createVehicle) - the same field a BAPL DMS-sourced
+  // vehicle's PurchaseDate at step 2 (see createVehicle) - the same field a DMS-sourced
   // saleDate already fills for an auto-fetched vehicle.
   const [newCustomer, setNewCustomer] = useState({ name: '', mobile: '', email: '', city: '', address: '', state: '', saleDate: '' })
 
   // "(Registered customer Details)" - by chassis no. / registration no. - auto-fetches everything
-  // BAPL DMS knows about that vehicle (Controllers/BaplDmsController.cs's vehicle-lookup, ported
-  // from BAPL DMS's own onChassisChange()/GetAllInspectedLotChassisAsync) and uses it to pre-fill
+  // DMS knows about that vehicle (Controllers/BaplDmsController.cs's vehicle-lookup, ported
+  // from DMS's own onChassisChange()/GetAllInspectedLotChassisAsync) and uses it to pre-fill
   // both the "register a new customer" fields below AND the vehicle step that follows -
   // baplVehicleHit is read again in step 2 for that. The old "search by mobile number or name"
   // field is commented out below per your request - chassis/reg no. search is the only lookup left.
@@ -165,7 +180,7 @@ export function JobCardWizardPage() {
   const [vehicleSuggestions, setVehicleSuggestions] = useState<BaplDmsVehicleSuggestion[]>([])
   const [showVehicleSuggestions, setShowVehicleSuggestions] = useState(false)
   // Global (cross-dealer) chassis/reg-no search - offered as a fallback right on the "not found"
-  // flag when a dealer-scoped lookup 404s, mirroring BAPL DMS's own Angular "Search Chassis Across
+  // flag when a dealer-scoped lookup 404s, mirroring DMS's own Angular "Search Chassis Across
   // All Dealers" popup (ebw-invoice component). GET /api/bapl-dms/vehicle-lookup already supports
   // this - dealerCode is optional server-side and an omitted one searches every dealer (see
   // IBaplDmsService.LookupVehicleAsync's own doc comment) - so no backend change was needed, just
@@ -176,7 +191,7 @@ export function JobCardWizardPage() {
   const [globalSearchNotFound, setGlobalSearchNotFound] = useState(false)
   // Scopes chassis/reg-no search to the dealer this job card is being created for - the wizard's
   // own dealer picker (Corporate/System Admin choosing which dealer/workshop) when one is set,
-  // falling back to the signed-in dealer's own BAPL DMS code otherwise. Left undefined (unscoped,
+  // falling back to the signed-in dealer's own DMS code otherwise. Left undefined (unscoped,
   // matching the backend's existing "search everything" default) only when neither is known yet -
   // e.g. a brand new dealer login whose BaplDmsDealerCode hasn't been resolved by any lookup yet.
   const vehicleSearchDealerCode = dealers.find((d) => d.id === effectiveDealerId)?.baplDmsDealerCode ?? profile?.dealerBaplDmsCode ?? undefined
@@ -189,7 +204,7 @@ export function JobCardWizardPage() {
     }, 300)
     return () => clearTimeout(handle)
   }, [chassisOrRegQ, showVehicleSuggestions, vehicleSearchDealerCode])
-  // Fields pre-filled from a BAPL DMS auto-fetch are locked by default (disabled inputs) so they
+  // Fields pre-filled from a DMS auto-fetch are locked by default (disabled inputs) so they
   // aren't accidentally overwritten - each section has its own "Edit anyway" escape hatch for the
   // rare case the fetched data is wrong. Resets back to locked whenever a fresh hit comes in.
   const [unlockCustomerFields, setUnlockCustomerFields] = useState(false)
@@ -208,7 +223,7 @@ export function JobCardWizardPage() {
       address: data.customerAddress || c.address,
       // Item 3: ChassisDetails.SaleDate is what gated this fetch in the first place (a null one
       // never reaches here - see the alert above) - show it back in the Sale Date field instead
-      // of leaving it blank for the user to re-type. BAPL DMS returns a full datetime (e.g.
+      // of leaving it blank for the user to re-type. DMS returns a full datetime (e.g.
       // "2026-07-17T15:47:40.203"); the <input type="date"> only wants the date part.
       saleDate: data.saleDate ? data.saleDate.split('T')[0] : c.saleDate,
     }))
@@ -231,17 +246,17 @@ export function JobCardWizardPage() {
     setGlobalSearchNotFound(false)
     try {
       const { data } = await staffApi.get<BaplDmsVehicleLookup>('/api/bapl-dms/vehicle-lookup', { params: { value, dealerCode: vehicleSearchDealerCode } })
-      // This chassis already has an open job card somewhere (JobCardScanner locally, or BAPL DMS -
+      // This chassis already has an open job card somewhere (JobCardScanner locally, or DMS -
       // see openJobCardNumber's doc comment) - refuse to auto-fill/proceed with it at all, and say
       // exactly where the open job card is so staff know where to go close it first.
       if (data.openJobCardNumber) {
-        const where = data.openJobCardSource === 'bapl-dms' ? 'in BAPL DMS' : 'here'
+        const where = data.openJobCardSource === 'bapl-dms' ? 'in DMS' : 'here'
         const status = data.openJobCardStatus ? ` (status: ${data.openJobCardStatus})` : ''
         setOpenJobCardNotice(`This chassis already has an open job card ${where}: ${data.openJobCardNumber}${status}. It must be closed before this chassis can be used for a new job card.`)
         return
       }
       // Item 3: a hit with no SaleDate on file isn't auto-fetched - alert and leave the customer/
-      // vehicle fields for manual entry instead of pre-filling from an incomplete BAPL DMS record.
+      // vehicle fields for manual entry instead of pre-filling from an incomplete DMS record.
       if (!data.saleDate) {
         // Item 12a/12b: shorter, friendlier wording - "This Vehicle not sold" instead of the
         // internal-sounding "Sale date not defined", shown as a styled banner instead of a native
@@ -255,15 +270,15 @@ export function JobCardWizardPage() {
     } catch (err: unknown) {
       const response = (err as { response?: { status?: number; data?: { message?: string } } })?.response
       if (response?.status === 404) {
-        setVehicleLookupError(`"${value}" wasn't found in BAPL DMS for this dealer.`)
+        setVehicleLookupError(`"${value}" wasn't found in DMS for this dealer.`)
         // Offer the cross-dealer fallback right on the "not found" flag, instead of only letting
         // the user give up and add the vehicle manually - see the state block above for why this
         // needs no new backend endpoint.
         setShowGlobalSearchOffer(true)
       } else {
         setVehicleLookupError(response?.data?.message
-          ? `BAPL DMS error: ${response.data.message}`
-          : 'Could not reach BAPL DMS right now - add the customer/vehicle manually below.')
+          ? `DMS error: ${response.data.message}`
+          : 'Could not reach DMS right now - add the customer/vehicle manually below.')
       }
     } finally {
       setVehicleLookupLoading(false)
@@ -272,7 +287,7 @@ export function JobCardWizardPage() {
 
   /** "Search across all dealers" - re-runs the exact same lookup with dealerCode omitted, so a
    * chassis/reg no. sold by a DIFFERENT dealer still turns up instead of silently reading as
-   * "doesn't exist anywhere". Mirrors BAPL DMS's own Angular ebw-invoice component's
+   * "doesn't exist anywhere". Mirrors DMS's own Angular ebw-invoice component's
    * searchGlobalChassis()/applyGlobalChassisResult() pair. */
   const searchGlobalChassis = async () => {
     const value = chassisOrRegQ.trim()
@@ -295,7 +310,7 @@ export function JobCardWizardPage() {
     // Same open-job-card block as the dealer-scoped lookup above - a cross-dealer hit can still
     // belong to a chassis with an open job card (at this dealer or elsewhere).
     if (globalHit.openJobCardNumber) {
-      const where = globalHit.openJobCardSource === 'bapl-dms' ? 'in BAPL DMS' : 'here'
+      const where = globalHit.openJobCardSource === 'bapl-dms' ? 'in DMS' : 'here'
       const status = globalHit.openJobCardStatus ? ` (status: ${globalHit.openJobCardStatus})` : ''
       setOpenJobCardNotice(`This chassis already has an open job card ${where}: ${globalHit.openJobCardNumber}${status}. It must be closed before this chassis can be used for a new job card.`)
       setShowGlobalSearchOffer(false)
@@ -314,11 +329,11 @@ export function JobCardWizardPage() {
   // Model -> Variant is a dependent dropdown (see data/vehicleCatalog.ts): picking a model
   // narrows the Variant list down to just that model's variants, and changing the model clears
   // whatever variant was previously selected so an invalid model/variant pairing can't be sent.
-  // Only used for a fully manual vehicle (no BAPL DMS hit) - see usingBaplVehicle below.
+  // Only used for a fully manual vehicle (no DMS hit) - see usingBaplVehicle below.
   const [selectedModelId, setSelectedModelId] = useState<number | null>(null)
   const availableVariants = variantsForModel(selectedModelId)
-  // True whenever a BAPL DMS chassis/reg-no hit exists - whether its fields are still locked or
-  // "Edit anyway" has unlocked them. BAPL DMS doesn't split Model/Variant into two fields the way
+  // True whenever a DMS chassis/reg-no hit exists - whether its fields are still locked or
+  // "Edit anyway" has unlocked them. DMS doesn't split Model/Variant into two fields the way
   // JobCardScanner's own catalog does (it's one combined ItemName), so once a hit exists, Model is
   // always a plain text field and Variant is never shown again, even after "Edit anyway" - only
   // Model/Reg No/VIN reappear as editable.
@@ -326,7 +341,7 @@ export function JobCardWizardPage() {
   const previousOdometer = baplVehicleHit?.vehiclePrevKms ?? null
   const odometerValid = newVehicle.odometer > 0 && (previousOdometer == null || newVehicle.odometer > previousOdometer)
 
-  // 2026-09-07: Coupon No. and Job Category, matching BAPL DMS's own Job Card form (the DMS
+  // 2026-09-07: Coupon No. and Job Category, matching DMS's own Job Card form (the DMS
   // Angular wizard shows these right after Service Location - see job-card-add-form.html). Coupon
   // No. auto-fills from the chassis number's last 13 characters, exactly like DMS's own
   // onChassisChange() (`this.couponNo = this.selectedChassis.slice(-13)`) - see the effect below -
@@ -343,8 +358,8 @@ export function JobCardWizardPage() {
     setCouponNo(vin.length > 13 ? vin.slice(-13) : vin)
   }, [newVehicle.vin, couponNoTouched])
 
-  // Pre-fill the "add a new vehicle" form the moment a BAPL DMS hit exists, so a customer created
-  // from a chassis/reg-no search (above) lands on step 2 with everything already typed in. BAPL DMS
+  // Pre-fill the "add a new vehicle" form the moment a DMS hit exists, so a customer created
+  // from a chassis/reg-no search (above) lands on step 2 with everything already typed in. DMS
   // doesn't split Model/Variant into two fields the way JobCardScanner's own catalog does - it's one
   // combined ItemName (e.g. "BGauss C12i MAX 2.0 Monolith Grey", straight from ChassisDetails) - so
   // this no longer tries to match it against the Model/Variant catalog; it's saved as-is into the
@@ -370,16 +385,16 @@ export function JobCardWizardPage() {
   const [batteryLevel, setBatteryLevel] = useState<number | ''>('')
   const [expectedDeliveryAt, setExpectedDeliveryAt] = useState(nowForDatetimeLocalInput)
   const [consentNotes, setConsentNotes] = useState('')
-  // Populated only from the BAPL DMS ComplaintMaster dropdown now (see addComplaintFromDropdown) -
+  // Populated only from the DMS ComplaintMaster dropdown now (see addComplaintFromDropdown) -
   // the old free-text "+ Add complaint" flow is gone per your request, so this never starts with a
   // blank placeholder entry any more.
   const [complaints, setComplaints] = useState<string[]>([])
   // BAPL-DMS-style fields, captured alongside JobCardScanner's own Service Type/Source/Priority
-  // above. Job Type -> Service Head -> Service Type is a live cascade straight off BAPL DMS's own
+  // above. Job Type -> Service Head -> Service Type is a live cascade straight off DMS's own
   // JobType/ServiceHead/ServiceType master tables (Controllers/BaplDmsController.cs) - picking a
   // Job Type loads that job type's Service Heads, picking a Service Head loads that head's Service
-  // Types, same dependency BAPL DMS's own screen uses. These ids (plus Service Location's Loccode)
-  // are what actually let JobCardsController.Create attempt the BAPL DMS write-back - the free-text
+  // Types, same dependency DMS's own screen uses. These ids (plus Service Location's Loccode)
+  // are what actually let JobCardsController.Create attempt the DMS write-back - the free-text
   // baplJobType/baplServiceLocation below are kept only as a human-readable label for display.
   const [baplJobType, setBaplJobType] = useState('')
   const [baplServiceLocation, setBaplServiceLocation] = useState('')
@@ -402,7 +417,7 @@ export function JobCardWizardPage() {
   const [selectedComplaintId, setSelectedComplaintId] = useState('')
 
   // Replaces the old hardcoded WalkIn/PickupAndDrop/Breakdown/Scheduled/Online "Source" dropdown -
-  // BAPL DMS's own JobSource master (Walk In/RSA/Mega Camp/...) is now the only "where did this job
+  // DMS's own JobSource master (Walk In/RSA/Mega Camp/...) is now the only "where did this job
   // come from" picker shown; JobCardScanner's own `source` state above is derived from it (see
   // mapBaplJobSourceToSource) rather than picked directly.
   const [jobSources, setJobSources] = useState<BaplDmsJobSource[]>([])
@@ -410,10 +425,10 @@ export function JobCardWizardPage() {
 
   const [baplSyncWarning, setBaplSyncWarning] = useState<string | null>(null)
 
-  // Every field in the "Job Card fields" (BAPL DMS) panel is now required, per your request -
+  // Every field in the "Job Card fields" (DMS) panel is now required, per your request -
   // "Continue to Review" stays disabled until all of them are filled in, so a job card can no
-  // longer reach Review with a half-filled BAPL DMS section.
-  // Manual Job No. is no longer required (Item 5) - every other BAPL DMS field still is.
+  // longer reach Review with a half-filled DMS section.
+  // Manual Job No. is no longer required (Item 5) - every other DMS field still is.
   // 2026-09-03: Expected delivery and Customer complaints (Customer Voice) are now required too,
   // per explicit request - both got a red * label to match.
   const serviceDetailsValid = !!(
@@ -427,7 +442,7 @@ export function JobCardWizardPage() {
   useEffect(() => {
     staffApi.get<BaplDmsJobType[]>('/api/bapl-dms/job-types')
       .then(({ data }) => setJobTypes(data))
-      .catch(() => setBaplMastersError('Could not load BAPL DMS\'s Job Type list - Service Details will only capture JobCardScanner\'s own fields.'))
+      .catch(() => setBaplMastersError('Could not load DMS\'s Job Type list - Service Details will only capture JobCardScanner\'s own fields.'))
     staffApi.get<BaplDmsComplaint[]>('/api/bapl-dms/complaints')
       .then(({ data }) => setComplaintOptions(data))
       .catch(() => setComplaintOptions([]))
@@ -456,7 +471,7 @@ export function JobCardWizardPage() {
   // soon as the dealer/workshop list resolves, instead of starting blank until step 2. Only fires
   // when nothing is selected yet, so it never overrides a manual pick (onWorkshopChange below) or
   // - since that effect runs after this one and always re-sets on a match - the more specific
-  // auto-fill from a chassis/reg-no BAPL DMS hit right below.
+  // auto-fill from a chassis/reg-no DMS hit right below.
   useEffect(() => {
     if (selectedWorkshopLocCode || workshops.length === 0) return
     const bySeries = [...workshops].sort((a, b) => {
@@ -472,7 +487,7 @@ export function JobCardWizardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workshops])
 
-  // Pre-select the Service Location once BAPL DMS told us which workshop this chassis is
+  // Pre-select the Service Location once DMS told us which workshop this chassis is
   // registered against (ChassisDetails.LocationCode via the chassis/reg-no lookup), once that
   // dealer's workshop list has actually loaded. Runs after the W1-default effect above and always
   // re-sets on a match, so a specific chassis-linked workshop still wins over the plain default.
@@ -616,14 +631,14 @@ export function JobCardWizardPage() {
     if (!customer) return
     if (!effectiveDealerId) { setError('Select a dealer/workshop before adding a vehicle.'); return }
     setError(null)
-    // BAPL DMS returns full ISO date-times (or plain dates); the backend's DateOnly fields only
+    // DMS returns full ISO date-times (or plain dates); the backend's DateOnly fields only
     // want the date part - same trim BAPL's own Angular code does (`selected.saleDate?.split('T')[0]`).
     const dateOnly = (s?: string | null) => (s ? s.split('T')[0] : null)
     const { data } = await staffApi.post<Vehicle>('/api/customers/vehicles', {
       ...newVehicle,
       customerId: customer.id,
       dealerId: effectiveDealerId,
-      // BAPL DMS's own sale date wins when there's an auto-fetched hit; otherwise fall back to
+      // DMS's own sale date wins when there's an auto-fetched hit; otherwise fall back to
       // whatever was manually typed into the "Registered Customer" section's Sale Date field
       // (Item 3) - both ultimately save into the same Vehicle.PurchaseDate column.
       purchaseDate: baplVehicleHit?.saleDate ? dateOnly(baplVehicleHit.saleDate) : (newCustomer.saleDate || null),
@@ -672,7 +687,7 @@ export function JobCardWizardPage() {
         baplManualJobNo: baplManualJobNo || null,
         // Cascade ids + Service Location code - only set once all three of Job Type/Service Head/
         // Service Type are picked, which is what tells the backend there's enough to actually try
-        // writing this job card into BAPL DMS's own database (see JobCardsController.Create).
+        // writing this job card into DMS's own database (see JobCardsController.Create).
         baplJobTypeId: selectedJobTypeId,
         baplServiceHeadId: selectedServiceHeadId,
         baplServiceHeadName: serviceHeads.find((h) => h.id === selectedServiceHeadId)?.name ?? null,
@@ -760,7 +775,7 @@ export function JobCardWizardPage() {
       insuranceExpiry: vehicle?.insuranceExpiry ?? baplVehicleHit?.insuranceExpDate,
       // Sourced straight from the chassis/reg-no lookup (baplVehicleHit), not the saved Vehicle -
       // Battery Make/Chemical/Capacity aren't columns on JobCardScanner's own Vehicle table, so
-      // this reads them from BAPL DMS's ChassisBatteryDetails response still held in wizard state.
+      // this reads them from DMS's ChassisBatteryDetails response still held in wizard state.
       batteryChemical: baplVehicleHit?.batteryChemical,
       batteryCapacity: baplVehicleHit?.batteryCapacity,
       batteryMake: baplVehicleHit?.batteryMake,
@@ -795,14 +810,14 @@ export function JobCardWizardPage() {
               </select>
               <p className="muted" style={{ marginTop: 4 }}>
                 Your account isn't tied to a single dealer, so pick which workshop this job card belongs to.
-                Not in the list yet? Search BAPL DMS below.
+                Not in the list yet? Search DMS below.
               </p>
               <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                 <input
                   value={dealerSearchQ}
                   onChange={(e) => setDealerSearchQ(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && searchBaplDealers()}
-                  placeholder="Search Dealer WorkShop Location (BAPL DMS) by name or code…"
+                  placeholder="Search Dealer WorkShop Location (DMS) by name or code…"
                 />
                 <button className="btn" onClick={searchBaplDealers} disabled={dealerSearchQ.trim().length < 2}>Search</button>
               </div>
@@ -873,7 +888,7 @@ export function JobCardWizardPage() {
                          Search hit - lets the user tell sold vehicles apart from unsold ones before
                          picking one. */}
                       <span style={{ display: 'block', fontSize: 12, color: 'var(--muted, #6b7280)' }}>
-                        Sale date: {s.saleDate ? new Date(s.saleDate).toLocaleDateString() : 'not sold'}
+                        Sale date: {s.saleDate ? formatISTDate(s.saleDate) : 'not sold'}
                       </span>
                     </button>
                   </li>
@@ -940,7 +955,7 @@ export function JobCardWizardPage() {
                   display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
                 }}
               >
-                🔎 Not found for this dealer.{globalSearchNotFound ? ' Not found anywhere in BAPL DMS either.' : ' Search BAPL DMS across every dealer?'}
+                🔎 Not found for this dealer.{globalSearchNotFound ? ' Not found anywhere in DMS either.' : ' Search DMS across every dealer?'}
                 <button
                   type="button"
                   className="btn btn-sm btn-primary"
@@ -955,12 +970,12 @@ export function JobCardWizardPage() {
             {globalHit && (
               <div style={{ marginTop: 8, padding: '10px 14px', borderRadius: 8, background: '#eef6ff', border: '1px solid #bfdcff' }}>
                 <p style={{ fontWeight: 600, color: '#1e3a5f', margin: 0 }}>
-                  Found in BAPL DMS{globalHit.dealerCode && globalHit.dealerCode !== vehicleSearchDealerCode ? ` — registered to dealer ${globalHit.dealerCode}, not this workshop` : ''}
+                  Found in DMS{globalHit.dealerCode && globalHit.dealerCode !== vehicleSearchDealerCode ? ` — registered to dealer ${globalHit.dealerCode}, not this workshop` : ''}
                 </p>
                 <p className="muted" style={{ margin: '4px 0 8px' }}>
                   {globalHit.customerName || 'Unknown customer'}{globalHit.customerMobile ? ` (${globalHit.customerMobile})` : ''} · {globalHit.modelName || 'Model unknown'}
                   {globalHit.registerNo ? ` · reg no. ${globalHit.registerNo}` : ''}
-                  {globalHit.saleDate ? ` · sold ${new Date(globalHit.saleDate).toLocaleDateString()}` : ' · not yet sold'}
+                  {globalHit.saleDate ? ` · sold ${formatISTDate(globalHit.saleDate)}` : ' · not yet sold'}
                 </p>
                 <button type="button" className="btn btn-sm btn-primary" onClick={applyGlobalHit}>Use this vehicle</button>
               </div>
@@ -970,14 +985,14 @@ export function JobCardWizardPage() {
                 Customer Details : customer-{baplVehicleHit.customerName || 'Unknown customer'}
                 {baplVehicleHit.customerMobile ? ` (${baplVehicleHit.customerMobile})` : ''} - model- {baplVehicleHit.modelName || 'Model unknown'}
                 {baplVehicleHit.registerNo ? `, reg no. ${baplVehicleHit.registerNo}` : ''}
-                {baplVehicleHit.saleDate ? `, sale date ${new Date(baplVehicleHit.saleDate).toLocaleDateString()}.` : '.'}
+                {baplVehicleHit.saleDate ? `, sale date ${formatISTDate(baplVehicleHit.saleDate)}.` : '.'}
               </p>
             )}
           </div>
           <h3 style={{ marginTop: 24 }}>Registered Customer</h3>
           {customerFieldsLocked && (
             <p className="muted" style={{ marginTop: -4, marginBottom: 12 }}>
-              🔒 Name, Mobile, Email, City and Address were auto-fetched from BAPL DMS and are locked to prevent accidental changes.{' '}
+              🔒 Name, Mobile, Email, City and Address were auto-fetched from DMS and are locked to prevent accidental changes.{' '}
               <a href="#" onClick={(e) => { e.preventDefault(); setUnlockCustomerFields(true) }}>Edit anyway</a>
             </p>
           )}
@@ -1056,15 +1071,20 @@ export function JobCardWizardPage() {
           )}
           {vehicleFieldsLocked && (
             <p className="muted" style={{ marginTop: -4, marginBottom: 12 }}>
-              🔒 Model, Reg No and VIN were auto-fetched from BAPL DMS and are locked to prevent accidental changes.{' '}
+              🔒 Model, Reg No and VIN were auto-fetched from DMS and are locked to prevent accidental changes.{' '}
               <a href="#" onClick={(e) => { e.preventDefault(); setUnlockVehicleFields(true) }}>Edit anyway</a>
             </p>
           )}
-          <div className="form-row">
+          {/* 2026-09-07: explicit inline gridTemplateColumns, not the plain .form-row class -
+             .form-row's default `minmax(200px, 1fr)` only fit 5 of these 6-7 fields per row on a
+             normal desktop width, wrapping Odometer onto its own line by itself. A 130px floor
+             comfortably fits Model/Variant/Reg No/VIN/Coupon No/Job Category/Odometer on one row
+             instead, per explicit request ("in 1 row for web all fields"). */}
+          <div className="form-row" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))' }}>
             <div className="field">
               <label>Model{usingBaplVehicle ? '' : ' & Variant'}</label>
               {usingBaplVehicle ? (
-                // BAPL DMS doesn't split Model/Variant into two fields (see the pre-fill effect
+                // DMS doesn't split Model/Variant into two fields (see the pre-fill effect
                 // above) - a plain text input shows the combined name it sent back (editable once
                 // "Edit anyway" unlocks it), instead of a <select> that would otherwise appear empty
                 // (nothing in the catalog matches a BAPL ItemName one-for-one). The Variant dropdown
@@ -1100,7 +1120,7 @@ export function JobCardWizardPage() {
             )}
             <div className="field"><label>Reg No</label><input value={newVehicle.regNo} disabled={vehicleFieldsLocked} onChange={(e) => setNewVehicle({ ...newVehicle, regNo: e.target.value })} /></div>
             <div className="field"><label>VIN</label><input value={newVehicle.vin} disabled={vehicleFieldsLocked} onChange={(e) => setNewVehicle({ ...newVehicle, vin: e.target.value })} /></div>
-            {/* 2026-09-07: Coupon No. + Job Category, matching BAPL DMS's own form - see the
+            {/* 2026-09-07: Coupon No. + Job Category, matching DMS's own form - see the
                couponNo/jobCategory state declared above for the auto-fill/default rules. */}
             <div className="field">
               <label>Coupon No</label>
@@ -1129,7 +1149,20 @@ export function JobCardWizardPage() {
             </div>
             <div className="field">
               <label>Odometer (km)<Req />{previousOdometer != null ? ` (Previous: ${previousOdometer} km)` : ''}</label>
-              <input type="number" value={newVehicle.odometer} onChange={(e) => setNewVehicle({ ...newVehicle, odometer: Number(e.target.value) })} />
+              {/* 2026-09-07: value was `newVehicle.odometer` directly (a number, defaulting to 0
+                 or the previous-km auto-fill) - backspacing it down to a single digit made
+                 e.target.value "" for one keystroke, Number("") is 0 (not NaN), so the field
+                 immediately re-rendered showing "0" again instead of actually going blank. From
+                 the keyboard it looked like backspace did nothing - "0" could never be erased to
+                 start typing a fresh reading. Showing '' whenever the value is 0 (same pattern
+                 mobile's Odometer field already used) fixes this: 0 is never a valid odometer
+                 reading anyway (see odometerValid below), so there's nothing lost by never
+                 displaying a literal "0" in the box. */}
+              <input
+                type="number"
+                value={newVehicle.odometer || ''}
+                onChange={(e) => setNewVehicle({ ...newVehicle, odometer: e.target.value === '' ? 0 : Number(e.target.value) })}
+              />
               {previousOdometer != null && newVehicle.odometer > 0 && newVehicle.odometer <= previousOdometer && (
                 <p className="error-text" style={{ margin: '4px 0 0', fontSize: 12 }}>Must be greater than the previous odometer reading ({previousOdometer} km).</p>
               )}
@@ -1216,7 +1249,7 @@ export function JobCardWizardPage() {
               </div>
             </div>
             <p className="muted" style={{ margin: '8px 0 0', fontSize: 12 }}>
-              All fields above are required - they are what let this job card also be created directly inside BAPL DMS's own database.
+              All fields above are required - they are what let this job card also be created directly inside DMS's own database.
             </p>
           </div>
 
@@ -1227,7 +1260,7 @@ export function JobCardWizardPage() {
 
           <div className="field">
             <label>Customer complaints (Customer Voice)<Req /></label>
-            {/* Manual "+ Add complaint" free-text flow removed per your request - the BAPL DMS
+            {/* Manual "+ Add complaint" free-text flow removed per your request - the DMS
                ComplaintMaster dropdown below is now the only way to add one, and it supports adding
                several (pick, Add, pick another, Add again). */}
             {complaintOptions.length > 0 && (

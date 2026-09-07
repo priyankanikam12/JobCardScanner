@@ -45,7 +45,7 @@ export interface Dealer {
   baplDmsDealerCode?: string | null
 }
 
-// ---------------- BAPL DMS integration (Job Card Wizard dealer/vehicle auto-fill) ----------------
+// ---------------- DMS integration (Job Card Wizard dealer/vehicle auto-fill) ----------------
 export interface BaplDealerResolveResult extends Dealer {
   loginCreated?: boolean
   loginEmail?: string | null
@@ -189,7 +189,7 @@ export interface WorkflowStage {
 export interface JobCardSummary {
   id: string
   jobCardNumber: string
-  // A BaplDms row's status is BAPL DMS's own free-text JobStatus (e.g. "Open", "Material
+  // A BaplDms row's status is DMS's own free-text JobStatus (e.g. "Open", "Material
   // Transfer") - not one of JobCardStatus's fixed values - so this widens to `string` for BaplDms
   // rows (see JobCardsListPage's rendering, which only feeds JobCardScanner rows to StatusBadge).
   status: JobCardStatus | string
@@ -204,7 +204,7 @@ export interface JobCardSummary {
   technicianName?: string
   createdAt?: string | null
   expectedDeliveryAt?: string | null
-  /** JobCardScanner's own record, or a read-only row blended in from BAPL DMS's own job card
+  /** JobCardScanner's own record, or a read-only row blended in from DMS's own job card
    * history (see GET /api/jobcards - JobCardsController.List). BaplDms rows have no JobCardScanner
    * id to navigate to, so the list page shows them without a detail link. */
   source: 'JobCardScanner' | 'BaplDms'
@@ -212,7 +212,7 @@ export interface JobCardSummary {
 
 export interface JobCardListResponse {
   items: JobCardSummary[]
-  /** Set only when a real BAPL DMS problem (not just "this dealer has no BAPL DMS data") kept its
+  /** Set only when a real DMS problem (not just "this dealer has no DMS data") kept its
    * job cards out of this response - JobCardScanner's own rows are still returned either way. */
   baplDmsWarning?: string | null
 }
@@ -309,7 +309,7 @@ export interface JobCardDetail extends Omit<JobCardSummary, 'customerName' | 've
   trackingToken: string
   // BAPL-DMS-style intake fields captured on the wizard's Service Details step (see
   // backend/JobCardScanner.Api/Models/JobCard.cs's doc comment) - free text, not yet written back
-  // into BAPL DMS's own database.
+  // into DMS's own database.
   baplJobType?: string | null
   baplServiceLocation?: string | null
   baplSupervisorName?: string | null

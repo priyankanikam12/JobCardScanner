@@ -9,7 +9,7 @@ const ISSUE_TYPES = ['Paid', 'U/W'] as const
 
 /**
  * "Labour Suggestion" panel - mirrors web/src/pages/staff/JobCardDetailPage.tsx's
- * LabourSuggestionCard. Labour rows come live from BAPL DMS's own LabourMaster, scoped by this
+ * LabourSuggestionCard. Labour rows come live from DMS's own LabourMaster, scoped by this
  * job card's own Job Type/Service Head/Service Type cascade plus a free-text search (most real
  * LabourMaster rows have no cascade mapping yet, so cascade-only would hide them - see
  * BaplDmsLabourRow's doc comment on the backend). Description/HSN/GST/Rate are snapshotted from
@@ -138,7 +138,7 @@ export function LabourSuggestionSection({ jc, onChanged, estimatesLocked, totalL
         </Text>
       ) : (
       <>
-      <Text style={styles.subheading}>Suggest labour (from BAPL DMS LabourMaster)</Text>
+      <Text style={styles.subheading}>Suggest labour (from DMS LabourMaster)</Text>
       {/* No separate "Search" label - matches web's LabourSuggestionCard: this field IS the search
          box, not a distinct extra step. */}
       <Text style={styles.label}>Labour Code</Text>

@@ -45,7 +45,7 @@ export default function App() {
         <Route path="/jobcards" element={<JobCardsListPage />} />
         <Route path="/jobcards/new" element={<JobCardWizardPage />} />
         <Route path="/jobcards/:id" element={<JobCardDetailPage />} />
-        {/* Read-only view for a BAPL DMS-sourced row on the /jobcards list - see
+        {/* Read-only view for a DMS-sourced row on the /jobcards list - see
             JobCardsListPage.tsx and BaplJobCardDetailPage.tsx's doc comment. A distinct 2-segment
             path, so it never collides with /jobcards/:id above (React Router matches by segment
             count/specificity, not just prefix). */}

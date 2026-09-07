@@ -64,7 +64,7 @@ public class JobCardsController : ControllerBase
         var query = _db.JobCards.AsNoTracking()
             .Include(j => j.Customer).Include(j => j.Vehicle).Include(j => j.CurrentStage)
             .Include(j => j.ServiceAdvisor).Include(j => j.AssignedTechnician).Include(j => j.Photos)
-            // 2026-09-05: BAPL DMS is now the sole source of truth - a job card created before this
+            // 2026-09-05: DMS is now the sole source of truth - a job card created before this
             // change that never got a BaplJobCardHeaderId (DMS sync failed, or wasn't attempted) is
             // no longer shown or openable. Its row (and any photos/history on it) is NOT deleted,
             // just hidden, in case this needs revisiting. Every row created after this change always
@@ -119,20 +119,25 @@ public class JobCardsController : ControllerBase
             j.Status == JobCardStatus.PendingClosure || j.Status == JobCardStatus.PendingInvoice);
 
         var results = await query.OrderByDescending(j => j.CreatedAt).Take(200).ToListAsync();
+
+        // Catch any local job card DMS has since closed/billed directly - see
+        // SyncClosedFromDmsAsync's doc comment for the full story ("this is the biggest issue").
+        await SyncClosedFromDmsAsync(results, HttpContext.RequestAborted);
+
         var localRows = results.Select(j => (SortKey: j.CreatedAt, Row: Summarize(j)));
 
-        // ---------------- Blend in BAPL DMS's own job cards ----------------
-        // Only when the filters in play are ones BAPL DMS rows can actually satisfy: status,
-        // technicianId, and stageKey are all JobCardScanner-specific concepts (BAPL DMS's JobStatus
+        // ---------------- Blend in DMS's own job cards ----------------
+        // Only when the filters in play are ones DMS rows can actually satisfy: status,
+        // technicianId, and stageKey are all JobCardScanner-specific concepts (DMS's JobStatus
         // vocabulary - "Open", "Material Transfer", ... - doesn't map onto JobCardStatus, and BAPL
         // DMS has no concept of a JobCardScanner technician/stage at all), so any of those filters
         // being set means "only show me JobCardScanner's own job cards" rather than trying to guess
         // a mapping. q (job card #/customer/reg no.) and status-less/technician-less/stage-less
-        // browsing both work fine against BAPL DMS too.
+        // browsing both work fine against DMS too.
         var baplRows = Enumerable.Empty<(DateTime SortKey, object Row)>();
         string? baplDmsWarning = null;
         // Same reasoning as status/technicianId/stageKey above - every new dashboard filter is
-        // also a JobCardScanner-specific concept BAPL DMS rows can't be evaluated against, so any
+        // also a JobCardScanner-specific concept DMS rows can't be evaluated against, so any
         // of them being set means "local job cards only".
         var anyDashboardFilterActive = excludeClosed == true || overdue == true || createdToday == true ||
             deliveredToday == true || closedThisMonth == true || warrantyOnly == true || pendingBucket == true;
@@ -143,8 +148,8 @@ public class JobCardsController : ControllerBase
             if (effectiveDealerId.HasValue)
             {
                 baplDealerCode = await _db.Dealers.AsNoTracking().Where(d => d.Id == effectiveDealerId).Select(d => d.BaplDmsDealerCode).FirstOrDefaultAsync();
-                // This dealer has no known BAPL DMS dealer code (never resolved via the Job Card
-                // Wizard's dealer picker) - searching BAPL DMS unscoped would leak every other
+                // This dealer has no known DMS dealer code (never resolved via the Job Card
+                // Wizard's dealer picker) - searching DMS unscoped would leak every other
                 // dealer's job cards into this one dealer's list, so skip it entirely rather than
                 // guess. Not an error - most dealers simply may not be linked yet.
                 canSearchBapl = !string.IsNullOrWhiteSpace(baplDealerCode);
@@ -155,14 +160,23 @@ public class JobCardsController : ControllerBase
                 try
                 {
                     var hits = await _baplDms.SearchJobCardsAsync(q, baplDealerCode, 50, HttpContext.RequestAborted);
-                    baplRows = hits.Select(r => (
+                    // Dedup against localRows: every JobCardScanner-created job card is ALSO a DMS
+                    // job card (Create() now requires DMS success first - see 2026-09-05 comment
+                    // above), so without this filter the same job card would show up twice - once
+                    // as its native JobCardScanner row (from `results`/`localRows` above) and again
+                    // as a "SummarizeBapl" read-only DMS row for the identical JobCardHeaderId. Only
+                    // DMS job cards JobCardScanner has no local row for at all (opened directly in
+                    // DMS, never created here) should appear as SummarizeBapl rows.
+                    var localBaplHeaderIds = results.Where(j => j.BaplJobCardHeaderId.HasValue)
+                        .Select(j => j.BaplJobCardHeaderId!.Value).ToHashSet();
+                    baplRows = hits.Where(r => !localBaplHeaderIds.Contains(r.JobCardHeaderId)).Select(r => (
                         SortKey: r.JobInDate?.ToDateTime(TimeOnly.MinValue) ?? DateTime.MinValue,
                         Row: SummarizeBapl(r)));
                 }
                 catch (InvalidOperationException ex)
                 {
-                    _logger.LogWarning(ex, "Could not blend BAPL DMS job cards into the /jobcards list");
-                    baplDmsWarning = "Could not reach BAPL DMS right now - showing JobCardScanner's own job cards only.";
+                    _logger.LogWarning(ex, "Could not blend DMS job cards into the /jobcards list");
+                    baplDmsWarning = "Could not reach DMS right now - showing JobCardScanner's own job cards only.";
                 }
             }
         }
@@ -177,18 +191,20 @@ public class JobCardsController : ControllerBase
         // 2026-09-05: same DMS-only rule as List() above - a job card with no BaplJobCardHeaderId
         // 404s now instead of opening.
         var jc = await FullQuery().FirstOrDefaultAsync(j => j.Id == id && j.BaplJobCardHeaderId != null);
-        return jc is null ? NotFound() : Ok(Detail(jc));
+        if (jc is null) return NotFound();
+        await SyncClosedFromDmsAsync(new[] { jc }, HttpContext.RequestAborted);
+        return Ok(Detail(jc));
     }
 
     /// <summary>
-    /// GET /api/jobcards/{id}/invoice-pdf - "Download Invoice from DMS": renders BAPL DMS's own
+    /// GET /api/jobcards/{id}/invoice-pdf - "Download Invoice from DMS": renders DMS's own
     /// repair bill (RepairBillHeader/RepairBillDetail, read live) for this job card as a GST tax
-    /// invoice PDF matching BAPL DMS's own layout - see IInvoicePdfService.BuildInvoicePdfAsync.
+    /// invoice PDF matching DMS's own layout - see IInvoicePdfService.BuildInvoicePdfAsync.
     /// Same [Authorize(Policy = Policies.Staff)] as this controller's other GET endpoints (Get()
     /// above, List()) - no stricter policy needed, viewing an invoice PDF isn't a more sensitive
     /// operation than viewing the job card itself. 404 covers both "no such job card" and "nothing
-    /// to download yet" (never synced to BAPL DMS, or synced but no repair bill raised there yet) -
-    /// both are normal, everyday states, not errors. A real BAPL DMS problem (bad connection/schema
+    /// to download yet" (never synced to DMS, or synced but no repair bill raised there yet) -
+    /// both are normal, everyday states, not errors. A real DMS problem (bad connection/schema
     /// drift) surfaces as 502 with the underlying message, same convention as BaplDmsController.
     /// </summary>
     [HttpGet("{id:guid}/invoice-pdf")]
@@ -201,7 +217,7 @@ public class JobCardsController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
-            _logger.LogWarning(ex, "Could not build the BAPL DMS invoice PDF for job card {JobCardId}", id);
+            _logger.LogWarning(ex, "Could not build the DMS invoice PDF for job card {JobCardId}", id);
             return StatusCode(502, new { message = ex.Message });
         }
         if (bytes is null) return NotFound();
@@ -285,16 +301,16 @@ public class JobCardsController : ControllerBase
         if (openJobCardForChassis is not null)
             return BadRequest(new { message = $"This chassis already has an open job card ({openJobCardForChassis}). It must be closed before a new job card can be created for it." });
 
-        // 2026-09-05: dealer's BAPL DMS code is now resolved once, up front, and reused both for the
+        // 2026-09-05: dealer's DMS code is now resolved once, up front, and reused both for the
         // DMS open-job-card check below and for the mandatory DMS create further down - see this
         // method's new doc comment below for why DMS creation moved here and became mandatory.
         var dealerBaplCode = await _db.Dealers.AsNoTracking().Where(d => d.Id == req.DealerId).Select(d => d.BaplDmsDealerCode).FirstOrDefaultAsync();
 
-        // Same check, but against BAPL DMS's own job cards - catches a job card opened directly in
-        // BAPL DMS (outside JobCardScanner entirely), which the local-only check above can never
-        // see. Best-effort: a BAPL DMS outage here should never block creating a job card locally,
+        // Same check, but against DMS's own job cards - catches a job card opened directly in
+        // DMS (outside JobCardScanner entirely), which the local-only check above can never
+        // see. Best-effort: a DMS outage here should never block creating a job card locally,
         // it just means this particular safety check couldn't run this time. Deliberately read-only
-        // - a BAPL DMS-only job card is never written into JobCardScanner's own database by this or
+        // - a DMS-only job card is never written into JobCardScanner's own database by this or
         // any other check; the local JobCards table only ever gets a row for a job card actually
         // created through this endpoint.
         if (!string.IsNullOrWhiteSpace(vehicle.Vin))
@@ -305,20 +321,20 @@ public class JobCardsController : ControllerBase
                 if (openInDms is not null)
                 {
                     var dmsJobNumber = $"{openInDms.JobPrefix}{openInDms.JobNo}";
-                    return BadRequest(new { message = $"This chassis already has an open job card in BAPL DMS ({dmsJobNumber}, status: {openInDms.JobStatus}). It must be closed there before a new job card can be created for it here." });
+                    return BadRequest(new { message = $"This chassis already has an open job card in DMS ({dmsJobNumber}, status: {openInDms.JobStatus}). It must be closed there before a new job card can be created for it here." });
                 }
             }
             catch (InvalidOperationException ex)
             {
-                _logger.LogWarning(ex, "Could not check BAPL DMS for an open job card on chassis {ChassisNo} - proceeding without this check", vehicle.Vin);
+                _logger.LogWarning(ex, "Could not check DMS for an open job card on chassis {ChassisNo} - proceeding without this check", vehicle.Vin);
             }
         }
 
-        // ---------------- BAPL DMS is now the sole source of truth: create there FIRST ----------------
+        // ---------------- DMS is now the sole source of truth: create there FIRST ----------------
         // 2026-09-05: this used to be a best-effort step at the very end of Create() - the local job
         // card was always saved regardless, and a DMS failure just surfaced as a non-blocking
         // baplSyncWarning. Per explicit request, JobCardScanner must stop being able to create a job
-        // card BAPL DMS doesn't know about: nothing is saved anywhere (no local row, no vehicle
+        // card DMS doesn't know about: nothing is saved anywhere (no local row, no vehicle
         // odometer bump, no ERP push, no SMS) unless this DMS write-back succeeds first. The local
         // JobCard row created below is now purely a same-transaction mirror/attachment point for
         // DMS's own record (see Models/JobCard.cs's updated class doc comment) - it exists only to
@@ -327,9 +343,9 @@ public class JobCardsController : ControllerBase
         // JobPrefix+JobNo, not a JobCardScanner-generated one.
         var customer = await _db.Customers.AsNoTracking().FirstOrDefaultAsync(c => c.Id == req.CustomerId);
         if (string.IsNullOrWhiteSpace(dealerBaplCode))
-            return BadRequest(new { message = "This dealer isn't linked to BAPL DMS yet, so a job card can't be created for it. Link the dealer to BAPL DMS first (see the Job Card Wizard's dealer search)." });
+            return BadRequest(new { message = "This dealer isn't linked to DMS yet, so a job card can't be created for it. Link the dealer to DMS first (see the Job Card Wizard's dealer search)." });
         if (!req.BaplJobTypeId.HasValue || !req.BaplServiceHeadId.HasValue || !req.BaplServiceTypeId.HasValue)
-            return BadRequest(new { message = "Job Type, Service Head and Service Type are required - BAPL DMS needs all three to create the job card there." });
+            return BadRequest(new { message = "Job Type, Service Head and Service Type are required - DMS needs all three to create the job card there." });
 
         BaplDmsCreateJobCardResult dmsResult;
         try
@@ -371,8 +387,8 @@ public class JobCardsController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
-            _logger.LogWarning(ex, "Could not create this job card in BAPL DMS - nothing was saved");
-            return StatusCode(502, new { message = $"Could not create this job card in BAPL DMS: {ex.Message}" });
+            _logger.LogWarning(ex, "Could not create this job card in DMS - nothing was saved");
+            return StatusCode(502, new { message = $"Could not create this job card in DMS: {ex.Message}" });
         }
 
         var firstStage = await _db.WorkflowStages.AsNoTracking()
@@ -450,11 +466,11 @@ public class JobCardsController : ControllerBase
         if (jc is null) return NotFound();
 
         // AssignedTechnicianId is a JobCardScanner User FK (used by Worklogs) - a different concept
-        // from AssignedTechnicianName below, and stays local; BAPL DMS has no equivalent.
+        // from AssignedTechnicianName below, and stays local; DMS has no equivalent.
         if (req.AssignedTechnicianId.HasValue) jc.AssignedTechnicianId = req.AssignedTechnicianId;
 
         // 2026-09-05: AssignedTechnicianName/Priority/ExpectedDeliveryAt are no longer
-        // JobCardScanner-local-only fields - BAPL DMS's own JobCardHeader already has
+        // JobCardScanner-local-only fields - DMS's own JobCardHeader already has
         // Technician/Priority/EstdelDate+EstdelTime columns for these, so per explicit decision they
         // now write straight there (BaplDmsService.UpdateJobCardAsync) instead of only living in
         // JobCardScannerDb. Every job card is guaranteed to have a BaplJobCardHeaderId (Create() no
@@ -467,7 +483,7 @@ public class JobCardsController : ControllerBase
         if (technicianNameProvided || priorityProvided || etaProvided)
         {
             if (!jc.BaplJobCardHeaderId.HasValue)
-                return StatusCode(502, new { message = "This job card has no BAPL DMS link - technician/priority/expected delivery can't be updated." });
+                return StatusCode(502, new { message = "This job card has no DMS link - technician/priority/expected delivery can't be updated." });
 
             // Free-text technician name (see JobCard.AssignedTechnicianName's doc comment) - the Job
             // Card Detail page's "Assign Technician" field types a name directly rather than picking
@@ -484,8 +500,8 @@ public class JobCardsController : ControllerBase
             }
             catch (InvalidOperationException ex)
             {
-                _logger.LogWarning(ex, "Could not update job card {JobCardId} in BAPL DMS", jc.Id);
-                return StatusCode(502, new { message = $"Could not update this job card in BAPL DMS: {ex.Message}" });
+                _logger.LogWarning(ex, "Could not update job card {JobCardId} in DMS", jc.Id);
+                return StatusCode(502, new { message = $"Could not update this job card in DMS: {ex.Message}" });
             }
 
             // Mirror the same values into the local row too, purely as a fast-read cache for
@@ -626,10 +642,10 @@ public class JobCardsController : ControllerBase
         _db.JobCardPhotos.Add(photo);
         await _db.SaveChangesAsync();
 
-        // ---------------- Best-effort write-back into BAPL DMS's own database ----------------
-        // Only attempted when this job card actually synced into BAPL DMS (BaplJobCardHeaderId
+        // ---------------- Best-effort write-back into DMS's own database ----------------
+        // Only attempted when this job card actually synced into DMS (BaplJobCardHeaderId
         // set). The local save above has ALREADY completed and is never affected by anything below
-        // - this is purely "also try to mirror the photo into BAPL DMS", mirroring the exact
+        // - this is purely "also try to mirror the photo into DMS", mirroring the exact
         // non-blocking write-back pattern JobCardsController.Create() uses for the job card itself.
         if (jobCardForPhoto.BaplJobCardHeaderId.HasValue)
         {
@@ -652,8 +668,8 @@ public class JobCardsController : ControllerBase
             }
             catch (Exception ex)
             {
-                // Never lets a BAPL DMS problem affect this already-successful upload response.
-                _logger.LogWarning(ex, "Could not write job card photo {PhotoId} into BAPL DMS for job card {JobCardId}", photo.Id, id);
+                // Never lets a DMS problem affect this already-successful upload response.
+                _logger.LogWarning(ex, "Could not write job card photo {PhotoId} into DMS for job card {JobCardId}", photo.Id, id);
             }
         }
 
@@ -783,6 +799,68 @@ public class JobCardsController : ControllerBase
     }
 
     // ---------------- helpers ----------------
+
+    /// <summary>
+    /// Closes local JobCard rows that DMS already considers Closed (RepairbillStatus = 'Billed')
+    /// but whose local Status hasn't caught up yet. Reported directly: "from dms which we created
+    /// jobcard...close from there this will close but from our jobscanner...this will not close" -
+    /// before this, JobCardScanner's own Status was only ever changed by JobCardScanner's own actions
+    /// (worklog start, the closure-OTP flow, workflow stage automation), so closing/billing a job
+    /// card directly in DMS never touched it at all, no matter how long ago that happened.
+    /// Called from List() and Get() - the two places a user would actually notice a stale status -
+    /// with a sync-on-read approach rather than a background poller, matching this codebase's
+    /// existing pattern of reading DMS live (InvoicePdfService, GetOpenJobCardForChassisAsync,
+    /// etc.) instead of running a separate sync job. Mutates each passed-in JobCard's Status/
+    /// ClosedAt/ActualDeliveryAt in place (so THIS request's response reflects it immediately, not
+    /// just the next one) and persists the same change via a small separately-tracked query, since
+    /// callers query with AsNoTracking(). Best-effort: a DMS hiccup here is logged and swallowed
+    /// rather than breaking the list/detail page - the same "still show JobCardScanner's own data"
+    /// convention List() already uses when blending in DMS rows fails.
+    /// </summary>
+    private async Task SyncClosedFromDmsAsync(IReadOnlyList<JobCard> jobCards, CancellationToken ct)
+    {
+        var openHeaderIds = jobCards
+            .Where(j => j.Status != JobCardStatus.Closed && j.Status != JobCardStatus.Cancelled && j.BaplJobCardHeaderId.HasValue)
+            .Select(j => j.BaplJobCardHeaderId!.Value)
+            .Distinct()
+            .ToList();
+        if (openHeaderIds.Count == 0) return;
+
+        IReadOnlyDictionary<int, string> dmsStatuses;
+        try
+        {
+            dmsStatuses = await _baplDms.GetJobStatusesAsync(openHeaderIds, ct);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Could not sync DMS closed-status into JobCardScanner for {Count} job card(s)", openHeaderIds.Count);
+            return;
+        }
+
+        var newlyClosed = jobCards
+            .Where(j => j.BaplJobCardHeaderId.HasValue && dmsStatuses.TryGetValue(j.BaplJobCardHeaderId.Value, out var s) && s == "Closed")
+            .ToList();
+        if (newlyClosed.Count == 0) return;
+
+        var idsToClose = newlyClosed.Select(j => j.Id).ToList();
+        var tracked = await _db.JobCards.Where(j => idsToClose.Contains(j.Id)).ToListAsync(ct);
+        var now = DateTime.UtcNow;
+        foreach (var t in tracked)
+        {
+            t.Status = JobCardStatus.Closed;
+            t.ClosedAt ??= now;
+            t.ActualDeliveryAt ??= now;
+        }
+        await _db.SaveChangesAsync(ct);
+
+        foreach (var j in newlyClosed)
+        {
+            j.Status = JobCardStatus.Closed;
+            j.ClosedAt ??= now;
+            j.ActualDeliveryAt ??= now;
+        }
+    }
+
     private IQueryable<JobCard> FullQuery() => _db.JobCards.AsNoTracking()
         .Include(j => j.Customer).Include(j => j.Vehicle).ThenInclude(v => v!.Warranty)
         .Include(j => j.Dealer).Include(j => j.CurrentStage)
@@ -822,11 +900,11 @@ public class JobCardsController : ControllerBase
         Source = "JobCardScanner",
     };
 
-    /// <summary>Shapes a BAPL DMS job card row (see BaplDmsService.SearchJobCardsAsync) into the
+    /// <summary>Shapes a DMS job card row (see BaplDmsService.SearchJobCardsAsync) into the
     /// same field names as Summarize() above so the /jobcards list page can render both kinds of
     /// row through one table - Source distinguishes them (BaplDms rows have no JobCardScanner Id,
     /// so the frontend must not try to link to a Job Card Detail page for one). Fields
-    /// JobCardScanner tracks but BAPL DMS's own job card doesn't (ServiceType/Priority/StageLabel/
+    /// JobCardScanner tracks but DMS's own job card doesn't (ServiceType/Priority/StageLabel/
     /// ExpectedDeliveryAt) come through null rather than guessed.</summary>
     private static object SummarizeBapl(BaplDmsJobCardListRow r) => new
     {
@@ -869,7 +947,7 @@ public class JobCardsController : ControllerBase
         j.BaplTechnicianName,
         j.BaplManualJobNo,
         // *Id fields (not just the display-only *Name strings above) are needed so the Labour
-        // Suggestion panel can scope its BAPL DMS LabourMaster search by this job card's own
+        // Suggestion panel can scope its DMS LabourMaster search by this job card's own
         // already-selected Job Type/Service Head/Service Type cascade, same IDs the wizard used.
         j.BaplJobTypeId,
         j.BaplServiceHeadId,
@@ -886,7 +964,7 @@ public class JobCardsController : ControllerBase
         Customer = j.Customer,
         Vehicle = j.Vehicle,
         Dealer = j.Dealer is null ? null : new { j.Dealer.Id, j.Dealer.Name, j.Dealer.Code },
-        // 2026-09-03: this job card's own dealer, resolved to BAPL DMS's own dealer code (distinct
+        // 2026-09-03: this job card's own dealer, resolved to DMS's own dealer code (distinct
         // from j.Dealer.Code above, which is JobCardScanner's own local code) - needed so the
         // Labour Suggestion panel's GET /api/bapl-dms/labour?dealerCode=... call can scope the new
         // PartWiseLabourMaster union to the right dealer, the same way baplServiceLocationCode
@@ -910,9 +988,9 @@ public class JobCardsController : ControllerBase
     };
 
     // ---------------- Part Suggestion ("Part Suggestion" panel) ----------------
-    /// <summary>POST /api/jobcards/{id}/part-suggestions - saves one BAPL DMS PartsInventory item
+    /// <summary>POST /api/jobcards/{id}/part-suggestions - saves one DMS PartsInventory item
     /// suggested for this job card, with a Paid/U-W status tracked only in JobCardScannerDb (see
-    /// JobCardPartSuggestion's doc comment - this does not write anything back into BAPL DMS).</summary>
+    /// JobCardPartSuggestion's doc comment - this does not write anything back into DMS).</summary>
     [HttpPost("{id:guid}/part-suggestions")]
     [Authorize(Policy = Policies.ServiceAdvisorUp)]
     public async Task<IActionResult> AddPartSuggestion(Guid id, AddPartSuggestionRequest req)
@@ -998,11 +1076,11 @@ public class JobCardsController : ControllerBase
     }
 
     // ---------------- Labour Suggestion ("Labour Suggestion" panel) ----------------
-    /// <summary>POST /api/jobcards/{id}/labour-suggestions - saves one BAPL DMS LabourMaster line
+    /// <summary>POST /api/jobcards/{id}/labour-suggestions - saves one DMS LabourMaster line
     /// suggested for this job card. Snapshots Description/HSN/GST/Rate from the request as picked
     /// on the frontend (same trust level as AddPartSuggestion's AvailableQtyAtSuggestion - this is
-    /// JobCardScanner-only history/reporting, not re-verified against BAPL DMS server-side) - see
-    /// JobCardLabourSuggestion's doc comment. Does not write anything back into BAPL DMS.</summary>
+    /// JobCardScanner-only history/reporting, not re-verified against DMS server-side) - see
+    /// JobCardLabourSuggestion's doc comment. Does not write anything back into DMS.</summary>
     [HttpPost("{id:guid}/labour-suggestions")]
     [Authorize(Policy = Policies.ServiceAdvisorUp)]
     public async Task<IActionResult> AddLabourSuggestion(Guid id, AddLabourSuggestionRequest req)

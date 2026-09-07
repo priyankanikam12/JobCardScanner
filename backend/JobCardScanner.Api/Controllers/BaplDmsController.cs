@@ -18,7 +18,7 @@ public record ResolveBaplDealerRequest(string DealerCode);
 /// local <see cref="Dealer"/> row WITH a DealerAdmin login (find-or-create, same shared default
 /// password as the bulk ERP import - see ResolveDealer below), and auto-filling customer/vehicle/
 /// battery/warranty details by chassis, registration number, or mobile number (see
-/// IBaplDmsService.LookupVehicleAsync, ported from BAPL DMS's own JobCardRepo).
+/// IBaplDmsService.LookupVehicleAsync, ported from DMS's own JobCardRepo).
 /// </summary>
 [ApiController]
 [Route("api/bapl-dms")]
@@ -64,7 +64,7 @@ public class BaplDmsController : ControllerBase
     }
 
     /// <summary>
-    /// POST /api/bapl-dms/dealers/resolve - given a BAPL DMS dealer code (from the search above),
+    /// POST /api/bapl-dms/dealers/resolve - given a DMS dealer code (from the search above),
     /// finds-or-creates the matching local <see cref="Dealer"/> row AND ensures it has a
     /// DealerAdmin login, same as AdminDealerImportController's bulk ERP import: shared default
     /// password (BaplImport:DefaultDealerPassword, "Dealer@123" unless you've changed it),
@@ -81,7 +81,7 @@ public class BaplDmsController : ControllerBase
 
         // Already known locally, however it originally got here (BaplImport from ERP, manual, or a
         // previous resolve like this one) - match on either code field, since a dealer imported
-        // from the ERP side may happen to share the same code BAPL DMS uses.
+        // from the ERP side may happen to share the same code DMS uses.
         var existing = await _db.Dealers.FirstOrDefaultAsync(d => d.Code == code || d.BaplDmsDealerCode == code);
         if (existing is not null)
         {
@@ -97,7 +97,7 @@ public class BaplDmsController : ControllerBase
 
             IReadOnlyList<BaplDmsDealerRow> existingMatches;
             try { existingMatches = await _baplDms.SearchDealersAsync(code, HttpContext.RequestAborted); }
-            catch (InvalidOperationException) { existingMatches = Array.Empty<BaplDmsDealerRow>(); } // dealer row still returned below even if BAPL DMS is unreachable right now
+            catch (InvalidOperationException) { existingMatches = Array.Empty<BaplDmsDealerRow>(); } // dealer row still returned below even if DMS is unreachable right now
             var existingRow = existingMatches.FirstOrDefault(m => string.Equals(m.DealerCode, code, StringComparison.OrdinalIgnoreCase));
             var (loginEmail, defaultPassword) = await CreateDealerLoginAsync(existing, existingRow);
             return Ok(new { existing.Id, existing.Name, existing.Code, existing.City, existing.BaplDmsDealerCode, loginCreated = loginEmail is not null, loginEmail, defaultPassword });
@@ -108,7 +108,7 @@ public class BaplDmsController : ControllerBase
         catch (InvalidOperationException ex) { return StatusCode(502, new { message = ex.Message }); }
 
         var row = matches.FirstOrDefault(m => string.Equals(m.DealerCode, code, StringComparison.OrdinalIgnoreCase));
-        if (row is null) return NotFound(new { message = $"'{code}' was not found in BAPL DMS's dealer master." });
+        if (row is null) return NotFound(new { message = $"'{code}' was not found in DMS's dealer master." });
 
         var dealer = new Dealer
         {
@@ -123,7 +123,7 @@ public class BaplDmsController : ControllerBase
         };
         _db.Dealers.Add(dealer);
         await _db.SaveChangesAsync(); // need dealer.Id before creating its login
-        _logger.LogInformation("Created Dealer {DealerId} from BAPL DMS dealer {DealerCode} via wizard resolve", dealer.Id, code);
+        _logger.LogInformation("Created Dealer {DealerId} from DMS dealer {DealerCode} via wizard resolve", dealer.Id, code);
 
         var (createdEmail, createdPassword) = await CreateDealerLoginAsync(dealer, row);
         return Ok(new { dealer.Id, dealer.Name, dealer.Code, dealer.City, dealer.BaplDmsDealerCode, loginCreated = createdEmail is not null, loginEmail = createdEmail, defaultPassword = createdPassword });
@@ -143,7 +143,7 @@ public class BaplDmsController : ControllerBase
             email = $"{dealer.Code.Trim().ToLower()}@dealer.bgauss.local";
         if (await _db.Users.AnyAsync(u => u.Email.ToLower() == email))
         {
-            _logger.LogWarning("Could not create a BAPL DMS dealer login for {DealerId} - {Email} already in use", dealer.Id, email);
+            _logger.LogWarning("Could not create a DMS dealer login for {DealerId} - {Email} already in use", dealer.Id, email);
             return (null, null);
         }
 
@@ -169,9 +169,9 @@ public class BaplDmsController : ControllerBase
     /// Job Card Wizard. dealerCode is optional (see IBaplDmsService.LookupVehicleAsync doc comment
     /// on why an unscoped search is safe here). Returns 404 for a genuine "searched, nothing found"
     /// (expected for a brand new/manually-entered vehicle) and 502 with the real error message for
-    /// an actual BAPL DMS problem (bad connection/schema mismatch/etc.) - these used to both look
+    /// an actual DMS problem (bad connection/schema mismatch/etc.) - these used to both look
     /// like a 404 from the frontend, which made a real integration bug indistinguishable from
-    /// "this vehicle just isn't in BAPL DMS".
+    /// "this vehicle just isn't in DMS".
     /// </summary>
     [HttpGet("vehicle-lookup")]
     public async Task<IActionResult> VehicleLookup([FromQuery] string value, [FromQuery] string? dealerCode)
@@ -180,7 +180,7 @@ public class BaplDmsController : ControllerBase
         try
         {
             var hit = await _baplDms.LookupVehicleAsync(value, dealerCode, HttpContext.RequestAborted);
-            if (hit is null) return NotFound(new { message = $"'{value}' was not found in BAPL DMS." });
+            if (hit is null) return NotFound(new { message = $"'{value}' was not found in DMS." });
 
             hit = await AttachOpenJobCardAsync(hit, dealerCode);
             return Ok(hit);
@@ -196,8 +196,8 @@ public class BaplDmsController : ControllerBase
     /// is selected, instead of only at final submit (JobCardsController.Create's own duplicate
     /// check, which this repeats). Checks JobCardScanner's own JobCards first (scoped to the calling
     /// user's own dealer - a dealer-scoped user has no business knowing about another dealer's open
-    /// job cards), then falls back to BAPL DMS's own job card history via
-    /// GetOpenJobCardForChassisAsync (best-effort - a BAPL DMS hiccup here must never block the
+    /// job cards), then falls back to DMS's own job card history via
+    /// GetOpenJobCardForChassisAsync (best-effort - a DMS hiccup here must never block the
     /// lookup that already succeeded).</summary>
     private async Task<BaplDmsVehicleRow> AttachOpenJobCardAsync(BaplDmsVehicleRow hit, string? dealerCode)
     {
@@ -223,7 +223,7 @@ public class BaplDmsController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
-            _logger.LogWarning(ex, "Could not check BAPL DMS for an open job card on chassis {ChassisNo} - proceeding without this check", hit.ChassisNo);
+            _logger.LogWarning(ex, "Could not check DMS for an open job card on chassis {ChassisNo} - proceeding without this check", hit.ChassisNo);
         }
 
         return hit;
@@ -266,9 +266,9 @@ public class BaplDmsController : ControllerBase
 
     /// <summary>
     /// GET /api/bapl-dms/service-history?chassisNo=...&amp;dealerCode=... - this chassis's past job
-    /// cards straight from BAPL DMS's own JobCardHeader/JobCardCustomer/JobCardComplaint tables, for
+    /// cards straight from DMS's own JobCardHeader/JobCardCustomer/JobCardComplaint tables, for
     /// the "Service History" section on JobCardScanner's own Job Card Detail page. Always returns 200
-    /// with an (possibly empty) array on a genuine "nothing found" - only a real BAPL DMS problem
+    /// with an (possibly empty) array on a genuine "nothing found" - only a real DMS problem
     /// (bad connection/schema mismatch/etc.) returns 502 with the real error message.
     /// </summary>
     [HttpGet("service-history")]
@@ -287,8 +287,8 @@ public class BaplDmsController : ControllerBase
     }
 
     /// <summary>
-    /// GET /api/bapl-dms/job-cards/{jobCardHeaderId} - full read-only detail for one BAPL DMS job
-    /// card. This is what a BAPL DMS row on the /jobcards list links to (see JobCardsListPage.tsx),
+    /// GET /api/bapl-dms/job-cards/{jobCardHeaderId} - full read-only detail for one DMS job
+    /// card. This is what a DMS row on the /jobcards list links to (see JobCardsListPage.tsx),
     /// since a BaplDms-sourced row has no JobCardScanner record to open instead.
     /// </summary>
     [HttpGet("job-cards/{jobCardHeaderId:int}")]
@@ -297,7 +297,7 @@ public class BaplDmsController : ControllerBase
         try
         {
             var row = await _baplDms.GetJobCardByIdAsync(jobCardHeaderId, HttpContext.RequestAborted);
-            return row is null ? NotFound(new { message = $"BAPL DMS job card {jobCardHeaderId} was not found." }) : Ok(row);
+            return row is null ? NotFound(new { message = $"DMS job card {jobCardHeaderId} was not found." }) : Ok(row);
         }
         catch (InvalidOperationException ex)
         {
@@ -308,7 +308,7 @@ public class BaplDmsController : ControllerBase
     /// <summary>
     /// GET /api/bapl-dms/workshops?dealerId=&amp;q= - active "W" series workshop locations from BAPL
     /// DMS's own LocationMaster, for the wizard's Dealer/Workshop and Service Location pickers.
-    /// dealerId is a LOCAL JobCardScanner Dealer id (not a raw BAPL DMS dealer code) - this resolves
+    /// dealerId is a LOCAL JobCardScanner Dealer id (not a raw DMS dealer code) - this resolves
     /// it to the dealer's BaplDmsDealerCode itself so the frontend never has to know or carry that
     /// code around. Omit dealerId to search every dealer's workshops by name/code (q).
     /// </summary>
@@ -320,7 +320,7 @@ public class BaplDmsController : ControllerBase
         {
             baplDealerCode = await _db.Dealers.AsNoTracking().Where(d => d.Id == dealerId).Select(d => d.BaplDmsDealerCode).FirstOrDefaultAsync();
             if (string.IsNullOrWhiteSpace(baplDealerCode))
-                return Ok(Array.Empty<BaplDmsWorkshopRow>()); // dealer not linked to BAPL DMS yet - nothing to show, not an error
+                return Ok(Array.Empty<BaplDmsWorkshopRow>()); // dealer not linked to DMS yet - nothing to show, not an error
         }
         try
         {
@@ -333,7 +333,7 @@ public class BaplDmsController : ControllerBase
         }
     }
 
-    /// <summary>GET /api/bapl-dms/job-types - BAPL DMS's JobType master (Job Type dropdown).</summary>
+    /// <summary>GET /api/bapl-dms/job-types - DMS's JobType master (Job Type dropdown).</summary>
     [HttpGet("job-types")]
     public async Task<IActionResult> JobTypes()
     {
@@ -359,7 +359,7 @@ public class BaplDmsController : ControllerBase
         catch (InvalidOperationException ex) { return StatusCode(502, new { message = ex.Message }); }
     }
 
-    /// <summary>GET /api/bapl-dms/complaints - BAPL DMS's active ComplaintMaster rows, for the
+    /// <summary>GET /api/bapl-dms/complaints - DMS's active ComplaintMaster rows, for the
     /// "Customer complaints / concerns" dropdown.</summary>
     [HttpGet("complaints")]
     public async Task<IActionResult> Complaints()
@@ -368,7 +368,7 @@ public class BaplDmsController : ControllerBase
         catch (InvalidOperationException ex) { return StatusCode(502, new { message = ex.Message }); }
     }
 
-    /// <summary>GET /api/bapl-dms/job-sources - BAPL DMS's JobSource master (Walk In/RSA/Mega
+    /// <summary>GET /api/bapl-dms/job-sources - DMS's JobSource master (Walk In/RSA/Mega
     /// Camp/...), for the wizard's "Source" dropdown.</summary>
     [HttpGet("job-sources")]
     public async Task<IActionResult> JobSources()
@@ -377,7 +377,7 @@ public class BaplDmsController : ControllerBase
         catch (InvalidOperationException ex) { return StatusCode(502, new { message = ex.Message }); }
     }
 
-    /// <summary>GET /api/bapl-dms/repair-bills/{jobCardHeaderId} - repair bill(s) BAPL DMS has for
+    /// <summary>GET /api/bapl-dms/repair-bills/{jobCardHeaderId} - repair bill(s) DMS has for
     /// one job card, for the Job Card Detail page's "Download Invoice from DMS" panel. Empty array
     /// is normal (no bill raised for this job yet).</summary>
     [HttpGet("repair-bills/{jobCardHeaderId:int}")]
@@ -388,7 +388,7 @@ public class BaplDmsController : ControllerBase
     }
 
     /// <summary>GET /api/bapl-dms/parts?locationCode=... - available stock per item at one workshop
-    /// location (BAPL DMS's own PartsInventory), for the Job Card Detail page's "Part Suggestion"
+    /// location (DMS's own PartsInventory), for the Job Card Detail page's "Part Suggestion"
     /// panel. See BaplDmsPartStockRow's doc comment for the (best-effort, unconfirmed) "available"
     /// rule this uses.</summary>
     [HttpGet("parts")]
@@ -405,7 +405,7 @@ public class BaplDmsController : ControllerBase
     /// serviceHeadId/serviceTypeId default the list to the job card's own already-selected cascade
     /// (see JobCardDetail.baplJobTypeId etc on the frontend), dealerCode (2026-09-03, see
     /// JobCardDetail.baplDealerCode - JobCardsController's GetById now returns the job card's own
-    /// resolved BAPL DMS dealer code alongside Dealer) scopes the PartWiseLabourMaster union (skipped
+    /// resolved DMS dealer code alongside Dealer) scopes the PartWiseLabourMaster union (skipped
     /// entirely without one), q is a free-text search across LabourCode/LabourDescription (and, for
     /// PartWiseLabourMaster rows, PartCode/PartDescription too) combined with (not replacing) any
     /// cascade filter - see BaplDmsLabourRow's doc comment for why both matter (many LabourMaster
@@ -419,8 +419,8 @@ public class BaplDmsController : ControllerBase
     }
 
     /// <summary>
-    /// GET /api/bapl-dms/aspnet-users?q=... - backs Admin -&gt; Users' "BAPL DMS Logins" panel: lists
-    /// every dealer/workshop login BAPL DMS's own AspNetUsers table knows about (the same table the
+    /// GET /api/bapl-dms/aspnet-users?q=... - backs Admin -&gt; Users' "DMS Logins" panel: lists
+    /// every dealer/workshop login DMS's own AspNetUsers table knows about (the same table the
     /// "Dealer / Workshop Login" fallback checks - see BaplDmsService.VerifyDealerCredentialsAsync),
     /// cross-referenced against JobCardScannerDb's own Dealers (does this row's DealerCode already
     /// resolve to a known local Dealer?) and Users (has anyone actually signed in with this email

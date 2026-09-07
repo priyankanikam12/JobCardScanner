@@ -36,7 +36,7 @@ export function JobCardsListScreen({ navigation, route }: Props) {
   // { status: 'PendingCustomerApproval' }) - see DashboardScreen.tsx's KPIS array.
   const filter = route.params
   const [jobCards, setJobCards] = useState<JobCardSummary[]>([])
-  // Non-null only when a real BAPL DMS problem (not "this dealer has no BAPL DMS data", which is
+  // Non-null only when a real DMS problem (not "this dealer has no DMS data", which is
   // normal and silent) kept its job cards out of the blended list below - mirrors
   // web/src/pages/staff/JobCardsListPage.tsx.
   const [baplDmsWarning, setBaplDmsWarning] = useState<string | null>(null)

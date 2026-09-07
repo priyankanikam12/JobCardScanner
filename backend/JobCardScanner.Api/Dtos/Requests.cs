@@ -22,7 +22,7 @@ public record CreateCustomerRequest(string Name, string Mobile, string? Email, s
 public record CreateVehicleRequest(
     Guid CustomerId, string Model, string? Variant, string? Color, string? RegNo, string? Vin,
     string? BatteryNo, string? MotorNo, string? SerialNo, DateOnly? PurchaseDate, double Odometer, Guid DealerId,
-    // Optional - populated when the vehicle step was auto-filled from a BAPL DMS chassis/reg-no
+    // Optional - populated when the vehicle step was auto-filled from a DMS chassis/reg-no
     // lookup (see Controllers/BaplDmsController.cs); null for a manually-entered vehicle.
     string? ControllerNo = null, string? ConverterNo = null, string? ChargerNo = null,
     DateOnly? InsuranceExpiry = null, DateOnly? NextServiceDueDate = null,
@@ -45,20 +45,20 @@ public record CreateJobCardRequest(
     Guid? ServiceAdvisorId,
     string? CustomerConsentNotes,
     List<ComplaintInput> Complaints,
-    // BAPL DMS-style fields (see JobCard.cs's doc comment) - free text display labels, kept for
+    // DMS-style fields (see JobCard.cs's doc comment) - free text display labels, kept for
     // backward compatibility with job cards created before the cascade below existed.
     string? BaplJobType = null,
     string? BaplServiceLocation = null,
     string? BaplSupervisorName = null,
     string? BaplTechnicianName = null,
     string? BaplManualJobNo = null,
-    // BAPL DMS JobType -> ServiceHead -> ServiceType cascade (see BaplDmsService.GetJobTypesAsync/
-    // GetServiceHeadsAsync/GetServiceTypesAsync) plus the Service Location BAPL DMS Loccode - when
+    // DMS JobType -> ServiceHead -> ServiceType cascade (see BaplDmsService.GetJobTypesAsync/
+    // GetServiceHeadsAsync/GetServiceTypesAsync) plus the Service Location DMS Loccode - when
     // all three ids and a location code are present AND the dealer has a known BaplDmsDealerCode,
-    // JobCardsController.Create attempts a best-effort write-back into BAPL DMS's own database (see
-    // BaplDmsService.CreateJobCardAsync). CustomerLedgerId is the BAPL DMS LedgerMaster.Id this
+    // JobCardsController.Create attempts a best-effort write-back into DMS's own database (see
+    // BaplDmsService.CreateJobCardAsync). CustomerLedgerId is the DMS LedgerMaster.Id this
     // customer/vehicle was auto-fetched against (from the chassis/reg-no lookup) - null for a
-    // manually-entered customer BAPL DMS has never seen.
+    // manually-entered customer DMS has never seen.
     int? BaplJobTypeId = null,
     int? BaplServiceHeadId = null,
     string? BaplServiceHeadName = null,
@@ -66,15 +66,15 @@ public record CreateJobCardRequest(
     string? BaplServiceTypeName = null,
     string? BaplServiceLocationCode = null,
     int? BaplCustomerLedgerId = null,
-    // BAPL DMS's JobSource master (Walk In/RSA/Mega Camp/...) - see JobCard.cs's doc comment on
+    // DMS's JobSource master (Walk In/RSA/Mega Camp/...) - see JobCard.cs's doc comment on
     // BaplJobSourceId for why the plain Source enum above still gets set too.
     int? BaplJobSourceId = null,
     string? BaplJobSourceName = null,
     // 2026-09-07: Coupon No. and Job Category, added to the Job Card Wizard's Vehicle step (before
-    // Odometer) to match BAPL DMS's own Job Card form. Both are optional overrides of what
+    // Odometer) to match DMS's own Job Card form. Both are optional overrides of what
     // BaplDmsService.CreateJobCardAsync would otherwise derive automatically (Coupon No. from the
     // chassis number's last 13 characters, Job Category defaulting to "B2C") - see that method's
-    // doc comment. Not persisted on JobCard itself (BAPL DMS is the system of record for both), only
+    // doc comment. Not persisted on JobCard itself (DMS is the system of record for both), only
     // forwarded into the DMS write-back.
     string? BaplCouponNo = null,
     string? BaplJobCategory = null);
@@ -132,7 +132,7 @@ public record OtpVerifyRequest(Guid OtpRequestId, string Code);
 public record RequestPartRequest(Guid PartId, double Quantity);
 public record IssuePartRequest { }
 
-// ---------------- Part Suggestion ("Part Suggestion" panel - suggested from BAPL DMS's own
+// ---------------- Part Suggestion ("Part Suggestion" panel - suggested from DMS's own
 // PartsInventory, status tracked locally only) ----------------
 public record AddPartSuggestionRequest(
     string ItemCode, int? AvailableQtyAtSuggestion, string Status,
@@ -141,7 +141,7 @@ public record AddPartSuggestionRequest(
     int Quantity = 1, string? Description = null, string? HsnCode = null, decimal? Mrp = null);
 public record UpdatePartSuggestionStatusRequest(string Status);
 
-// ---------------- Labour Suggestion ("Labour Suggestion" panel - suggested from BAPL DMS's own
+// ---------------- Labour Suggestion ("Labour Suggestion" panel - suggested from DMS's own
 // LabourMaster, Description/HSN/GST/Rate snapshotted locally at suggestion time) ----------------
 public record AddLabourSuggestionRequest(
     string LabourCode,

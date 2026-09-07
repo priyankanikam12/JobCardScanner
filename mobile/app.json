@@ -5,7 +5,7 @@
     "scheme": "jobcardscanner",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/BG_Logo.png",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true
@@ -14,16 +14,11 @@
       "package": "com.bgauss.jobcardscanner",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
+        "foregroundImage": "./assets/BG_Logo.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false,
-      "permissions": [
-        "android.permission.RECORD_AUDIO",
-        "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_FINE_LOCATION"
-      ]
+      "predictiveBackGestureEnabled": false
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -49,16 +44,7 @@
         {
           "locationAlwaysAndWhenInUsePermission": "JobCardScanner uses your location to tag where a job card photo was taken."
         }
-      ],
-      "@react-native-community/datetimepicker",
-      "expo-secure-store",
-      "expo-sharing"
-    ],
-    "extra": {
-      "eas": {
-        "projectId": "222321e0-98ff-4f60-bbf4-35737f0d296a"
-      }
-    },
-    "owner": "priyankanikam101ss-team"
+      ]
+    ]
   }
 }

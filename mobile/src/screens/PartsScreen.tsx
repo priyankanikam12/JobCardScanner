@@ -15,7 +15,7 @@ export function PartsScreen() {
   const { profile } = useStaffAuth()
   const [q, setQ] = useState('')
   const [locationCode, setLocationCode] = useState('')
-  // Dealer's own BAPL DMS workshop location(s) - fetched once so the DMS Parts Inventory list
+  // Dealer's own DMS workshop location(s) - fetched once so the DMS Parts Inventory list
   // below can pick one automatically instead of requiring the user to know/type a location code.
   // Mirrors web's PartsPage.tsx same change.
   const [workshops, setWorkshops] = useState<BaplDmsWorkshop[]>([])
@@ -60,7 +60,7 @@ export function PartsScreen() {
       {workshops.length > 0 ? (
         <View style={{ marginBottom: 12 }}>
           <PickerField
-            label="BAPL DMS workshop location"
+            label="DMS workshop location"
             value={locationCode}
             options={workshops.map((w) => ({ label: `${w.locCode} — ${w.locName}`, value: w.locCode }))}
             onChange={setLocationCode}
@@ -69,7 +69,7 @@ export function PartsScreen() {
       ) : (
         <TextInput
           style={styles.search}
-          placeholder="BAPL DMS workshop location code (e.g. CUS0435W1)"
+          placeholder="DMS workshop location code (e.g. CUS0435W1)"
           value={locationCode}
           onChangeText={setLocationCode}
           autoCapitalize="characters"
@@ -89,8 +89,8 @@ export function PartsScreen() {
         </View>
       ))}
 
-      <Text style={styles.sectionTitle}>BAPL DMS Parts Inventory</Text>
-      {!locationCode && <Text style={styles.muted}>Select or enter a BAPL DMS workshop location above to see its live stock.</Text>}
+      <Text style={styles.sectionTitle}>DMS Parts Inventory</Text>
+      {!locationCode && <Text style={styles.muted}>Select or enter a DMS workshop location above to see its live stock.</Text>}
       {dmsWarning && <Text style={[styles.muted, { color: '#dc2626' }]}>{dmsWarning}</Text>}
       {!!locationCode && dmsParts.length === 0 && !dmsWarning && (
         <Text style={styles.muted}>No stock found at "{locationCode}"{q ? ` matching "${q}"` : ''}.</Text>

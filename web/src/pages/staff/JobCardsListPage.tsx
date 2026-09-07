@@ -1,6 +1,6 @@
-// web\src\pages\staff\JobCardsListPage.tsx
 import { useEffect, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import type { MouseEvent } from 'react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { staffApi } from '../../api/client'
 import type { JobCardListResponse, JobCardSummary, JobCardStatus } from '../../types'
 import { StatusBadge } from '../../components/StatusBadge'
@@ -13,14 +13,25 @@ const STATUSES: JobCardStatus[] = ['Open', 'InProgress', 'PendingCustomerApprova
 // it's a fresh navigation or a bookmarked/shared link.
 const DASHBOARD_FILTER_KEYS = ['excludeClosed', 'overdue', 'createdToday', 'deliveredToday', 'closedThisMonth', 'warrantyOnly', 'pendingBucket'] as const
 
+// A row's own detail route - shared by the row's onClick below and each inner Link's href, so
+// they can never disagree about where a given row goes.
+function detailRoute(jc: JobCardSummary): string {
+  return jc.source === 'BaplDms'
+    // jc.id is "bapl-{JobCardHeaderId}" (see JobCardsController.SummarizeBapl) - strip the prefix
+    // back to the numeric id the read-only detail route wants.
+    ? `/jobcards/bapl/${jc.id.replace(/^bapl-/, '')}`
+    : `/jobcards/${jc.id}`
+}
+
 export function JobCardsListPage() {
   // Dashboard Quick Links / KPI cards / "Job Cards by Status" chart deep-link here as e.g.
   // /jobcards?status=PendingCustomerApproval, /jobcards?stageKey=part_suggestion, or
   // /jobcards?excludeClosed=true - read once on mount so a linked-to filter is applied immediately
   // instead of showing the unfiltered list first.
   const [searchParams] = useSearchParams()
+  const navigate = useNavigate()
   const [jobCards, setJobCards] = useState<JobCardSummary[]>([])
-  // Non-null only when a real BAPL DMS problem (not "this dealer has no BAPL DMS data", which is
+  // Non-null only when a real DMS problem (not "this dealer has no DMS data", which is
   // normal and silent) kept its job cards out of the blended list below.
   const [baplDmsWarning, setBaplDmsWarning] = useState<string | null>(null)
   const [status, setStatus] = useState<string>(() => searchParams.get('status') ?? '')
@@ -109,18 +120,25 @@ export function JobCardsListPage() {
             <tbody>
               {jobCards.map((jc) => {
                 const isBapl = jc.source === 'BaplDms'
+                // Reported directly: "any place click on jobcard then open jobcard now only
+                // jobcard open when click Job card no" - previously only the Job Card # cell had
+                // a Link, so clicking the customer/vehicle/stage/status/technician/created cells
+                // did nothing. The whole row now opens the job card; the inner Links (Job Card #,
+                // the Photos jump-to-anchor) keep their own more specific destination by stopping
+                // the click from also reaching the row's onClick below - otherwise both handlers
+                // would fire on the same click and the row's plain detailRoute(jc) would win over
+                // e.g. the Photos link's more specific "#photos" anchor.
+                const stopRowClick = (e: MouseEvent) => e.stopPropagation()
                 return (
-                  <tr key={jc.id}>
+                  <tr key={jc.id} onClick={() => navigate(detailRoute(jc))} style={{ cursor: 'pointer' }}>
                     <td>
                       {isBapl ? (
                         <>
-                          {/* jc.id is "bapl-{JobCardHeaderId}" (see JobCardsController.SummarizeBapl) -
-                             strip the prefix back to the numeric id the read-only detail route wants. */}
-                          <Link to={`/jobcards/bapl/${jc.id.replace(/^bapl-/, '')}`}>{jc.jobCardNumber}</Link>
+                          <Link to={detailRoute(jc)} onClick={stopRowClick}>{jc.jobCardNumber}</Link>
                           <div><span style={{ background: '#1c64f2', color: '#fff', fontSize: 11, fontWeight: 600, padding: '1px 6px', borderRadius: 999 }}>DMS</span></div>
                         </>
                       ) : (
-                        <Link to={`/jobcards/${jc.id}`}>{jc.jobCardNumber}</Link>
+                        <Link to={detailRoute(jc)} onClick={stopRowClick}>{jc.jobCardNumber}</Link>
                       )}
                     </td>
                     <td>{jc.customerName}<div className="muted">{jc.customerMobile}</div></td>
@@ -135,7 +153,7 @@ export function JobCardsListPage() {
                       ) : jc.photoCount ? (
                         // Item 10: media is viewable straight from the list now - jumps to the
                         // Photos section on the job card instead of just showing a bare count.
-                        <Link to={`/jobcards/${jc.id}#photos`}>📷 {jc.photoCount}</Link>
+                        <Link to={`/jobcards/${jc.id}#photos`} onClick={stopRowClick}>📷 {jc.photoCount}</Link>
                       ) : (
                         <span className="muted">📷 0</span>
                       )}

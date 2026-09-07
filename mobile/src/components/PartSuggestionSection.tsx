@@ -16,7 +16,7 @@ const photoSrc = (url: string) => (url.startsWith('http') ? url : `${API_BASE_UR
  * "Part Suggestion" panel - mirrors web/src/pages/staff/JobCardDetailPage.tsx's PartSuggestionCard
  * (Item 16 rework): a type-ahead search bound to item code/description, a Qty field, and a
  * Remove button per suggestion, instead of the old Paid/U-W-toggle-only version. Parts come live
- * from BAPL DMS's own PartsInventory for this job card's service location (GET
+ * from DMS's own PartsInventory for this job card's service location (GET
  * /api/bapl-dms/parts?locationCode=...); Description/HsnCode/Mrp are snapshotted onto the
  * suggestion at add time (POST .../part-suggestions), not re-fetched afterwards.
  */
@@ -123,9 +123,9 @@ export function PartSuggestionSection({ jc, onChanged, estimatesLocked, totalLoc
         </Text>
       ) : (
       <>
-      <Text style={styles.subheading}>Suggest a part (from BAPL DMS PartsInventory)</Text>
+      <Text style={styles.subheading}>Suggest a part (from DMS PartsInventory)</Text>
       {!jc.baplServiceLocationCode && (
-        <Text style={styles.muted}>No BAPL DMS service location on this job card - part list unavailable.</Text>
+        <Text style={styles.muted}>No DMS service location on this job card - part list unavailable.</Text>
       )}
 
       <TextInput
@@ -155,7 +155,7 @@ export function PartSuggestionSection({ jc, onChanged, estimatesLocked, totalLoc
             <Text style={[styles.pickerRowText, styles.muted]}>
               {jc.baplServiceLocationCode
                 ? `Part number "${search.trim()}" does not exist for dealer location ${jc.baplServiceLocationCode}.`
-                : 'No BAPL DMS service location on this job card - part list unavailable.'}
+                : 'No DMS service location on this job card - part list unavailable.'}
             </Text>
           </View>
         </View>

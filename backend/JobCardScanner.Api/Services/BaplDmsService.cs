@@ -4,7 +4,7 @@ using Microsoft.Data.SqlClient;
 
 namespace JobCardScanner.Api.Services;
 
-/// <summary>One active dealer/workshop row read from BAPL DMS's own DealerMaster (separate
+/// <summary>One active dealer/workshop row read from DMS's own DealerMaster (separate
 /// database - BAPLDMSvadConnection - and a separate table from BaplDealerService's
 /// C_CustomerMaster, which lives in the BAPL ERP data warehouse instead).</summary>
 public record BaplDmsDealerRow(
@@ -16,8 +16,8 @@ public record BaplDmsDealerRow(
     string Email,
     string ContactPerson);
 
-/// <summary>Everything BAPL DMS knows about one vehicle by chassis/registration number - the
-/// "auto fetch everything" payload for the Job Card Wizard, modeled directly on BAPL DMS's own
+/// <summary>Everything DMS knows about one vehicle by chassis/registration number - the
+/// "auto fetch everything" payload for the Job Card Wizard, modeled directly on DMS's own
 /// JobCardRepo.GetAllInspectedLotChassisAsync/LotInspectionChassisVM (ported to a single-vehicle
 /// lookup - see BaplDmsService.LookupVehicleAsync for the port notes).</summary>
 public record BaplDmsVehicleRow(
@@ -45,7 +45,7 @@ public record BaplDmsVehicleRow(
     // Appended at the end with defaults so existing positional callers don't break. ----
     string? CustomerCity = null,
     int? CustomerLedgerId = null,
-    /// <summary>BAPL DMS's LocationMaster.Loccode this vehicle/chassis is registered against
+    /// <summary>DMS's LocationMaster.Loccode this vehicle/chassis is registered against
     /// (ChassisDetails.LocationCode) - used to pre-select the Service Location dropdown.</summary>
     string? LocationCode = null,
     string? DealerCode = null,
@@ -59,7 +59,7 @@ public record BaplDmsVehicleRow(
     string? CustomerAddress = null,
     string? CustomerEmail = null,
     /// <summary>Battery Details panel fields the Job Card print preview previously had nowhere to
-    /// source and printed as "-" - now read straight from BAPL DMS's own ChassisBatteryDetails
+    /// source and printed as "-" - now read straight from DMS's own ChassisBatteryDetails
     /// (confirmed via a `SELECT * FROM ChassisBatteryDetails` you ran), keyed by chassis no. See
     /// LookupVehicleAsync's ChassisBatteryDetails enrichment for how these (and the existing
     /// BatteryNumber/MotorNo/ControllerNo/ConverterNo/ChargerNumber fields above) are actually
@@ -70,18 +70,18 @@ public record BaplDmsVehicleRow(
     /// <summary>Set by BaplDmsController.VehicleLookup (NOT by LookupVehicleAsync itself - this
     /// record is filled in here, after the lookup, from two separate checks: JobCardScanner's own
     /// JobCards table for the calling dealer, and BaplDmsService.GetOpenJobCardForChassisAsync for
-    /// BAPL DMS's own job cards) when this chassis already has an open (not yet closed/billed) job
+    /// DMS's own job cards) when this chassis already has an open (not yet closed/billed) job
     /// card somewhere. Non-null means the wizard should warn immediately on selecting this chassis
     /// and refuse to auto-fill/proceed with it, instead of only finding out at final submit time
     /// (JobCardsController.Create already has the same duplicate check, but that's the last step of
     /// the wizard - this repeats it right at chassis-selection time so the user isn't allowed to
-    /// fill in the whole form first). "JC-1042" (local) or "SVC1042" (BAPL DMS JobPrefix+JobNo).</summary>
+    /// fill in the whole form first). "JC-1042" (local) or "SVC1042" (DMS JobPrefix+JobNo).</summary>
     string? OpenJobCardNumber = null,
-    /// <summary>"local" (JobCardScanner's own JobCards, this dealer only) or "bapl-dms" (BAPL DMS's
+    /// <summary>"local" (JobCardScanner's own JobCards, this dealer only) or "bapl-dms" (DMS's
     /// own job card history, which JobCardsController.Create's duplicate check also already covers -
     /// see OpenJobCardNumber's doc comment).</summary>
     string? OpenJobCardSource = null,
-    /// <summary>BAPL DMS's own JobStatus text for an "bapl-dms"-sourced hit (e.g. "In Progress") -
+    /// <summary>DMS's own JobStatus text for an "bapl-dms"-sourced hit (e.g. "In Progress") -
     /// null for a "local" hit, where JobCardScanner's own Status enum isn't a single display string
     /// the same way.</summary>
     string? OpenJobCardStatus = null);
@@ -93,38 +93,38 @@ public record BaplDmsVehicleRow(
 /// the existing LookupVehicleAsync. See BaplDmsService.SearchVehiclesAsync.</summary>
 public record BaplDmsVehicleSuggestion(string ChassisNo, string? RegNo, string? ModelName, string? DealerId, DateOnly? SaleDate);
 
-/// <summary>One workshop/service location row from BAPL DMS's own LocationMaster - filtered to the
+/// <summary>One workshop/service location row from DMS's own LocationMaster - filtered to the
 /// "W" series (Loccode ending in W&lt;digits&gt;, e.g. "CUS0435W1") per your own workshops, as
 /// opposed to the "S" (showroom) and "G" (godown/stock point) series LocationMaster also holds for
 /// the same dealer. Confirmed via `SELECT * FROM LocationMaster` you ran directly.</summary>
 public record BaplDmsWorkshopRow(string LocCode, string LocName, string City, string State, string DealerCode);
 
-/// <summary>One row from BAPL DMS's JobType master (confirmed via `SELECT * FROM JobType`) - the
+/// <summary>One row from DMS's JobType master (confirmed via `SELECT * FROM JobType`) - the
 /// Job Type dropdown's source, first level of the JobType -&gt; ServiceHead -&gt; ServiceType cascade.</summary>
 public record BaplDmsJobTypeRow(int Id, string Name);
 
-/// <summary>One row from BAPL DMS's ServiceHead master (confirmed via `SELECT * FROM ServiceHead`),
+/// <summary>One row from DMS's ServiceHead master (confirmed via `SELECT * FROM ServiceHead`),
 /// scoped to one JobTypeId - the Service Head dropdown's source, dependent on the Job Type picked.</summary>
 public record BaplDmsServiceHeadRow(int Id, int JobTypeId, string Name);
 
-/// <summary>One row from BAPL DMS's ServiceType master (confirmed via `SELECT * FROM ServiceType`),
+/// <summary>One row from DMS's ServiceType master (confirmed via `SELECT * FROM ServiceType`),
 /// scoped to one ServiceHeadId - the Service Type dropdown's source, dependent on the Service Head
 /// picked.</summary>
 public record BaplDmsServiceTypeRow(int Id, int ServiceHeadId, string Name);
 
-/// <summary>One row from BAPL DMS's ComplaintMaster (confirmed via `SELECT * FROM ComplaintMaster`)
+/// <summary>One row from DMS's ComplaintMaster (confirmed via `SELECT * FROM ComplaintMaster`)
 /// - the "Customer complaints / concerns" dropdown's source. Status is filtered to active (1) rows
 /// only.</summary>
 public record BaplDmsComplaintRow(int Id, string Name, int? GroupName);
 
-/// <summary>One row from BAPL DMS's JobSource master (confirmed via `SELECT * FROM JobSource`:
+/// <summary>One row from DMS's JobSource master (confirmed via `SELECT * FROM JobSource`:
 /// Walk In, RSA, Mega Camp, Others, ...) - replaces the wizard's old hardcoded WalkIn/PickupAndDrop/
 /// Breakdown/Scheduled/Online "Source" dropdown, which was JobCardScanner's own invented list, not
-/// anything BAPL DMS actually tracks.</summary>
+/// anything DMS actually tracks.</summary>
 public record BaplDmsJobSourceRow(int Id, string Name);
 
-/// <summary>Everything needed to write one new job card into BAPL DMS's own database - modeled
-/// directly on BAPL DMS's own JobCardRepo.InsertJobCardinfoDetails (pasted into this project's chat
+/// <summary>Everything needed to write one new job card into DMS's own database - modeled
+/// directly on DMS's own JobCardRepo.InsertJobCardinfoDetails (pasted into this project's chat
 /// history for reference), covering the JobCardHeader/JobCardCustomer/JobCardBatteryDetail/
 /// JobCardComplaint columns that repo actually populates on insert. See
 /// BaplDmsService.CreateJobCardAsync for what's intentionally left out (columns that repo's
@@ -159,12 +159,12 @@ public record BaplDmsCreateJobCardRequest(
     DateTime? ExpectedDeliveryAt,
     IReadOnlyList<string> Complaints,
     string CreatedBy,
-    /// <summary>BAPL DMS's own JobSource.Id (Walk In/RSA/Mega Camp/...), replacing the previously
+    /// <summary>DMS's own JobSource.Id (Walk In/RSA/Mega Camp/...), replacing the previously
     /// hardcoded 1 ("Walk In") written to JobCardHeader.JobSource. Still defaults to 1 when not
     /// supplied, so existing callers keep working unchanged.</summary>
     int? JobSourceId = null,
     /// <summary>JobCardScanner's own Normal/High/Urgent priority, written to a NEW Priority column
-    /// on BAPL DMS's own JobCardHeader (see add-bapldms-jobcardheader-priority-column.sql). This
+    /// on DMS's own JobCardHeader (see add-bapldms-jobcardheader-priority-column.sql). This
     /// column did NOT exist before - if that migration hasn't been run against BAPLDMSvad yet, the
     /// insert below will fail with "Invalid column name 'Priority'" and this whole write-back will
     /// report as Failed (non-blocking - the local job card still saves either way) until it's run.</summary>
@@ -177,8 +177,8 @@ public record BaplDmsCreateJobCardRequest(
     string? CouponNo = null,
     string? JobCategory = null);
 
-/// <summary>Result of a successful BAPL DMS job card insert - JobCardHeaderId lets JobCardScanner's
-/// own JobCard row remember which BAPL DMS record it created (JobCard.BaplJobCardHeaderId), so the
+/// <summary>Result of a successful DMS job card insert - JobCardHeaderId lets JobCardScanner's
+/// own JobCard row remember which DMS record it created (JobCard.BaplJobCardHeaderId), so the
 /// Job Card Detail page can link straight to it the same way a BaplDms-sourced /jobcards row does.</summary>
 public record BaplDmsCreateJobCardResult(int JobCardHeaderId, int JobNo);
 
@@ -190,11 +190,11 @@ public record BaplDmsCreateJobCardResult(int JobCardHeaderId, int JobNo);
 /// COALESCE-based SQL.</summary>
 public record BaplDmsUpdateJobCardRequest(string? Technician, DateTime? ExpectedDeliveryAt, string? Priority);
 
-/// <summary>One past visit for a chassis, straight from BAPL DMS's own job card history - the
+/// <summary>One past visit for a chassis, straight from DMS's own job card history - the
 /// "Service History" section on JobCardScanner's own Job Card Detail page (see
 /// BaplDmsService.GetServiceHistoryAsync).</summary>
 /// <summary>One row for the /jobcards list page's merged view (JobCardScanner's own job cards +
-/// BAPL DMS's) - deliberately narrower than BaplDmsJobCardHistoryRow (no Complaints aggregate,
+/// DMS's) - deliberately narrower than BaplDmsJobCardHistoryRow (no Complaints aggregate,
 /// since a list of many rows doing a STRING_AGG subquery per row is unnecessary work for a browse
 /// view) but includes customer/vehicle columns that history doesn't need since it's already scoped
 /// to one chassis. See BaplDmsService.SearchJobCardsAsync.</summary>
@@ -214,12 +214,12 @@ public record BaplDmsJobCardListRow(
     string? Technician);
 
 /// <summary>The result of BaplDmsService.GetOpenJobCardForChassisAsync - just enough to build the
-/// "this chassis already has an open job card in BAPL DMS" block message
+/// "this chassis already has an open job card in DMS" block message
 /// (JobCardsController.Create), never persisted anywhere locally.</summary>
 public record BaplDmsOpenJobCardRow(int JobCardHeaderId, int? JobNo, string? JobPrefix, string? JobStatus);
 
-/// <summary>Full read-only detail for one BAPL DMS job card, by its JobCardHeaderId - powers the
-/// read-only "BAPL DMS Job Card" view a merged /jobcards list row links to (see
+/// <summary>Full read-only detail for one DMS job card, by its JobCardHeaderId - powers the
+/// read-only "DMS Job Card" view a merged /jobcards list row links to (see
 /// BaplDmsService.GetJobCardByIdAsync and the /jobcards/bapl/:id page). A superset of
 /// BaplDmsJobCardListRow/BaplDmsJobCardHistoryRow's columns - all still the confirmed
 /// JobCardHeader/JobCardCustomer/JobCardBatteryDetail/JobCardComplaint schema, just more of it.</summary>
@@ -253,7 +253,7 @@ public record BaplDmsJobCardDetailRow(
     string? ChargerNo,
     string? Complaints);
 
-/// <summary>One repair bill row from BAPL DMS's own RepairBillHeader, scoped to one JobCardHeaderId
+/// <summary>One repair bill row from DMS's own RepairBillHeader, scoped to one JobCardHeaderId
 /// - for the Job Card Detail page's "Download Invoice from DMS" panel. Deliberately narrow: Id/
 /// RepairbillStatus/TotalNetAmount/JobId are the only RepairBillHeader columns already confirmed
 /// safe (they're used unchanged in SearchJobCardsAsync/GetJobCardByIdAsync's JobStatus CASE
@@ -261,7 +261,7 @@ public record BaplDmsJobCardDetailRow(
 /// independently confirmed, so it's deliberately left out rather than guessed.</summary>
 public record BaplDmsRepairBillRow(int Id, string? RepairBillStatus, decimal? TotalNetAmount);
 
-/// <summary>One item's available stock at one workshop location, from BAPL DMS's own PartsInventory
+/// <summary>One item's available stock at one workshop location, from DMS's own PartsInventory
 /// - for the Job Card Detail page's "Part Suggestion" panel (and now the general Parts &amp;
 /// Inventory catalog - see PartsController.Search). CONFIRMED business rule (you ran
 /// `SELECT * FROM PartsInventory` and shared the full column list plus three real rows): each
@@ -296,7 +296,7 @@ public record BaplDmsRepairBillRow(int Id, string? RepairBillStatus, decimal? To
 /// </summary>
 public record BaplDmsPartStockRow(string ItemCode, int AvailableQty, string? Description = null, decimal? Mrp = null, string? HsnCode = null);
 
-/// <summary>One labour rate-card row from BAPL DMS's own LabourMaster, OR from PartWiseLabourMaster
+/// <summary>One labour rate-card row from DMS's own LabourMaster, OR from PartWiseLabourMaster
 /// (a second, part-linked rate card - see GetLabourAsync's doc comment for why both are queried and
 /// merged), for the Job Card Detail page's "Labour Suggestion" panel - mirrors BaplDmsPartStockRow's
 /// role for Part Suggestion.
@@ -305,7 +305,7 @@ public record BaplDmsPartStockRow(string ItemCode, int AvailableQty, string? Des
 /// populated on every row; JobTypeId/ServiceHeadId/ServiceTypeId (LabourMaster's own
 /// Jobtype/ServiceHead/ServiceType columns) are the SAME master ids as JobCard's own
 /// BaplJobTypeId/BaplServiceHeadId/BaplServiceTypeId (confirmed by matching values, e.g. a row with
-/// Jobtype=3/ServiceHead=3/ServiceType=3) - but are NULL on most existing rows (BAPL DMS's own data
+/// Jobtype=3/ServiceHead=3/ServiceType=3) - but are NULL on most existing rows (DMS's own data
 /// hasn't mapped every labour code to the cascade yet), so GetLabourAsync's cascade filter only
 /// EXCLUDES a row that has a value there AND it doesn't match the requested id - a row with NULL
 /// Jobtype/ServiceHead/ServiceType always passes through regardless of the cascade, since most of
@@ -340,7 +340,7 @@ public record BaplDmsLabourRow(
     string? PartCode = null,
     string? PartDescription = null);
 
-/// <summary>Full RepairBillHeader row for one BAPL DMS job (RepairBillHeader.JobId), for the
+/// <summary>Full RepairBillHeader row for one DMS job (RepairBillHeader.JobId), for the
 /// "Download Invoice from DMS" PDF (see InvoicePdfService.BuildInvoicePdfAsync). Wider than the
 /// existing <see cref="BaplDmsRepairBillRow"/> (which only exposes Id/RepairbillStatus/
 /// TotalNetAmount for the repair-bill-list panel) - every column here (LocationCode, Prefix,
@@ -412,17 +412,17 @@ public record BaplDmsCustomerLedgerDetail(
     string? State,
     string? Gstin);
 
-/// <summary>Result of a successful BAPL DMS credential check against BAPL DMS's own AspNetUsers
+/// <summary>Result of a successful DMS credential check against DMS's own AspNetUsers
 /// (standard ASP.NET Core Identity table) - see VerifyDealerCredentialsAsync. Deliberately narrow:
 /// just enough to auto-provision/reuse a local Users row for the dealer-login fallback in
 /// DealerAuthController.Login, never the password hash itself.
 /// DealerCode is a CONFIRMED custom column on this AspNetUsers table (you ran
-/// `SELECT TOP 3 * FROM AspNetUsers` and shared it - e.g. "CUS0001") - BAPL DMS's own DealerMaster
+/// `SELECT TOP 3 * FROM AspNetUsers` and shared it - e.g. "CUS0001") - DMS's own DealerMaster
 /// dealer code this login belongs to. It's null for some rows (e.g. internal BAPL staff accounts
 /// with no dealer of their own), in which case DealerAuthController.Login can't resolve a Dealer
 /// and falls back to its inactive/pending-assignment safety net.
-/// IsBgEmployeeRole is true when this AspNetUsers row carries BAPL DMS's own "Employee" role
-/// (AspNetUserRoles/AspNetRoles - confirmed via your AspNetRoles dump). BAPL DMS's own
+/// IsBgEmployeeRole is true when this AspNetUsers row carries DMS's own "Employee" role
+/// (AspNetUserRoles/AspNetRoles - confirmed via your AspNetRoles dump). DMS's own
 /// AuthController.Login branches on exactly this role: an "Employee" account's dealer scope comes
 /// from BgEmployeeMaster/EmployeeMaster (by email, possibly MULTIPLE comma-separated dealer codes),
 /// never from this row's own DealerCode column - see ResolveEmployeeDealerScopeAsync.
@@ -430,10 +430,10 @@ public record BaplDmsCustomerLedgerDetail(
 /// in favor of that lookup.</summary>
 public record BaplDmsDealerCredential(string Email, string? UserName, string? Phone, string? DealerCode, bool IsBgEmployeeRole);
 
-/// <summary>Result of resolving a BAPL DMS "Employee"-role AspNetUsers row to its dealer scope, via
-/// BgEmployeeMaster (checked first) or EmployeeMaster (fallback) - mirrors BAPL DMS's own
+/// <summary>Result of resolving a DMS "Employee"-role AspNetUsers row to its dealer scope, via
+/// BgEmployeeMaster (checked first) or EmployeeMaster (fallback) - mirrors DMS's own
 /// AuthController.ResolveEmployeeLoginInfo (you pasted its real source). Found=false means neither
-/// table has a row for this email at all (BAPL DMS's own login would also reject this). IsActive
+/// table has a row for this email at all (DMS's own login would also reject this). IsActive
 /// mirrors that row's own IsActive column - an inactive BG employee is rejected the same way BAPL
 /// DMS's own login rejects them. DealerCodes is BgEmployeeMaster.DealerCode split on commas (can be
 /// 0, 1, or several codes - e.g. "CUS0347,CUS0440" for a regional/zone employee covering multiple
@@ -455,14 +455,14 @@ public record BaplDmsJobCardHistoryRow(
 
 public interface IBaplDmsService
 {
-    /// <summary>Live search of BAPL DMS's active dealers by name/code (min 2 chars), for the Job
+    /// <summary>Live search of DMS's active dealers by name/code (min 2 chars), for the Job
     /// Card Wizard's "search Dealer / Workshop" picker. Throws <see cref="InvalidOperationException"/>
     /// if BAPLDMSvadConnection isn't configured or the query fails.</summary>
     Task<IReadOnlyList<BaplDmsDealerRow>> SearchDealersAsync(string q, CancellationToken ct = default);
 
     /// <summary>
     /// Looks up one vehicle by chassis number, registration number, or customer mobile number.
-    /// Primary source is BAPL DMS's own job card history (JobCardHeader/JobCardCustomer/
+    /// Primary source is DMS's own job card history (JobCardHeader/JobCardCustomer/
     /// JobCardBatteryDetail - table and column names confirmed directly against your database, not
     /// guessed) - the most recent job card for a matching chassis/reg-no/mobile. If nothing has ever
     /// been serviced there, this falls back to BAPL's "inspected lot" tables (LotinspectionHeader/
@@ -493,7 +493,7 @@ public interface IBaplDmsService
     Task<IReadOnlyList<BaplDmsVehicleSuggestion>> SearchVehiclesAsync(string q, string? dealerCode, int take, CancellationToken ct = default);
 
     /// <summary>
-    /// This chassis's past job cards in BAPL DMS (JobCardHeader/JobCardCustomer/JobCardComplaint),
+    /// This chassis's past job cards in DMS (JobCardHeader/JobCardCustomer/JobCardComplaint),
     /// most recent first - for the "Service History" section on the Job Card Detail page. Throws
     /// <see cref="InvalidOperationException"/> on a real failure (same reasoning as
     /// LookupVehicleAsync's primary query - this schema is confirmed, so an error here is real).
@@ -501,11 +501,11 @@ public interface IBaplDmsService
     Task<IReadOnlyList<BaplDmsJobCardHistoryRow>> GetServiceHistoryAsync(string chassisNo, string? dealerCode, CancellationToken ct = default);
 
     /// <summary>
-    /// This chassis's most recent BAPL DMS job card, ONLY if it's still open (i.e. not Billed) -
-    /// null if there is no job card for this chassis in BAPL DMS at all, or the most recent one is
+    /// This chassis's most recent DMS job card, ONLY if it's still open (i.e. not Billed) -
+    /// null if there is no job card for this chassis in DMS at all, or the most recent one is
     /// already closed/billed. Added so JobCardsController.Create's existing "this chassis already
     /// has an open job card" duplicate check (which only ever looked at JobCardScanner's own local
-    /// JobCards table) also catches a job card opened directly in BAPL DMS outside JobCardScanner -
+    /// JobCards table) also catches a job card opened directly in DMS outside JobCardScanner -
     /// that job card is only ever READ here, never written into JobCardScanner's own database; the
     /// local database still only ever gets a row for a job card actually created through
     /// JobCardScanner's own wizard. Uses the same JobStatus CASE expression as SearchJobCardsAsync
@@ -516,7 +516,7 @@ public interface IBaplDmsService
     Task<BaplDmsOpenJobCardRow?> GetOpenJobCardForChassisAsync(string chassisNo, string? dealerCode, CancellationToken ct = default);
 
     /// <summary>
-    /// Browse/search across BAPL DMS's own job cards (JobCardHeader/JobCardCustomer - same
+    /// Browse/search across DMS's own job cards (JobCardHeader/JobCardCustomer - same
     /// confirmed schema as LookupVehicleAsync's primary query and GetServiceHistoryAsync), for
     /// blending into the /jobcards list page alongside JobCardScanner's own records (see
     /// JobCardsController.List). <paramref name="q"/> matches chassis no., registration no.,
@@ -525,22 +525,38 @@ public interface IBaplDmsService
     /// JobCardsController.List only ever does for CorporateAdmin/SystemAdmin (same cross-dealer
     /// visibility they already have over JobCardScanner's own data) - a dealer-scoped caller whose
     /// local Dealer row has no BaplDmsDealerCode should skip calling this entirely rather than pass
-    /// null, since that would show every dealer's BAPL DMS job cards to a single-dealer user.
+    /// null, since that would show every dealer's DMS job cards to a single-dealer user.
     /// Throws <see cref="InvalidOperationException"/> on a real failure (confirmed schema, same
-    /// reasoning as the other two methods above) - the list page treats that as "BAPL DMS is
+    /// reasoning as the other two methods above) - the list page treats that as "DMS is
     /// unavailable right now" and still shows JobCardScanner's own rows.
     /// </summary>
     Task<IReadOnlyList<BaplDmsJobCardListRow>> SearchJobCardsAsync(string? q, string? dealerCode, int take, CancellationToken ct = default);
 
     /// <summary>
-    /// Full read-only detail for one BAPL DMS job card by its JobCardHeaderId - what a BAPL DMS row
+    /// Batch-reads DMS's own live JobStatus (same CASE expression as SearchJobCardsAsync/
+    /// GetOpenJobCardForChassisAsync - "Closed" means RepairbillStatus = 'Billed') for a set of
+    /// JobCardHeaderIds in one round trip. Added to close a real reported gap: JobCardScanner's own
+    /// JobCard.Status was never updated when a job card was closed/billed directly in DMS -
+    /// "from dms...close from there this will close but from our jobscanner...this will not close".
+    /// JobCardsController.List/Get call this for every locally-tracked job card that isn't already
+    /// Closed, and flip the local row to Closed the moment DMS agrees it's Closed - see
+    /// JobCardsController.SyncClosedFromDmsAsync. Returns an entry only for ids DMS actually has
+    /// a JobCardHeader row for (a deleted/unknown id is simply absent from the result, not an error);
+    /// an empty <paramref name="jobCardHeaderIds"/> short-circuits to an empty dictionary without a
+    /// round trip. Throws <see cref="InvalidOperationException"/> on a real failure, same as the
+    /// other methods on this confirmed schema.
+    /// </summary>
+    Task<IReadOnlyDictionary<int, string>> GetJobStatusesAsync(IReadOnlyList<int> jobCardHeaderIds, CancellationToken ct = default);
+
+    /// <summary>
+    /// Full read-only detail for one DMS job card by its JobCardHeaderId - what a DMS row
     /// on the /jobcards list links to, since there's no JobCardScanner record to open for one.
     /// Returns null for a genuine "no such id"; throws <see cref="InvalidOperationException"/> on a
     /// real failure (confirmed schema, same reasoning as the other methods above).
     /// </summary>
     Task<BaplDmsJobCardDetailRow?> GetJobCardByIdAsync(int jobCardHeaderId, CancellationToken ct = default);
 
-    /// <summary>Active workshop locations from BAPL DMS's own LocationMaster, filtered to the "W"
+    /// <summary>Active workshop locations from DMS's own LocationMaster, filtered to the "W"
     /// series (Loccode ending in W&lt;digits&gt;) - i.e. actual workshops, not showrooms ("S") or
     /// godowns ("G") that the same table also holds. <paramref name="dealerCode"/> scopes to one
     /// dealer; null browses every dealer's workshops (only used for a free-text search, never for
@@ -548,33 +564,33 @@ public interface IBaplDmsService
     /// a real failure.</summary>
     Task<IReadOnlyList<BaplDmsWorkshopRow>> GetWorkshopsAsync(string? dealerCode, string? q, CancellationToken ct = default);
 
-    /// <summary>BAPL DMS's JobType master, for the wizard's Job Type dropdown (first level of the
+    /// <summary>DMS's JobType master, for the wizard's Job Type dropdown (first level of the
     /// JobType -&gt; ServiceHead -&gt; ServiceType cascade).</summary>
     Task<IReadOnlyList<BaplDmsJobTypeRow>> GetJobTypesAsync(CancellationToken ct = default);
 
-    /// <summary>BAPL DMS's ServiceHead master scoped to one JobTypeId, for the wizard's Service Head
+    /// <summary>DMS's ServiceHead master scoped to one JobTypeId, for the wizard's Service Head
     /// dropdown (second level of the cascade - populated only after a Job Type is picked).</summary>
     Task<IReadOnlyList<BaplDmsServiceHeadRow>> GetServiceHeadsAsync(int jobTypeId, CancellationToken ct = default);
 
-    /// <summary>BAPL DMS's ServiceType master scoped to one ServiceHeadId, for the wizard's Service
+    /// <summary>DMS's ServiceType master scoped to one ServiceHeadId, for the wizard's Service
     /// Type dropdown (third level of the cascade - populated only after a Service Head is picked).</summary>
     Task<IReadOnlyList<BaplDmsServiceTypeRow>> GetServiceTypesAsync(int serviceHeadId, CancellationToken ct = default);
 
-    /// <summary>BAPL DMS's active ComplaintMaster rows, for the "Customer complaints / concerns"
+    /// <summary>DMS's active ComplaintMaster rows, for the "Customer complaints / concerns"
     /// dropdown.</summary>
     Task<IReadOnlyList<BaplDmsComplaintRow>> GetComplaintsAsync(CancellationToken ct = default);
 
-    /// <summary>BAPL DMS's JobSource master (Walk In/RSA/Mega Camp/...), for the wizard's "Source"
+    /// <summary>DMS's JobSource master (Walk In/RSA/Mega Camp/...), for the wizard's "Source"
     /// dropdown - replaces the WalkIn/PickupAndDrop/Breakdown/Scheduled/Online list that used to be
-    /// hardcoded there (JobCardScanner's own invented values, not anything BAPL DMS tracks).</summary>
+    /// hardcoded there (JobCardScanner's own invented values, not anything DMS tracks).</summary>
     Task<IReadOnlyList<BaplDmsJobSourceRow>> GetJobSourcesAsync(CancellationToken ct = default);
 
     /// <summary>
-    /// Writes one new job card into BAPL DMS's own database (JobCardHeader/JobCardCustomer/
-    /// JobCardBatteryDetail/JobCardComplaint), mirroring BAPL DMS's own JobCardRepo.
+    /// Writes one new job card into DMS's own database (JobCardHeader/JobCardCustomer/
+    /// JobCardBatteryDetail/JobCardComplaint), mirroring DMS's own JobCardRepo.
     /// InsertJobCardinfoDetails in a single transaction.
     ///
-    /// 2026-09-05: this is no longer a best-effort step run after the fact - BAPL DMS is now the
+    /// 2026-09-05: this is no longer a best-effort step run after the fact - DMS is now the
     /// sole source of truth for whether a job card exists at all. JobCardsController.Create calls
     /// this FIRST; a failure here (still surfaced as <see cref="InvalidOperationException"/>) now
     /// blocks the whole request - nothing is saved in JobCardScannerDb, no ERP push, no SMS - rather
@@ -586,25 +602,25 @@ public interface IBaplDmsService
     /// </summary>
     Task<BaplDmsCreateJobCardResult> CreateJobCardAsync(BaplDmsCreateJobCardRequest req, CancellationToken ct = default);
 
-    /// <summary>Updates Technician/EstdelDate+EstdelTime/Priority on an existing BAPL DMS
+    /// <summary>Updates Technician/EstdelDate+EstdelTime/Priority on an existing DMS
     /// JobCardHeader row - see <see cref="BaplDmsUpdateJobCardRequest"/>'s doc comment for why only
     /// these three. Throws <see cref="InvalidOperationException"/> on failure (including "no such
     /// JobCardHeaderId") - the caller (JobCardsController.Update) treats that as a hard failure of
     /// the whole update, since DMS is now the only place these fields live.</summary>
     Task UpdateJobCardAsync(int jobCardHeaderId, BaplDmsUpdateJobCardRequest req, CancellationToken ct = default);
 
-    /// <summary>Repair bill(s) BAPL DMS has for this job card (RepairBillHeader.JobId), for the
+    /// <summary>Repair bill(s) DMS has for this job card (RepairBillHeader.JobId), for the
     /// "Download Invoice from DMS" panel on the Job Card Detail page. Empty list is normal (no bill
     /// raised yet); throws <see cref="InvalidOperationException"/> on a real failure.</summary>
     Task<IReadOnlyList<BaplDmsRepairBillRow>> GetRepairBillsForJobAsync(int jobCardHeaderId, CancellationToken ct = default);
 
-    /// <summary>Available stock per item at one workshop location, from BAPL DMS's own
+    /// <summary>Available stock per item at one workshop location, from DMS's own
     /// PartsInventory - for the "Part Suggestion" panel and the general Parts &amp; Inventory
     /// catalog page. See <see cref="BaplDmsPartStockRow"/>'s doc comment for the (now confirmed via
     /// a live SELECT *) "available" rule this uses.</summary>
     Task<IReadOnlyList<BaplDmsPartStockRow>> GetPartsInventoryAsync(string locationCode, CancellationToken ct = default);
 
-    /// <summary>Active labour rate-card rows from BAPL DMS's own LabourMaster, UNIONed with
+    /// <summary>Active labour rate-card rows from DMS's own LabourMaster, UNIONed with
     /// PartWiseLabourMaster (2026-09-03: a second rate card that ties a labour code to a specific
     /// PartCode/PartDescription, scoped per-dealer via its own DealerCode column - you shared its
     /// schema and confirmed real rows exist there that aren't in plain LabourMaster) - for the
@@ -625,7 +641,7 @@ public interface IBaplDmsService
     /// panel the way it already worked before today.</summary>
     Task<IReadOnlyList<BaplDmsLabourRow>> GetLabourAsync(int? jobTypeId, int? serviceHeadId, int? serviceTypeId, string? dealerCode, string? q, CancellationToken ct = default);
 
-    /// <summary>Most recent (non-deleted) RepairBillHeader row for one BAPL DMS job card, for the
+    /// <summary>Most recent (non-deleted) RepairBillHeader row for one DMS job card, for the
     /// "Download Invoice from DMS" PDF (see InvoicePdfService.BuildInvoicePdfAsync). Returns null
     /// for a genuine "no repair bill raised yet for this job" (normal - most open job cards have
     /// none); throws <see cref="InvalidOperationException"/> on a real failure, same as
@@ -647,7 +663,7 @@ public interface IBaplDmsService
     Task<BaplDmsCustomerLedgerDetail?> GetCustomerLedgerDetailAsync(int ledgerId, CancellationToken ct = default);
 
     /// <summary>
-    /// Best-effort write of one job-card photo into BAPL DMS's own database (a brand-new table,
+    /// Best-effort write of one job-card photo into DMS's own database (a brand-new table,
     /// dbo.JobCardScannerMedia - see add-bapldms-jobcard-media-table.sql - since no existing BAPL
     /// DMS media/photo table is confirmed anywhere in this codebase). Called ONLY after
     /// JobCardScanner's own local photo upload has already succeeded (see
@@ -659,7 +675,7 @@ public interface IBaplDmsService
     Task SaveJobCardPhotoAsync(int jobId, string fileName, string? contentType, string? stage, string? caption, byte[] bytes, CancellationToken ct = default);
 
     /// <summary>
-    /// Verifies an email+password against BAPL DMS's own AspNetUsers (standard ASP.NET Core
+    /// Verifies an email+password against DMS's own AspNetUsers (standard ASP.NET Core
     /// Identity table, in the same BAPLDMSvad database) - the fallback path in
     /// DealerAuthController.Login when JobCardScanner's own local Users lookup fails. Column names
     /// (Id/Email/UserName/PasswordHash/PhoneNumber/NormalizedEmail) are framework-standard ASP.NET
@@ -667,7 +683,7 @@ public interface IBaplDmsService
     /// table (via a live SELECT * you ran) that DealerAuthController.Login uses to resolve/assign
     /// the right local Dealer automatically. This still NEVER throws (unlike every other method
     /// in this interface): a login endpoint must degrade to "wrong password" on ANY unexpected
-    /// failure here (network blip, BAPL DMS down, a real schema surprise), never crash the whole
+    /// failure here (network blip, DMS down, a real schema surprise), never crash the whole
     /// sign-in flow. Returns null for "no such user", "wrong password", or any failure alike -
     /// DealerAuthController.Login treats all three the same way (falls through to its existing
     /// Unauthorized response) since a login endpoint should never reveal which one occurred anyway.
@@ -675,18 +691,18 @@ public interface IBaplDmsService
     Task<BaplDmsDealerCredential?> VerifyDealerCredentialsAsync(string email, string password, CancellationToken ct = default);
 
     /// <summary>
-    /// For a BAPL DMS "Employee"-role login (see BaplDmsDealerCredential.IsBgEmployeeRole) - resolves
+    /// For a DMS "Employee"-role login (see BaplDmsDealerCredential.IsBgEmployeeRole) - resolves
     /// its dealer scope via BgEmployeeMaster (checked first, by EmailId) then EmployeeMaster
-    /// (fallback, by EmailId), mirroring BAPL DMS's own AuthController.ResolveEmployeeLoginInfo.
+    /// (fallback, by EmailId), mirroring DMS's own AuthController.ResolveEmployeeLoginInfo.
     /// Like VerifyDealerCredentialsAsync, this NEVER throws - a login-path failure here degrades to
     /// Found=false (treated the same as "no such employee row") rather than crashing sign-in.
     /// </summary>
     Task<BaplDmsEmployeeScope> ResolveEmployeeDealerScopeAsync(string email, CancellationToken ct = default);
 
     /// <summary>
-    /// Browses BAPL DMS's own AspNetUsers (same table VerifyDealerCredentialsAsync checks a single
-    /// row of) - backs Admin -&gt; Users' "BAPL DMS Logins" panel, so an admin can see every
-    /// dealer/workshop login BAPL DMS knows about (and its DealerCode) without pasting SQL dumps
+    /// Browses DMS's own AspNetUsers (same table VerifyDealerCredentialsAsync checks a single
+    /// row of) - backs Admin -&gt; Users' "DMS Logins" panel, so an admin can see every
+    /// dealer/workshop login DMS knows about (and its DealerCode) without pasting SQL dumps
     /// back and forth. PasswordHash/SecurityStamp/ConcurrencyStamp are deliberately never selected -
     /// this is a read-only directory browse, not a credential surface. q (optional) filters by
     /// Email/UserName/DealerCode substring; omit to list everyone, capped at 500 rows like
@@ -697,7 +713,7 @@ public interface IBaplDmsService
     Task<IReadOnlyList<BaplDmsAspNetUserRow>> SearchAspNetUsersAsync(string? q, CancellationToken ct = default);
 }
 
-/// <summary>One row of BAPL DMS's own AspNetUsers, for the admin "BAPL DMS Logins" browse panel -
+/// <summary>One row of DMS's own AspNetUsers, for the admin "DMS Logins" browse panel -
 /// see IBaplDmsService.SearchAspNetUsersAsync. Same confirmed columns as
 /// VerifyDealerCredentialsAsync's query, minus PasswordHash (never surfaced outside that one
 /// verification method).</summary>
@@ -708,7 +724,7 @@ public record BaplDmsAspNetUserRow(string Id, string Email, string? UserName, st
 /// both JobCardScannerDb and the BAPL ERP warehouse BaplDealerService reads from - to power the Job
 /// Card Wizard's dealer search and chassis/registration-number vehicle auto-fill. Plain ADO.NET
 /// (Microsoft.Data.SqlClient), same as BaplDealerService, rather than a second EF DbContext: this
-/// is a read-only integration against a schema this app doesn't own or migrate, and BAPL DMS's own
+/// is a read-only integration against a schema this app doesn't own or migrate, and DMS's own
 /// backend (JobCardRepo.GetAllInspectedLotChassisAsync, pasted into this project's chat history for
 /// reference) already defines the exact joins/columns to copy - see the inline comments below for
 /// where each piece came from and the one bug intentionally NOT carried over.
@@ -767,7 +783,7 @@ public class BaplDmsService : IBaplDmsService
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not search BAPL DMS's dealer master (DealerMaster): {ex.Message}", ex);
+            throw new InvalidOperationException($"Could not search DMS's dealer master (DealerMaster): {ex.Message}", ex);
         }
 
         return results;
@@ -780,13 +796,13 @@ public class BaplDmsService : IBaplDmsService
 
         await using var conn = new SqlConnection(ConnStr);
 
-        // ----- PRIMARY: BAPL DMS's own vehicle master - ChassisDetails (confirmed directly via a
+        // ----- PRIMARY: DMS's own vehicle master - ChassisDetails (confirmed directly via a
         // `SELECT TOP 5 * FROM ChassisDetails` you ran) joined to LedgerMaster for the owning
         // customer's identity. This covers BOTH a brand-new, not-yet-sold vehicle (SaleDate IS NULL,
         // LedgerId IS NULL - rows 3/4 in your sample) and an already-sold one (SaleDate populated,
         // LedgerId set - row 2) in one query, which is why this replaced the old two-step "job card
         // history, then a separate not-yet-sold fallback" approach below. ModelName comes straight
-        // from ItemName - BAPL DMS doesn't split Model/Variant into two fields, it's one combined
+        // from ItemName - DMS doesn't split Model/Variant into two fields, it's one combined
         // name (e.g. "BGauss C12i MAX 2.0 Monolith Grey"), so the wizard now only fills a single
         // Model field from this instead of trying to match it against a separate Model/Variant
         // catalog.
@@ -847,8 +863,8 @@ public class BaplDmsService : IBaplDmsService
             // Confirmed-schema query - a real failure here (network, credentials, or the schema
             // drifted since you ran that SELECT *) is surfaced as a thrown exception (the controller
             // maps this to a 502 with the message) instead of silently reporting "not found".
-            _logger.LogWarning(ex, "BAPL DMS vehicle lookup (ChassisDetails) failed for {Value} (dealerCode={DealerCode})", value, dealerCode);
-            throw new InvalidOperationException($"BAPL DMS vehicle lookup failed for '{value}': {ex.Message}", ex);
+            _logger.LogWarning(ex, "DMS vehicle lookup (ChassisDetails) failed for {Value} (dealerCode={DealerCode})", value, dealerCode);
+            throw new InvalidOperationException($"DMS vehicle lookup failed for '{value}': {ex.Message}", ex);
         }
 
         if (!found) return null;
@@ -858,7 +874,7 @@ public class BaplDmsService : IBaplDmsService
         DateOnly? insuranceExpDate = null, nextServiceDueDate = null;
         string? batteryChemical = null, batteryCapacity = null, batteryMake = null;
 
-        // ----- ENRICHMENT: BAPL DMS's own ChassisBatteryDetails - the vehicle's real battery/
+        // ----- ENRICHMENT: DMS's own ChassisBatteryDetails - the vehicle's real battery/
         // motor/charger/controller/converter serial numbers, plus Battery Make/Chemical/Capacity
         // (confirmed via a `SELECT * FROM ChassisBatteryDetails` you ran - this is what the print
         // preview's Battery Details panel was missing before, since the job-card-history
@@ -893,7 +909,7 @@ public class BaplDmsService : IBaplDmsService
         }
         catch (Exception ex)
         {
-            _logger.LogInformation(ex, "BAPL DMS ChassisBatteryDetails enrichment skipped for chassis {ChassisNo}", chassisNo);
+            _logger.LogInformation(ex, "DMS ChassisBatteryDetails enrichment skipped for chassis {ChassisNo}", chassisNo);
         }
 
         // ----- ENRICHMENT: this chassis's most recent past job card (if any), for Previous Km and
@@ -932,7 +948,7 @@ public class BaplDmsService : IBaplDmsService
         }
         catch (Exception ex)
         {
-            _logger.LogInformation(ex, "BAPL DMS job-card-history enrichment skipped for chassis {ChassisNo}", chassisNo);
+            _logger.LogInformation(ex, "DMS job-card-history enrichment skipped for chassis {ChassisNo}", chassisNo);
         }
 
         // ----- ENRICHMENT 2: LedgerMaster.Address/Email for this customer, for the "(Registered
@@ -958,7 +974,7 @@ public class BaplDmsService : IBaplDmsService
             }
             catch (Exception ex)
             {
-                _logger.LogInformation(ex, "BAPL DMS LedgerMaster Address/Email enrichment skipped for ledger {LedgerId} (unconfirmed column names)", customerLedgerId);
+                _logger.LogInformation(ex, "DMS LedgerMaster Address/Email enrichment skipped for ledger {LedgerId} (unconfirmed column names)", customerLedgerId);
             }
         }
 
@@ -1039,7 +1055,7 @@ public class BaplDmsService : IBaplDmsService
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"BAPL DMS vehicle suggestion search failed for '{q}': {ex.Message}", ex);
+            throw new InvalidOperationException($"DMS vehicle suggestion search failed for '{q}': {ex.Message}", ex);
         }
 
         return results;
@@ -1091,7 +1107,7 @@ public class BaplDmsService : IBaplDmsService
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not read BAPL DMS's service history for chassis '{chassisNo}': {ex.Message}", ex);
+            throw new InvalidOperationException($"Could not read DMS's service history for chassis '{chassisNo}': {ex.Message}", ex);
         }
 
         return results;
@@ -1152,7 +1168,7 @@ public class BaplDmsService : IBaplDmsService
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not check BAPL DMS for an open job card on chassis '{chassisNo}': {ex.Message}", ex);
+            throw new InvalidOperationException($"Could not check DMS for an open job card on chassis '{chassisNo}': {ex.Message}", ex);
         }
     }
 
@@ -1161,8 +1177,8 @@ public class BaplDmsService : IBaplDmsService
         if (take <= 0) take = 50;
 
         // JobStatus is NOT read off a stored column here - h.JobStatus turned out to be
-        // unpopulated/unreliable in practice (every BAPL DMS row was coming through as "Unknown" on
-        // the merged /jobcards list). BAPL DMS's own Job Card List screen instead computes status
+        // unpopulated/unreliable in practice (every DMS row was coming through as "Unknown" on
+        // the merged /jobcards list). DMS's own Job Card List screen instead computes status
         // live from RepairBillHeader/Ffirheader/IsMaterialTransfer - ported directly from your own
         // JobCardRepo.GetJobCardListViewAsync's JobStatus CASE expression (RepairBillHeader/
         // Ffirheader table names inferred from that same pasted code: their EF entity class names -
@@ -1231,10 +1247,61 @@ public class BaplDmsService : IBaplDmsService
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not search BAPL DMS's job cards: {ex.Message}", ex);
+            throw new InvalidOperationException($"Could not search DMS's job cards: {ex.Message}", ex);
         }
 
         return results;
+    }
+
+    public async Task<IReadOnlyDictionary<int, string>> GetJobStatusesAsync(IReadOnlyList<int> jobCardHeaderIds, CancellationToken ct = default)
+    {
+        var result = new Dictionary<int, string>();
+        if (jobCardHeaderIds is null || jobCardHeaderIds.Count == 0) return result;
+
+        // Same live-computed JobStatus CASE expression as SearchJobCardsAsync/
+        // GetOpenJobCardForChassisAsync above - see SearchJobCardsAsync's doc comment on why a
+        // stored h.JobStatus column isn't trustworthy. STRING_SPLIT needs SQL Server 2016+/Azure
+        // SQL (BAPLDMSvad is an Azure SQL Database, so it's always available) - avoids building a
+        // dynamic IN (...) list from caller-supplied ints by hand.
+        const string sql = @"
+            SELECT h.Id AS JobCardHeaderId,
+                CASE
+                    WHEN rb.RepairbillStatus = 'Billed' THEN 'Closed'
+                    WHEN rb.TotalNetAmount > 0 THEN 'Complete'
+                    WHEN h.IsMaterialTransfer = 1 THEN 'Material Transfer'
+                    WHEN fr.Ffirstatus = 'Closed' THEN 'FFIR Closed'
+                    WHEN fr.Id IS NOT NULL THEN 'FFIR Created'
+                    ELSE 'Open'
+                END AS JobStatus
+            FROM [dbo].[JobCardHeader] h
+            OUTER APPLY (
+                SELECT TOP 1 rb2.RepairbillStatus, rb2.TotalNetAmount
+                FROM [dbo].[RepairBillHeader] rb2 WHERE rb2.JobId = h.Id ORDER BY rb2.Id DESC
+            ) rb
+            OUTER APPLY (
+                SELECT TOP 1 fr2.Id, fr2.Ffirstatus
+                FROM [dbo].[Ffirheader] fr2 WHERE fr2.JobCardHeaderId = h.Id ORDER BY fr2.Id DESC
+            ) fr
+            WHERE h.Id IN (SELECT CAST(value AS int) FROM STRING_SPLIT(@ids, ','))";
+
+        try
+        {
+            await using var conn = new SqlConnection(ConnStr);
+            await conn.OpenAsync(ct);
+            await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+            cmd.Parameters.AddWithValue("@ids", string.Join(",", jobCardHeaderIds.Distinct()));
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            while (await rdr.ReadAsync(ct))
+            {
+                result[(int)rdr["JobCardHeaderId"]] = rdr["JobStatus"] as string ?? "Open";
+            }
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Could not read DMS job statuses for {jobCardHeaderIds.Count} job card(s): {ex.Message}", ex);
+        }
+
+        return result;
     }
 
     public async Task<BaplDmsJobCardDetailRow?> GetJobCardByIdAsync(int jobCardHeaderId, CancellationToken ct = default)
@@ -1311,7 +1378,7 @@ public class BaplDmsService : IBaplDmsService
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not read BAPL DMS job card {jobCardHeaderId}: {ex.Message}", ex);
+            throw new InvalidOperationException($"Could not read DMS job card {jobCardHeaderId}: {ex.Message}", ex);
         }
     }
 
@@ -1356,12 +1423,12 @@ public class BaplDmsService : IBaplDmsService
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not read BAPL DMS's workshop locations (LocationMaster): {ex.Message}", ex);
+            throw new InvalidOperationException($"Could not read DMS's workshop locations (LocationMaster): {ex.Message}", ex);
         }
 
         // Dedupe by LocCode (2026-09-03) - reported as "duplicate location shown" in the wizard's
         // Service Location dropdown. LocationMaster has no PK/unique constraint enforced on
-        // (Loccode, DealerId) on BAPL DMS's side that this app can see, and this dealer's data has
+        // (Loccode, DealerId) on DMS's side that this app can see, and this dealer's data has
         // more than one Active='Y' row for the same Loccode (confirmed by the symptom - the query
         // above has no JOIN that could introduce a duplicate on its own). A workshop should only
         // ever appear once regardless of how many raw LocationMaster rows exist for it, so this
@@ -1393,7 +1460,7 @@ public class BaplDmsService : IBaplDmsService
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not read BAPL DMS's job types (JobType): {ex.Message}", ex);
+            throw new InvalidOperationException($"Could not read DMS's job types (JobType): {ex.Message}", ex);
         }
         return results;
     }
@@ -1414,7 +1481,7 @@ public class BaplDmsService : IBaplDmsService
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not read BAPL DMS's service heads (ServiceHead): {ex.Message}", ex);
+            throw new InvalidOperationException($"Could not read DMS's service heads (ServiceHead): {ex.Message}", ex);
         }
         return results;
     }
@@ -1435,7 +1502,7 @@ public class BaplDmsService : IBaplDmsService
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not read BAPL DMS's service types (ServiceType): {ex.Message}", ex);
+            throw new InvalidOperationException($"Could not read DMS's service types (ServiceType): {ex.Message}", ex);
         }
         return results;
     }
@@ -1455,7 +1522,7 @@ public class BaplDmsService : IBaplDmsService
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not read BAPL DMS's complaint master (ComplaintMaster): {ex.Message}", ex);
+            throw new InvalidOperationException($"Could not read DMS's complaint master (ComplaintMaster): {ex.Message}", ex);
         }
         return results;
     }
@@ -1475,13 +1542,13 @@ public class BaplDmsService : IBaplDmsService
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not read BAPL DMS's job sources (JobSource): {ex.Message}", ex);
+            throw new InvalidOperationException($"Could not read DMS's job sources (JobSource): {ex.Message}", ex);
         }
         return results;
     }
 
     /// <summary>
-    /// Writes one new job card into BAPL DMS's own JobCardHeader/JobCardCustomer/
+    /// Writes one new job card into DMS's own JobCardHeader/JobCardCustomer/
     /// JobCardBatteryDetail/JobCardComplaint tables, mirroring your own JobCardRepo.
     /// InsertJobCardinfoDetails as closely as an ADO.NET insert can (this project reads BAPLDMSvad
     /// with plain SqlClient rather than a second EF DbContext - see this class's header comment for
@@ -1494,12 +1561,12 @@ public class BaplDmsService : IBaplDmsService
     ///     a lock/sequence/unique constraint this insert doesn't take out.
     ///   - Jobprefix: your code only ever strips a numeric suffix off whatever prefix is passed in
     ///     (NormalizeJobPrefix) - it's never generated from scratch anywhere in what you pasted, so
-    ///     this insert sends an empty string. If BAPL DMS's UI always shows a specific prefix (a
+    ///     this insert sends an empty string. If DMS's UI always shows a specific prefix (a
     ///     dealer code, a location code, ...), tell me the rule and I'll generate it here too.
-    ///   - CreatedBy: your schema stores this as a string that looks like a BAPL DMS user's GUID
-    ///     (e.g. "973620f2-a192-41c6-af0d-2d515e5ad5e9") - JobCardScanner has no such BAPL DMS user
+    ///   - CreatedBy: your schema stores this as a string that looks like a DMS user's GUID
+    ///     (e.g. "973620f2-a192-41c6-af0d-2d515e5ad5e9") - JobCardScanner has no such DMS user
     ///     id, so this sends a JobCardScanner staff id instead, prefixed so it's identifiable in
-    ///     BAPL DMS's own audit trail. If CreatedBy has a foreign key or format constraint that
+    ///     DMS's own audit trail. If CreatedBy has a foreign key or format constraint that
     ///     rejects that, this insert will throw and the exact SQL error will say so.
     /// Columns your ViewModel carries that the Job Card Wizard has no equivalent input for yet
     /// (AirpressureRearTyre/AirpressurefrontTyre, Observation, SupervisorComment, IsPdiSuccess,
@@ -1529,8 +1596,8 @@ public class BaplDmsService : IBaplDmsService
             var estDelDate = req.ExpectedDeliveryAt.HasValue ? DateOnly.FromDateTime(req.ExpectedDeliveryAt.Value) : jobInDate;
             var estDelTime = req.ExpectedDeliveryAt?.TimeOfDay ?? now.TimeOfDay;
 
-            // 2026-09-07: Couponno/InwardType (BAPL DMS's own "Job Category") now mirror the exact
-            // logic the real BAPL DMS Angular wizard uses (job-card-add-form.ts), rather than being
+            // 2026-09-07: Couponno/InwardType (DMS's own "Job Category") now mirror the exact
+            // logic the real DMS Angular wizard uses (job-card-add-form.ts), rather than being
             // left NULL/hardcoded - the Job Card Wizard has no UI input for either, but both are
             // deterministic from data this request already carries:
             //   - Couponno: DMS's own onChassisChange() sets `this.couponNo =
@@ -1654,8 +1721,8 @@ public class BaplDmsService : IBaplDmsService
         catch (Exception ex)
         {
             try { await tx.RollbackAsync(ct); } catch { /* connection may already be unusable */ }
-            _logger.LogWarning(ex, "Could not create BAPL DMS job card for chassis {ChassisNo}/dealer {DealerCode}", req.ChassisNo, req.DealerCode);
-            throw new InvalidOperationException($"Could not create the job card in BAPL DMS: {ex.Message}", ex);
+            _logger.LogWarning(ex, "Could not create DMS job card for chassis {ChassisNo}/dealer {DealerCode}", req.ChassisNo, req.DealerCode);
+            throw new InvalidOperationException($"Could not create the job card in DMS: {ex.Message}", ex);
         }
     }
 
@@ -1686,13 +1753,13 @@ public class BaplDmsService : IBaplDmsService
             cmd.Parameters.AddWithValue("@priority", (object?)req.Priority ?? DBNull.Value);
             var rows = await cmd.ExecuteNonQueryAsync(ct);
             if (rows == 0)
-                throw new InvalidOperationException($"No BAPL DMS JobCardHeader row found with Id {jobCardHeaderId}.");
+                throw new InvalidOperationException($"No DMS JobCardHeader row found with Id {jobCardHeaderId}.");
         }
         catch (InvalidOperationException) { throw; }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not update BAPL DMS job card {JobCardHeaderId}", jobCardHeaderId);
-            throw new InvalidOperationException($"Could not update the job card in BAPL DMS: {ex.Message}", ex);
+            _logger.LogWarning(ex, "Could not update DMS job card {JobCardHeaderId}", jobCardHeaderId);
+            throw new InvalidOperationException($"Could not update the job card in DMS: {ex.Message}", ex);
         }
     }
 
@@ -1716,7 +1783,7 @@ public class BaplDmsService : IBaplDmsService
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not read BAPL DMS's repair bills for job card {jobCardHeaderId}: {ex.Message}", ex);
+            throw new InvalidOperationException($"Could not read DMS's repair bills for job card {jobCardHeaderId}: {ex.Message}", ex);
         }
         return results;
     }
@@ -1787,13 +1854,13 @@ public class BaplDmsService : IBaplDmsService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogInformation(ex, "BAPL DMS ItemMaster description/MRP enrichment skipped for location {LocationCode} (unconfirmed table/column names)", locationCode);
+                    _logger.LogInformation(ex, "DMS ItemMaster description/MRP enrichment skipped for location {LocationCode} (unconfirmed table/column names)", locationCode);
                 }
             }
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not read BAPL DMS's parts inventory (PartsInventory) for location '{locationCode}': {ex.Message}", ex);
+            throw new InvalidOperationException($"Could not read DMS's parts inventory (PartsInventory) for location '{locationCode}': {ex.Message}", ex);
         }
         return results;
     }
@@ -1915,13 +1982,13 @@ public class BaplDmsService : IBaplDmsService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogInformation(ex, "BAPL DMS PartWiseLabourMaster lookup skipped for dealer {DealerCode} (table may not exist on this database yet)", dealerCode);
+                    _logger.LogInformation(ex, "DMS PartWiseLabourMaster lookup skipped for dealer {DealerCode} (table may not exist on this database yet)", dealerCode);
                 }
             }
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not read BAPL DMS's labour rate card (LabourMaster): {ex.Message}", ex);
+            throw new InvalidOperationException($"Could not read DMS's labour rate card (LabourMaster): {ex.Message}", ex);
         }
         return results;
     }
@@ -1960,7 +2027,7 @@ public class BaplDmsService : IBaplDmsService
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not read BAPL DMS's repair bill header for job card {jobCardHeaderId}: {ex.Message}", ex);
+            throw new InvalidOperationException($"Could not read DMS's repair bill header for job card {jobCardHeaderId}: {ex.Message}", ex);
         }
     }
 
@@ -2011,7 +2078,7 @@ public class BaplDmsService : IBaplDmsService
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not read BAPL DMS's repair bill lines for bill {repairBillId}: {ex.Message}", ex);
+            throw new InvalidOperationException($"Could not read DMS's repair bill lines for bill {repairBillId}: {ex.Message}", ex);
         }
         return results;
     }
@@ -2059,7 +2126,7 @@ public class BaplDmsService : IBaplDmsService
             }
             catch (Exception ex)
             {
-                _logger.LogInformation(ex, "BAPL DMS LedgerMaster Address/Email enrichment skipped for invoice ledger {LedgerId}", ledgerId);
+                _logger.LogInformation(ex, "DMS LedgerMaster Address/Email enrichment skipped for invoice ledger {LedgerId}", ledgerId);
             }
 
             // ENRICHMENT 2: State/Gstin - a NEW guess (never confirmed against a live SELECT *),
@@ -2080,20 +2147,20 @@ public class BaplDmsService : IBaplDmsService
             }
             catch (Exception ex)
             {
-                _logger.LogInformation(ex, "BAPL DMS LedgerMaster State/Gstin lookup skipped for invoice ledger {LedgerId} (unconfirmed column names)", ledgerId);
+                _logger.LogInformation(ex, "DMS LedgerMaster State/Gstin lookup skipped for invoice ledger {LedgerId} (unconfirmed column names)", ledgerId);
             }
 
             return new BaplDmsCustomerLedgerDetail(ledgerId, name, mobile, city, address, email, state, gstin);
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not read BAPL DMS's customer ledger {ledgerId}: {ex.Message}", ex);
+            throw new InvalidOperationException($"Could not read DMS's customer ledger {ledgerId}: {ex.Message}", ex);
         }
     }
 
     /// <summary>
     /// See add-bapldms-jobcard-media-table.sql - a NEW, JobCardScanner-owned table in BAPLDMSvad
-    /// (never an existing BAPL DMS table, since none was confirmed to hold photos anywhere in this
+    /// (never an existing DMS table, since none was confirmed to hold photos anywhere in this
     /// codebase). Best-effort only: JobCardsController.UploadPhoto calls this AFTER its own local
     /// save already succeeded, and catches whatever this throws without letting it affect the HTTP
     /// response.
@@ -2121,7 +2188,7 @@ public class BaplDmsService : IBaplDmsService
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not write job card photo into BAPL DMS (dbo.JobCardScannerMedia) for job {jobId}: {ex.Message}", ex);
+            throw new InvalidOperationException($"Could not write job card photo into DMS (dbo.JobCardScannerMedia) for job {jobId}: {ex.Message}", ex);
         }
     }
 
@@ -2130,14 +2197,14 @@ public class BaplDmsService : IBaplDmsService
     /// caller (unlike every other method in this class): a login endpoint must degrade to "not
     /// found" on any unexpected failure, not surface a 500.
     ///
-    /// Matches by NormalizedUserName OR NormalizedEmail - confirmed against BAPL DMS's own real
+    /// Matches by NormalizedUserName OR NormalizedEmail - confirmed against DMS's own real
     /// AuthController.Login source (you pasted it), which does
     /// <c>_userManager.FindByNameAsync(x) ?? _userManager.FindByEmailAsync(x)</c>. Several AspNetUsers
     /// rows have a UserName that isn't their Email at all (e.g. "CUS0486" with email
-    /// naveenbijliride@gmail.com) - BAPL DMS's own login screen accepts either, so whoever owns that
+    /// naveenbijliride@gmail.com) - DMS's own login screen accepts either, so whoever owns that
     /// account may only know "CUS0486" as their sign-in, not the email behind it. Matching email-only
     /// (the original version of this query) would silently 401 that person even with the exact right
-    /// password. TOP 1 with an OR is a safe stand-in for BAPL DMS's try-username-then-email order:
+    /// password. TOP 1 with an OR is a safe stand-in for DMS's try-username-then-email order:
     /// a real account's UserName and Email don't collide with a DIFFERENT account's Email/UserName in
     /// practice, since AspNetUsers enforces both as unique on their own.
     /// </summary>
@@ -2178,7 +2245,7 @@ public class BaplDmsService : IBaplDmsService
                     return null;
 
                 // Second query, same connection/row, isolated in its own try/catch below - whether
-                // this account carries BAPL DMS's own "Employee" role (AspNetUserRoles/AspNetRoles,
+                // this account carries DMS's own "Employee" role (AspNetUserRoles/AspNetRoles,
                 // confirmed via your AspNetRoles dump). A schema surprise here must never turn an
                 // otherwise-successful password check into a failed login, so IsBgEmployeeRole just
                 // defaults to false (treated as the simple single-DealerCode case) if this throws.
@@ -2197,7 +2264,7 @@ public class BaplDmsService : IBaplDmsService
                 }
                 catch (Exception roleEx)
                 {
-                    _logger.LogWarning(roleEx, "BAPL DMS Employee-role check failed/unavailable for {EmailOrUserName}, defaulting to false", emailOrUserName);
+                    _logger.LogWarning(roleEx, "DMS Employee-role check failed/unavailable for {EmailOrUserName}, defaulting to false", emailOrUserName);
                 }
 
                 // actualEmail comes from the matched row's own Email column, which every AspNetUsers
@@ -2221,15 +2288,15 @@ public class BaplDmsService : IBaplDmsService
         catch (Exception ex)
         {
             // Deliberately swallowed (logged only) - see this method's doc comment on the interface:
-            // a login flow must never crash because BAPL DMS's AspNetUsers schema surprised us.
-            _logger.LogWarning(ex, "BAPL DMS dealer credential check failed/unavailable for {EmailOrUserName}", emailOrUserName);
+            // a login flow must never crash because DMS's AspNetUsers schema surprised us.
+            _logger.LogWarning(ex, "DMS dealer credential check failed/unavailable for {EmailOrUserName}", emailOrUserName);
             return null;
         }
     }
 
     /// <summary>See IBaplDmsService.ResolveEmployeeDealerScopeAsync's doc comment. Checks
     /// BgEmployeeMaster first (confirmed schema - you ran `SELECT TOP 3 * FROM BgEmployeeMaster`),
-    /// falling back to EmployeeMaster (a separate table per BAPL DMS's own EmployeeMasterRepo.cs,
+    /// falling back to EmployeeMaster (a separate table per DMS's own EmployeeMasterRepo.cs,
     /// NOT independently confirmed via a live SELECT - a schema surprise there is swallowed exactly
     /// like the primary lookup, both degrade to Found=false rather than throwing) only when
     /// BgEmployeeMaster has no matching row at all.</summary>
@@ -2272,20 +2339,20 @@ public class BaplDmsService : IBaplDmsService
                 {
                     var raw = rdr["DealerCode"] as string;
                     // EmployeeMaster has no IsActive column confirmed - treat "row exists" as active,
-                    // same as BAPL DMS's own EmployeeMasterRepo fallback implicitly does.
+                    // same as DMS's own EmployeeMasterRepo fallback implicitly does.
                     return new BaplDmsEmployeeScope(true, true, SplitDealerCodes(raw));
                 }
             }
             catch (Exception empEx)
             {
-                _logger.LogWarning(empEx, "BAPL DMS EmployeeMaster fallback lookup failed/unavailable for {Email}", email);
+                _logger.LogWarning(empEx, "DMS EmployeeMaster fallback lookup failed/unavailable for {Email}", email);
             }
 
             return new BaplDmsEmployeeScope(false, false, Array.Empty<string>());
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "BAPL DMS employee dealer-scope resolution failed/unavailable for {Email}", email);
+            _logger.LogWarning(ex, "DMS employee dealer-scope resolution failed/unavailable for {Email}", email);
             return new BaplDmsEmployeeScope(false, false, Array.Empty<string>());
         }
     }
@@ -2338,7 +2405,7 @@ public class BaplDmsService : IBaplDmsService
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not read BAPL DMS's AspNetUsers: {ex.Message}", ex);
+            throw new InvalidOperationException($"Could not read DMS's AspNetUsers: {ex.Message}", ex);
         }
 
         return results;
@@ -2347,7 +2414,7 @@ public class BaplDmsService : IBaplDmsService
     private static DateOnly? ToDateOnly(object? value) =>
         value is DateTime dt ? DateOnly.FromDateTime(dt) : null;
 
-    // ChassisBatteryDetails (and a few other BAPL DMS tables) store "no value" as an empty/
+    // ChassisBatteryDetails (and a few other DMS tables) store "no value" as an empty/
     // whitespace string as often as a real NULL (e.g. BatteryMake is '' rather than NULL on
     // several rows) - this normalizes both to null so the print/UI's "-" fallback applies to
     // either instead of showing a blank cell for one and "-" for the other.

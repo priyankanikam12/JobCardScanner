@@ -29,7 +29,7 @@
 .jcs-hero-logo {
   height: 42px;
   width: auto;
-  max-width: 220px;
+  max-width: 132px;
   object-fit: contain;
   margin-bottom: 28px;
   /* Most logo PNGs ship on a transparent or white background - this keeps a dark logo

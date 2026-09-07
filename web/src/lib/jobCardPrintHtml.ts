@@ -1,4 +1,4 @@
-// Shared print-HTML builders for the "BAPL DMS Job Card + Gate Pass" paper layout.
+// Shared print-HTML builders for the "DMS Job Card + Gate Pass" paper layout.
 //
 // 2026-09-03: extracted out of JobCardWizardPage.tsx (which originally owned
 // buildJobCardPrintHtml, dash, fmtDatePrint and the whole print <style> block as private,
@@ -84,7 +84,7 @@ body{font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#111;background
 `
 
 /**
- * Builds a print preview matching the real BAPL DMS "Job Card + Gate Pass" paper layout, field for
+ * Builds a print preview matching the real DMS "Job Card + Gate Pass" paper layout, field for
  * field: a Job Card page (company/dealer header, Job Details/Customer Details/Vehicle Details/
  * Battery Details panels, Customer Voice & Complaints, Observation/Supervisor Comment/Remarks,
  * signatures) followed by a torn-off Gate Pass page.
@@ -92,9 +92,9 @@ body{font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#111;background
  * Used from two places: JobCardWizardPage's Review & Create step (before the job card - and BAPL
  * DMS's own Job No./Invoice No - actually exist, so jobNo/invoiceNo are left undefined there and
  * show "-"), and JobCardDetailPage's "Print" menu -> "JobCard print" (after creation, with the
- * real jobNo/invoiceNo passed in once known). Fields BAPL DMS's own print shows that
+ * real jobNo/invoiceNo passed in once known). Fields DMS's own print shows that
  * JobCardScanner genuinely has nowhere to source (GST No., Alt. Mobile, customer State, OEM
- * Model, and every Battery Details voltage/capacity test reading - BAPL DMS's
+ * Model, and every Battery Details voltage/capacity test reading - DMS's
  * ChassisBatteryDetails table doesn't carry those, only serial numbers and Make/Chemical/
  * Capacity, which this DOES now print) show as "-" rather than being guessed.
  */
@@ -125,9 +125,9 @@ export function buildJobCardPrintHtml(d: {
   colour?: string | null
   saleDate?: string | null
   insuranceExpiry?: string | null
-  // Sourced from BAPL DMS's own ChassisBatteryDetails table (see BaplDmsService.LookupVehicleAsync's
+  // Sourced from DMS's own ChassisBatteryDetails table (see BaplDmsService.LookupVehicleAsync's
   // ChassisBatteryDetails enrichment) - previously nowhere to source, so the Battery Details panel
-  // printed "-" for all three even when BAPL DMS had them on file.
+  // printed "-" for all three even when DMS had them on file.
   batteryChemical?: string | null
   batteryCapacity?: string | null
   batteryMake?: string | null

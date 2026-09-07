@@ -1,4 +1,3 @@
-// web\src\pages\staff\PartsPage.tsx
 import { useEffect, useState } from 'react'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
@@ -14,7 +13,7 @@ export function PartsPage() {
   const { profile } = useStaffAuth()
   const [q, setQ] = useState('')
   const [locationCode, setLocationCode] = useState('')
-  // The dealer's own BAPL DMS workshop location(s) ("W1", "W2", ... under their dealer code - see
+  // The dealer's own DMS workshop location(s) ("W1", "W2", ... under their dealer code - see
   // LocationMaster's doc comment in BaplDmsService.GetWorkshopsAsync) - fetched once so the Parts
   // Inventory section can pick one automatically instead of making every dealer user learn and
   // type their own location code by hand (Item: "without search this Parts Inventory need to
@@ -54,7 +53,7 @@ export function PartsPage() {
 
   // Item 11: search-as-you-type (debounced) instead of requiring Enter/the Search button - the
   // backend (/api/parts?q=) already does a case-insensitive substring match on name/part
-  // number/category and, when locationCode is set, on the BAPL DMS item code too.
+  // number/category and, when locationCode is set, on the DMS item code too.
   useEffect(() => {
     const handle = setTimeout(search, 300)
     return () => clearTimeout(handle)
@@ -79,7 +78,7 @@ export function PartsPage() {
         <div className="form-row">
           <div className="field"><label>Search catalog</label><input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && search()} placeholder="Part name or number" /></div>
           <div className="field">
-            <label>BAPL DMS workshop location</label>
+            <label>DMS workshop location</label>
             {workshops.length > 0 ? (
               // Dealer's own location(s) resolved automatically (see the useEffect above) - a
               // dropdown instead of free text now that we actually know the valid options, and
@@ -118,13 +117,13 @@ export function PartsPage() {
       </div>
 
       <div className="card">
-        <h3>BAPL DMS Parts Inventory</h3>
+        <h3>DMS Parts Inventory</h3>
         <p className="muted">
-          Live stock from BAPL DMS at the location code above. These items aren't in JobCardScanner's
+          Live stock from DMS at the location code above. These items aren't in JobCardScanner's
           own catalog (no name/price on file) and can't be requested against a job card here - use
           the "Part Suggestion" panel on a specific job card's Detail page for that instead.
         </p>
-        {!locationCode && <p className="muted">Select or enter a BAPL DMS workshop location above to see its live stock.</p>}
+        {!locationCode && <p className="muted">Select or enter a DMS workshop location above to see its live stock.</p>}
         {dmsWarning && <p className="muted" style={{ color: '#b91c1c' }}>{dmsWarning}</p>}
         {locationCode && (
           <table>
