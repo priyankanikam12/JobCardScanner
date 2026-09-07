@@ -20,7 +20,7 @@ const photoSrc = (url: string) => (url.startsWith('http') ? url : `${API_BASE_UR
  * /api/bapl-dms/parts?locationCode=...); Description/HsnCode/Mrp are snapshotted onto the
  * suggestion at add time (POST .../part-suggestions), not re-fetched afterwards.
  */
-export function PartSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; onChanged: () => void }) {
+export function PartSuggestionSection({ jc, onChanged, estimatesLocked, totalLockReached }: { jc: JobCardDetail; onChanged: () => void; estimatesLocked: boolean; totalLockReached: boolean }) {
   const [availableParts, setAvailableParts] = useState<BaplDmsPartStock[]>([])
   const [search, setSearch] = useState('')
   const [itemCode, setItemCode] = useState('')
@@ -58,6 +58,13 @@ export function PartSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; on
 
   const addSuggestion = async () => {
     if (!itemCode) return
+    // 2026-09-07: gated on an open Technician Work Log timer - see WorklogCard/hasOpenWorklog in
+    // JobCardDetailScreen.tsx's doc comment ("Part Suggestion, Labour Suggestion not can update
+    // give alret in this process start the timer").
+    if (!jc.worklogs.some((w) => !w.endedAt)) {
+      Alert.alert('Start the Technician Work Log timer before adding a part suggestion.')
+      return
+    }
     setSaving(true)
     try {
       await apiClient.post(`/api/jobcards/${jc.id}/part-suggestions`, {
@@ -108,6 +115,14 @@ export function PartSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; on
         </View>
       ))}
 
+      {estimatesLocked || totalLockReached ? (
+        <Text style={styles.muted}>
+          {estimatesLocked
+            ? 'Estimate is marked Done - tap Edit on the Estimates Amount card below to add more parts.'
+            : 'Grand Total has reached ₹2000 - no more parts can be suggested on this estimate.'}
+        </Text>
+      ) : (
+      <>
       <Text style={styles.subheading}>Suggest a part (from BAPL DMS PartsInventory)</Text>
       {!jc.baplServiceLocationCode && (
         <Text style={styles.muted}>No BAPL DMS service location on this job card - part list unavailable.</Text>
@@ -173,6 +188,8 @@ export function PartSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; on
       >
         <Text style={styles.addBtnText}>{saving ? 'Adding…' : 'Add Suggestion'}</Text>
       </TouchableOpacity>
+      </>
+      )}
     </View>
   )
 }

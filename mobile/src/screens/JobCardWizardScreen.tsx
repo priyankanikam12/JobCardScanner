@@ -287,6 +287,19 @@ export function JobCardWizardScreen({ navigation }: Props) {
   const previousOdometer = baplVehicleHit?.vehiclePrevKms ?? null
   const odometerValid = newVehicle.odometer > 0 && (previousOdometer == null || newVehicle.odometer > previousOdometer)
 
+  // 2026-09-07: Coupon No. and Job Category - mirrors web's JobCardWizardPage.tsx exactly (see its
+  // couponNo/jobCategory state doc comment for the full rationale: auto-fills from the chassis
+  // number's last 13 characters like DMS's own onChassisChange(), stays editable, and defaults Job
+  // Category to "B2C" matching DMS's own default).
+  const [couponNo, setCouponNo] = useState('')
+  const [couponNoTouched, setCouponNoTouched] = useState(false)
+  const [jobCategory, setJobCategory] = useState<'B2C' | 'B2B'>('B2C')
+  useEffect(() => {
+    if (couponNoTouched) return
+    const vin = newVehicle.vin || ''
+    setCouponNo(vin.length > 13 ? vin.slice(-13) : vin)
+  }, [newVehicle.vin, couponNoTouched])
+
   useEffect(() => {
     if (!baplVehicleHit) return
     setSelectedModelId(null)
@@ -603,6 +616,8 @@ export function JobCardWizardScreen({ navigation }: Props) {
         baplCustomerLedgerId: baplVehicleHit?.customerLedgerId ?? null,
         baplJobSourceId: selectedJobSourceId,
         baplJobSourceName: jobSources.find((s) => s.id === selectedJobSourceId)?.name ?? null,
+        baplCouponNo: couponNo || null,
+        baplJobCategory: jobCategory,
       })
       if (data?.baplSyncWarning) setBaplSyncWarning(data.baplSyncWarning as string)
 
@@ -989,6 +1004,16 @@ export function JobCardWizardScreen({ navigation }: Props) {
           )}
           <Field label="Reg No" value={newVehicle.regNo} disabled={vehicleFieldsLocked} onChangeText={(v) => setNewVehicle({ ...newVehicle, regNo: v })} />
           <Field label="VIN" value={newVehicle.vin} disabled={vehicleFieldsLocked} onChangeText={(v) => setNewVehicle({ ...newVehicle, vin: v })} />
+          {/* 2026-09-07: Coupon No. + Job Category, matching BAPL DMS's own form and mirroring
+             web's JobCardWizardPage.tsx - see the couponNo/jobCategory state above for the
+             auto-fill/default rules. */}
+          <Field label="Coupon No" value={couponNo} onChangeText={(v) => { setCouponNo(v); setCouponNoTouched(true) }} />
+          <PickerField
+            label="Job Category"
+            value={jobCategory}
+            options={[{ label: 'B2C', value: 'B2C' }, { label: 'B2B', value: 'B2B' }]}
+            onChange={(v) => setJobCategory(v as 'B2C' | 'B2B')}
+          />
           <Field
             label={`Odometer (km) *${previousOdometer != null ? ` (Previous: ${previousOdometer} km)` : ''}`}
             value={newVehicle.odometer ? String(newVehicle.odometer) : ''}
@@ -1090,10 +1115,10 @@ export function JobCardWizardScreen({ navigation }: Props) {
               <Text style={styles.label}>Photos<Text style={styles.requiredStar}> *</Text></Text>
               <View style={{ flexDirection: 'row', gap: 10, marginBottom: 10 }}>
                 <TouchableOpacity style={styles.btn} disabled={capturingPhoto} onPress={takePhoto}>
-                  <Text style={styles.btnText}>{capturingPhoto ? 'Adding…' : '📷 Capture'}</Text>
+                  <Text style={styles.btnText}>{capturingPhoto ? 'Adding…' : '📷 Take Photo'}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.btn} disabled={capturingPhoto} onPress={pickPhoto}>
-                  <Text style={styles.btnText}>🖼️ Choose Media</Text>
+                  <Text style={styles.btnText}>🖼️ Choose Photo</Text>
                 </TouchableOpacity>
               </View>
               {photoLocationNote && <Text style={styles.muted}>{photoLocationNote}</Text>}

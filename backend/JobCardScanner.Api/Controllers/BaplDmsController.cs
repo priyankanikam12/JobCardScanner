@@ -232,8 +232,8 @@ public class BaplDmsController : ControllerBase
     /// <summary>
     /// GET /api/bapl-dms/vehicle-suggestions?q=...&amp;dealerCode=... - live search-as-you-type
     /// suggestions for the Job Card Wizard's chassis/registration-no. box (e.g. typing "P6" lists
-    /// every matching ChassisDetails row so the user can pick one, instead of only supporting a
-    /// single exact-match lookup). Picking a suggestion still goes through the existing
+    /// matching, already-sold ChassisDetails rows so the user can pick one, instead of only
+    /// supporting a single exact-match lookup). Picking a suggestion still goes through the existing
     /// vehicle-lookup endpoint above to fetch the full auto-fill payload. Empty array for a query
     /// under 2 characters (same convention as /dealers) rather than a full-table scan.
     /// Was hardcoded to a TOP 20 (2026-09-03: raised to 100, and made overridable via ?take=) - a
@@ -243,6 +243,12 @@ public class BaplDmsController : ControllerBase
     /// query - anything past that looked "not found" even though it was sitting in the table,
     /// because there was no way to see further down the list or ask for more. See
     /// SearchVehiclesAsync's own doc comment on the new upper ceiling this respects.
+    /// 2026-09-05: SearchVehiclesAsync briefly excluded unsold stock entirely (SaleDate IS NULL) to
+    /// stop a batch of unsold inventory sharing a chassis prefix (the "P6DSVFMSPBH01xxxx" case
+    /// above) from burying the handful of real, usable matches. 2026-09-07: reverted - that hid
+    /// legitimate unsold-vehicle chassis from dealers entirely. Sold vehicles still rank first
+    /// (most-recently-sold), unsold ones now follow instead of being excluded. See
+    /// SearchVehiclesAsync's own doc comment.
     /// </summary>
     [HttpGet("vehicle-suggestions")]
     public async Task<IActionResult> VehicleSuggestions([FromQuery] string q, [FromQuery] string? dealerCode, [FromQuery] int? take)

@@ -63,11 +63,12 @@ public class OtpService : IntegrationClientBase, IOtpService
         // land in an inbox, never that SMS delivery (or the OtpRequest itself) was affected.
         if (!string.IsNullOrWhiteSpace(email))
         {
-            var sent = await _email.SendAsync(email,
+            var emailResult = await _email.SendAsync(email,
                 $"Your JobCardScanner OTP: {code}",
                 $"<p>Your JobCardScanner OTP to {purposeLabel} is <strong style=\"font-size:18px;letter-spacing:2px;\">{code}</strong>.</p>" +
                 $"<p>Valid for {ExpiryMinutes} minutes. Do not share this code with anyone.</p>");
-            if (!sent) _logger.LogInformation("Email OTP not sent to {Email} for {Purpose} (see prior warning, if any) - SMS was still sent.", email, purpose);
+            if (!emailResult.Success)
+                _logger.LogInformation("Email OTP not sent to {Email} for {Purpose}: {Error} - SMS was still sent.", email, purpose, emailResult.Error);
         }
 
         return new OtpIssueResult(request.Id, _env.IsDevelopment() ? code : null);

@@ -1,4 +1,3 @@
-// web\src\pages\staff\JobCardDetailPage.tsx
 import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { staffApi } from '../../api/client'
@@ -13,6 +12,21 @@ import { buildEstimatePrintHtml, buildJobCardPrintHtml } from '../../lib/jobCard
 // see JobCardsController.UploadPhoto), same origin as the API itself, not the frontend dev server.
 const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL
 const photoSrc = (url: string) => (url.startsWith('http') ? url : `${API_BASE_URL}${url}`)
+
+// 2026-09-07: once the Estimates Amount Grand Total reaches this, Part Suggestion/Labour Suggestion
+// stop accepting new entries (existing suggestions still show/print/email fine) - see
+// ESTIMATE_TOTAL_LOCK_THRESHOLD's usage in JobCardDetailPage below. Per explicit request; not tied
+// to the manual Done/Edit lock on the Estimates Amount card itself, which stays independent of this.
+const ESTIMATE_TOTAL_LOCK_THRESHOLD = 2000
+
+/** Same Grand Total formula EstimatesCard/printEstimate already use (parts: mrp*qty, labour:
+ * rate*qty) - pulled out here so JobCardDetailPage can gate Part/Labour Suggestion's add-forms on
+ * it without duplicating the calculation a third time. */
+function calcEstimateGrandTotal(jc: JobCardDetail): number {
+  const partsTotal = jc.partSuggestions.reduce((sum, p) => sum + (p.mrp ?? 0) * (p.quantity ?? 1), 0)
+  const labourTotal = jc.labourSuggestions.reduce((sum, l) => sum + (l.rateAtSuggestion ?? 0) * (l.quantity ?? 1), 0)
+  return partsTotal + labourTotal
+}
 
 /** "Set/reset customer portal password" - the dealer/admin side of the new customer password
  * login (POST /api/customers/{id}/admin-reset-password), which runs alongside the customer's
@@ -314,8 +328,8 @@ function PrintMenu({ jc, hasRole, setMsg }: { jc: JobCardDetail; hasRole: (...ro
     } catch (err: unknown) {
       win.close()
       const status = (err as { response?: { status?: number } })?.response?.status
-      if (status === 404) setMsg('No repair bill saved in DMS for this job yet.')
-      else setMsg('Could not open the invoice from DMS. Please try again.')
+      if (status === 404) setMsg('No repair bill saved in BAPL DMS for this job yet.')
+      else setMsg('Could not open the invoice from BAPL DMS. Please try again.')
     } finally {
       setInvoiceBusy(false)
     }
@@ -356,6 +370,10 @@ export function JobCardDetailPage() {
   const [stages, setStages] = useState<WorkflowStage[]>([])
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
+  // Estimates Amount "Done"/"Edit" toggle - lifted up here (rather than local to EstimatesCard)
+  // because "Done" also hides PartSuggestionCard/LabourSuggestionCard's add-new-suggestion forms,
+  // not just EstimatesCard's own UI. See EstimatesCard's doc comment for the full feature.
+  const [estimatesLocked, setEstimatesLocked] = useState(false)
 
   const load = async () => {
     if (!id) return
@@ -385,6 +403,8 @@ export function JobCardDetailPage() {
   }, [jc])
 
   if (!jc) return <p className="muted">Loading...</p>
+
+  const estimateGrandTotal = calcEstimateGrandTotal(jc)
 
   const run = async (fn: () => Promise<unknown>, successMsg?: string) => {
     setBusy(true)
@@ -444,18 +464,18 @@ export function JobCardDetailPage() {
           )}
           {jc.baplSyncStatus === 'Synced' && jc.baplJobCardHeaderId && (
             <p className="muted" style={{ marginTop: 4 }}>
-              {/* Show DMS's own JobNo (what DMS's own Job Card List calls "JobNo") - not
+              {/* Show BAPL DMS's own JobNo (what BAPL DMS's own Job Card List calls "JobNo") - not
                  baplJobCardHeaderId, which is only JobCardScanner's internal reference to the row
-                 and means nothing to a user looking at DMS's own screens. */}
-              ✅ Synced to DMS as{' '}
+                 and means nothing to a user looking at BAPL DMS's own screens. */}
+              ✅ Synced to BAPL DMS as{' '}
               <a href={`/jobcards/bapl/${jc.baplJobCardHeaderId}`}>
-                {jc.baplJobNo != null ? `job card #${jc.baplJobNo}` : 'a job card (DMS sync pending)'}
+                {jc.baplJobNo != null ? `job card #${jc.baplJobNo}` : 'a job card (BAPL DMS sync pending)'}
               </a>.
             </p>
           )}
           {jc.baplSyncStatus === 'Failed' && (
             <p className="error-text" style={{ marginTop: 4 }}>
-              ⚠ Not yet synced to DMS{jc.baplSyncError ? `: ${jc.baplSyncError}` : '.'}
+              ⚠ Not yet synced to BAPL DMS{jc.baplSyncError ? `: ${jc.baplSyncError}` : '.'}
             </p>
           )}
         </div>
@@ -483,9 +503,12 @@ export function JobCardDetailPage() {
       {SHOW_QUALITY_CHECK_PANEL && hasRole('WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && <QcCard jc={jc} run={run} />}
       {/* Item 16: Part Suggestion, then Item 17: Labour Suggestion, then Item 15: Estimates Amount
          moves to AFTER Labour Suggestion (was before both). */}
-      <PartSuggestionCard jc={jc} run={run} />
-      <LabourSuggestionCard jc={jc} run={run} />
-      <EstimatesCard jc={jc} run={run} />
+      {/* 2026-09-07: Part/Labour Suggestion's add-forms now also lock once the Grand Total hits
+         ESTIMATE_TOTAL_LOCK_THRESHOLD - independent of (and in addition to) the manual Done/Edit
+         lock, so EstimatesCard itself still only sees the manual `estimatesLocked` state below. */}
+      <PartSuggestionCard jc={jc} run={run} estimatesLocked={estimatesLocked} totalLockReached={estimateGrandTotal >= ESTIMATE_TOTAL_LOCK_THRESHOLD} />
+      <LabourSuggestionCard jc={jc} run={run} estimatesLocked={estimatesLocked} totalLockReached={estimateGrandTotal >= ESTIMATE_TOTAL_LOCK_THRESHOLD} />
+      <EstimatesCard jc={jc} run={run} estimatesLocked={estimatesLocked} setEstimatesLocked={setEstimatesLocked} />
       {/* Item 13: BAPL DMS Service History moves to AFTER Invoice (was the 2nd card, right after
          Update Workflow Stage). */}
       <BaplServiceHistoryCard chassisNo={jc.vehicle?.vin} dealerCode={jc.dealer?.code} />
@@ -519,7 +542,7 @@ function BaplServiceHistoryCard({ chassisNo, dealerCode }: { chassisNo?: string 
         const msg = err?.response?.data?.message
         // A 502 here is a real BAPL DMS problem; anything else (404/network hiccup) just means
         // "nothing to show", which is normal and not worth alarming the service advisor over.
-        if (err?.response?.status === 502) setError(msg ?? 'Could not reach DMS.')
+        if (err?.response?.status === 502) setError(msg ?? 'Could not reach BAPL DMS.')
         setRows([])
       })
   }, [chassisNo, dealerCode])
@@ -528,10 +551,10 @@ function BaplServiceHistoryCard({ chassisNo, dealerCode }: { chassisNo?: string 
 
   return (
     <div className="card">
-      <h3>DMS Service History</h3>
+      <h3>BAPL DMS Service History</h3>
       {error && <p className="muted">{error}</p>}
       {rows === null && !error && <p className="muted">Loading…</p>}
-      {rows !== null && rows.length === 0 && !error && <p className="muted">No prior DMS job cards found for this chassis.</p>}
+      {rows !== null && rows.length === 0 && !error && <p className="muted">No prior BAPL DMS job cards found for this chassis.</p>}
       {rows !== null && rows.length > 0 && (
         <table>
           <thead>
@@ -630,7 +653,7 @@ function PhotosCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<un
         {/* capture="environment" hints the rear camera on a phone; still falls back to a normal
            file picker on desktop, where "capture" is simply ignored. */}
         <label className="btn btn-sm btn-primary" style={{ cursor: uploading ? 'default' : 'pointer', opacity: uploading ? 0.6 : 1 }}>
-          {uploading ? 'Uploading…' : 'Capture / Upload Photo'}
+          {uploading ? 'Uploading…' : 'Take / Upload Photo'}
           <input
             type="file"
             accept="image/*"
@@ -748,7 +771,7 @@ function UpdateWorkflowStageCard({
             <input type="datetime-local" disabled={busy} value={expectedDeliveryAt} onChange={(e) => setExpectedDeliveryAt(e.target.value)} />
           </div>
           <div className="field">
-            <button className="btn btn-sm" style={{ backgroundColor: '#2563EB', color: '#fff' }} disabled={busy} onClick={() => run(saveDetails, 'Technician & completion date updated.')}>Save</button>
+            <button className="btn btn-sm" disabled={busy} onClick={() => run(saveDetails, 'Technician & completion date updated.')}>Save</button>
           </div>
         </div>
       )}
@@ -800,20 +823,30 @@ function ComplaintsCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promis
   )
 }
 
-/** Item 14: the timer is now automatic, not manual - starts the moment this job card is open (no
- * running log yet, and the job card isn't Closed) and stops the moment the job card is Closed. Both
- * effects are guarded by their own condition already being false after the reload run() triggers
- * (a fresh openLog appears after auto-start; it disappears - endedAt gets set - after auto-stop),
- * so neither fires more than once per actual state change. */
+// 2026-09-07: timer is manual again per explicit request ("timer start button add manual start...
+// remove condition when it is in Work In Progress then start that timer button add"). Starting the
+// timer (POST /worklogs/start) already flips jc.status to InProgress as a side effect on the
+// backend (StartWorklog) and auto-advances the workflow stage - so clicking "Start Timer" IS what
+// puts the job card into Work In Progress, there's no separate InProgress-gated visibility to
+// remove beyond the old auto-start effect itself. A manual "Stop Timer" button ends the open log;
+// the job-card-closed auto-stop effect below stays as a safety net so a forgotten timer doesn't run
+// forever, but starting is never automatic anymore. All timestamps are shown explicitly in IST
+// (Asia/Kolkata) rather than the browser's own locale/timezone, per explicit request ("dont use utc
+// show actual time current time zone is IST").
+const IST_TIME_ZONE = 'Asia/Kolkata'
+const formatIST = (iso: string, opts: Intl.DateTimeFormatOptions) => new Date(iso).toLocaleString('en-IN', { timeZone: IST_TIME_ZONE, ...opts })
+const formatISTTime = (iso: string) => formatIST(iso, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })
+const formatISTDateTime = (iso: string) => formatIST(iso, { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true })
+
+/** Whether a Part/Labour suggestion can be added right now - gated on an open (not-yet-ended)
+ * worklog existing, per explicit request ("Part Suggestion, Labour Suggestion not can update give
+ * alret in this process start the timer"). Exported-shape helper (not exported, just shared) so
+ * PartSuggestionCard/LabourSuggestionCard below check the exact same condition WorklogCard uses to
+ * decide whether the timer looks "running". */
+const hasOpenWorklog = (jc: JobCardDetail) => jc.worklogs.some((w) => !w.endedAt)
+
 function WorklogCard({ jc, run, profileId }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>) => void; profileId?: string }) {
   const openLog = jc.worklogs.find((w) => !w.endedAt)
-
-  useEffect(() => {
-    if (jc.status !== 'Closed' && !openLog) {
-      run(() => staffApi.post(`/api/jobcards/${jc.id}/worklogs/start`, { technicianId: profileId, taskDescription: 'Service work' }))
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jc.id, jc.status, openLog?.id])
 
   useEffect(() => {
     if (jc.status === 'Closed' && openLog) {
@@ -822,19 +855,28 @@ function WorklogCard({ jc, run, profileId }: { jc: JobCardDetail; run: (fn: () =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jc.status, openLog?.id])
 
+  const startTimer = () => run(() => staffApi.post(`/api/jobcards/${jc.id}/worklogs/start`, { technicianId: profileId, taskDescription: 'Service work' }))
+  const stopTimer = () => { if (openLog) run(() => staffApi.post(`/api/jobcards/worklogs/${openLog.id}/end`, {})) }
+
   return (
     <div className="card">
       <h3>Technician Work Log</h3>
       {openLog ? (
-        <p className="muted">⏱ Timer running since {new Date(openLog.startedAt).toLocaleTimeString()} (stops automatically when this job card is closed).</p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <p className="muted" style={{ margin: 0 }}>⏱ Timer running since {formatISTTime(openLog.startedAt)} IST.</p>
+          <button className="btn btn-sm" style={{ background: '#dc2626', color: '#fff', border: '1px solid #dc2626' }} onClick={stopTimer}>■ Stop Timer</button>
+        </div>
       ) : jc.status === 'Closed' ? (
         <p className="muted">Timer stopped - this job card is closed.</p>
       ) : (
-        <p className="muted">Starting timer…</p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <p className="muted" style={{ margin: 0 }}>Timer isn't running. Start it before adding Part/Labour suggestions.</p>
+          <button className="btn btn-sm btn-primary" onClick={startTimer}>▶ Start Timer</button>
+        </div>
       )}
       <table style={{ marginTop: 12 }}>
-        <thead><tr><th>Started</th><th>Ended</th><th>Duration (min)</th></tr></thead>
-        <tbody>{jc.worklogs.map((w) => <tr key={w.id}><td>{new Date(w.startedAt).toLocaleString()}</td><td>{w.endedAt ? new Date(w.endedAt).toLocaleString() : '-'}</td><td>{w.durationMinutes ?? '-'}</td></tr>)}</tbody>
+        <thead><tr><th>Started (IST)</th><th>Ended (IST)</th><th>Duration (min)</th></tr></thead>
+        <tbody>{jc.worklogs.map((w) => <tr key={w.id}><td>{formatISTDateTime(w.startedAt)}</td><td>{w.endedAt ? formatISTDateTime(w.endedAt) : '-'}</td><td>{w.durationMinutes ?? '-'}</td></tr>)}</tbody>
       </table>
     </div>
   )
@@ -871,8 +913,45 @@ function QcCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<unknow
  * from jc.labourSuggestions, and a Grand Total row summing both. Per an explicit decision, this
  * REPLACES the old Description/Amount/Reason + "Send Estimate to Customer" OTP flow entirely -
  * that flow (and the Estimate/estimateNumber data behind it) still exists in the backend, just no
- * longer surfaced on this card. */
-function EstimatesCard({ jc }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>) => void }) {
+ * longer surfaced on this card.
+ *
+ * 2026-09-07: added a "Done"/"Edit" toggle per explicit request. "Done" (blue button) locks the
+ * estimate - PartSuggestionCard/LabourSuggestionCard's "add a new suggestion" forms hide (their
+ * already-added grids stay visible - see `estimatesLocked` threaded down from JobCardDetailPage)
+ * and an email textbox + Send button appear right here so the estimate can be mailed out as a PDF
+ * attachment (POST /api/jobcards/{id}/estimates/email - see JobCardsController.EmailEstimate /
+ * IEstimatePdfService). "Edit" flips back, re-showing the add-suggestion forms and hiding the email
+ * box. This toggle is plain client-side UI state (see JobCardDetailPage's `estimatesLocked`) - it
+ * is NOT persisted to the backend, so it resets to unlocked on a fresh page load; nothing about
+ * this changes what's actually saved (the parts/labour suggestions themselves still save
+ * immediately as before). */
+function EstimatesCard({
+  jc, estimatesLocked, setEstimatesLocked,
+}: {
+  jc: JobCardDetail
+  run: (fn: () => Promise<unknown>) => void
+  estimatesLocked: boolean
+  setEstimatesLocked: (v: boolean) => void
+}) {
+  const [email, setEmail] = useState('')
+  const [sending, setSending] = useState(false)
+  const [emailMsg, setEmailMsg] = useState<string | null>(null)
+
+  const sendEmail = async () => {
+    if (!email.trim()) { setEmailMsg('Enter an email address first.'); return }
+    setSending(true)
+    setEmailMsg(null)
+    try {
+      const { data } = await staffApi.post<{ message: string }>(`/api/jobcards/${jc.id}/estimates/email`, { email: email.trim() })
+      setEmailMsg(data.message)
+    } catch (err: unknown) {
+      const data = (err as { response?: { data?: { message?: string } } })?.response?.data
+      setEmailMsg(data?.message ?? 'Could not send the email.')
+    } finally {
+      setSending(false)
+    }
+  }
+
   const money = (n: number) => `₹${n.toFixed(2)}`
 
   const partRows = jc.partSuggestions.map((p, i) => {
@@ -931,28 +1010,59 @@ function EstimatesCard({ jc }: { jc: JobCardDetail; run: (fn: () => Promise<unkn
 
       <div style={{
         marginTop: 16, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12,
-        borderTop: '2px solid var(--border)', paddingTop: 10,
+        borderTop: '2px solid var(--border)', paddingTop: 10, flexWrap: 'wrap',
       }}>
         <strong style={{ fontSize: 16 }}>Grand Total</strong>
         <strong style={{ fontSize: 18 }}>{money(grandTotal)}</strong>
+        {estimatesLocked ? (
+          <button
+            className="btn btn-sm"
+            onClick={() => { setEstimatesLocked(false); setEmailMsg(null) }}
+          >
+            Edit
+          </button>
+        ) : (
+          <button
+            className="btn btn-sm"
+            style={{ background: '#2563eb', color: '#fff', border: '1px solid #2563eb' }}
+            onClick={() => setEstimatesLocked(true)}
+          >
+            Done
+          </button>
+        )}
       </div>
+      {estimatesLocked && (
+        <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="Customer email address…"
+            style={{ minWidth: 240 }}
+          />
+          <button className="btn btn-sm btn-primary" disabled={sending} onClick={sendEmail}>
+            {sending ? 'Sending…' : 'Send Estimate'}
+          </button>
+        </div>
+      )}
+      {emailMsg && <p className="muted" style={{ textAlign: 'right', marginTop: 6 }}>{emailMsg}</p>}
     </div>
   )
 }
 
 /** "Part Suggestion" panel (renamed from "Parts Used" - see JobCardPartSuggestion's doc comment in
- * types/index.ts). Parts come from DMS's own PartsInventory for this job card's service
- * location (GET /api/dms/parts?locationCode=...), fetched once on mount the same way
+ * types/index.ts). Parts come from BAPL DMS's own PartsInventory for this job card's service
+ * location (GET /api/bapl-dms/parts?locationCode=...), fetched once on mount the same way
  * BaplServiceHistoryCard above fetches its supplementary data; suggesting one just records an
  * itemCode + a Paid/U-W status in JobCardScannerDb (POST .../part-suggestions) - nothing is written
- * back into DMS itself. Status can be flipped afterwards (PUT .../part-suggestions/{id}). */
+ * back into BAPL DMS itself. Status can be flipped afterwards (PUT .../part-suggestions/{id}). */
 /** Item 16: reworked into a type-ahead Item Code search (bound to description, so typing either
  * the code or a word of the description narrows the list), a Qty field (distinct from the
  * available-stock number, which is only shown as a hint), and multi add/remove - each suggested
  * part gets its own Remove button (DELETE /api/jobcards/part-suggestions/{id}), instead of the old
  * Paid/U-W toggle being the only action available. Grid columns per spec: Sr no., Item Code,
  * Description, MRP, QTY, IssueType(Status). */
-function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => void }) {
+function PartSuggestionCard({ jc, run, estimatesLocked, totalLockReached }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => void; estimatesLocked: boolean; totalLockReached: boolean }) {
   const [availableParts, setAvailableParts] = useState<BaplDmsPartStock[]>([])
   const [search, setSearch] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(false)
@@ -1019,7 +1129,7 @@ function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Pr
               </td>
               <td style={{ display: 'flex', gap: 4 }}>
                 <button
-                  className="btn btn-sm" style={{ backgroundColor: '#2563EB', color: '#fff' }}
+                  className="btn btn-sm"
                   onClick={() => run(() => staffApi.put(`/api/jobcards/part-suggestions/${p.id}`, { status: p.status === 'Paid' ? 'U/W' : 'Paid' }))}
                 >
                   Mark {p.status === 'Paid' ? 'U/W' : 'Paid'}
@@ -1040,8 +1150,20 @@ function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Pr
         </tbody>
       </table>
 
-      <h4>Suggest a part (from DMS PartsInventory)</h4>
-      {!jc.baplServiceLocationCode && <p className="muted">No DMS service location on this job card - part list unavailable.</p>}
+      {/* Estimates Amount "Done" hides this add-new-suggestion form (grid above stays visible) -
+         see EstimatesCard's doc comment for the full Done/Edit toggle. totalLockReached is a
+         separate, automatic lock once the Grand Total hits ESTIMATE_TOTAL_LOCK_THRESHOLD - see that
+         constant's doc comment in JobCardDetailPage. */}
+      {estimatesLocked || totalLockReached ? (
+        <p className="muted">
+          {estimatesLocked
+            ? 'Estimate is marked Done - click Edit on the Estimates Amount card below to add more parts.'
+            : `Grand Total has reached ₹${ESTIMATE_TOTAL_LOCK_THRESHOLD} - no more parts can be suggested on this estimate.`}
+        </p>
+      ) : (
+      <>
+      <h4>Suggest a part (from BAPL DMS PartsInventory)</h4>
+      {!jc.baplServiceLocationCode && <p className="muted">No BAPL DMS service location on this job card - part list unavailable.</p>}
       {/* Item-code/description, QTY, Issue Type and the Add Suggestion button all in one row now,
          matching Suggest labour's layout below - Add sits at the end of the row instead of on its
          own line underneath. .suggest-row (not .form-row) so the search field grows and Qty/Issue
@@ -1088,7 +1210,7 @@ function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Pr
                 <span className="muted" style={{ fontSize: 13 }}>
                   {jc.baplServiceLocationCode
                     ? `Part number "${search.trim()}" does not exist for dealer location ${jc.baplServiceLocationCode}.`
-                    : 'No DMS service location on this job card - part list unavailable.'}
+                    : 'No BAPL DMS service location on this job card - part list unavailable.'}
                 </span>
               </div>
             )
@@ -1106,11 +1228,20 @@ function PartSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Pr
           </select>
         </div>
         <div className="field field-compact">
-          <button className="btn btn-sm btn-primary" disabled={!itemCode} onClick={() => run(addSuggestion, 'Part suggestion added.')}>Add Suggestion</button>
+          <button
+            className="btn btn-sm btn-primary"
+            disabled={!itemCode}
+            onClick={() => {
+              if (!hasOpenWorklog(jc)) { alert('Start the Technician Work Log timer before adding a part suggestion.'); return }
+              run(addSuggestion, 'Part suggestion added.')
+            }}
+          >Add Suggestion</button>
         </div>
       </div>
       {selectedPart && (
         <p className="muted">MRP {selectedPart.mrp != null ? `₹${selectedPart.mrp}` : '-'} · HSN {selectedPart.hsnCode ?? '-'} · Available {selectedPart.availableQty}</p>
+      )}
+      </>
       )}
     </div>
   )
@@ -1211,7 +1342,7 @@ function PartPictureCell({
 // actually bills labour (paid work vs. work covered by the vehicle's warranty).
 const LABOUR_ISSUE_TYPES = ['Paid', 'U/W'] as const
 
-function LabourSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => void }) {
+function LabourSuggestionCard({ jc, run, estimatesLocked, totalLockReached }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => void; estimatesLocked: boolean; totalLockReached: boolean }) {
   const [rows, setRows] = useState<BaplDmsLabourRow[]>([])
   const [q, setQ] = useState('')
   // Type-ahead dropdown state, mirroring PartSuggestionCard's search/pickPart pattern above -
@@ -1363,7 +1494,19 @@ function LabourSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => 
         </tbody>
       </table>
 
-      <h4>Suggest labour (from DMS LabourMaster)</h4>
+      {/* Estimates Amount "Done" hides this add-new-suggestion form (grid above stays visible) -
+         see EstimatesCard's doc comment for the full Done/Edit toggle. totalLockReached is a
+         separate, automatic lock once the Grand Total hits ESTIMATE_TOTAL_LOCK_THRESHOLD - see that
+         constant's doc comment in JobCardDetailPage. */}
+      {estimatesLocked || totalLockReached ? (
+        <p className="muted">
+          {estimatesLocked
+            ? 'Estimate is marked Done - click Edit on the Estimates Amount card below to add more labour.'
+            : `Grand Total has reached ₹${ESTIMATE_TOTAL_LOCK_THRESHOLD} - no more labour can be suggested on this estimate.`}
+        </p>
+      ) : (
+      <>
+      <h4>Suggest labour (from BAPL DMS LabourMaster)</h4>
       {/* Item 17: Labour Code, Qty, Issue Type and the Add Suggestion button all in one row now -
          no separate "Search" field/label any more, same as Item Code / Description above: the
          Labour Code field itself IS the search box (typing filters the dropdown below it), matching
@@ -1414,7 +1557,7 @@ function LabourSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => 
                 background: 'var(--card-bg, #fff)', border: '1px solid var(--border)', borderRadius: 8,
                 padding: '8px 10px', boxShadow: '0 6px 18px rgba(0,0,0,.12)',
               }}>
-                <span className="muted" style={{ fontSize: 13 }}>No labour found in DMS matching "{q.trim()}".</span>
+                <span className="muted" style={{ fontSize: 13 }}>No labour found in BAPL DMS matching "{q.trim()}".</span>
               </div>
             )
           )}
@@ -1431,7 +1574,14 @@ function LabourSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => 
           </select>
         </div>
         <div className="field field-compact">
-          <button className="btn btn-sm btn-primary" disabled={!selectedId} onClick={() => run(addSuggestion, 'Labour suggestion added.')}>Add Suggestion</button>
+          <button
+            className="btn btn-sm btn-primary"
+            disabled={!selectedId}
+            onClick={() => {
+              if (!hasOpenWorklog(jc)) { alert('Start the Technician Work Log timer before adding a labour suggestion.'); return }
+              run(addSuggestion, 'Labour suggestion added.')
+            }}
+          >Add Suggestion</button>
         </div>
       </div>
       {selected && (
@@ -1440,15 +1590,17 @@ function LabourSuggestionCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => 
           {selected.partCode && ` · Part: ${selected.partCode}${selected.partDescription ? ' — ' + selected.partDescription : ''}`}
         </p>
       )}
+      </>
+      )}
     </div>
   )
 }
 
-/** "Download Invoice from DMS" - DMS's own repair bill is the source of truth for a job
+/** "Download Invoice from DMS" - BAPL DMS's own repair bill is the source of truth for a job
  * card's invoice. Streams the PDF through staffApi so the same Bearer token every other call on
  * this page carries is attached (see api/client.ts's interceptor) - a plain <a href> pointed at
  * the API would 401 instead of downloading anything - then hands the blob to the browser via a
- * temporary <a download> element. Re-added 2026-09-03 as its own card below DMS Service
+ * temporary <a download> element. Re-added 2026-09-03 as its own card below BAPL DMS Service
  * History (it briefly lived only inside the header's Print menu - see PrintMenu's "Invoice"
  * option, which stays too and opens the same PDF in a new tab instead of forcing a download). */
 function InvoiceCard({ jc }: { jc: JobCardDetail }) {
@@ -1472,8 +1624,8 @@ function InvoiceCard({ jc }: { jc: JobCardDetail }) {
       setTimeout(() => URL.revokeObjectURL(url), 60_000)
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status
-      if (status === 404) setNotice('No repair bill saved in DMS for this job yet.')
-      else setError('Could not download the invoice from DMS. Please try again.')
+      if (status === 404) setNotice('No repair bill saved in BAPL DMS for this job yet.')
+      else setError('Could not download the invoice from BAPL DMS. Please try again.')
     } finally {
       setBusy(false)
     }

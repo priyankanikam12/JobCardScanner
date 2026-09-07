@@ -1,4 +1,3 @@
-// web\src\pages\staff\JobCardWizardPage.tsx
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { staffApi } from '../../api/client'
@@ -105,7 +104,7 @@ export function JobCardWizardPage() {
       setBaplDealerResults(data)
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
-      setDealerSearchError(msg ? `DMS error: ${msg}` : 'Could not reach DMS right now - try the dropdown above, or again shortly.')
+      setDealerSearchError(msg ? `BAPL DMS error: ${msg}` : 'Could not reach BAPL DMS right now - try the dropdown above, or again shortly.')
     }
   }
 
@@ -124,7 +123,7 @@ export function JobCardWizardPage() {
       }
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
-      setDealerSearchError(msg ? `DMS error: ${msg}` : `Could not add "${row.dealerName}" from DMS - try again shortly.`)
+      setDealerSearchError(msg ? `BAPL DMS error: ${msg}` : `Could not add "${row.dealerName}" from BAPL DMS - try again shortly.`)
     } finally {
       setResolvingDealer(false)
     }
@@ -135,7 +134,7 @@ export function JobCardWizardPage() {
   // state/saleDate: added per Item 3/7 - state is stored on the customer (Customer.State - see
   // deploy/add-customer-state-column.sql for the manual production migration this needs);
   // saleDate has nowhere of its own to live on Customer, so it's carried forward and saved as the
-  // vehicle's PurchaseDate at step 2 (see createVehicle) - the same field a DMS-sourced
+  // vehicle's PurchaseDate at step 2 (see createVehicle) - the same field a BAPL DMS-sourced
   // saleDate already fills for an auto-fetched vehicle.
   const [newCustomer, setNewCustomer] = useState({ name: '', mobile: '', email: '', city: '', address: '', state: '', saleDate: '' })
 
@@ -236,7 +235,7 @@ export function JobCardWizardPage() {
       // see openJobCardNumber's doc comment) - refuse to auto-fill/proceed with it at all, and say
       // exactly where the open job card is so staff know where to go close it first.
       if (data.openJobCardNumber) {
-        const where = data.openJobCardSource === 'bapl-dms' ? 'in DMS' : 'here'
+        const where = data.openJobCardSource === 'bapl-dms' ? 'in BAPL DMS' : 'here'
         const status = data.openJobCardStatus ? ` (status: ${data.openJobCardStatus})` : ''
         setOpenJobCardNotice(`This chassis already has an open job card ${where}: ${data.openJobCardNumber}${status}. It must be closed before this chassis can be used for a new job card.`)
         return
@@ -256,15 +255,15 @@ export function JobCardWizardPage() {
     } catch (err: unknown) {
       const response = (err as { response?: { status?: number; data?: { message?: string } } })?.response
       if (response?.status === 404) {
-        setVehicleLookupError(`"${value}" wasn't found in DMS for this dealer.`)
+        setVehicleLookupError(`"${value}" wasn't found in BAPL DMS for this dealer.`)
         // Offer the cross-dealer fallback right on the "not found" flag, instead of only letting
         // the user give up and add the vehicle manually - see the state block above for why this
         // needs no new backend endpoint.
         setShowGlobalSearchOffer(true)
       } else {
         setVehicleLookupError(response?.data?.message
-          ? `DMS error: ${response.data.message}`
-          : 'Could not reach DMS right now - add the customer/vehicle manually below.')
+          ? `BAPL DMS error: ${response.data.message}`
+          : 'Could not reach BAPL DMS right now - add the customer/vehicle manually below.')
       }
     } finally {
       setVehicleLookupLoading(false)
@@ -296,7 +295,7 @@ export function JobCardWizardPage() {
     // Same open-job-card block as the dealer-scoped lookup above - a cross-dealer hit can still
     // belong to a chassis with an open job card (at this dealer or elsewhere).
     if (globalHit.openJobCardNumber) {
-      const where = globalHit.openJobCardSource === 'bapl-dms' ? 'in DMS' : 'here'
+      const where = globalHit.openJobCardSource === 'bapl-dms' ? 'in BAPL DMS' : 'here'
       const status = globalHit.openJobCardStatus ? ` (status: ${globalHit.openJobCardStatus})` : ''
       setOpenJobCardNotice(`This chassis already has an open job card ${where}: ${globalHit.openJobCardNumber}${status}. It must be closed before this chassis can be used for a new job card.`)
       setShowGlobalSearchOffer(false)
@@ -326,6 +325,23 @@ export function JobCardWizardPage() {
   const usingBaplVehicle = !!baplVehicleHit
   const previousOdometer = baplVehicleHit?.vehiclePrevKms ?? null
   const odometerValid = newVehicle.odometer > 0 && (previousOdometer == null || newVehicle.odometer > previousOdometer)
+
+  // 2026-09-07: Coupon No. and Job Category, matching BAPL DMS's own Job Card form (the DMS
+  // Angular wizard shows these right after Service Location - see job-card-add-form.html). Coupon
+  // No. auto-fills from the chassis number's last 13 characters, exactly like DMS's own
+  // onChassisChange() (`this.couponNo = this.selectedChassis.slice(-13)`) - see the effect below -
+  // but stays editable and stops auto-updating once the user types into it directly, same as any
+  // other auto-filled-but-overridable field in this wizard. Job Category defaults to "B2C" (DMS's
+  // own default - its b2c radio starts checked and nothing un-checks it programmatically) with a
+  // B2B option alongside, mirroring DMS's radio group.
+  const [couponNo, setCouponNo] = useState('')
+  const [couponNoTouched, setCouponNoTouched] = useState(false)
+  const [jobCategory, setJobCategory] = useState<'B2C' | 'B2B'>('B2C')
+  useEffect(() => {
+    if (couponNoTouched) return
+    const vin = newVehicle.vin || ''
+    setCouponNo(vin.length > 13 ? vin.slice(-13) : vin)
+  }, [newVehicle.vin, couponNoTouched])
 
   // Pre-fill the "add a new vehicle" form the moment a BAPL DMS hit exists, so a customer created
   // from a chassis/reg-no search (above) lands on step 2 with everything already typed in. BAPL DMS
@@ -411,7 +427,7 @@ export function JobCardWizardPage() {
   useEffect(() => {
     staffApi.get<BaplDmsJobType[]>('/api/bapl-dms/job-types')
       .then(({ data }) => setJobTypes(data))
-      .catch(() => setBaplMastersError('Could not load DMS\'s Job Type list - Service Details will only capture JobCardScanner\'s own fields.'))
+      .catch(() => setBaplMastersError('Could not load BAPL DMS\'s Job Type list - Service Details will only capture JobCardScanner\'s own fields.'))
     staffApi.get<BaplDmsComplaint[]>('/api/bapl-dms/complaints')
       .then(({ data }) => setComplaintOptions(data))
       .catch(() => setComplaintOptions([]))
@@ -666,6 +682,8 @@ export function JobCardWizardPage() {
         baplCustomerLedgerId: baplVehicleHit?.customerLedgerId ?? null,
         baplJobSourceId: selectedJobSourceId,
         baplJobSourceName: jobSources.find((s) => s.id === selectedJobSourceId)?.name ?? null,
+        baplCouponNo: couponNo || null,
+        baplJobCategory: jobCategory,
       })
       if (data?.baplSyncWarning) setBaplSyncWarning(data.baplSyncWarning as string)
 
@@ -777,14 +795,14 @@ export function JobCardWizardPage() {
               </select>
               <p className="muted" style={{ marginTop: 4 }}>
                 Your account isn't tied to a single dealer, so pick which workshop this job card belongs to.
-                Not in the list yet? Search DMS below.
+                Not in the list yet? Search BAPL DMS below.
               </p>
               <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                 <input
                   value={dealerSearchQ}
                   onChange={(e) => setDealerSearchQ(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && searchBaplDealers()}
-                  placeholder="Search Dealer WorkShop Location (DMS) by name or code…"
+                  placeholder="Search Dealer WorkShop Location (BAPL DMS) by name or code…"
                 />
                 <button className="btn" onClick={searchBaplDealers} disabled={dealerSearchQ.trim().length < 2}>Search</button>
               </div>
@@ -810,7 +828,7 @@ export function JobCardWizardPage() {
               )}
             </div>
           )}
-          <h3>Registered customer Details</h3>
+          <h3>(Registered customer Details)</h3>
           {/* "Search by mobile number or name" commented out per your request - chassis/reg no.
              search (below) is now the only way to look up a customer here. */}
           {/* <div className="field">
@@ -922,7 +940,7 @@ export function JobCardWizardPage() {
                   display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
                 }}
               >
-                🔎 Not found for this dealer.{globalSearchNotFound ? ' Not found anywhere in DMS either.' : ' Search DMS across every dealer?'}
+                🔎 Not found for this dealer.{globalSearchNotFound ? ' Not found anywhere in BAPL DMS either.' : ' Search BAPL DMS across every dealer?'}
                 <button
                   type="button"
                   className="btn btn-sm btn-primary"
@@ -937,7 +955,7 @@ export function JobCardWizardPage() {
             {globalHit && (
               <div style={{ marginTop: 8, padding: '10px 14px', borderRadius: 8, background: '#eef6ff', border: '1px solid #bfdcff' }}>
                 <p style={{ fontWeight: 600, color: '#1e3a5f', margin: 0 }}>
-                  Found in DMS{globalHit.dealerCode && globalHit.dealerCode !== vehicleSearchDealerCode ? ` — registered to dealer ${globalHit.dealerCode}, not this workshop` : ''}
+                  Found in BAPL DMS{globalHit.dealerCode && globalHit.dealerCode !== vehicleSearchDealerCode ? ` — registered to dealer ${globalHit.dealerCode}, not this workshop` : ''}
                 </p>
                 <p className="muted" style={{ margin: '4px 0 8px' }}>
                   {globalHit.customerName || 'Unknown customer'}{globalHit.customerMobile ? ` (${globalHit.customerMobile})` : ''} · {globalHit.modelName || 'Model unknown'}
@@ -947,19 +965,19 @@ export function JobCardWizardPage() {
                 <button type="button" className="btn btn-sm btn-primary" onClick={applyGlobalHit}>Use this vehicle</button>
               </div>
             )}
-            {/* {baplVehicleHit && (
+            {baplVehicleHit && (
               <p className="muted" style={{ marginTop: 4 }}>
                 Customer Details : customer-{baplVehicleHit.customerName || 'Unknown customer'}
                 {baplVehicleHit.customerMobile ? ` (${baplVehicleHit.customerMobile})` : ''} - model- {baplVehicleHit.modelName || 'Model unknown'}
                 {baplVehicleHit.registerNo ? `, reg no. ${baplVehicleHit.registerNo}` : ''}
                 {baplVehicleHit.saleDate ? `, sale date ${new Date(baplVehicleHit.saleDate).toLocaleDateString()}.` : '.'}
               </p>
-            )} */}
+            )}
           </div>
           <h3 style={{ marginTop: 24 }}>Registered Customer</h3>
           {customerFieldsLocked && (
             <p className="muted" style={{ marginTop: -4, marginBottom: 12 }}>
-              🔒 Name, Mobile, Email, City and Address were auto-fetched from DMS and are locked to prevent accidental changes.{' '}
+              🔒 Name, Mobile, Email, City and Address were auto-fetched from BAPL DMS and are locked to prevent accidental changes.{' '}
               <a href="#" onClick={(e) => { e.preventDefault(); setUnlockCustomerFields(true) }}>Edit anyway</a>
             </p>
           )}
@@ -1038,7 +1056,7 @@ export function JobCardWizardPage() {
           )}
           {vehicleFieldsLocked && (
             <p className="muted" style={{ marginTop: -4, marginBottom: 12 }}>
-              🔒 Model, Reg No and VIN were auto-fetched from DMS and are locked to prevent accidental changes.{' '}
+              🔒 Model, Reg No and VIN were auto-fetched from BAPL DMS and are locked to prevent accidental changes.{' '}
               <a href="#" onClick={(e) => { e.preventDefault(); setUnlockVehicleFields(true) }}>Edit anyway</a>
             </p>
           )}
@@ -1082,6 +1100,33 @@ export function JobCardWizardPage() {
             )}
             <div className="field"><label>Reg No</label><input value={newVehicle.regNo} disabled={vehicleFieldsLocked} onChange={(e) => setNewVehicle({ ...newVehicle, regNo: e.target.value })} /></div>
             <div className="field"><label>VIN</label><input value={newVehicle.vin} disabled={vehicleFieldsLocked} onChange={(e) => setNewVehicle({ ...newVehicle, vin: e.target.value })} /></div>
+            {/* 2026-09-07: Coupon No. + Job Category, matching BAPL DMS's own form - see the
+               couponNo/jobCategory state declared above for the auto-fill/default rules. */}
+            <div className="field">
+              <label>Coupon No</label>
+              <input value={couponNo} onChange={(e) => { setCouponNo(e.target.value); setCouponNoTouched(true) }} />
+            </div>
+            <div className="field">
+              <label>Job Category</label>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  style={jobCategory === 'B2C' ? { background: '#2563eb', color: '#fff', border: '1px solid #2563eb' } : undefined}
+                  onClick={() => setJobCategory('B2C')}
+                >
+                  B2C
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  style={jobCategory === 'B2B' ? { background: '#2563eb', color: '#fff', border: '1px solid #2563eb' } : undefined}
+                  onClick={() => setJobCategory('B2B')}
+                >
+                  B2B
+                </button>
+              </div>
+            </div>
             <div className="field">
               <label>Odometer (km)<Req />{previousOdometer != null ? ` (Previous: ${previousOdometer} km)` : ''}</label>
               <input type="number" value={newVehicle.odometer} onChange={(e) => setNewVehicle({ ...newVehicle, odometer: Number(e.target.value) })} />
@@ -1171,7 +1216,7 @@ export function JobCardWizardPage() {
               </div>
             </div>
             <p className="muted" style={{ margin: '8px 0 0', fontSize: 12 }}>
-              All fields above are required - they are what let this job card also be created directly inside DMS's own database.
+              All fields above are required - they are what let this job card also be created directly inside BAPL DMS's own database.
             </p>
           </div>
 
@@ -1270,7 +1315,7 @@ export function JobCardWizardPage() {
               <label>Photos<Req /></label>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: pendingPhotos.length > 0 ? 12 : 0 }}>
                 <label className="btn btn-sm" style={{ cursor: capturingPhoto ? 'default' : 'pointer', opacity: capturingPhoto ? 0.6 : 1 }}>
-                  {capturingPhoto ? 'Adding…' : '📷 Capture / Upload Photo'}
+                  {capturingPhoto ? 'Adding…' : '📷 Take / Upload Photo'}
                   <input
                     type="file"
                     accept="image/*"

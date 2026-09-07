@@ -39,6 +39,39 @@ builder.Services.AddDbContext<JobCardScannerDbContext>(opt =>
 builder.Services.AddAuthentication()
     .AddMicrosoftIdentityWebApi(builder.Configuration, configSectionName: "AzureAd", jwtBearerScheme: AuthSchemes.AzureAd);
 
+// 2026-09-03: DIAGNOSTIC - added while chasing a reported 401 on /api/auth/me from a fresh
+// public-IP deploy (https://3.88.172.79). AddMicrosoftIdentityWebApi rejects a bad/invalid token
+// with a 401 challenge, but the *reason* (bad signature, wrong audience, expired, clock skew,
+// couldn't reach Azure AD's key-fetch endpoint...) only goes to ILogger, which on a plain
+// `dotnet MyApp.dll` in a terminal, or a systemd/IIS-hosted process, may not be visible anywhere
+// the person deploying this is actually looking. Every other startup check in this file
+// (EnsureCreatedAsync, the self-healing schema blocks) already logs straight to Console.WriteLine
+// for exactly this reason - this does the same for the one failure mode those checks can't cover.
+// Safe to leave in permanently: it only chains onto whatever handlers Microsoft.Identity.Web
+// already wired up (captured below and still invoked), it never changes the actual auth decision,
+// and it only ever fires on a REJECTED token, so it is silent on every normal successful request.
+// Once the real cause is confirmed from these lines, this block can be deleted if the extra
+// console noise on ordinary bad-token attempts (e.g. an expired browser tab) isn't wanted.
+builder.Services.Configure<JwtBearerOptions>(AuthSchemes.AzureAd, options =>
+{
+    var previousOnAuthenticationFailed = options.Events?.OnAuthenticationFailed;
+    var previousOnChallenge = options.Events?.OnChallenge;
+    options.Events ??= new JwtBearerEvents();
+
+    options.Events.OnAuthenticationFailed = async context =>
+    {
+        Console.WriteLine($"[AzureAd JWT] Token REJECTED - {context.Exception.GetType().Name}: {context.Exception.Message}");
+        if (previousOnAuthenticationFailed is not null) await previousOnAuthenticationFailed(context);
+    };
+    options.Events.OnChallenge = async context =>
+    {
+        Console.WriteLine($"[AzureAd JWT] 401 challenge on {context.Request.Path} - " +
+            $"AuthenticateFailure: {context.AuthenticateFailure?.Message ?? "(none - request had no/unparseable bearer token)"}. " +
+            $"Error={context.Error ?? "(none)"}, ErrorDescription={context.ErrorDescription ?? "(none)"}");
+        if (previousOnChallenge is not null) await previousOnChallenge(context);
+    };
+});
+
 builder.Services.AddAuthentication().AddJwtBearer(AuthSchemes.CustomerPortal, options =>
 {
     var section = builder.Configuration.GetSection("CustomerPortalJwt");
@@ -123,6 +156,7 @@ builder.Services.AddScoped<IBaplDealerService, BaplDealerService>();
 builder.Services.AddScoped<IBaplDmsService, BaplDmsService>();
 builder.Services.AddScoped<IJobCardNumberingService, JobCardNumberingService>();
 builder.Services.AddScoped<IInvoicePdfService, InvoicePdfService>();
+builder.Services.AddScoped<IEstimatePdfService, EstimatePdfService>();
 builder.Services.AddScoped<IExcelExportService, ExcelExportService>();
 builder.Services.AddScoped<IAuditLogService, AuditLogService>();
 

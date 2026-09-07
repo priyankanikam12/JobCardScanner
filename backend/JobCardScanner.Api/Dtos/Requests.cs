@@ -69,7 +69,15 @@ public record CreateJobCardRequest(
     // BAPL DMS's JobSource master (Walk In/RSA/Mega Camp/...) - see JobCard.cs's doc comment on
     // BaplJobSourceId for why the plain Source enum above still gets set too.
     int? BaplJobSourceId = null,
-    string? BaplJobSourceName = null);
+    string? BaplJobSourceName = null,
+    // 2026-09-07: Coupon No. and Job Category, added to the Job Card Wizard's Vehicle step (before
+    // Odometer) to match BAPL DMS's own Job Card form. Both are optional overrides of what
+    // BaplDmsService.CreateJobCardAsync would otherwise derive automatically (Coupon No. from the
+    // chassis number's last 13 characters, Job Category defaulting to "B2C") - see that method's
+    // doc comment. Not persisted on JobCard itself (BAPL DMS is the system of record for both), only
+    // forwarded into the DMS write-back.
+    string? BaplCouponNo = null,
+    string? BaplJobCategory = null);
 
 public record UpdateJobCardRequest(Guid? AssignedTechnicianId, JobCardPriority? Priority, DateTime? ExpectedDeliveryAt, string? AssignedTechnicianName = null);
 
@@ -150,6 +158,11 @@ public record UpdateLabourSuggestionRequest(int Quantity, string? IssueType);
 // ---------------- Invoicing ----------------
 public record GenerateInvoiceRequest(decimal DiscountAmount, decimal CgstAmount, decimal SgstAmount, decimal IgstAmount);
 public record RecordPaymentRequest(PaymentMode PaymentMode, string? PaymentReference);
+
+/// <summary>Estimates Amount card's "Done" -> email flow (see JobCardsController.EmailEstimate) -
+/// just the address the estimate PDF should go to; everything else is built server-side from the
+/// job card's own current Part/Labour Suggestion rows at send time.</summary>
+public record EmailEstimateRequest(string Email);
 
 // ---------------- Workflow config ----------------
 public record UpsertWorkflowStageRequest(string StageKey, string Label, int Seq, string? Icon, bool Active, bool IsTerminal);

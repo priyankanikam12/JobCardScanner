@@ -37,6 +37,21 @@ type Props = NativeStackScreenProps<RootStackParamList, 'JobCardDetail'>
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? ''
 const photoSrc = (url: string) => (url.startsWith('http') ? url : `${API_BASE_URL}${url}`)
 
+// 2026-09-07: mirrors web's JobCardDetailPage.tsx ESTIMATE_TOTAL_LOCK_THRESHOLD - once the
+// Estimates Amount Grand Total reaches this, Part Suggestion/Labour Suggestion stop accepting new
+// entries (existing suggestions still show/print/email fine). Independent of the manual Done/Edit
+// lock on the Estimates Amount card itself - see estimatesLocked below.
+const ESTIMATE_TOTAL_LOCK_THRESHOLD = 2000
+
+/** Same Grand Total formula EstimatesCard below uses (parts: mrp*qty, labour: rate*qty) - pulled
+ * out here so JobCardDetailScreen can gate PartSuggestionSection/LabourSuggestionSection's
+ * add-forms on it without duplicating the calculation a third time. */
+function calcEstimateGrandTotal(jc: JobCardDetail): number {
+  const partsTotal = jc.partSuggestions.reduce((sum, p) => sum + (p.mrp ?? 0) * (p.quantity ?? 1), 0)
+  const labourTotal = jc.labourSuggestions.reduce((sum, l) => sum + (l.rateAtSuggestion ?? 0) * (l.quantity ?? 1), 0)
+  return partsTotal + labourTotal
+}
+
 /** Mirrors web/src/pages/staff/JobCardDetailPage.tsx's HIDDEN_WORKFLOW_STAGE_KEYS /
  * MERGED_CHECKIN_LABEL - see that file's doc comment for why these three stage keys are hidden
  * from the timeline and stage-update picker, and "check_in"/"job_card_created" are shown merged. */
@@ -112,6 +127,10 @@ export function JobCardDetailScreen({ route }: Props) {
   const [stages, setStages] = useState<WorkflowStage[]>([])
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
+  // Estimates Amount "Done"/"Edit" toggle, mirroring web's JobCardDetailPage - lifted up here
+  // (rather than local to EstimatesCard) because "Done" also hides PartSuggestionSection/
+  // LabourSuggestionSection's add-new-suggestion forms, not just EstimatesCard's own UI.
+  const [estimatesLocked, setEstimatesLocked] = useState(false)
 
   const load = async () => {
     const [jcRes, stagesRes] = await Promise.all([
@@ -131,6 +150,8 @@ export function JobCardDetailScreen({ route }: Props) {
       </View>
     )
   }
+
+  const estimateGrandTotal = calcEstimateGrandTotal(jc)
 
   const run: Run = async (fn, successMsg) => {
     setBusy(true)
@@ -214,9 +235,12 @@ export function JobCardDetailScreen({ route }: Props) {
       <PhotosCard jc={jc} run={run} />
       <WorklogCard jc={jc} run={run} profileId={profile?.id} />
 
-      <PartSuggestionSection jc={jc} onChanged={load} />
-      <LabourSuggestionSection jc={jc} onChanged={load} />
-      <EstimatesCard jc={jc} />
+      {/* 2026-09-07: Part/Labour Suggestion's add-forms also lock once the Grand Total hits
+         ESTIMATE_TOTAL_LOCK_THRESHOLD - independent of (and in addition to) the manual Done/Edit
+         lock, so EstimatesCard itself still only sees the manual `estimatesLocked` state below. */}
+      <PartSuggestionSection jc={jc} onChanged={load} estimatesLocked={estimatesLocked} totalLockReached={estimateGrandTotal >= ESTIMATE_TOTAL_LOCK_THRESHOLD} />
+      <LabourSuggestionSection jc={jc} onChanged={load} estimatesLocked={estimatesLocked} totalLockReached={estimateGrandTotal >= ESTIMATE_TOTAL_LOCK_THRESHOLD} />
+      <EstimatesCard jc={jc} estimatesLocked={estimatesLocked} setEstimatesLocked={setEstimatesLocked} />
       <BaplServiceHistoryCard chassisNo={jc.vehicle?.vin} dealerCode={jc.dealer?.code} />
       {/* Standalone Invoice card, matching web's PrintMenu doc comment: "the Print menu's own
          Invoice option stays too, so both paths work; this one is the quick one-click download
@@ -646,18 +670,25 @@ function ComplaintsCard({ jc, run }: { jc: JobCardDetail; run: Run }) {
   )
 }
 
-/** Automatic timer - starts the moment this job card is open (no running log yet, job card isn't
- * Closed) and stops the moment the job card is Closed - mirrors web's WorklogCard exactly. */
+// 2026-09-07: timer is manual again per explicit request, mirroring web's WorklogCard exactly -
+// see that file's doc comment for the full reasoning (starting the timer is what causes Work In
+// Progress via StartWorklog's own side effect; the closed-job-card auto-stop effect below stays as
+// a safety net only). All timestamps shown explicitly in IST (Asia/Kolkata), not device locale.
+const IST_TIME_ZONE = 'Asia/Kolkata'
+const formatIST = (iso: string, opts: Intl.DateTimeFormatOptions) => new Date(iso).toLocaleString('en-IN', { timeZone: IST_TIME_ZONE, ...opts })
+const formatISTTime = (iso: string) => formatIST(iso, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })
+const formatISTDateTime = (iso: string) => formatIST(iso, { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true })
+
+// The same "open worklog?" check gates Part/Labour suggestion adding in PartSuggestionSection.tsx
+// and LabourSuggestionSection.tsx (separate files - each inlines `jc.worklogs.some((w) =>
+// !w.endedAt)` directly rather than importing a helper across files, matching this codebase's
+// existing pattern of small per-file duplication over cross-file coupling for one-line checks).
+
 function WorklogCard({ jc, run, profileId }: { jc: JobCardDetail; run: Run; profileId?: string }) {
   const openLog = jc.worklogs.find((w) => !w.endedAt)
 
-  useEffect(() => {
-    if (jc.status !== 'Closed' && !openLog) {
-      run(() => apiClient.post(`/api/jobcards/${jc.id}/worklogs/start`, { technicianId: profileId, taskDescription: 'Service work' }))
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jc.id, jc.status, openLog?.id])
-
+  // Safety net only - starting is manual now, but if a job card gets closed while a timer is
+  // still running (closed from web, or the technician forgot to stop it), end it automatically.
   useEffect(() => {
     if (jc.status === 'Closed' && openLog) {
       run(() => apiClient.post(`/api/jobcards/worklogs/${openLog.id}/end`, {}))
@@ -665,20 +696,33 @@ function WorklogCard({ jc, run, profileId }: { jc: JobCardDetail; run: Run; prof
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jc.status, openLog?.id])
 
+  const startTimer = () => run(() => apiClient.post(`/api/jobcards/${jc.id}/worklogs/start`, { technicianId: profileId, taskDescription: 'Service work' }))
+  const stopTimer = () => { if (openLog) run(() => apiClient.post(`/api/jobcards/worklogs/${openLog.id}/end`, {})) }
+
   return (
     <View style={styles.card}>
       <Text style={styles.cardTitle}>Technician Work Log</Text>
       {openLog ? (
-        <Text style={styles.muted}>⏱ Timer running since {new Date(openLog.startedAt).toLocaleTimeString()} (stops automatically when this job card is closed).</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+          <Text style={styles.muted}>⏱ Timer running since {formatISTTime(openLog.startedAt)} IST.</Text>
+          <TouchableOpacity style={styles.dangerBtnSm} onPress={stopTimer}>
+            <Text style={styles.dangerBtnText}>■ Stop Timer</Text>
+          </TouchableOpacity>
+        </View>
       ) : jc.status === 'Closed' ? (
         <Text style={styles.muted}>Timer stopped - this job card is closed.</Text>
       ) : (
-        <Text style={styles.muted}>Starting timer…</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+          <Text style={styles.muted}>Timer isn't running. Start it before adding Part/Labour suggestions.</Text>
+          <TouchableOpacity style={styles.btnPrimarySm} onPress={startTimer}>
+            <Text style={styles.btnPrimaryText}>▶ Start Timer</Text>
+          </TouchableOpacity>
+        </View>
       )}
       {jc.worklogs.map((w) => (
         <View key={w.id} style={styles.historyRow}>
-          <Text style={styles.rowTitle}>{new Date(w.startedAt).toLocaleString()}</Text>
-          <Text style={styles.muted}>{w.endedAt ? `Ended ${new Date(w.endedAt).toLocaleString()}` : 'Still running'} · {w.durationMinutes ?? '-'} min</Text>
+          <Text style={styles.rowTitle}>{formatISTDateTime(w.startedAt)} IST</Text>
+          <Text style={styles.muted}>{w.endedAt ? `Ended ${formatISTDateTime(w.endedAt)} IST` : 'Still running'} · {w.durationMinutes ?? '-'} min</Text>
         </View>
       ))}
     </View>
@@ -689,8 +733,40 @@ function WorklogCard({ jc, run, profileId }: { jc: JobCardDetail; run: Run; prof
  * the full column set (Sr no./Item or Labour Code/Description/HSN/MRP or Rate/Qty/Amount), not
  * just a collapsed "code - description" line. RN has no <table>, so each row is a two-line card
  * instead of a grid: the code/description/HSN on one line, Qty x MRP(or Rate) = Amount on the
- * next - same fields as web, just stacked to fit a phone width. */
-function EstimatesCard({ jc }: { jc: JobCardDetail }) {
+ * next - same fields as web, just stacked to fit a phone width.
+ *
+ * 2026-09-07: added the same "Done"/"Edit" toggle as web - see JobCardDetailPage.tsx's EstimatesCard
+ * doc comment for the full feature. "Done" (blue button) locks the estimate - PartSuggestionSection/
+ * LabourSuggestionSection's add-new-suggestion forms hide (their already-added lists stay visible)
+ * and an email input + Send button appear right here to mail the estimate as a PDF attachment
+ * (POST /api/jobcards/{id}/estimates/email). "Edit" flips back. Plain client-side UI state, not
+ * persisted - resets to unlocked on a fresh screen load, same as web. */
+function EstimatesCard({
+  jc, estimatesLocked, setEstimatesLocked,
+}: {
+  jc: JobCardDetail
+  estimatesLocked: boolean
+  setEstimatesLocked: (v: boolean) => void
+}) {
+  const [email, setEmail] = useState('')
+  const [sending, setSending] = useState(false)
+  const [emailMsg, setEmailMsg] = useState<string | null>(null)
+
+  const sendEmail = async () => {
+    if (!email.trim()) { setEmailMsg('Enter an email address first.'); return }
+    setSending(true)
+    setEmailMsg(null)
+    try {
+      const { data } = await apiClient.post<{ message: string }>(`/api/jobcards/${jc.id}/estimates/email`, { email: email.trim() })
+      setEmailMsg(data.message)
+    } catch (err: unknown) {
+      const data = (err as { response?: { data?: { message?: string } } })?.response?.data
+      setEmailMsg(data?.message ?? 'Could not send the email.')
+    } finally {
+      setSending(false)
+    }
+  }
+
   const money = (n: number) => `₹${n.toFixed(2)}`
   const partRows = jc.partSuggestions.map((p, i) => {
     const mrp = p.mrp ?? 0
@@ -737,6 +813,33 @@ function EstimatesCard({ jc }: { jc: JobCardDetail }) {
         <Text style={{ fontSize: 16, fontWeight: '700' }}>Grand Total</Text>
         <Text style={{ fontSize: 18, fontWeight: '700' }}>{money(grandTotal)}</Text>
       </View>
+      <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 10 }}>
+        {estimatesLocked ? (
+          <TouchableOpacity style={styles.btn} onPress={() => { setEstimatesLocked(false); setEmailMsg(null) }}>
+            <Text style={styles.btnText}>Edit</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity style={styles.btnPrimarySm} onPress={() => setEstimatesLocked(true)}>
+            <Text style={styles.btnPrimaryText}>Done</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+      {estimatesLocked && (
+        <View style={{ marginTop: 10, gap: 8 }}>
+          <TextInput
+            style={styles.input}
+            value={email}
+            onChangeText={setEmail}
+            placeholder="Customer email address…"
+            keyboardType="email-address"
+            autoCapitalize="none"
+          />
+          <TouchableOpacity style={[styles.btnPrimarySm, sending && styles.btnDisabled]} disabled={sending} onPress={sendEmail}>
+            <Text style={styles.btnPrimaryText}>{sending ? 'Sending…' : 'Send Estimate'}</Text>
+          </TouchableOpacity>
+          {emailMsg && <Text style={styles.muted}>{emailMsg}</Text>}
+        </View>
+      )}
     </View>
   )
 }
@@ -970,6 +1073,9 @@ const styles = StyleSheet.create({
   btnPrimarySm: { backgroundColor: '#2563eb', borderRadius: 8, paddingHorizontal: 14, paddingVertical: 10, alignItems: 'center', alignSelf: 'flex-start' },
   btnPrimaryText: { color: '#fff', fontWeight: '700' },
   btnDisabled: { opacity: 0.5 },
+  // Stop Timer (WorklogCard) / Edit (EstimatesCard, matching web's red Stop / plain Edit look).
+  dangerBtnSm: { backgroundColor: '#dc2626', borderRadius: 8, paddingHorizontal: 14, paddingVertical: 10, alignItems: 'center' },
+  dangerBtnText: { color: '#fff', fontWeight: '700' },
   smallBtn: { backgroundColor: '#f4f6f9', borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 6, paddingHorizontal: 8, justifyContent: 'center' },
   smallBtnText: { fontSize: 12, fontWeight: '600', color: '#374151' },
   // Amber "done/confirmed" chip treatment (Hub Pulse reskin) - this data is confirmed

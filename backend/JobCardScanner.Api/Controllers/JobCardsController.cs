@@ -25,12 +25,15 @@ public class JobCardsController : ControllerBase
     private readonly IWebHostEnvironment _env;
     private readonly IBaplDmsService _baplDms;
     private readonly IInvoicePdfService _invoicePdf;
+    private readonly IEstimatePdfService _estimatePdf;
+    private readonly IEmailClient _email;
     private readonly ILogger<JobCardsController> _logger;
 
     public JobCardsController(
         JobCardScannerDbContext db, ICurrentUserService currentUser, IJobCardNumberingService numbering,
         IErpClient erp, INotificationClient notifications, IOtpService otp, IAuditLogService audit,
-        IWebHostEnvironment env, IBaplDmsService baplDms, IInvoicePdfService invoicePdf, ILogger<JobCardsController> logger)
+        IWebHostEnvironment env, IBaplDmsService baplDms, IInvoicePdfService invoicePdf,
+        IEstimatePdfService estimatePdf, IEmailClient email, ILogger<JobCardsController> logger)
     {
         _db = db;
         _currentUser = currentUser;
@@ -42,6 +45,8 @@ public class JobCardsController : ControllerBase
         _env = env;
         _baplDms = baplDms;
         _invoicePdf = invoicePdf;
+        _estimatePdf = estimatePdf;
+        _email = email;
         _logger = logger;
     }
 
@@ -206,6 +211,59 @@ public class JobCardsController : ControllerBase
         return File(bytes, "application/pdf", $"invoice-{fileNamePart}.pdf");
     }
 
+    /// <summary>
+    /// POST /api/jobcards/{id}/estimates/email - Estimates Amount card's "Done" flow: builds the
+    /// same Estimates Amount PDF as the "Estimate" browser-print option
+    /// (IEstimatePdfService.BuildEstimatePdfAsync - Part Details/Labour Details/Grand Total, same
+    /// numbers shown on screen) and emails it to whatever address the user typed into the textbox
+    /// that appears once "Done" is clicked, via Microsoft Graph (IEmailClient - see
+    /// GraphEmailClient's doc comment for the AzureAdGraph:SenderMailbox/Mail.Send setup this
+    /// needs). Returns 400 for a missing/malformed address, 404 if the job card doesn't exist, and
+    /// 502 if BuildEstimatePdfAsync or the Graph send itself fails - matches this controller's
+    /// existing InvoicePdf/BaplDms error-response convention.
+    /// </summary>
+    [HttpPost("{id:guid}/estimates/email")]
+    public async Task<IActionResult> EmailEstimate(Guid id, EmailEstimateRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Email) || !req.Email.Contains('@'))
+            return BadRequest(new { message = "Enter a valid email address." });
+
+        var jc = await _db.JobCards.AsNoTracking().Where(j => j.Id == id)
+            .Select(j => new { j.JobCardNumber, CustomerName = j.Customer != null ? j.Customer.Name : null })
+            .FirstOrDefaultAsync();
+        if (jc is null) return NotFound();
+
+        byte[]? pdf;
+        try
+        {
+            pdf = await _estimatePdf.BuildEstimatePdfAsync(id, HttpContext.RequestAborted);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not build the Estimates Amount PDF for job card {JobCardId}", id);
+            return StatusCode(502, new { message = "Could not build the estimate PDF." });
+        }
+        if (pdf is null) return NotFound();
+
+        var subject = $"Estimate for Job Card {jc.JobCardNumber}";
+        var htmlBody =
+            $"<p>Dear {jc.CustomerName ?? "Customer"},</p>" +
+            $"<p>Please find attached the estimate for your job card <strong>{jc.JobCardNumber}</strong>.</p>" +
+            "<p>Thank you,<br/>JobCardScanner</p>";
+        var attachment = new EmailAttachment($"estimate-{jc.JobCardNumber}.pdf", "application/pdf", pdf);
+
+        // 2026-09-07: IEmailClient.SendAsync now returns the real failure reason (EmailSendResult.
+        // Error) instead of a bare bool, so this message no longer just points at "check your
+        // config somewhere" - it says exactly what Graph (or the token endpoint) rejected, e.g.
+        // "SenderMailbox isn't a licensed Exchange Online mailbox" (404) vs. "Mail.Send not
+        // consented" (403) vs. a bad ClientSecret at the token step.
+        var emailResult = await _email.SendAsync(req.Email, subject, htmlBody, attachment, HttpContext.RequestAborted);
+        if (!emailResult.Success)
+            return StatusCode(502, new { message = $"Could not send the email: {emailResult.Error ?? "unknown error"}" });
+
+        return Ok(new { message = $"Estimate emailed to {req.Email}." });
+    }
+
     // ---------------- Job Card Opening Wizard: finalize ----------------
     [HttpPost]
     [Authorize(Policy = Policies.ServiceAdvisorUp)]
@@ -306,7 +364,9 @@ public class JobCardsController : ControllerBase
                 Complaints: req.Complaints.Select(c => c.Description).ToList(),
                 CreatedBy: $"JobCardScanner:{_currentUser.UserId}",
                 JobSourceId: req.BaplJobSourceId,
-                Priority: req.Priority.ToString()),
+                Priority: req.Priority.ToString(),
+                CouponNo: req.BaplCouponNo,
+                JobCategory: req.BaplJobCategory),
                 HttpContext.RequestAborted);
         }
         catch (InvalidOperationException ex)
@@ -389,13 +449,52 @@ public class JobCardsController : ControllerBase
         var jc = await _db.JobCards.FirstOrDefaultAsync(j => j.Id == id);
         if (jc is null) return NotFound();
 
+        // AssignedTechnicianId is a JobCardScanner User FK (used by Worklogs) - a different concept
+        // from AssignedTechnicianName below, and stays local; BAPL DMS has no equivalent.
         if (req.AssignedTechnicianId.HasValue) jc.AssignedTechnicianId = req.AssignedTechnicianId;
-        // Free-text technician name (see JobCard.AssignedTechnicianName's doc comment) - the Job
-        // Card Detail page's "Assign Technician" field types a name directly rather than picking
-        // from a User dropdown, since there's no confirmed technician catalog to populate one from.
-        if (req.AssignedTechnicianName is not null) jc.AssignedTechnicianName = string.IsNullOrWhiteSpace(req.AssignedTechnicianName) ? null : req.AssignedTechnicianName.Trim();
-        if (req.Priority.HasValue) jc.Priority = req.Priority.Value;
-        if (req.ExpectedDeliveryAt.HasValue) jc.ExpectedDeliveryAt = req.ExpectedDeliveryAt;
+
+        // 2026-09-05: AssignedTechnicianName/Priority/ExpectedDeliveryAt are no longer
+        // JobCardScanner-local-only fields - BAPL DMS's own JobCardHeader already has
+        // Technician/Priority/EstdelDate+EstdelTime columns for these, so per explicit decision they
+        // now write straight there (BaplDmsService.UpdateJobCardAsync) instead of only living in
+        // JobCardScannerDb. Every job card is guaranteed to have a BaplJobCardHeaderId (Create() no
+        // longer allows one to exist without it - see Create()'s own doc comment), so this is never
+        // expected to hit the "no DMS link" branch below for a row created after that change.
+        // A DMS failure fails this whole request - no silently-local-only value DMS never sees.
+        var technicianNameProvided = req.AssignedTechnicianName is not null;
+        var priorityProvided = req.Priority.HasValue;
+        var etaProvided = req.ExpectedDeliveryAt.HasValue;
+        if (technicianNameProvided || priorityProvided || etaProvided)
+        {
+            if (!jc.BaplJobCardHeaderId.HasValue)
+                return StatusCode(502, new { message = "This job card has no BAPL DMS link - technician/priority/expected delivery can't be updated." });
+
+            // Free-text technician name (see JobCard.AssignedTechnicianName's doc comment) - the Job
+            // Card Detail page's "Assign Technician" field types a name directly rather than picking
+            // from a User dropdown, since there's no confirmed technician catalog to populate one
+            // from. An empty string clears it, same as before.
+            var trimmedTechnicianName = string.IsNullOrWhiteSpace(req.AssignedTechnicianName) ? "" : req.AssignedTechnicianName!.Trim();
+            try
+            {
+                await _baplDms.UpdateJobCardAsync(jc.BaplJobCardHeaderId.Value, new BaplDmsUpdateJobCardRequest(
+                    Technician: technicianNameProvided ? trimmedTechnicianName : null,
+                    ExpectedDeliveryAt: etaProvided ? req.ExpectedDeliveryAt : null,
+                    Priority: priorityProvided ? req.Priority!.Value.ToString() : null),
+                    HttpContext.RequestAborted);
+            }
+            catch (InvalidOperationException ex)
+            {
+                _logger.LogWarning(ex, "Could not update job card {JobCardId} in BAPL DMS", jc.Id);
+                return StatusCode(502, new { message = $"Could not update this job card in BAPL DMS: {ex.Message}" });
+            }
+
+            // Mirror the same values into the local row too, purely as a fast-read cache for
+            // List()/Get() (so every list/detail render doesn't need a live DMS round-trip) - DMS
+            // above is what's actually authoritative; this is never the only place a value is saved.
+            if (technicianNameProvided) jc.AssignedTechnicianName = string.IsNullOrWhiteSpace(trimmedTechnicianName) ? null : trimmedTechnicianName;
+            if (priorityProvided) jc.Priority = req.Priority!.Value;
+            if (etaProvided) jc.ExpectedDeliveryAt = req.ExpectedDeliveryAt;
+        }
         jc.UpdatedAt = DateTime.UtcNow;
 
         await _db.SaveChangesAsync();

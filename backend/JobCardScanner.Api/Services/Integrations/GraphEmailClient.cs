@@ -1,17 +1,49 @@
-using JobCardScanner.Api.Data;
-using JobCardScanner.Api.Models;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using JobCardScanner.Api.Data;
+using JobCardScanner.Api.Models;
 
 namespace JobCardScanner.Api.Services.Integrations;
 
+/// <summary>One file to attach to an outgoing email - see IEmailClient.SendAsync's optional
+/// attachment parameter. Matches the shape Microsoft Graph's sendMail expects
+/// (fileAttachment: name/contentType/contentBytes), kept provider-agnostic here so callers don't
+/// need to know that.</summary>
+public record EmailAttachment(string FileName, string ContentType, byte[] Bytes);
+
+/// <summary>Wire shape for one entry in Graph sendMail's `message.attachments` array
+/// (https://learn.microsoft.com/graph/api/resources/fileattachment) - a plain record (not an
+/// anonymous object like the rest of GraphEmailClient's payload) purely because "@odata.type"
+/// isn't expressible as a C# identifier without [JsonPropertyName].</summary>
+internal record GraphFileAttachment(
+    [property: JsonPropertyName("@odata.type")] string OdataType,
+    // Lowercase-first C# property names (not the usual PascalCase) so the default
+    // JsonSerializerOptions (no naming policy - property names serialize exactly as declared)
+    // emits "name"/"contentType"/"contentBytes" the way Graph expects, matching how the rest of
+    // this payload is already written as camelCase anonymous-object members for the same reason.
+    string name,
+    string contentType,
+    string contentBytes);
+
+/// <summary>Result of one SendAsync call - <c>Success</c> mirrors the old bool-only return, and
+/// <c>Error</c> (2026-09-07) carries the actual failure reason (the Graph HTTP error body, the
+/// token-endpoint error, or "not configured yet") instead of forcing every caller to go dig it out
+/// of IntegrationLogEntries. OtpService's OTP-email path only reads Success (email is best-effort
+/// there, SMS is the channel that matters); JobCardsController.EmailEstimate surfaces Error
+/// straight back to the caller, since a failed "email the estimate" IS the whole request.</summary>
+public record EmailSendResult(bool Success, string? Error);
+
 public interface IEmailClient
 {
-    /// <summary>Best-effort: returns false (never throws) if Graph isn't configured yet or the
-    /// send fails, so a caller can fire this alongside a more critical channel (SMS) without
-    /// risking that channel on an email misconfiguration.</summary>
-    Task<bool> SendAsync(string toEmail, string subject, string htmlBody, CancellationToken ct = default);
+    /// <summary>Best-effort: returns Success=false (never throws) if Graph isn't configured yet or
+    /// the send fails, so a caller can fire this alongside a more critical channel (SMS) without
+    /// risking that channel on an email misconfiguration - see EmailSendResult's doc comment for
+    /// why Error exists alongside Success. `attachment` is optional - added for the Estimates
+    /// Amount "email with attached PDF" feature (JobCardsController.EmailEstimate); the original
+    /// OTP-email caller (OtpService) passes none and is unaffected.</summary>
+    Task<EmailSendResult> SendAsync(string toEmail, string subject, string htmlBody, EmailAttachment? attachment = null, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -49,7 +81,7 @@ public class GraphEmailClient : IntegrationClientBase, IEmailClient
         _logger = logger;
     }
 
-    public async Task<bool> SendAsync(string toEmail, string subject, string htmlBody, CancellationToken ct = default)
+    public async Task<EmailSendResult> SendAsync(string toEmail, string subject, string htmlBody, EmailAttachment? attachment = null, CancellationToken ct = default)
     {
         var section = _config.GetSection("AzureAdGraph");
         var tenantId = section["TenantId"];
@@ -59,15 +91,15 @@ public class GraphEmailClient : IntegrationClientBase, IEmailClient
         if (string.IsNullOrWhiteSpace(tenantId) || string.IsNullOrWhiteSpace(clientId) ||
             string.IsNullOrWhiteSpace(clientSecret) || string.IsNullOrWhiteSpace(sender))
         {
-            _logger.LogWarning(
-                "Email skipped for {To}: AzureAdGraph:SenderMailbox isn't configured yet in appsettings.json " +
-                "(TenantId/ClientId/ClientSecret are shared with directory sync - SenderMailbox is new).", toEmail);
-            return false;
+            const string notConfiguredError = "AzureAdGraph:SenderMailbox isn't configured yet in appsettings.json " +
+                "(TenantId/ClientId/ClientSecret are shared with directory sync - SenderMailbox is new).";
+            _logger.LogWarning("Email skipped for {To}: {Error}", toEmail, notConfiguredError);
+            return new EmailSendResult(false, notConfiguredError);
         }
 
         try
         {
-            return await ExecuteAsync(IntegrationSystem.Email, "POST /users/{sender}/sendMail", new { to = toEmail, subject }, async () =>
+            await ExecuteAsync(IntegrationSystem.Email, "POST /users/{sender}/sendMail", new { to = toEmail, subject, hasAttachment = attachment != null }, async () =>
             {
                 var accessToken = await GetAppOnlyAccessTokenAsync(tenantId, clientId, clientSecret, ct);
 
@@ -78,6 +110,21 @@ public class GraphEmailClient : IntegrationClientBase, IEmailClient
                         subject,
                         body = new { contentType = "HTML", content = htmlBody },
                         toRecipients = new[] { new { emailAddress = new { address = toEmail } } },
+                        // Graph's fileAttachment shape - contentBytes is base64, exactly what
+                        // Convert.ToBase64String gives us from the PDF's raw bytes. Omitted
+                        // entirely (not an empty array) when there's nothing to attach, matching
+                        // every other optional Graph field in this payload. "@odata.type" isn't a
+                        // legal C# identifier, hence the dedicated GraphFileAttachment record with
+                        // a [JsonPropertyName] below instead of an anonymous object like the rest
+                        // of this payload.
+                        attachments = attachment == null ? null : new[]
+                        {
+                            new GraphFileAttachment(
+                                "#microsoft.graph.fileAttachment",
+                                attachment.FileName,
+                                attachment.ContentType,
+                                Convert.ToBase64String(attachment.Bytes)),
+                        },
                     },
                     saveToSentItems = false,
                 };
@@ -96,6 +143,7 @@ public class GraphEmailClient : IntegrationClientBase, IEmailClient
                 }
                 return true;
             });
+            return new EmailSendResult(true, null);
         }
         catch (Exception ex)
         {
@@ -103,9 +151,15 @@ public class GraphEmailClient : IntegrationClientBase, IEmailClient
             // yet, the sender mailbox not existing, or a transient Graph error must never take
             // down the OTP flow itself. ExecuteAsync already retried (see IntegrationClientBase)
             // and logged the failure to IntegrationLogEntries before rethrowing; this is just
-            // where that final "give up" gets swallowed instead of bubbling to the caller.
+            // where that final "give up" gets swallowed instead of bubbling to the caller. ex.Message
+            // (2026-09-07: now returned, not just logged) is the real diagnostic - for a Graph HTTP
+            // failure this is the exact string built above ("Graph sendMail 404/403/... (sender
+            // ...): <response body>"), which is what actually tells apart "Mail.Send not consented",
+            // "SenderMailbox isn't a real/licensed Exchange Online mailbox" (404 ResourceNotFound /
+            // 403 ErrorAccessDenied - see this class's header doc comment), a bad ClientSecret, or a
+            // genuine transient Graph outage.
             _logger.LogWarning(ex, "Email send failed for {To} (non-fatal - other channels unaffected).", toEmail);
-            return false;
+            return new EmailSendResult(false, ex.Message);
         }
     }
 

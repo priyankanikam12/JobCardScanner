@@ -22,7 +22,7 @@ const ISSUE_TYPES = ['Paid', 'U/W'] as const
  * `labourCode` - selecting by code alone would silently resolve to the wrong row's rate/HSN/GST
  * (see the web fix this mirrors).
  */
-export function LabourSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; onChanged: () => void }) {
+export function LabourSuggestionSection({ jc, onChanged, estimatesLocked, totalLockReached }: { jc: JobCardDetail; onChanged: () => void; estimatesLocked: boolean; totalLockReached: boolean }) {
   const [rows, setRows] = useState<BaplDmsLabourRow[]>([])
   const [q, setQ] = useState('')
   // 2026-09-05 fix ("without click search box that list open"): this dropdown used to render
@@ -71,6 +71,12 @@ export function LabourSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; 
 
   const addSuggestion = async () => {
     if (!selected) return
+    // 2026-09-07: gated on an open Technician Work Log timer - see WorklogCard/hasOpenWorklog in
+    // JobCardDetailScreen.tsx's doc comment.
+    if (!jc.worklogs.some((w) => !w.endedAt)) {
+      Alert.alert('Start the Technician Work Log timer before adding a labour suggestion.')
+      return
+    }
     setSaving(true)
     try {
       await apiClient.post(`/api/jobcards/${jc.id}/labour-suggestions`, {
@@ -124,6 +130,14 @@ export function LabourSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; 
         </View>
       ))}
 
+      {estimatesLocked || totalLockReached ? (
+        <Text style={styles.muted}>
+          {estimatesLocked
+            ? 'Estimate is marked Done - tap Edit on the Estimates Amount card below to add more labour.'
+            : 'Grand Total has reached ₹2000 - no more labour can be suggested on this estimate.'}
+        </Text>
+      ) : (
+      <>
       <Text style={styles.subheading}>Suggest labour (from BAPL DMS LabourMaster)</Text>
       {/* No separate "Search" label - matches web's LabourSuggestionCard: this field IS the search
          box, not a distinct extra step. */}
@@ -198,6 +212,8 @@ export function LabourSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; 
       >
         <Text style={styles.addBtnText}>{saving ? 'Adding…' : 'Add Suggestion'}</Text>
       </TouchableOpacity>
+      </>
+      )}
     </View>
   )
 }

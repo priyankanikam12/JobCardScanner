@@ -168,12 +168,27 @@ public record BaplDmsCreateJobCardRequest(
     /// column did NOT exist before - if that migration hasn't been run against BAPLDMSvad yet, the
     /// insert below will fail with "Invalid column name 'Priority'" and this whole write-back will
     /// report as Failed (non-blocking - the local job card still saves either way) until it's run.</summary>
-    string? Priority = null);
+    string? Priority = null,
+    /// <summary>2026-09-07: optional overrides for the two values CreateJobCardAsync would
+    /// otherwise auto-derive (see that method's doc comment) - CouponNo defaults to the chassis
+    /// number's last 13 characters, JobCategory defaults to "B2C". Both null by default so every
+    /// existing caller keeps the previous auto-derived behavior unchanged; the Job Card Wizard's
+    /// Vehicle step is the only caller that supplies them today.</summary>
+    string? CouponNo = null,
+    string? JobCategory = null);
 
 /// <summary>Result of a successful BAPL DMS job card insert - JobCardHeaderId lets JobCardScanner's
 /// own JobCard row remember which BAPL DMS record it created (JobCard.BaplJobCardHeaderId), so the
 /// Job Card Detail page can link straight to it the same way a BaplDms-sourced /jobcards row does.</summary>
 public record BaplDmsCreateJobCardResult(int JobCardHeaderId, int JobNo);
+
+/// <summary>2026-09-05: the three Job Card Detail "Update" fields that have a real column on BAPL
+/// DMS's own JobCardHeader (Technician/EstdelDate+EstdelTime/Priority) - per explicit decision,
+/// these now write straight into DMS instead of being kept as JobCardScanner-local-only fields (see
+/// JobCardsController.Update). A null field here is left untouched on the DMS row, matching the
+/// old local Update()'s "only touch what's provided" semantics - see UpdateJobCardAsync's
+/// COALESCE-based SQL.</summary>
+public record BaplDmsUpdateJobCardRequest(string? Technician, DateTime? ExpectedDeliveryAt, string? Priority);
 
 /// <summary>One past visit for a chassis, straight from BAPL DMS's own job card history - the
 /// "Service History" section on JobCardScanner's own Job Card Detail page (see
@@ -557,16 +572,26 @@ public interface IBaplDmsService
     /// <summary>
     /// Writes one new job card into BAPL DMS's own database (JobCardHeader/JobCardCustomer/
     /// JobCardBatteryDetail/JobCardComplaint), mirroring BAPL DMS's own JobCardRepo.
-    /// InsertJobCardinfoDetails in a single transaction. This is a BEST-EFFORT sync called only
-    /// AFTER JobCardScanner's own local job card is already saved - a failure here throws
-    /// <see cref="InvalidOperationException"/>, which the caller (JobCardsController.Create) catches
-    /// and surfaces as a warning on an otherwise-successful response, never as a reason to fail or
-    /// roll back the local job card. See the doc comment on CreateJobCardAsync's implementation for
-    /// exactly which columns/defaults this fills in and which ones are still guesses (JobNo
-    /// generation, CreatedBy's format, Jobprefix) since they could only be inferred from your pasted
-    /// repository code, not independently confirmed against a live insert.
+    /// InsertJobCardinfoDetails in a single transaction.
+    ///
+    /// 2026-09-05: this is no longer a best-effort step run after the fact - BAPL DMS is now the
+    /// sole source of truth for whether a job card exists at all. JobCardsController.Create calls
+    /// this FIRST; a failure here (still surfaced as <see cref="InvalidOperationException"/>) now
+    /// blocks the whole request - nothing is saved in JobCardScannerDb, no ERP push, no SMS - rather
+    /// than being caught and downgraded to a non-blocking warning. See the doc comment on
+    /// CreateJobCardAsync's implementation for exactly which columns/defaults this fills in and
+    /// which ones are still guesses (JobNo generation, CreatedBy's format, Jobprefix) since they
+    /// could only be inferred from your pasted repository code, not independently confirmed against
+    /// a live insert.
     /// </summary>
     Task<BaplDmsCreateJobCardResult> CreateJobCardAsync(BaplDmsCreateJobCardRequest req, CancellationToken ct = default);
+
+    /// <summary>Updates Technician/EstdelDate+EstdelTime/Priority on an existing BAPL DMS
+    /// JobCardHeader row - see <see cref="BaplDmsUpdateJobCardRequest"/>'s doc comment for why only
+    /// these three. Throws <see cref="InvalidOperationException"/> on failure (including "no such
+    /// JobCardHeaderId") - the caller (JobCardsController.Update) treats that as a hard failure of
+    /// the whole update, since DMS is now the only place these fields live.</summary>
+    Task UpdateJobCardAsync(int jobCardHeaderId, BaplDmsUpdateJobCardRequest req, CancellationToken ct = default);
 
     /// <summary>Repair bill(s) BAPL DMS has for this job card (RepairBillHeader.JobId), for the
     /// "Download Invoice from DMS" panel on the Job Card Detail page. Empty list is normal (no bill
@@ -975,12 +1000,22 @@ public class BaplDmsService : IBaplDmsService
         // doc comment on the caller-side default this ceiling now leaves room under.
         take = take is > 0 and <= 120 ? take : 60;
 
+        // 2026-09-05: tried excluding unsold stock entirely (SaleDate IS NOT NULL) - a job card is
+        // usually for an already-sold vehicle, and a batch of unsold inventory sharing a chassis
+        // prefix (e.g. 80+ "P6DSVFMSPBH01xxxx" rows with no SaleDate) was drowning out the handful
+        // of real, usable matches for a short query like "p6". 2026-09-07 REVERTED that hard
+        // exclusion: reported regression - dealers legitimately search for chassis that aren't sold
+        // yet (pre-delivery inspection / warranty work / a sale recorded late in DMS), and those
+        // rows had simply stopped appearing at all, even scoped to the dealer's own login where the
+        // "80 near-identical rows" noise problem barely applies. Kept the spirit of the fix instead
+        // of dropping it outright: sold vehicles still sort first (most-recently-sold), unsold ones
+        // now follow rather than being hidden.
         const string sql = @"
             SELECT TOP (@take) ch.ChassisNo, ch.RegNo, ch.ItemName, ch.DealerId, ch.SaleDate
             FROM [dbo].[ChassisDetails] ch
             WHERE (ch.ChassisNo LIKE @q OR ch.RegNo LIKE @q)
               AND (@dealerCode IS NULL OR ch.DealerId = @dealerCode)
-            ORDER BY ch.ChassisNo";
+            ORDER BY CASE WHEN ch.SaleDate IS NOT NULL THEN 0 ELSE 1 END, ch.SaleDate DESC, ch.ChassisNo";
 
         var results = new List<BaplDmsVehicleSuggestion>();
         try
@@ -1468,8 +1503,11 @@ public class BaplDmsService : IBaplDmsService
     ///     rejects that, this insert will throw and the exact SQL error will say so.
     /// Columns your ViewModel carries that the Job Card Wizard has no equivalent input for yet
     /// (AirpressureRearTyre/AirpressurefrontTyre, Observation, SupervisorComment, IsPdiSuccess,
-    /// Couponno, InvoiceNo, EstNo/Jobestmate) are left at their column defaults/NULL rather than
-    /// guessed.
+    /// InvoiceNo, EstNo/Jobestmate) are left at their column defaults/NULL rather than guessed.
+    /// Couponno and InwardType ("Job Category") are the two exceptions - both are derived the same
+    /// way DMS's own Angular wizard derives them (chassis-number suffix, and a B2C default) rather
+    /// than left blank; see the doc comment right above this method's Couponno/inwardType locals for
+    /// the exact rule and why.
     /// </summary>
     public async Task<BaplDmsCreateJobCardResult> CreateJobCardAsync(BaplDmsCreateJobCardRequest req, CancellationToken ct = default)
     {
@@ -1491,15 +1529,38 @@ public class BaplDmsService : IBaplDmsService
             var estDelDate = req.ExpectedDeliveryAt.HasValue ? DateOnly.FromDateTime(req.ExpectedDeliveryAt.Value) : jobInDate;
             var estDelTime = req.ExpectedDeliveryAt?.TimeOfDay ?? now.TimeOfDay;
 
+            // 2026-09-07: Couponno/InwardType (BAPL DMS's own "Job Category") now mirror the exact
+            // logic the real BAPL DMS Angular wizard uses (job-card-add-form.ts), rather than being
+            // left NULL/hardcoded - the Job Card Wizard has no UI input for either, but both are
+            // deterministic from data this request already carries:
+            //   - Couponno: DMS's own onChassisChange() sets `this.couponNo =
+            //     this.selectedChassis.slice(-13)` - i.e. the chassis number's last 13 characters (or
+            //     the whole chassis number if it's 13 characters or shorter). Reproduced exactly below.
+            //   - InwardType ("Job Category" in the DMS UI - a B2C/B2B radio group, not a duplicate of
+            //     ServiceType/Warranty): DMS's form defaults this to "B2C" (the b2c radio has `checked`
+            //     and nothing in the pasted component ever un-checks it programmatically) and the Job
+            //     Card Wizard has no B2C/B2B picker yet, so this always sends "B2C" - the same default
+            //     a DMS operator would get by not touching that toggle. This replaces the previous
+            //     placeholder value ("Service", which isn't even part of DMS's own B2C/B2B vocabulary).
+            // 2026-09-07: the Job Card Wizard's Vehicle step now HAS both a Coupon No. field and a
+            // B2C/B2B Job Category toggle (matching DMS's own form) - req.CouponNo/req.JobCategory
+            // carry whatever the wizard sent, and win over the auto-derived defaults below when
+            // present (they're still the fallback for any older/other caller of CreateJobCardAsync
+            // that doesn't supply them).
+            var couponNo = !string.IsNullOrWhiteSpace(req.CouponNo)
+                ? req.CouponNo
+                : (req.ChassisNo.Length > 13 ? req.ChassisNo[^13..] : req.ChassisNo);
+            var inwardType = !string.IsNullOrWhiteSpace(req.JobCategory) ? req.JobCategory : "B2C";
+
             int headerId;
             const string insertHeaderSql = @"
                 INSERT INTO [dbo].[JobCardHeader]
                     (Jobtype, DealerCode, Chassisno, Vehiclekms, Servicehead, Servicetype, Serviceloc,
-                     InwardType, Jobprefix, JobinDate, JobinTime, JobNo, ManualjobNo, EstdelDate, EstdelTime,
+                     InwardType, Couponno, Jobprefix, JobinDate, JobinTime, JobNo, ManualjobNo, EstdelDate, EstdelTime,
                      JobSource, Supervisor, Technician, Priority, IsDelete, CreatedBy, CreatedDate)
                 VALUES
                     (@jobType, @dealerCode, @chassisNo, @vehicleKms, @serviceHead, @serviceType, @serviceLoc,
-                     @inwardType, @jobPrefix, @jobinDate, @jobinTime, @jobNo, @manualJobNo, @estDelDate, @estDelTime,
+                     @inwardType, @couponNo, @jobPrefix, @jobinDate, @jobinTime, @jobNo, @manualJobNo, @estDelDate, @estDelTime,
                      @jobSource, @supervisor, @technician, @priority, 0, @createdBy, @createdDate);
                 SELECT CAST(SCOPE_IDENTITY() AS int);";
             await using (var cmd = new SqlCommand(insertHeaderSql, conn, tx))
@@ -1511,7 +1572,8 @@ public class BaplDmsService : IBaplDmsService
                 cmd.Parameters.AddWithValue("@serviceHead", req.ServiceHeadId);
                 cmd.Parameters.AddWithValue("@serviceType", req.ServiceTypeId);
                 cmd.Parameters.AddWithValue("@serviceLoc", (object?)req.ServiceLocationCode ?? DBNull.Value);
-                cmd.Parameters.AddWithValue("@inwardType", "Service");
+                cmd.Parameters.AddWithValue("@couponNo", couponNo);
+                cmd.Parameters.AddWithValue("@inwardType", inwardType);
                 cmd.Parameters.AddWithValue("@jobPrefix", "");
                 cmd.Parameters.AddWithValue("@jobinDate", jobInDate.ToDateTime(TimeOnly.MinValue));
                 cmd.Parameters.AddWithValue("@jobinTime", now.TimeOfDay);
@@ -1594,6 +1656,43 @@ public class BaplDmsService : IBaplDmsService
             try { await tx.RollbackAsync(ct); } catch { /* connection may already be unusable */ }
             _logger.LogWarning(ex, "Could not create BAPL DMS job card for chassis {ChassisNo}/dealer {DealerCode}", req.ChassisNo, req.DealerCode);
             throw new InvalidOperationException($"Could not create the job card in BAPL DMS: {ex.Message}", ex);
+        }
+    }
+
+    public async Task UpdateJobCardAsync(int jobCardHeaderId, BaplDmsUpdateJobCardRequest req, CancellationToken ct = default)
+    {
+        // COALESCE(@param, column) pattern: a field the caller left null passes DBNull.Value here,
+        // which COALESCE resolves to the column's own current value - i.e. leaves it untouched -
+        // matching the old local Update()'s "only touch what's provided" semantics. A plain
+        // `SET Technician = @technician` would instead NULL out any field the caller didn't set.
+        const string sql = @"
+            UPDATE [dbo].[JobCardHeader]
+            SET Technician = COALESCE(@technician, Technician),
+                EstdelDate = COALESCE(@estDelDate, EstdelDate),
+                EstdelTime = COALESCE(@estDelTime, EstdelTime),
+                Priority = COALESCE(@priority, Priority)
+            WHERE Id = @headerId";
+        try
+        {
+            await using var conn = new SqlConnection(ConnStr);
+            await conn.OpenAsync(ct);
+            await using var cmd = new SqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("@headerId", jobCardHeaderId);
+            cmd.Parameters.AddWithValue("@technician", (object?)req.Technician ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@estDelDate", req.ExpectedDeliveryAt.HasValue
+                ? DateOnly.FromDateTime(req.ExpectedDeliveryAt.Value).ToDateTime(TimeOnly.MinValue) : (object)DBNull.Value);
+            cmd.Parameters.AddWithValue("@estDelTime", req.ExpectedDeliveryAt.HasValue
+                ? (object)req.ExpectedDeliveryAt.Value.TimeOfDay : DBNull.Value);
+            cmd.Parameters.AddWithValue("@priority", (object?)req.Priority ?? DBNull.Value);
+            var rows = await cmd.ExecuteNonQueryAsync(ct);
+            if (rows == 0)
+                throw new InvalidOperationException($"No BAPL DMS JobCardHeader row found with Id {jobCardHeaderId}.");
+        }
+        catch (InvalidOperationException) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not update BAPL DMS job card {JobCardHeaderId}", jobCardHeaderId);
+            throw new InvalidOperationException($"Could not update the job card in BAPL DMS: {ex.Message}", ex);
         }
     }
 
