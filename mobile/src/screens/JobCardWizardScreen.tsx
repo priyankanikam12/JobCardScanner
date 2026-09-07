@@ -468,6 +468,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
   const [createdJobCard, setCreatedJobCard] = useState<{ id: string; jobCardNumber: string } | null>(null)
   const [sharingPdf, setSharingPdf] = useState(false)
   const [downloadingPdf, setDownloadingPdf] = useState(false)
+  const [printingPdf, setPrintingPdf] = useState(false)
 
   const getPhotoLocation = async (): Promise<{ latitude: number; longitude: number; accuracy: number | null } | null> => {
     try {
@@ -676,6 +677,26 @@ export function JobCardWizardScreen({ navigation }: Props) {
       jobCardNumber: createdJobCard?.jobCardNumber,
     })
 
+  // 2026-09-05: replaced the separate Download PDF / Share PDF buttons below with a single
+  // "Print" button, matching web's single 🖨️ Print button on this step (JobCardWizardPage.tsx) -
+  // Print.printAsync opens Android's own native print dialog, which (like the browser print popup
+  // web uses) already offers "Save as PDF" as one of its printer choices, so this one dialog still
+  // covers both printing and saving without needing a second, separate action.
+  const printPdf = async () => {
+    setPrintingPdf(true)
+    try {
+      await Print.printAsync({ html: buildPrintHtml() })
+    } catch {
+      Alert.alert('Could not open the print dialog. Please try again.')
+    } finally {
+      setPrintingPdf(false)
+    }
+  }
+
+  // Kept for now (commented out of the UI below per request) rather than deleted, in case Share
+  // PDF's direct-to-share-sheet flow (as opposed to Print's "Save as PDF" printer option) is wanted
+  // back later.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const sharePdf = async () => {
     setSharingPdf(true)
     try {
@@ -1069,10 +1090,10 @@ export function JobCardWizardScreen({ navigation }: Props) {
               <Text style={styles.label}>Photos<Text style={styles.requiredStar}> *</Text></Text>
               <View style={{ flexDirection: 'row', gap: 10, marginBottom: 10 }}>
                 <TouchableOpacity style={styles.btn} disabled={capturingPhoto} onPress={takePhoto}>
-                  <Text style={styles.btnText}>{capturingPhoto ? 'Adding…' : '📷 Capture Photo'}</Text>
+                  <Text style={styles.btnText}>{capturingPhoto ? 'Adding…' : '📷 Capture'}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.btn} disabled={capturingPhoto} onPress={pickPhoto}>
-                  <Text style={styles.btnText}>🖼️ Choose Photo</Text>
+                  <Text style={styles.btnText}>🖼️ Choose Media</Text>
                 </TouchableOpacity>
               </View>
               {photoLocationNote && <Text style={styles.muted}>{photoLocationNote}</Text>}
@@ -1105,12 +1126,20 @@ export function JobCardWizardScreen({ navigation }: Props) {
             <View>
               {photoUploadWarning && <Text style={styles.muted}>{photoUploadWarning}</Text>}
               {baplSyncWarning && <Text style={styles.muted}>{baplSyncWarning}</Text>}
+              {/* Single "Print" button now, matching web's step - see printPdf above for why
+                 Print.printAsync alone (its own dialog's "Save as PDF" printer option) covers what
+                 the old separate Download PDF button did too.
+                 <View style={styles.btnRow}>
+                   <TouchableOpacity style={styles.btn} disabled={downloadingPdf} onPress={downloadPdf}>
+                     {downloadingPdf ? <ActivityIndicator color="#374151" /> : <Text style={styles.btnText}>⬇️ Download PDF</Text>}
+                   </TouchableOpacity>
+                   <TouchableOpacity style={styles.btn} disabled={sharingPdf} onPress={sharePdf}>
+                     {sharingPdf ? <ActivityIndicator color="#374151" /> : <Text style={styles.btnText}>🖨️ Share PDF</Text>}
+                   </TouchableOpacity>
+                 </View> */}
               <View style={styles.btnRow}>
-                <TouchableOpacity style={styles.btn} disabled={downloadingPdf} onPress={downloadPdf}>
-                  {downloadingPdf ? <ActivityIndicator color="#374151" /> : <Text style={styles.btnText}>⬇️ Download PDF</Text>}
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.btn} disabled={sharingPdf} onPress={sharePdf}>
-                  {sharingPdf ? <ActivityIndicator color="#374151" /> : <Text style={styles.btnText}>🖨️ Share PDF</Text>}
+                <TouchableOpacity style={styles.btn} disabled={printingPdf} onPress={printPdf}>
+                  {printingPdf ? <ActivityIndicator color="#374151" /> : <Text style={styles.btnText}>🖨️ Print</Text>}
                 </TouchableOpacity>
               </View>
               <View style={[styles.btnRow, { marginTop: 8 }]}>
@@ -1201,8 +1230,11 @@ const styles = StyleSheet.create({
   link: { color: '#2563eb', fontWeight: '600', marginBottom: 8 },
   bold: { fontWeight: '700' },
   reviewLine: { marginBottom: 4, fontSize: 13, color: '#101828' },
-  searchRow: { flexDirection: 'row', gap: 8, alignItems: 'flex-start', marginBottom: 8 },
-  btnRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
+  // 2026-09-05: flexWrap added to both so a longer button label (e.g. "Continue to Job Card
+  // JC/288/26-27/0006") or a narrower/smaller handset no longer forces buttons to squeeze onto one
+  // line - they drop to their own line instead of clipping or overlapping.
+  searchRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'flex-start', marginBottom: 8 },
+  btnRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 12 },
   btn: { borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 8, paddingHorizontal: 14, paddingVertical: 10, backgroundColor: '#fff' },
   btnText: { color: '#374151', fontWeight: '600' },
   btnPrimary: { backgroundColor: '#2563eb', borderRadius: 8, paddingHorizontal: 14, paddingVertical: 10, alignItems: 'center', justifyContent: 'center', flex: 1 },

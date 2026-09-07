@@ -59,6 +59,12 @@ public class JobCardsController : ControllerBase
         var query = _db.JobCards.AsNoTracking()
             .Include(j => j.Customer).Include(j => j.Vehicle).Include(j => j.CurrentStage)
             .Include(j => j.ServiceAdvisor).Include(j => j.AssignedTechnician).Include(j => j.Photos)
+            // 2026-09-05: BAPL DMS is now the sole source of truth - a job card created before this
+            // change that never got a BaplJobCardHeaderId (DMS sync failed, or wasn't attempted) is
+            // no longer shown or openable. Its row (and any photos/history on it) is NOT deleted,
+            // just hidden, in case this needs revisiting. Every row created after this change always
+            // has this set (Create() now requires DMS success before a row can exist at all).
+            .Where(j => j.BaplJobCardHeaderId != null)
             .AsQueryable();
 
         // Two bugs fixed here (found while chasing "dealer login sees every dealer's job cards"):
@@ -163,7 +169,9 @@ public class JobCardsController : ControllerBase
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id)
     {
-        var jc = await FullQuery().FirstOrDefaultAsync(j => j.Id == id);
+        // 2026-09-05: same DMS-only rule as List() above - a job card with no BaplJobCardHeaderId
+        // 404s now instead of opening.
+        var jc = await FullQuery().FirstOrDefaultAsync(j => j.Id == id && j.BaplJobCardHeaderId != null);
         return jc is null ? NotFound() : Ok(Detail(jc));
     }
 
@@ -219,6 +227,11 @@ public class JobCardsController : ControllerBase
         if (openJobCardForChassis is not null)
             return BadRequest(new { message = $"This chassis already has an open job card ({openJobCardForChassis}). It must be closed before a new job card can be created for it." });
 
+        // 2026-09-05: dealer's BAPL DMS code is now resolved once, up front, and reused both for the
+        // DMS open-job-card check below and for the mandatory DMS create further down - see this
+        // method's new doc comment below for why DMS creation moved here and became mandatory.
+        var dealerBaplCode = await _db.Dealers.AsNoTracking().Where(d => d.Id == req.DealerId).Select(d => d.BaplDmsDealerCode).FirstOrDefaultAsync();
+
         // Same check, but against BAPL DMS's own job cards - catches a job card opened directly in
         // BAPL DMS (outside JobCardScanner entirely), which the local-only check above can never
         // see. Best-effort: a BAPL DMS outage here should never block creating a job card locally,
@@ -230,7 +243,6 @@ public class JobCardsController : ControllerBase
         {
             try
             {
-                var dealerBaplCode = await _db.Dealers.AsNoTracking().Where(d => d.Id == req.DealerId).Select(d => d.BaplDmsDealerCode).FirstOrDefaultAsync();
                 var openInDms = await _baplDms.GetOpenJobCardForChassisAsync(vehicle.Vin, dealerBaplCode);
                 if (openInDms is not null)
                 {
@@ -244,13 +256,75 @@ public class JobCardsController : ControllerBase
             }
         }
 
+        // ---------------- BAPL DMS is now the sole source of truth: create there FIRST ----------------
+        // 2026-09-05: this used to be a best-effort step at the very end of Create() - the local job
+        // card was always saved regardless, and a DMS failure just surfaced as a non-blocking
+        // baplSyncWarning. Per explicit request, JobCardScanner must stop being able to create a job
+        // card BAPL DMS doesn't know about: nothing is saved anywhere (no local row, no vehicle
+        // odometer bump, no ERP push, no SMS) unless this DMS write-back succeeds first. The local
+        // JobCard row created below is now purely a same-transaction mirror/attachment point for
+        // DMS's own record (see Models/JobCard.cs's updated class doc comment) - it exists only to
+        // give JobCardScanner-only features (Photos, Worklogs, QC checklist, stage history, Part/
+        // Labour Suggestions) something to attach to, and its JobCardNumber is DMS's own
+        // JobPrefix+JobNo, not a JobCardScanner-generated one.
+        var customer = await _db.Customers.AsNoTracking().FirstOrDefaultAsync(c => c.Id == req.CustomerId);
+        if (string.IsNullOrWhiteSpace(dealerBaplCode))
+            return BadRequest(new { message = "This dealer isn't linked to BAPL DMS yet, so a job card can't be created for it. Link the dealer to BAPL DMS first (see the Job Card Wizard's dealer search)." });
+        if (!req.BaplJobTypeId.HasValue || !req.BaplServiceHeadId.HasValue || !req.BaplServiceTypeId.HasValue)
+            return BadRequest(new { message = "Job Type, Service Head and Service Type are required - BAPL DMS needs all three to create the job card there." });
+
+        BaplDmsCreateJobCardResult dmsResult;
+        try
+        {
+            dmsResult = await _baplDms.CreateJobCardAsync(new BaplDmsCreateJobCardRequest(
+                DealerCode: dealerBaplCode,
+                JobTypeId: req.BaplJobTypeId.Value,
+                ServiceHeadId: req.BaplServiceHeadId.Value,
+                ServiceHeadName: req.BaplServiceHeadName ?? "",
+                ServiceTypeId: req.BaplServiceTypeId.Value,
+                ServiceTypeName: req.BaplServiceTypeName ?? "",
+                ServiceLocationCode: req.BaplServiceLocationCode,
+                ChassisNo: vehicle.Vin ?? "",
+                RegisterNo: vehicle.RegNo,
+                ModelName: vehicle.Model,
+                VehicleKms: (int)req.OdometerAtCheckIn,
+                Supervisor: req.BaplSupervisorName,
+                Technician: req.BaplTechnicianName,
+                ManualJobNo: req.BaplManualJobNo,
+                CustomerName: customer?.Name,
+                CustomerMobile: customer?.Mobile,
+                CustomerLedgerId: req.BaplCustomerLedgerId,
+                MotorNo: vehicle.MotorNo,
+                BatteryNo: vehicle.BatteryNo,
+                ControllerNo: vehicle.ControllerNo,
+                ConverterNo: vehicle.ConverterNo,
+                ChargerNo: vehicle.ChargerNo,
+                SaleDate: null,
+                InsuranceExpDate: vehicle.InsuranceExpiry,
+                NextServiceDueDate: vehicle.NextServiceDueDate,
+                ExpectedDeliveryAt: req.ExpectedDeliveryAt,
+                Complaints: req.Complaints.Select(c => c.Description).ToList(),
+                CreatedBy: $"JobCardScanner:{_currentUser.UserId}",
+                JobSourceId: req.BaplJobSourceId,
+                Priority: req.Priority.ToString()),
+                HttpContext.RequestAborted);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Could not create this job card in BAPL DMS - nothing was saved");
+            return StatusCode(502, new { message = $"Could not create this job card in BAPL DMS: {ex.Message}" });
+        }
+
         var firstStage = await _db.WorkflowStages.AsNoTracking()
             .Where(s => (s.DealerId == null || s.DealerId == req.DealerId) && s.Active)
             .OrderBy(s => s.Seq).FirstOrDefaultAsync();
 
         var jobCard = new JobCard
         {
-            JobCardNumber = await _numbering.NextJobCardNumberAsync(req.DealerId),
+            // DMS is now the source of truth for the job card's own number - see this method's
+            // updated doc comment above. _numbering.NextJobCardNumberAsync is no longer called for
+            // new rows (old rows keep whatever number they were already given).
+            JobCardNumber = $"{dmsResult.JobNo}",
             DealerId = req.DealerId,
             CustomerId = req.CustomerId,
             VehicleId = req.VehicleId,
@@ -275,6 +349,11 @@ public class JobCardsController : ControllerBase
             BaplServiceLocationCode = req.BaplServiceLocationCode,
             BaplJobSourceId = req.BaplJobSourceId,
             BaplJobSourceName = req.BaplJobSourceName,
+            // Set immediately from the DMS result above, not in a later best-effort step - a
+            // JobCard row can no longer exist without these being set.
+            BaplJobCardHeaderId = dmsResult.JobCardHeaderId,
+            BaplJobNo = dmsResult.JobNo,
+            BaplSyncStatus = "Synced",
             Status = JobCardStatus.Open,
             CurrentStageId = firstStage?.Id,
             CreatedById = _currentUser.UserId,
@@ -293,82 +372,13 @@ public class JobCardsController : ControllerBase
         await _erp.PushJobCardAsync(jobCard);
         await _audit.LogAsync("JobCard.Create", "JobCard", jobCard.Id.ToString(), new { jobCard.JobCardNumber });
 
-        var customer = await _db.Customers.AsNoTracking().FirstOrDefaultAsync(c => c.Id == req.CustomerId);
         if (customer is not null)
             await _notifications.SendAsync(NotificationChannel.Sms, customer.Mobile,
                 $"Hi {customer.Name}, your job card {jobCard.JobCardNumber} has been created. Track: /track/{jobCard.TrackingToken}",
                 templateKey: "JobCardOpened", jobCardId: jobCard.Id, customerId: customer.Id);
 
-        // ---------------- Best-effort write-back into BAPL DMS's own database ----------------
-        // Only attempted when there's actually somewhere to write to (this dealer has a resolved
-        // BaplDmsDealerCode) and the wizard captured the full JobType/ServiceHead/ServiceType
-        // cascade a BAPL DMS JobCardHeader row requires. A failure here NEVER rolls back or fails
-        // this request - the local job card above is already committed and is the source of truth;
-        // this is purely "also try to mirror it into BAPL DMS", surfaced as baplSyncWarning on an
-        // otherwise-200 response so the wizard can tell the user without blocking them.
-        string? baplSyncWarning = null;
-        if (req.BaplJobTypeId.HasValue && req.BaplServiceHeadId.HasValue && req.BaplServiceTypeId.HasValue)
-        {
-            var baplDealerCode = await _db.Dealers.AsNoTracking().Where(d => d.Id == req.DealerId).Select(d => d.BaplDmsDealerCode).FirstOrDefaultAsync();
-            if (!string.IsNullOrWhiteSpace(baplDealerCode))
-            {
-                try
-                {
-                    var result = await _baplDms.CreateJobCardAsync(new BaplDmsCreateJobCardRequest(
-                        DealerCode: baplDealerCode,
-                        JobTypeId: req.BaplJobTypeId.Value,
-                        ServiceHeadId: req.BaplServiceHeadId.Value,
-                        ServiceHeadName: req.BaplServiceHeadName ?? "",
-                        ServiceTypeId: req.BaplServiceTypeId.Value,
-                        ServiceTypeName: req.BaplServiceTypeName ?? "",
-                        ServiceLocationCode: req.BaplServiceLocationCode,
-                        ChassisNo: vehicle.Vin ?? "",
-                        RegisterNo: vehicle.RegNo,
-                        ModelName: vehicle.Model,
-                        VehicleKms: (int)req.OdometerAtCheckIn,
-                        Supervisor: req.BaplSupervisorName,
-                        Technician: req.BaplTechnicianName,
-                        ManualJobNo: req.BaplManualJobNo,
-                        CustomerName: customer?.Name,
-                        CustomerMobile: customer?.Mobile,
-                        CustomerLedgerId: req.BaplCustomerLedgerId,
-                        MotorNo: vehicle.MotorNo,
-                        BatteryNo: vehicle.BatteryNo,
-                        ControllerNo: vehicle.ControllerNo,
-                        ConverterNo: vehicle.ConverterNo,
-                        ChargerNo: vehicle.ChargerNo,
-                        SaleDate: null,
-                        InsuranceExpDate: vehicle.InsuranceExpiry,
-                        NextServiceDueDate: vehicle.NextServiceDueDate,
-                        ExpectedDeliveryAt: req.ExpectedDeliveryAt,
-                        Complaints: req.Complaints.Select(c => c.Description).ToList(),
-                        CreatedBy: $"JobCardScanner:{_currentUser.UserId}",
-                        JobSourceId: req.BaplJobSourceId,
-                        Priority: req.Priority.ToString()),
-                        HttpContext.RequestAborted);
-
-                    jobCard.BaplJobCardHeaderId = result.JobCardHeaderId;
-                    // BAPL DMS's own Job Card List shows this JobNo (e.g. "22"), not the internal
-                    // JobCardHeaderId (e.g. "70") - kept separate so the Detail page can show staff
-                    // the number they actually recognize from BAPL DMS's own screen.
-                    jobCard.BaplJobNo = result.JobNo;
-                    jobCard.BaplSyncStatus = "Synced";
-                    jobCard.BaplSyncError = null;
-                    await _db.SaveChangesAsync();
-                }
-                catch (InvalidOperationException ex)
-                {
-                    _logger.LogWarning(ex, "Could not sync job card {JobCardId} into BAPL DMS", jobCard.Id);
-                    jobCard.BaplSyncStatus = "Failed";
-                    jobCard.BaplSyncError = ex.Message.Length > 1000 ? ex.Message[..1000] : ex.Message;
-                    await _db.SaveChangesAsync();
-                    baplSyncWarning = $"Job card {jobCard.JobCardNumber} was created, but syncing it into BAPL DMS's own database failed: {ex.Message}";
-                }
-            }
-        }
-
         var full = await FullQuery().FirstAsync(j => j.Id == jobCard.Id);
-        return CreatedAtAction(nameof(Get), new { id = jobCard.Id }, Detail(full, baplSyncWarning));
+        return CreatedAtAction(nameof(Get), new { id = jobCard.Id }, Detail(full));
     }
 
     // ---------------- Assignment / priority / ETA ----------------

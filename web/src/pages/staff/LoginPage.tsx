@@ -5,7 +5,7 @@ import { apiLoginRequest } from '../../auth/msalConfig'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
 import { dealerLogin, forgotDealerPassword, resetDealerPassword } from '../../services/dealerAuthService'
 import { PasswordInput } from '../../components/PasswordInput'
-import bgaussLogo from '../../assets/BGauss_Logo.png'
+import bgaussLogo from '../../assets/BG_Logo.png'
 import scootyImg from '../../assets/Bg0-scooty.png'
 import './LoginPage.css'
 

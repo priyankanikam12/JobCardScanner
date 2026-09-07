@@ -14,6 +14,11 @@ import * as FileSystem from 'expo-file-system/legacy'
 // own Share/Download PDF buttons use Print.printToFileAsync - the mobile equivalent of web's
 // window.print().
 import * as Print from 'expo-print'
+// Standalone InvoiceCard below uses this for its one-click "Download Invoice from DMS" (web keeps
+// both that card AND the Print menu's own Invoice option - see PrintMenu's doc comment - so this
+// mirrors that "quick one-click download without opening the menu" path on Android too).
+import * as Sharing from 'expo-sharing'
+import { DateTimePickerAndroid, type DateTimePickerEvent } from '@react-native-community/datetimepicker'
 import { apiClient } from '../api/client'
 import { useStaffAuth } from '../auth/StaffAuthContext'
 import { Badge } from '../components/Badge'
@@ -173,6 +178,9 @@ export function JobCardDetailScreen({ route }: Props) {
         <Text style={{ marginTop: 6 }}>{jc.vehicle?.model} {jc.vehicle?.variant}</Text>
         <Text style={styles.muted}>Reg: {jc.vehicle?.regNo} | Odometer: {jc.odometerAtCheckIn} km</Text>
         <Text style={styles.muted}>Tracking link: /track/{jc.trackingToken}</Text>
+        {jc.customer && hasRole('WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
+          <CustomerPasswordResetButton customerId={jc.customer.id} customerName={jc.customer.name} />
+        )}
         {baplLine.length > 0 && (
           <Text style={[styles.muted, { marginTop: 8 }]}>
             <Text style={styles.dmsBadge}> DMS </Text> {baplLine}
@@ -180,11 +188,11 @@ export function JobCardDetailScreen({ route }: Props) {
         )}
         {jc.baplSyncStatus === 'Synced' && jc.baplJobCardHeaderId && (
           <Text style={[styles.muted, { marginTop: 4 }]}>
-            ✅ Synced to BAPL DMS as {jc.baplJobNo != null ? `job card #${jc.baplJobNo}` : 'a job card (BAPL DMS sync pending)'}.
+            ✅ Synced to DMS as {jc.baplJobNo != null ? `job card #${jc.baplJobNo}` : 'a job card (DMS sync pending)'}.
           </Text>
         )}
         {jc.baplSyncStatus === 'Failed' && (
-          <Text style={[styles.errorText, { marginTop: 4 }]}>⚠ Not yet synced to BAPL DMS{jc.baplSyncError ? `: ${jc.baplSyncError}` : '.'}</Text>
+          <Text style={[styles.errorText, { marginTop: 4 }]}>⚠ Not yet synced to DMS{jc.baplSyncError ? `: ${jc.baplSyncError}` : '.'}</Text>
         )}
       </View>
 
@@ -210,8 +218,117 @@ export function JobCardDetailScreen({ route }: Props) {
       <LabourSuggestionSection jc={jc} onChanged={load} />
       <EstimatesCard jc={jc} />
       <BaplServiceHistoryCard chassisNo={jc.vehicle?.vin} dealerCode={jc.dealer?.code} />
+      {/* Standalone Invoice card, matching web's PrintMenu doc comment: "the Print menu's own
+         Invoice option stays too, so both paths work; this one is the quick one-click download
+         without opening the menu." Same role gate as PrintMenu's Invoice option. */}
+      {hasRole('Cashier', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && <InvoiceCard jc={jc} />}
       <ClosureCard jc={jc} run={run} />
       </ScrollView>
+    </View>
+  )
+}
+
+/** "Set/reset customer portal password" (WorkshopManager+) - mirrors web's
+ * CustomerPasswordResetButton exactly: POST /api/customers/{id}/admin-reset-password SETS the
+ * password to whatever's typed here (never reveals/checks the existing one), runs alongside the
+ * customer's existing OTP-based portal login rather than replacing it. */
+function CustomerPasswordResetButton({ customerId, customerName }: { customerId: string; customerName: string }) {
+  const [open, setOpen] = useState(false)
+  const [newPassword, setNewPassword] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+
+  const save = async () => {
+    setSaving(true)
+    setMsg(null)
+    try {
+      await apiClient.post(`/api/customers/${customerId}/admin-reset-password`, { newPassword })
+      setMsg(`Password set for ${customerName}. Share it with them directly.`)
+      setNewPassword('')
+    } catch (err: unknown) {
+      setMsg((err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not set the password.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!open) {
+    return (
+      <TouchableOpacity style={[styles.smallBtn, { alignSelf: 'flex-start', marginTop: 8 }]} onPress={() => setOpen(true)}>
+        <Text style={styles.smallBtnText}>Set/reset customer portal password</Text>
+      </TouchableOpacity>
+    )
+  }
+
+  return (
+    <View style={{ marginTop: 8 }}>
+      <Text style={styles.label}>New password for {customerName}</Text>
+      <View style={styles.searchRow}>
+        <TextInput
+          style={[styles.input, { flex: 1 }]}
+          value={newPassword}
+          onChangeText={setNewPassword}
+          placeholder="At least 8 characters"
+          secureTextEntry
+        />
+        <TouchableOpacity style={[styles.smallBtn, (newPassword.length < 8 || saving) && styles.btnDisabled]} disabled={newPassword.length < 8 || saving} onPress={save}>
+          <Text style={styles.smallBtnText}>{saving ? 'Saving…' : 'Save'}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.smallBtn} onPress={() => { setOpen(false); setMsg(null) }}>
+          <Text style={styles.smallBtnText}>Cancel</Text>
+        </TouchableOpacity>
+      </View>
+      {msg && <Text style={[styles.muted, { marginTop: 6 }]}>{msg}</Text>}
+    </View>
+  )
+}
+
+/** "Download Invoice from DMS" (Cashier/DealerAdmin/CorporateAdmin/SystemAdmin) - mirrors web's
+ * standalone InvoiceCard, restored below BAPL DMS Service History alongside the header's Print
+ * menu (which also has its own Invoice option - see PrintMenu's doc comment on why both exist).
+ * Fetches the same PDF PrintMenu's printInvoice does, then hands it to the OS share sheet
+ * (Sharing.shareAsync) rather than the OS print dialog - "download/save this" instead of "print
+ * this now", matching this card's own "Download" framing on web. */
+function InvoiceCard({ jc }: { jc: JobCardDetail }) {
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const download = async () => {
+    setBusy(true)
+    setNotice(null)
+    setError(null)
+    try {
+      const res = await apiClient.get(`/api/jobcards/${jc.id}/invoice-pdf`, { responseType: 'arraybuffer' })
+      const bytes = new Uint8Array(res.data as ArrayBuffer)
+      let binary = ''
+      for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i])
+      const base64 = btoa(binary)
+      const fileName = `invoice-${jc.baplJobNo ?? jc.id}.pdf`
+      const fileUri = `${FileSystem.cacheDirectory}${fileName}`
+      await FileSystem.writeAsStringAsync(fileUri, base64, { encoding: FileSystem.EncodingType.Base64 })
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(fileUri, { mimeType: 'application/pdf', dialogTitle: fileName })
+      } else {
+        setError('Sharing is not available on this device.')
+      }
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } })?.response?.status
+      if (status === 404) setNotice('No repair bill saved in DMS for this job yet.')
+      else setError('Could not download the invoice from DMS. Please try again.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <View style={styles.card}>
+      <Text style={styles.cardTitle}>Invoice</Text>
+      <TouchableOpacity style={[styles.btnPrimarySm, busy && styles.btnDisabled]} disabled={busy} onPress={download}>
+        <Text style={styles.btnPrimaryText}>{busy ? 'Downloading…' : 'Download Invoice from DMS'}</Text>
+      </TouchableOpacity>
+      {notice && <Text style={[styles.muted, { marginTop: 8 }]}>{notice}</Text>}
+      {error && <Text style={[styles.errorText, { marginTop: 8 }]}>{error}</Text>}
     </View>
   )
 }
@@ -231,7 +348,7 @@ function BaplServiceHistoryCard({ chassisNo, dealerCode }: { chassisNo?: string 
     apiClient.get<BaplDmsJobCardHistory[]>('/api/bapl-dms/service-history', { params: { chassisNo, dealerCode: dealerCode || undefined } })
       .then(({ data }) => setRows(data))
       .catch((err: any) => {
-        if (err?.response?.status === 502) setError(err?.response?.data?.message ?? 'Could not reach BAPL DMS.')
+        if (err?.response?.status === 502) setError(err?.response?.data?.message ?? 'Could not reach DMS.')
         setRows([])
       })
   }, [chassisNo, dealerCode])
@@ -240,10 +357,10 @@ function BaplServiceHistoryCard({ chassisNo, dealerCode }: { chassisNo?: string 
 
   return (
     <View style={styles.card}>
-      <Text style={styles.cardTitle}>BAPL DMS Service History</Text>
+      <Text style={styles.cardTitle}>DMS Service History</Text>
       {error && <Text style={styles.muted}>{error}</Text>}
       {rows === null && !error && <Text style={styles.muted}>Loading…</Text>}
-      {rows !== null && rows.length === 0 && !error && <Text style={styles.muted}>No prior BAPL DMS job cards found for this chassis.</Text>}
+      {rows !== null && rows.length === 0 && !error && <Text style={styles.muted}>No prior DMS job cards found for this chassis.</Text>}
       {rows !== null && rows.map((r) => (
         <View key={r.jobCardHeaderId} style={styles.historyRow}>
           <Text style={styles.rowTitle}>{r.jobPrefix}{r.jobNo} · {r.jobInDate ? new Date(r.jobInDate).toLocaleDateString() : '-'}</Text>
@@ -336,7 +453,7 @@ function PhotosCard({ jc, run }: { jc: JobCardDetail; run: Run }) {
       </View>
       <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
         <TouchableOpacity style={styles.btn} disabled={uploading} onPress={takePhoto}>
-          <Text style={styles.btnText}>{uploading ? 'Uploading…' : '📷 Capture Photo'}</Text>
+          <Text style={styles.btnText}>{uploading ? 'Uploading…' : '📷 Take Photo'}</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.btn} disabled={uploading} onPress={pickPhoto}>
           <Text style={styles.btnText}>🖼️ Choose Photo</Text>
@@ -400,13 +517,43 @@ function UpdateWorkflowStageCard({
   canAssignTechnician: boolean
 }) {
   const [technicianName, setTechnicianName] = useState(jc.assignedTechnicianName ?? '')
+  // 2026-09-05: was missing entirely - web's UpdateWorkflowStageCard saves Assign Technician AND
+  // Expected Completion together in one PUT (saveDetails), but this screen only ever sent
+  // assignedTechnicianName, so Expected Completion could never be changed from the job card once
+  // it was first set at creation. Mirrors the wizard screen's own date/time picker pattern below.
+  const [expectedDeliveryAt, setExpectedDeliveryAt] = useState<Date | null>(jc.expectedDeliveryAt ? new Date(jc.expectedDeliveryAt) : null)
   const [notes, setNotes] = useState('')
 
   useEffect(() => {
     setTechnicianName(jc.assignedTechnicianName ?? '')
-  }, [jc.id, jc.assignedTechnicianName])
+    setExpectedDeliveryAt(jc.expectedDeliveryAt ? new Date(jc.expectedDeliveryAt) : null)
+  }, [jc.id, jc.assignedTechnicianName, jc.expectedDeliveryAt])
 
-  const saveTechnician = () => apiClient.put(`/api/jobcards/${jc.id}`, { assignedTechnicianName: technicianName || null })
+  const saveDetails = () => apiClient.put(`/api/jobcards/${jc.id}`, {
+    assignedTechnicianName: technicianName || null,
+    expectedDeliveryAt: expectedDeliveryAt ? expectedDeliveryAt.toISOString() : null,
+  })
+
+  const openExpectedDeliveryPicker = () => {
+    DateTimePickerAndroid.open({
+      value: expectedDeliveryAt ?? new Date(),
+      mode: 'date',
+      onChange: (_e: DateTimePickerEvent, date?: Date) => {
+        if (!date) return
+        DateTimePickerAndroid.open({
+          value: date,
+          mode: 'time',
+          is24Hour: true,
+          onChange: (_e2: DateTimePickerEvent, time?: Date) => {
+            if (!time) return
+            const combined = new Date(date)
+            combined.setHours(time.getHours(), time.getMinutes())
+            setExpectedDeliveryAt(combined)
+          },
+        })
+      },
+    })
+  }
 
   const currentSeq = jc.currentStage?.seq ?? -1
   const repairCompletedStage = stages.find((s) => s.stageKey === 'repair_completed')
@@ -426,12 +573,18 @@ function UpdateWorkflowStageCard({
       {canAssignTechnician && (
         <View style={{ marginTop: 10, marginBottom: 10 }}>
           <Text style={styles.label}>Assign Technician</Text>
-          <View style={{ flexDirection: 'row', gap: 8 }}>
-            <TextInput style={[styles.input, { flex: 1 }]} value={technicianName} editable={!busy} onChangeText={setTechnicianName} placeholder="Technician name" />
-            <TouchableOpacity style={[styles.smallBtn, busy && styles.btnDisabled]} disabled={busy} onPress={() => run(saveTechnician, 'Technician updated.')}>
-              <Text style={styles.smallBtnText}>Save</Text>
-            </TouchableOpacity>
-          </View>
+          <TextInput style={styles.input} value={technicianName} editable={!busy} onChangeText={setTechnicianName} placeholder="Technician name" />
+          <Text style={[styles.label, { marginTop: 8 }]}>Expected Completion</Text>
+          <TouchableOpacity style={styles.field} disabled={busy} onPress={openExpectedDeliveryPicker}>
+            <Text style={styles.fieldText}>{expectedDeliveryAt ? expectedDeliveryAt.toLocaleString() : 'Not set'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.smallBtn, { alignSelf: 'flex-start' }, busy && styles.btnDisabled]}
+            disabled={busy}
+            onPress={() => run(saveDetails, 'Technician & completion date updated.')}
+          >
+            <Text style={styles.smallBtnText}>Save</Text>
+          </TouchableOpacity>
         </View>
       )}
       <View style={{ marginBottom: 10 }}>
@@ -532,47 +685,50 @@ function WorklogCard({ jc, run, profileId }: { jc: JobCardDetail; run: Run; prof
   )
 }
 
-/** Part Details + Labour Details + Grand Total - mirrors web's EstimatesCard exactly
- * (Amount = MRP x Qty for parts, Rate x Qty for labour). */
+/** Part Details + Labour Details + Grand Total - mirrors web's EstimatesCard exactly, including
+ * the full column set (Sr no./Item or Labour Code/Description/HSN/MRP or Rate/Qty/Amount), not
+ * just a collapsed "code - description" line. RN has no <table>, so each row is a two-line card
+ * instead of a grid: the code/description/HSN on one line, Qty x MRP(or Rate) = Amount on the
+ * next - same fields as web, just stacked to fit a phone width. */
 function EstimatesCard({ jc }: { jc: JobCardDetail }) {
   const money = (n: number) => `₹${n.toFixed(2)}`
   const partRows = jc.partSuggestions.map((p, i) => {
     const mrp = p.mrp ?? 0
     const qty = p.quantity ?? 1
-    return { sr: i + 1, code: p.itemCode, description: p.description ?? '-', amount: mrp * qty }
+    return { sr: i + 1, code: p.itemCode, description: p.description ?? '-', hsn: p.hsnCode ?? '-', rate: mrp, qty, amount: mrp * qty }
   })
   const labourRows = jc.labourSuggestions.map((l, i) => {
     const rate = l.rateAtSuggestion ?? 0
     const qty = l.quantity ?? 1
-    return { sr: i + 1, code: l.labourCode, description: l.labourDescription ?? '-', amount: rate * qty }
+    return { sr: i + 1, code: l.labourCode, description: l.labourDescription ?? '-', hsn: l.hsnCode ?? '-', rate, qty, amount: rate * qty }
   })
   const partsTotal = partRows.reduce((sum, r) => sum + r.amount, 0)
   const labourTotal = labourRows.reduce((sum, r) => sum + r.amount, 0)
   const grandTotal = partsTotal + labourTotal
+
+  const Row = ({ r, rateLabel }: { r: { sr: number; code: string; description: string; hsn: string; rate: number; qty: number; amount: number }; rateLabel: string }) => (
+    <View style={styles.estimateRow}>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.bold}>{r.sr}. {r.code} - {r.description}</Text>
+        <Text style={styles.muted}>HSN {r.hsn} · {r.qty} x {rateLabel} {money(r.rate)}</Text>
+      </View>
+      <Text style={styles.bold}>{money(r.amount)}</Text>
+    </View>
+  )
 
   return (
     <View style={styles.card}>
       <Text style={styles.cardTitle}>Estimates Amount</Text>
       <Text style={styles.subheading}>Part Details</Text>
       {partRows.length === 0 && <Text style={styles.muted}>No parts suggested yet.</Text>}
-      {partRows.map((r) => (
-        <View key={r.sr} style={styles.estimateRow}>
-          <Text style={{ flex: 1 }}>{r.sr}. {r.code} - {r.description}</Text>
-          <Text style={styles.bold}>{money(r.amount)}</Text>
-        </View>
-      ))}
+      {partRows.map((r) => <Row key={r.sr} r={r} rateLabel="MRP" />)}
       {partRows.length > 0 && (
         <View style={styles.estimateTotalRow}><Text style={styles.bold}>Parts Total</Text><Text style={styles.bold}>{money(partsTotal)}</Text></View>
       )}
 
       <Text style={[styles.subheading, { marginTop: 14 }]}>Labour Details</Text>
       {labourRows.length === 0 && <Text style={styles.muted}>No labour suggested yet.</Text>}
-      {labourRows.map((r) => (
-        <View key={r.sr} style={styles.estimateRow}>
-          <Text style={{ flex: 1 }}>{r.sr}. {r.code} - {r.description}</Text>
-          <Text style={styles.bold}>{money(r.amount)}</Text>
-        </View>
-      ))}
+      {labourRows.map((r) => <Row key={r.sr} r={r} rateLabel="Rate" />)}
       {labourRows.length > 0 && (
         <View style={styles.estimateTotalRow}><Text style={styles.bold}>Labour Total</Text><Text style={styles.bold}>{money(labourTotal)}</Text></View>
       )}
@@ -805,6 +961,9 @@ const styles = StyleSheet.create({
   link: { color: '#2563eb', fontSize: 11, marginTop: 2 },
   label: { fontSize: 12, color: '#6b7280', marginBottom: 4 },
   input: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 8, padding: 8 },
+  // Tap-to-open date/time field (Expected Completion) - matches PickerField's own "field" look.
+  field: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 8, padding: 10, minHeight: 42, justifyContent: 'center' },
+  fieldText: { color: '#101828', fontSize: 14 },
   searchRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   btn: { borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 9, backgroundColor: '#fff' },
   btnText: { color: '#374151', fontWeight: '600' },
@@ -812,13 +971,13 @@ const styles = StyleSheet.create({
   btnPrimaryText: { color: '#fff', fontWeight: '700' },
   btnDisabled: { opacity: 0.5 },
   smallBtn: { backgroundColor: '#f4f6f9', borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 6, paddingHorizontal: 8, justifyContent: 'center' },
-  smallBtnText: { fontSize: 12, fontWeight: '600', color: '#2563EB' },
+  smallBtnText: { fontSize: 12, fontWeight: '600', color: '#374151' },
   // Amber "done/confirmed" chip treatment (Hub Pulse reskin) - this data is confirmed
   // synced-from-DMS, same semantic as the list screen's DMS badge.
   dmsBadge: { backgroundColor: colors.amber, color: '#fff', fontSize: 11, fontWeight: '700', borderRadius: 999, overflow: 'hidden' },
   historyRow: { paddingVertical: 8, borderTopWidth: 1, borderTopColor: '#f1f3f6' },
   rowTitle: { fontWeight: '600', color: '#101828' },
-  estimateRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: '#f1f3f6' },
+  estimateRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: '#f1f3f6' },
   estimateTotalRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6, marginTop: 2 },
   grandTotalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 14, paddingTop: 10, borderTopWidth: 2, borderTopColor: '#e2e6ec' },
   // PrintMenu (2026-09-04) - the header's "Print ▾" toggle plus its tap-to-open action sheet.

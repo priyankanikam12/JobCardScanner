@@ -40,6 +40,19 @@ public enum JobCardPriority { Normal, High, Urgent }
 /// <summary>
 /// The central record of the customer service journey: created by the 6-step Job Card Opening
 /// Wizard, driven through <see cref="WorkflowStage"/>s, and closed via OTP + invoiced.
+///
+/// 2026-09-05: BAPL DMS is now the sole source of truth for whether a job card exists at all -
+/// see JobCardsController.Create, which calls BAPL DMS's own CreateJobCardAsync FIRST and only
+/// ever creates a row here as a direct, same-request consequence of that succeeding
+/// (BaplJobCardHeaderId/BaplJobNo below are always set for any row created this way; a row that
+/// somehow lacks them predates this change and is hidden from the list/detail endpoints, never
+/// deleted). This row is therefore no longer an independent save path or "the" record of the job
+/// card - JobCardNumber itself is DMS's own JobPrefix+JobNo, not a JobCardScanner-generated
+/// number. What this row IS still for: (1) a stable local id for everything BAPL DMS has no table
+/// for and that must keep working exactly as before - Photos, Complaints, Inspections,
+/// StageHistory, Worklogs, QcChecklistItems, PartSuggestions, LabourSuggestions, Invoice,
+/// Estimates, Parts (all FK'd to this row's Id below, unchanged) - and (2) JobCardScanner-only
+/// workflow concepts DMS doesn't model, like Status/CurrentStage/AssignedTechnician/ExpectedDeliveryAt.
 /// </summary>
 public class JobCard
 {

@@ -1,3 +1,4 @@
+// web\src\pages\staff\JobCardsListPage.tsx
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { staffApi } from '../../api/client'

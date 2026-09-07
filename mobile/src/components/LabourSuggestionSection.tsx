@@ -25,6 +25,14 @@ const ISSUE_TYPES = ['Paid', 'U/W'] as const
 export function LabourSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; onChanged: () => void }) {
   const [rows, setRows] = useState<BaplDmsLabourRow[]>([])
   const [q, setQ] = useState('')
+  // 2026-09-05 fix ("without click search box that list open"): this dropdown used to render
+  // whenever `rows` was non-empty, and `rows` is populated by the cascade search below on mount
+  // (job type/service head/service type alone, with `q` empty) - so the list appeared open the
+  // instant the card mounted, before the user had touched the search box at all. Mirrors web's
+  // LabourSuggestionCard, which gates the same dropdown on `showSuggestions && q.trim().length > 0`
+  // (see JobCardDetailPage.tsx) - the cascade search still runs up front so results are ready the
+  // moment the user does start typing, it just isn't shown until they do.
+  const [showSuggestions, setShowSuggestions] = useState(false)
   const [selectedId, setSelectedId] = useState<number | null>(null)
   // Holds the actually-picked row's own data, set once at pick time - not re-derived from `rows`.
   // 2026-09-03 fix (mirrors web's LabourSuggestionCard fix): `rows` is refreshed by the debounced
@@ -123,11 +131,16 @@ export function LabourSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; 
       <TextInput
         style={styles.input}
         value={q}
-        onChangeText={(text) => { setQ(text); setSelectedId(null); setSelected(null) }}
+        onChangeText={(text) => { setQ(text); setSelectedId(null); setSelected(null); setShowSuggestions(true) }}
+        onFocus={() => setShowSuggestions(true)}
+        // Same 150ms grace period used by every other search-as-you-type box in this app (e.g.
+        // JobCardWizardScreen's chassis search) - long enough for a tap on a row below to register
+        // (its own onPress) before this hides the list out from under it.
+        onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
         placeholder="Search by labour code or description…"
       />
 
-      {rows.length > 0 && (
+      {showSuggestions && q.trim().length > 0 && rows.length > 0 && (
         // See PartSuggestionSection.tsx's same fix - a plain View with maxHeight clips instead of
         // scrolling on Android; nestedScrollEnabled lets this ScrollView scroll inside the card's
         // own outer ScrollView.
@@ -138,7 +151,7 @@ export function LabourSuggestionSection({ jc, onChanged }: { jc: JobCardDetail; 
               <TouchableOpacity
                 key={r.id}
                 style={[styles.pickerRow, isSelected && styles.pickerRowSelected]}
-                onPress={() => { setSelectedId(r.id); setSelected(r) }}
+                onPress={() => { setSelectedId(r.id); setSelected(r); setShowSuggestions(false) }}
               >
                 <Text style={[styles.pickerRowText, isSelected && styles.pickerRowTextSelected]}>
                   {r.labourCode} - {r.labourDescription ?? 'No description'} (₹{r.labourRate ?? '-'})

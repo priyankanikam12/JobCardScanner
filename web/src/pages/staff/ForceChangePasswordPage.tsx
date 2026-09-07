@@ -4,7 +4,7 @@ import { changeMyPassword } from '../../services/dealerAuthService'
 import { clearMustChangePassword } from '../../auth/dealerSession'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
 import { PasswordInput } from '../../components/PasswordInput'
-import bgaussLogo from '../../assets/BGauss_Logo.png'
+import bgaussLogo from '../../assets/BG_Logo.png'
 import scootyImg from '../../assets/Bg0-scooty.png'
 import './LoginPage.css'
 

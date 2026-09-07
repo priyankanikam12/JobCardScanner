@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import { useAuth as useAzureAuth } from './AuthContext'
 import { getDealerSession, type DealerSession } from './dealerSession'
 import { dealerLogout } from '../services/dealerAuthService'
-import { setDealerToken } from '../api/client'
+import { apiClient, setDealerToken } from '../api/client'
 import type { CurrentUser, StaffRole } from '../types'
 
 /**
@@ -62,6 +62,21 @@ export function StaffAuthProvider({ children }: { children: ReactNode }) {
   const azure = useAzureAuth()
   const [dealerSession, setDealerSessionState] = useState<DealerSession | null>(null)
   const [dealerChecked, setDealerChecked] = useState(false)
+  // 2026-09-05 fix ("chassis search shows every dealer's stock, not just this workshop's, on
+  // Android"): the cached DealerSession.user payload (written once at login by dealerAuthService)
+  // never carried dealerBaplDmsCode - it isn't even in the DealerUser type below. dealerUserToProfile
+  // was the ONLY source for `profile` on this login path, so a Dealer/Workshop-login account's
+  // profile.dealerBaplDmsCode was always undefined, no matter which dealer they actually belonged
+  // to - unlike the Azure AD path (AuthContext.tsx's loadProfile) and unlike web (see
+  // web/src/auth/StaffAuthContext.tsx's load(), which calls GET /api/auth/me for every login path,
+  // dealer session included). JobCardWizardScreen's vehicleSearchDealerCode falls back to
+  // `profile?.dealerBaplDmsCode` for exactly this reason, so it silently resolved to "no dealer" and
+  // every chassis/reg-no search went to "search across every dealer" instead of scoping to this
+  // user's own workshop. Fetching the same /api/auth/me endpoint here (kept as a full refresh, not
+  // just this one field, in case other CurrentUser fields drift the same way) makes this path
+  // authoritative too - dealerUserToProfile below is now only the instant-first-paint fallback
+  // shown before this resolves (or if it fails, e.g. opening the app offline right after login).
+  const [dealerMeProfile, setDealerMeProfile] = useState<CurrentUser | null>(null)
 
   const loadDealerSession = async () => {
     const session = await getDealerSession()
@@ -70,6 +85,16 @@ export function StaffAuthProvider({ children }: { children: ReactNode }) {
     // startup (a session saved from a previous run) and right after a fresh dealerLogin().
     setDealerToken(session?.accessToken ?? null)
     setDealerChecked(true)
+    if (!session) {
+      setDealerMeProfile(null)
+      return
+    }
+    try {
+      const { data } = await apiClient.get<CurrentUser>('/api/auth/me')
+      setDealerMeProfile(data)
+    } catch {
+      setDealerMeProfile(null)
+    }
   }
 
   useEffect(() => {
@@ -79,7 +104,7 @@ export function StaffAuthProvider({ children }: { children: ReactNode }) {
   const authMode: StaffAuthValue['authMode'] = dealerSession ? 'dealer' : azure.profile ? 'azureAd' : null
   const isAuthenticated = !!dealerSession || !!azure.profile
   const mustChangePassword = !!dealerSession?.mustChangePassword
-  const profile: CurrentUser | null = dealerSession ? dealerUserToProfile(dealerSession) : azure.profile
+  const profile: CurrentUser | null = dealerSession ? (dealerMeProfile ?? dealerUserToProfile(dealerSession)) : azure.profile
   // Only block on the Azure AD side's own loading state while there's no dealer session already
   // resolved - otherwise a signed-in dealer would see an endless spinner every time AuthContext
   // re-checks its (irrelevant, for this user) stored MSAL tokens.
