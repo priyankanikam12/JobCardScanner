@@ -30,14 +30,16 @@ public class BaplDmsController : ControllerBase
     private readonly ILogger<BaplDmsController> _logger;
     private readonly IConfiguration _config;
     private readonly ICurrentUserService _currentUser;
+    private readonly IInvoicePdfService _invoicePdf;
 
-    public BaplDmsController(IBaplDmsService baplDms, JobCardScannerDbContext db, ILogger<BaplDmsController> logger, IConfiguration config, ICurrentUserService currentUser)
+    public BaplDmsController(IBaplDmsService baplDms, JobCardScannerDbContext db, ILogger<BaplDmsController> logger, IConfiguration config, ICurrentUserService currentUser, IInvoicePdfService invoicePdf)
     {
         _baplDms = baplDms;
         _db = db;
         _logger = logger;
         _config = config;
         _currentUser = currentUser;
+        _invoicePdf = invoicePdf;
     }
 
     /// <summary>Same shared default password as the bulk BAPL ERP import (AdminDealerImportController -
@@ -303,6 +305,55 @@ public class BaplDmsController : ControllerBase
         {
             return StatusCode(502, new { message = ex.Message });
         }
+    }
+
+    /// <summary>
+    /// GET /api/bapl-dms/job-cards/{jobCardHeaderId}/line-items - 2026-09-07 ("this also show like
+    /// whole data in our jobcard flow"): the Part Details/Labour Details breakdown + Grand Total
+    /// for this DMS job card's own repair bill, for BaplJobCardDetailPage.tsx to render inline -
+    /// the DMS-only equivalent of what JobCardDetailPage's Estimates Amount card already shows for
+    /// a JobCardScanner-native job card. 404 covers both "no such job card" and "no repair bill
+    /// raised for it yet" (a job card still Open in DMS normally has none) - both are everyday
+    /// states, not errors.
+    /// </summary>
+    [HttpGet("job-cards/{jobCardHeaderId:int}/line-items")]
+    public async Task<IActionResult> GetJobCardLineItems(int jobCardHeaderId)
+    {
+        BaplDmsInvoiceLineItemsResult? result;
+        try
+        {
+            result = await _invoicePdf.GetLineItemsAsync(jobCardHeaderId, HttpContext.RequestAborted);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Could not build the DMS line-items breakdown for job card header {JobCardHeaderId}", jobCardHeaderId);
+            return StatusCode(502, new { message = ex.Message });
+        }
+        return result is null ? NotFound() : Ok(result);
+    }
+
+    /// <summary>
+    /// GET /api/bapl-dms/job-cards/{jobCardHeaderId}/invoice-pdf - "Download Invoice from DMS" for
+    /// a DMS job card JobCardScanner never created locally (no JobCard.Id to key off, unlike
+    /// JobCardsController.InvoicePdf). Same null/error conventions as that endpoint: 404 covers
+    /// both "no such job card" and "no repair bill raised for it yet" (both normal, not errors); a
+    /// real DMS problem is a 502 with the underlying message.
+    /// </summary>
+    [HttpGet("job-cards/{jobCardHeaderId:int}/invoice-pdf")]
+    public async Task<IActionResult> GetJobCardInvoicePdf(int jobCardHeaderId)
+    {
+        byte[]? bytes;
+        try
+        {
+            bytes = await _invoicePdf.BuildInvoicePdfFromDmsAsync(jobCardHeaderId, HttpContext.RequestAborted);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Could not build the DMS invoice PDF for job card header {JobCardHeaderId}", jobCardHeaderId);
+            return StatusCode(502, new { message = ex.Message });
+        }
+        if (bytes is null) return NotFound();
+        return File(bytes, "application/pdf", $"invoice-dms-{jobCardHeaderId}.pdf");
     }
 
     /// <summary>

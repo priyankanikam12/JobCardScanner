@@ -240,6 +240,32 @@ export interface BaplDmsRepairBill {
   totalNetAmount?: number | null
 }
 
+/// One Part/Labour line from a DMS repair bill - see BaplDmsInvoiceLineItemDto's doc comment in
+/// IInvoicePdfService.cs. Code/Description/Hsn are best-effort placeholders (no confirmed part/
+/// labour-name master table exists anywhere in this codebase), never a guessed join.
+export interface BaplDmsInvoiceLineItem {
+  code: string
+  description: string
+  hsn: string
+  qty: number
+  rate: number
+  discount: number
+  taxable: number
+  netAmount: number
+  isPart: boolean
+}
+
+/// Whole shaped repair-bill breakdown for one DMS job card - GET /api/bapl-dms/job-cards/{id}/line-items.
+/// 404 (not this shape) means no repair bill raised for this job in DMS yet - normal for one still Open.
+export interface BaplDmsInvoiceLineItemsResult {
+  items: BaplDmsInvoiceLineItem[]
+  partTotal: number
+  labourTotal: number
+  invoiceTotal: number
+  repairBillStatus?: string | null
+  invoiceNo?: string | null
+}
+
 export interface CurrentUser {
   id: string
   name: string

@@ -61,7 +61,7 @@ function nowForDatetimeLocalInput(): string {
   return new Date(Date.now() + IST_OFFSET_MINUTES * 60 * 1000).toISOString().slice(0, 16)
 }
 
-/** A date (e.g. a vehicle's BAPL DMS sale date) in real IST, not the browser's own timezone -
+/** A date (e.g. a vehicle's DMS sale date) in real IST, not the browser's own timezone -
  * same reasoning as nowForDatetimeLocalInput above. */
 function formatISTDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-IN', { timeZone: IST_TIME_ZONE })
@@ -153,7 +153,7 @@ export function JobCardWizardPage() {
   // saleDate already fills for an auto-fetched vehicle.
   const [newCustomer, setNewCustomer] = useState({ name: '', mobile: '', email: '', city: '', address: '', state: '', saleDate: '' })
 
-  // "(Registered customer Details)" - by chassis no. / registration no. - auto-fetches everything
+  // "Registered customer Details" - by chassis no. / registration no. - auto-fetches everything
   // DMS knows about that vehicle (Controllers/BaplDmsController.cs's vehicle-lookup, ported
   // from DMS's own onChassisChange()/GetAllInspectedLotChassisAsync) and uses it to pre-fill
   // both the "register a new customer" fields below AND the vehicle step that follows -
@@ -843,7 +843,7 @@ export function JobCardWizardPage() {
               )}
             </div>
           )}
-          <h3>(Registered customer Details)</h3>
+          <h3>Registered customer Details</h3>
           {/* "Search by mobile number or name" commented out per your request - chassis/reg no.
              search (below) is now the only way to look up a customer here. */}
           {/* <div className="field">

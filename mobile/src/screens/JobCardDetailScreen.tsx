@@ -679,6 +679,18 @@ const formatIST = (iso: string, opts: Intl.DateTimeFormatOptions) => new Date(is
 const formatISTTime = (iso: string) => formatIST(iso, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })
 const formatISTDateTime = (iso: string) => formatIST(iso, { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true })
 
+/** "now i start timer but still another time show current time 11.51 not shown in timer" -
+ * formats a millisecond duration as H:MM:SS (or M:SS under an hour) for WorklogCard's live
+ * elapsed-time display below - mirrors web's formatElapsedMs exactly. */
+function formatElapsedMs(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000))
+  const h = Math.floor(totalSeconds / 3600)
+  const m = Math.floor((totalSeconds % 3600) / 60)
+  const s = totalSeconds % 60
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`
+}
+
 // The same "open worklog?" check gates Part/Labour suggestion adding in PartSuggestionSection.tsx
 // and LabourSuggestionSection.tsx (separate files - each inlines `jc.worklogs.some((w) =>
 // !w.endedAt)` directly rather than importing a helper across files, matching this codebase's
@@ -686,6 +698,19 @@ const formatISTDateTime = (iso: string) => formatIST(iso, { day: '2-digit', mont
 
 function WorklogCard({ jc, run, profileId }: { jc: JobCardDetail; run: Run; profileId?: string }) {
   const openLog = jc.worklogs.find((w) => !w.endedAt)
+
+  // "now i start timer but still another time show current time 11.51 not shown in timer" - the
+  // "Timer running since ..." line below only ever rendered once, from whatever jc.worklogs looked
+  // like the moment the screen last fetched it, so it silently froze at the start time forever and
+  // never reflected that real time kept passing while the timer ran. This ticks nowMs once a
+  // second (only while a worklog is actually open, so it's a no-op the rest of the time) purely so
+  // the elapsed-time text below stays live instead of static - mirrors web's WorklogCard exactly.
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => {
+    if (!openLog) return
+    const t = setInterval(() => setNowMs(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [openLog?.id])
 
   // Safety net only - starting is manual now, but if a job card gets closed while a timer is
   // still running (closed from web, or the technician forgot to stop it), end it automatically.
@@ -704,7 +729,10 @@ function WorklogCard({ jc, run, profileId }: { jc: JobCardDetail; run: Run; prof
       <Text style={styles.cardTitle}>Technician Work Log</Text>
       {openLog ? (
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-          <Text style={styles.muted}>⏱ Timer running since {formatISTTime(openLog.startedAt)} IST.</Text>
+          <Text style={styles.muted}>
+            ⏱ Timer running since {formatISTTime(openLog.startedAt)} IST - running for{' '}
+            {formatElapsedMs(nowMs - new Date(openLog.startedAt).getTime())}.
+          </Text>
           <TouchableOpacity style={styles.dangerBtnSm} onPress={stopTimer}>
             <Text style={styles.dangerBtnText}>■ Stop Timer</Text>
           </TouchableOpacity>

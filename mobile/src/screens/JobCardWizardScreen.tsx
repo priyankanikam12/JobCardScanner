@@ -823,8 +823,8 @@ export function JobCardWizardScreen({ navigation }: Props) {
             </View>
           )}
 
-          <Text style={styles.h3}>(Registered customer Details)</Text>
-          <Text style={styles.label}>Search by chassis no. / registration no.</Text>
+          <Text style={styles.h3}>Registered customer Details</Text>
+          <Text style={styles.label}>Search by chassis no./Reg no.</Text>
           <View style={styles.searchRow}>
             <TextInput
               style={[styles.input, { flex: 1 }]}

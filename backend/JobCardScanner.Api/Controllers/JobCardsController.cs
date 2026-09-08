@@ -850,6 +850,20 @@ public class JobCardsController : ControllerBase
             t.Status = JobCardStatus.Closed;
             t.ClosedAt ??= now;
             t.ActualDeliveryAt ??= now;
+            // 2026-09-07 ("in dms after jobcard closed invoice create so in our jobscanner also
+            // when jobcard close from dms invoice generate...same as it is like dms in flow") -
+            // DMS closing/billing a job card directly means DMS has already raised its own invoice
+            // for it, but until now this method only ever flipped the local Status field - the
+            // Workflow Timeline's CurrentStage stayed wherever it was (typically stuck at "Repair
+            // Completed"), so a job card DMS closed on its own never showed "Invoice Generated"
+            // here, only the manual "Generate Invoice" button (JobCardsController.ChangeStage) ever
+            // reached that stage. AdvanceIfAheadAsync targets that exact same terminal stage - same
+            // stage, same StageHistory record shape - just system-triggered (changedById: null)
+            // instead of a button click, mirroring what already happened in DMS. It never moves a
+            // job card backwards, and its own terminal-stage handling is a no-op here since Status
+            // is already Closed by the two lines above (guarded by `jc.Status !=
+            // JobCardStatus.Closed`), so ClosedAt/ActualDeliveryAt above aren't touched twice.
+            await WorkflowStageAutomation.AdvanceIfAheadAsync(_db, t, "invoice_generated", null, "Auto-advanced: DMS closed this job card (invoice already generated in DMS).");
         }
         await _db.SaveChangesAsync(ct);
 

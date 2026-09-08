@@ -2019,7 +2019,7 @@ public class BaplDmsService : IBaplDmsService
                 LabourQty, PartQty, LabourRate, PartRate, DiscountValue, LabourDiscount, PartDiscount, DiscountType,
                 Igstamount, Cgstamount, Sgstamount, IssutypeId, LabourTaxblAmount, PartTaxblAmount,
                 LabourNetAmount, PartNetAmount, TotalTaxPer
-            FROM [dbo].[RepairBillDetail]
+            FROM [dbo].[RepairBillDetails]
             WHERE RepairBillId = @id";
         var results = new List<BaplDmsRepairBillDetailRow>();
         try

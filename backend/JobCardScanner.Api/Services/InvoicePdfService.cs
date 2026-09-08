@@ -430,6 +430,330 @@ public class InvoicePdfService : IInvoicePdfService
         return doc.GeneratePdf();
     }
 
+    // =====================================================================================
+    // 2026-09-07 ("this also show like whole data in our jobcard flow") - the DMS-only job card
+    // detail page (BaplJobCardDetailPage.tsx, opened for a "DMS" badge row on /jobcards that
+    // JobCardScanner never created locally) previously showed only a handful of plain summary
+    // fields. These two methods bring it the same repair-bill breakdown/invoice the native
+    // JobCardDetailPage already gets - sourced entirely from DMS's own data
+    // (IBaplDmsService.GetJobCardByIdAsync) plus a local Dealer lookup by BaplDmsDealerCode for
+    // letterhead details only, since there's no local JobCard/Customer/Vehicle row to read instead.
+    // =====================================================================================
+
+    public async Task<BaplDmsInvoiceLineItemsResult?> GetLineItemsAsync(int jobCardHeaderId, CancellationToken ct = default)
+    {
+        BaplDmsRepairBillHeaderDetail? header;
+        try
+        {
+            header = await _baplDms.GetRepairBillHeaderDetailAsync(jobCardHeaderId, ct);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Could not read DMS repair bill header for job card header {JobCardHeaderId}", jobCardHeaderId);
+            throw;
+        }
+        if (header is null) return null; // no repair bill raised for this job yet - normal, not an error
+
+        IReadOnlyList<BaplDmsRepairBillDetailRow> lines;
+        try
+        {
+            lines = await _baplDms.GetRepairBillDetailLinesAsync(header.Id, ct);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Could not read DMS repair bill lines for bill {RepairBillId}", header.Id);
+            throw;
+        }
+
+        var items = lines.Select(ClassifyLine)
+            .Select(i => new BaplDmsInvoiceLineItemDto(i.Code, i.Description, i.Hsn, i.Qty, i.Rate, i.Discount, i.Taxable, i.NetAmount, i.IsPart))
+            .ToList();
+        var partTotal = items.Where(i => i.IsPart).Sum(i => i.NetAmount);
+        var labourTotal = items.Where(i => !i.IsPart).Sum(i => i.NetAmount);
+        var invoiceNo = header.BillNo.HasValue ? $"{header.Prefix}{header.BillNo}" : null;
+        return new BaplDmsInvoiceLineItemsResult(items, partTotal, labourTotal, header.TotalNetAmount ?? (partTotal + labourTotal), header.RepairBillStatus, invoiceNo);
+    }
+
+    public async Task<byte[]?> BuildInvoicePdfFromDmsAsync(int jobCardHeaderId, CancellationToken ct = default)
+    {
+        var row = await _baplDms.GetJobCardByIdAsync(jobCardHeaderId, ct);
+        if (row is null) return null; // no such DMS job card
+
+        BaplDmsRepairBillHeaderDetail? header;
+        try
+        {
+            header = await _baplDms.GetRepairBillHeaderDetailAsync(jobCardHeaderId, ct);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Could not read DMS repair bill header for job card header {JobCardHeaderId}", jobCardHeaderId);
+            throw;
+        }
+        if (header is null) return null; // no repair bill raised for this job yet - normal, not an error
+
+        IReadOnlyList<BaplDmsRepairBillDetailRow> lines;
+        try
+        {
+            lines = await _baplDms.GetRepairBillDetailLinesAsync(header.Id, ct);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Could not read DMS repair bill lines for bill {RepairBillId}", header.Id);
+            throw;
+        }
+
+        BaplDmsCustomerLedgerDetail? ledger = null;
+        if (header.CustomerLedgerId.HasValue)
+        {
+            try { ledger = await _baplDms.GetCustomerLedgerDetailAsync(header.CustomerLedgerId.Value, ct); }
+            catch (InvalidOperationException ex)
+            {
+                _logger.LogInformation(ex, "DMS customer ledger lookup skipped for invoice (ledger {LedgerId})", header.CustomerLedgerId);
+            }
+        }
+
+        // Letterhead only - this DMS job card has no local JobCard/Dealer row of its own, so the
+        // dealer's own name/address/GSTIN for the invoice header comes from a plain lookup by
+        // BaplDmsDealerCode (same code every other DMS-scoped local lookup uses - see
+        // PartsController, BaplDmsController.Workshops), not from anything DMS itself returns.
+        var dealer = string.IsNullOrWhiteSpace(row.DealerCode)
+            ? null
+            : await _db.Dealers.AsNoTracking().FirstOrDefaultAsync(d => d.BaplDmsDealerCode == row.DealerCode, ct);
+
+        var items = lines.Select(ClassifyLine).ToList();
+        var partTotal = items.Where(i => i.IsPart).Sum(i => i.NetAmount);
+        var labourTotal = items.Where(i => !i.IsPart).Sum(i => i.NetAmount);
+        var invoiceTotal = header.TotalNetAmount ?? (partTotal + labourTotal);
+
+        var hsnGroups = items
+            .GroupBy(i => string.IsNullOrWhiteSpace(i.Hsn) ? "-" : i.Hsn)
+            .Select(g => new
+            {
+                Hsn = g.Key,
+                Taxable = g.Sum(x => x.Taxable),
+                Sgst = g.Sum(x => x.Sgst),
+                Cgst = g.Sum(x => x.Cgst),
+                Igst = g.Sum(x => x.Igst),
+            })
+            .OrderBy(g => g.Hsn)
+            .ToList();
+
+        var customerName = ledger?.Name ?? row.CustomerName ?? "-";
+        var customerMobile = ledger?.Mobile ?? row.CustomerMobile ?? "-";
+        var customerAddress = ledger?.Address; // no confirmed fallback on the DMS row itself
+        var customerCity = !string.IsNullOrWhiteSpace(ledger?.City) ? ledger!.City : null;
+        var customerState = ledger?.State;
+        var customerGstin = ledger?.Gstin;
+
+        var invoiceNo = header.BillNo.HasValue ? $"{header.Prefix}{header.BillNo}" : (row.InvoiceNo ?? "-");
+        var jobNoDisplay = $"{row.JobPrefix}{row.JobNo}".Trim();
+        if (string.IsNullOrWhiteSpace(jobNoDisplay)) jobNoDisplay = "-";
+
+        var doc = Document.Create(container =>
+        {
+            container.Page(page =>
+            {
+                page.Size(PageSizes.A4);
+                page.Margin(28);
+                page.DefaultTextStyle(x => x.FontSize(9));
+
+                page.Header().Column(col =>
+                {
+                    col.Item().Text(dealer?.Name ?? "-").FontSize(15).Bold();
+                    if (!string.IsNullOrWhiteSpace(dealer?.Address)) col.Item().Text(dealer!.Address!);
+                    var cityLine = string.Join(", ", new[] { dealer?.City, dealer?.State }
+                        .Where(s => !string.IsNullOrWhiteSpace(s)));
+                    if (!string.IsNullOrWhiteSpace(cityLine)) col.Item().Text(cityLine!);
+                    col.Item().Text($"Phone : {(string.IsNullOrWhiteSpace(dealer?.Phone) ? "-" : dealer!.Phone)}");
+                    col.Item().Text($"Email : {(string.IsNullOrWhiteSpace(dealer?.Email) ? "-" : dealer!.Email)}");
+                    col.Item().Text($"GSTIN : {(string.IsNullOrWhiteSpace(dealer?.Gstin) ? "" : dealer!.Gstin)}");
+                    col.Item().PaddingTop(6).AlignCenter().Text("GST TAX INVOICE").FontSize(13).Bold();
+                });
+
+                page.Content().PaddingTop(10).Column(col =>
+                {
+                    var customerRows = new List<(string Label, string Value)>
+                    {
+                        ("Customer Name", customerName),
+                        ("Phone", customerMobile ?? "-"),
+                        ("Address", string.IsNullOrWhiteSpace(customerAddress) ? "-" : customerAddress!),
+                        ("State", string.IsNullOrWhiteSpace(customerState) ? "-" : customerState!),
+                        ("City", string.IsNullOrWhiteSpace(customerCity) ? "-" : customerCity!),
+                        ("GSTIN", string.IsNullOrWhiteSpace(customerGstin) ? "-" : customerGstin!),
+                    };
+                    col.Item().Border(1).Padding(6).Column(c =>
+                    {
+                        c.Item().Text("Customer Details").Bold();
+                        foreach (var (label, value) in customerRows)
+                        {
+                            var rowLabel = label; var rowValue = value;
+                            c.Item().Row(r =>
+                            {
+                                r.ConstantItem(110).Text(rowLabel).SemiBold();
+                                r.RelativeItem().Text(rowValue);
+                            });
+                        }
+                    });
+
+                    var vehicleRows = new List<(string Label1, string Value1, string Label2, string Value2)>
+                    {
+                        ("Job No", jobNoDisplay, "Invoice No", invoiceNo),
+                        ("Chassis No", row.ChassisNo ?? "-", "Registration No", row.RegisterNo ?? "-"),
+                        ("Motor No", row.MotorNo ?? "-", "Model", row.ModelName ?? "-"),
+                        ("Battery No", row.BatteryNo ?? "-", "Inward Type", row.InwardType ?? "-"),
+                        ("Job Status", row.JobStatus ?? "-", "Technician", row.Technician ?? "-"),
+                    };
+                    col.Item().PaddingTop(8).Border(1).Padding(6).Column(c =>
+                    {
+                        c.Item().Text("Vehicle Details").Bold();
+                        foreach (var (label1, value1, label2, value2) in vehicleRows)
+                        {
+                            var l1 = label1; var v1 = value1; var l2 = label2; var v2 = value2;
+                            c.Item().Row(r =>
+                            {
+                                r.RelativeItem().Row(rr => { rr.ConstantItem(90).Text(l1).SemiBold(); rr.RelativeItem().Text(v1); });
+                                r.RelativeItem().Row(rr => { rr.ConstantItem(90).Text(l2).SemiBold(); rr.RelativeItem().Text(v2); });
+                            });
+                        }
+                    });
+
+                    col.Item().PaddingTop(10).Table(table =>
+                    {
+                        table.ColumnsDefinition(c =>
+                        {
+                            c.ConstantColumn(22);
+                            c.RelativeColumn(2);
+                            c.RelativeColumn(4);
+                            c.RelativeColumn(1.6f);
+                            c.RelativeColumn(1.2f);
+                            c.RelativeColumn(1.6f);
+                            c.RelativeColumn(1.6f);
+                            c.RelativeColumn(1.8f);
+                            c.RelativeColumn(1.6f);
+                            c.RelativeColumn(1.8f);
+                        });
+
+                        table.Header(h =>
+                        {
+                            h.Cell().Text("Sr").Bold();
+                            h.Cell().Text("Code").Bold();
+                            h.Cell().Text("Description").Bold();
+                            h.Cell().Text("HSN").Bold();
+                            h.Cell().AlignRight().Text("Qty").Bold();
+                            h.Cell().AlignRight().Text("Rate").Bold();
+                            h.Cell().AlignRight().Text("Discount").Bold();
+                            h.Cell().AlignRight().Text("Taxable").Bold();
+                            h.Cell().AlignRight().Text("IGST").Bold();
+                            h.Cell().AlignRight().Text("Net Amount").Bold();
+                            h.Cell().ColumnSpan(10).PaddingTop(3).BorderBottom(1);
+                        });
+
+                        var sr = 1;
+                        foreach (var it in items)
+                        {
+                            table.Cell().Text(sr.ToString());
+                            table.Cell().Text(it.Code);
+                            table.Cell().Text(it.Description);
+                            table.Cell().Text(it.Hsn);
+                            table.Cell().AlignRight().Text(it.Qty.ToString("0.##"));
+                            table.Cell().AlignRight().Text(it.Rate.ToString("N2"));
+                            table.Cell().AlignRight().Text(it.Discount.ToString("N2"));
+                            table.Cell().AlignRight().Text(it.Taxable.ToString("N2"));
+                            table.Cell().AlignRight().Text(it.Igst.ToString("N2"));
+                            table.Cell().AlignRight().Text(it.NetAmount.ToString("N2"));
+                            sr++;
+                        }
+                    });
+
+                    col.Item().PaddingTop(8).Text($"Amount In Words : {NumberToIndianWords(Math.Round(invoiceTotal, 0))} Rupees Only");
+
+                    col.Item().PaddingTop(4).AlignRight().Column(c =>
+                    {
+                        void Line(string label, decimal amount, bool bold = false)
+                        {
+                            c.Item().Row(r =>
+                            {
+                                r.RelativeItem().AlignRight().Text(t => { var x = t.Span(label); if (bold) x.Bold(); });
+                                r.ConstantItem(90).AlignRight().Text(t => { var x = t.Span(amount.ToString("N2")); if (bold) x.Bold(); });
+                            });
+                        }
+                        Line("Part Total", partTotal);
+                        Line("Labour Total", labourTotal);
+                        c.Item().PaddingTop(2).LineHorizontal(1);
+                        Line("Invoice Total", invoiceTotal, bold: true);
+                    });
+
+                    col.Item().PaddingTop(12).Border(1).Padding(6).Column(c =>
+                    {
+                        c.Item().Text("HSN Summary").Bold();
+                        c.Item().PaddingTop(4).Table(table =>
+                        {
+                            table.ColumnsDefinition(cc =>
+                            {
+                                cc.RelativeColumn(1.4f);
+                                cc.RelativeColumn(1.6f);
+                                cc.RelativeColumn(1.2f);
+                                cc.RelativeColumn(1.4f);
+                                cc.RelativeColumn(1.2f);
+                                cc.RelativeColumn(1.4f);
+                                cc.RelativeColumn(1.2f);
+                                cc.RelativeColumn(1.4f);
+                            });
+                            table.Header(h =>
+                            {
+                                h.Cell().Text("HSN").Bold();
+                                h.Cell().AlignRight().Text("Taxable Value").Bold();
+                                h.Cell().AlignRight().Text("SGST Rate").Bold();
+                                h.Cell().AlignRight().Text("SGST Amt").Bold();
+                                h.Cell().AlignRight().Text("CGST Rate").Bold();
+                                h.Cell().AlignRight().Text("CGST Amt").Bold();
+                                h.Cell().AlignRight().Text("IGST Rate").Bold();
+                                h.Cell().AlignRight().Text("IGST Amt").Bold();
+                                h.Cell().ColumnSpan(8).PaddingTop(3).BorderBottom(1);
+                            });
+                            foreach (var g in hsnGroups)
+                            {
+                                var sgstRate = g.Taxable > 0 ? g.Sgst / g.Taxable * 100m : 0m;
+                                var cgstRate = g.Taxable > 0 ? g.Cgst / g.Taxable * 100m : 0m;
+                                var igstRate = g.Taxable > 0 ? g.Igst / g.Taxable * 100m : 0m;
+                                table.Cell().Text(g.Hsn);
+                                table.Cell().AlignRight().Text(g.Taxable.ToString("N2"));
+                                table.Cell().AlignRight().Text(sgstRate.ToString("N2"));
+                                table.Cell().AlignRight().Text(g.Sgst.ToString("N2"));
+                                table.Cell().AlignRight().Text(cgstRate.ToString("N2"));
+                                table.Cell().AlignRight().Text(g.Cgst.ToString("N2"));
+                                table.Cell().AlignRight().Text(igstRate.ToString("N2"));
+                                table.Cell().AlignRight().Text(g.Igst.ToString("N2"));
+                            }
+                        });
+                    });
+
+                    col.Item().PaddingTop(16).Text("Remarks :");
+                    col.Item().PaddingTop(18).Height(1);
+
+                    col.Item().PaddingTop(24).Row(sigRow =>
+                    {
+                        sigRow.RelativeItem().Column(c =>
+                        {
+                            c.Item().PaddingTop(20).LineHorizontal(1);
+                            c.Item().AlignCenter().Text("Customer Signature");
+                        });
+                        sigRow.ConstantItem(30);
+                        sigRow.RelativeItem().Column(c =>
+                        {
+                            c.Item().PaddingTop(20).LineHorizontal(1);
+                            c.Item().AlignCenter().Text("Authorized Signatory");
+                        });
+                    });
+                });
+
+                page.Footer().AlignCenter().Text("Generated by JobCardScanner from DMS.").FontSize(7).Italic();
+            });
+        });
+
+        return doc.GeneratePdf();
+    }
+
     /// <summary>
     /// Resolves one RepairBillDetail row to a rendered line-item. ItemType's own value convention
     /// (what a part line looks like vs a labour line) was NEVER confirmed anywhere in this codebase

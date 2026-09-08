@@ -771,7 +771,7 @@ function UpdateWorkflowStageCard({
             <input type="datetime-local" disabled={busy} value={expectedDeliveryAt} onChange={(e) => setExpectedDeliveryAt(e.target.value)} />
           </div>
           <div className="field">
-            <button className="btn btn-sm" style={{ backgroundColor: '#2563EB', color: '#fff', border: '1px solid #2563EB' }} disabled={busy} onClick={() => run(saveDetails, 'Technician & completion date updated.')}>Save</button>
+            <button className="btn btn-sm" disabled={busy} onClick={() => run(saveDetails, 'Technician & completion date updated.')}>Save</button>
           </div>
         </div>
       )}
@@ -838,6 +838,18 @@ const formatIST = (iso: string, opts: Intl.DateTimeFormatOptions) => new Date(is
 const formatISTTime = (iso: string) => formatIST(iso, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })
 const formatISTDateTime = (iso: string) => formatIST(iso, { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true })
 
+/** "now i start timer but still another time show current time 11.51 not shown in timer" - formats
+ * a millisecond duration as H:MM:SS (or M:SS under an hour) for WorklogCard's live elapsed-time
+ * display below. */
+function formatElapsedMs(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000))
+  const h = Math.floor(totalSeconds / 3600)
+  const m = Math.floor((totalSeconds % 3600) / 60)
+  const s = totalSeconds % 60
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`
+}
+
 /** Whether a Part/Labour suggestion can be added right now - gated on an open (not-yet-ended)
  * worklog existing, per explicit request ("Part Suggestion, Labour Suggestion not can update give
  * alret in this process start the timer"). Exported-shape helper (not exported, just shared) so
@@ -847,6 +859,20 @@ const hasOpenWorklog = (jc: JobCardDetail) => jc.worklogs.some((w) => !w.endedAt
 
 function WorklogCard({ jc, run, profileId }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>) => void; profileId?: string }) {
   const openLog = jc.worklogs.find((w) => !w.endedAt)
+
+  // "now i start timer but still another time show current time 11.51 not shown in timer" - the
+  // "Timer running since ..." line below only ever rendered once, from whatever jc.worklogs looked
+  // like the moment the page last fetched it, so it silently froze at the start time forever and
+  // never reflected that real time kept passing while the timer ran - there was nothing here to
+  // ever trigger a re-render on its own. This ticks nowMs once a second (only while a worklog is
+  // actually open, so it's a complete no-op the rest of the time - not a page-wide poller) purely
+  // so the elapsed-time text below stays live instead of static.
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => {
+    if (!openLog) return
+    const t = setInterval(() => setNowMs(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [openLog?.id])
 
   useEffect(() => {
     if (jc.status === 'Closed' && openLog) {
@@ -863,7 +889,10 @@ function WorklogCard({ jc, run, profileId }: { jc: JobCardDetail; run: (fn: () =
       <h3>Technician Work Log</h3>
       {openLog ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <p className="muted" style={{ margin: 0 }}>⏱ Timer running since {formatISTTime(openLog.startedAt)} IST.</p>
+          <p className="muted" style={{ margin: 0 }}>
+            ⏱ Timer running since {formatISTTime(openLog.startedAt)} IST - running for{' '}
+            {formatElapsedMs(nowMs - new Date(openLog.startedAt).getTime())}.
+          </p>
           <button className="btn btn-sm" style={{ background: '#dc2626', color: '#fff', border: '1px solid #dc2626' }} onClick={stopTimer}>■ Stop Timer</button>
         </div>
       ) : jc.status === 'Closed' ? (
@@ -1162,7 +1191,7 @@ function PartSuggestionCard({ jc, run, estimatesLocked, totalLockReached }: { jc
         </p>
       ) : (
       <>
-      <h4>Suggest a part</h4>
+      <h4>Suggest a part (from DMS PartsInventory)</h4>
       {!jc.baplServiceLocationCode && <p className="muted">No DMS service location on this job card - part list unavailable.</p>}
       {/* Item-code/description, QTY, Issue Type and the Add Suggestion button all in one row now,
          matching Suggest labour's layout below - Add sits at the end of the row instead of on its
