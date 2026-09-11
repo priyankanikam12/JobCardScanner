@@ -1127,7 +1127,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
               <Text style={styles.label}>Photos<Text style={styles.requiredStar}> *</Text></Text>
               <View style={{ flexDirection: 'row', gap: 10, marginBottom: 10 }}>
                 <TouchableOpacity style={styles.btn} disabled={capturingPhoto} onPress={takePhoto}>
-                  <Text style={styles.btnText}>{capturingPhoto ? 'Adding…' : '📷 Take Photo'}</Text>
+                  <Text style={styles.btnText}>{capturingPhoto ? 'Adding…' : '📷 Capture Photo'}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.btn} disabled={capturingPhoto} onPress={pickPhoto}>
                   <Text style={styles.btnText}>🖼️ Choose Photo</Text>

@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import {
-  ActivityIndicator, Animated, Easing, Image, KeyboardAvoidingView, Platform, ScrollView,
+  ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView,
   StyleSheet, Text, TextInput, TouchableOpacity, View,
 } from 'react-native'
 import { useAuth } from '../auth/AuthContext'
@@ -13,20 +13,12 @@ type DealerStep = 'login' | 'forgot' | 'reset'
 
 // BGauss brand palette - mirrors web/src/pages/staff/LoginPage.css exactly (navy #0b1220/#101828
 // + volt-green #8ef542 accents, the same pair the rest of the staff app's sidebar uses). Web's
-// hero panel (LoginPage.tsx) uses the same three PNGs this screen now bundles from
-// mobile/assets/: BGauss_Logo.png (the full wordmark, shown "hero" style at the top - mirrors
-// web's <img className="jcs-hero-logo">), BG_Logo.png (a small square mark - mirrors web's
-// narrow-screen ".jcs-brand-mobile" fallback badge next to the "JobCardScanner" title), and
-// Bg0-scooty.png (the floating scooter illustration under the title - mirrors web's
-// ".jcs-hero-scooter" float animation, reproduced below with the RN Animated API since there's
-// no CSS @keyframes here).
+// hero panel uses BGauss_Logo.png/Bg0-scooty.png, which this repo checkout doesn't have a copy of
+// to bundle into the mobile app - the "BG" monogram badge below stands in for the real logo until
+// those PNGs are available to embed; swap BrandBadge's content for an <Image> once they are.
 const NAVY = '#0b1220'
 const NAVY_CARD = '#101828'
 const VOLT = '#8ef542'
-
-const bgaussLogo = require('../../assets/BGauss_Logo.png')
-const bgLogoBadge = require('../../assets/BG_Logo.png')
-const scootyImg = require('../../assets/Bg0-scooty.png')
 
 /** Mirrors web/src/pages/staff/LoginPage.tsx: two tabs (Dealer/Workshop local login vs Staff
  * Microsoft/Azure AD), with the same forgot/reset-password sub-flow under the Dealer tab, and the
@@ -50,21 +42,6 @@ export function LoginScreen() {
   const [info, setInfo] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [focusedField, setFocusedField] = useState<string | null>(null)
-
-  // Mirrors web's ".jcs-hero-scooter" CSS @keyframes float (0/100% translateY(0), 50%
-  // translateY(-10px), 4.5s ease-in-out, infinite) - there's no CSS here, so the same motion is
-  // reproduced with the Animated API: an up-then-back loop, matched to the same 4.5s period.
-  const scooterFloat = useRef(new Animated.Value(0)).current
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(scooterFloat, { toValue: -10, duration: 2250, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-        Animated.timing(scooterFloat, { toValue: 0, duration: 2250, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-      ]),
-    )
-    loop.start()
-    return () => loop.stop()
-  }, [scooterFloat])
 
   const resetMessages = () => { setError(null); setInfo(null) }
 
@@ -136,22 +113,11 @@ export function LoginScreen() {
         <View style={styles.glowGreen} pointerEvents="none" />
         <View style={styles.glowBlue} pointerEvents="none" />
 
-        {/* "At the start" of the screen - mirrors web's desktop hero <img className="jcs-hero-logo"> */}
-        <Image source={bgaussLogo} style={styles.heroLogo} resizeMode="contain" />
-
         <View style={styles.heroRow}>
           <BrandBadge />
           <Text style={styles.title}>JobCardScanner</Text>
         </View>
         <Text style={styles.subtitle}>EV Two-Wheeler Workshop Management</Text>
-
-        <Animated.Image
-          source={scootyImg}
-          style={[styles.scooter, { transform: [{ translateY: scooterFloat }] }]}
-          resizeMode="contain"
-          accessibilityElementsHidden
-          importantForAccessibility="no"
-        />
 
         <View style={styles.card}>
           <View style={styles.tabs}>
@@ -323,7 +289,11 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 }
 
 function BrandBadge() {
-  return <Image source={bgLogoBadge} style={styles.badge} resizeMode="contain" />
+  return (
+    <View style={styles.badge}>
+      <Text style={styles.badgeText}>BG</Text>
+    </View>
+  )
 }
 
 /** Four-color Microsoft "windows" mark, built from plain colored squares - matches web's inline
@@ -348,19 +318,11 @@ const styles = StyleSheet.create({
   scroll: { flexGrow: 1, justifyContent: 'center', padding: 24, paddingTop: 64, paddingBottom: 40 },
   glowGreen: { position: 'absolute', top: -60, left: -60, width: 220, height: 220, borderRadius: 110, backgroundColor: 'rgba(142, 245, 66, 0.14)' },
   glowBlue: { position: 'absolute', bottom: -80, right: -60, width: 260, height: 260, borderRadius: 130, backgroundColor: 'rgba(37, 99, 235, 0.18)' },
-  // Mirrors web's .jcs-hero-logo (height 42, max-width 220, centered above the heading).
-  heroLogo: { height: 42, width: 220, alignSelf: 'center', marginBottom: 20 },
   heroRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 4 },
-  // Small square mark next to "JobCardScanner" - was a plain "BG" text badge on a volt-green
-  // square; now the real BG_Logo.png image at the same footprint (no more background square -
-  // the PNG carries its own colors/background).
-  badge: { width: 34, height: 34 },
+  badge: { width: 34, height: 34, borderRadius: 9, backgroundColor: VOLT, alignItems: 'center', justifyContent: 'center' },
+  badgeText: { color: NAVY_CARD, fontWeight: '800', fontSize: 14 },
   title: { fontSize: 24, fontWeight: '800', color: '#fff', textAlign: 'center' },
   subtitle: { fontSize: 13, color: '#9ca3af', marginTop: 4, marginBottom: 28, textAlign: 'center' },
-  // Mirrors web's .jcs-hero-scooter (width min(360px, 80%), floats via the Animated loop set up
-  // above). Capped at 260 here rather than 360 - phone-width screens have much less headroom
-  // than web's desktop hero panel.
-  scooter: { width: '65%', maxWidth: 260, height: 140, alignSelf: 'center', marginBottom: 8 },
   card: {
     width: '100%',
     maxWidth: 420,

@@ -477,7 +477,7 @@ function PhotosCard({ jc, run }: { jc: JobCardDetail; run: Run }) {
       </View>
       <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
         <TouchableOpacity style={styles.btn} disabled={uploading} onPress={takePhoto}>
-          <Text style={styles.btnText}>{uploading ? 'Uploading…' : '📷 Take Photo'}</Text>
+          <Text style={styles.btnText}>{uploading ? 'Uploading…' : '📷 Capture Photo'}</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.btn} disabled={uploading} onPress={pickPhoto}>
           <Text style={styles.btnText}>🖼️ Choose Photo</Text>
