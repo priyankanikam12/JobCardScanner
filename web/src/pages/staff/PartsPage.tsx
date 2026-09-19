@@ -41,15 +41,20 @@ export function PartsPage() {
     if (!profile?.dealerId) return
     staffApi.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: profile.dealerId } })
       .then(({ data }) => {
-        setWorkshops(data)
+        // 2026-09-18 Work Area scoping (same rationale as JobCardWizardPage/MaterialTransferPage):
+        // only offer this user's own assigned location(s) when they have any set; empty = unrestricted.
+        const scoped = profile?.workLocationCodes?.length
+          ? data.filter((w) => profile.workLocationCodes.includes(w.locCode))
+          : data
+        setWorkshops(scoped)
         // Auto-select this dealer's first workshop location so the DMS Parts Inventory section
         // below renders as soon as the page loads, with no manual search needed - the debounced
         // [q, locationCode] effect below picks this up and fires search() itself.
-        if (data.length > 0) setLocationCode((prev) => prev || data[0].locCode)
+        if (scoped.length > 0) setLocationCode((prev) => prev || scoped[0].locCode)
       })
       .catch(() => setWorkshops([]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile?.dealerId])
+  }, [profile?.dealerId, profile?.workLocationCodes])
 
   // Item 11: search-as-you-type (debounced) instead of requiring Enter/the Search button - the
   // backend (/api/parts?q=) already does a case-insensitive substring match on name/part

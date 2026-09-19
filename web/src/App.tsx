@@ -10,7 +10,13 @@ import { JobCardWizardPage } from './pages/staff/JobCardWizardPage'
 import { JobCardDetailPage } from './pages/staff/JobCardDetailPage'
 import { BaplJobCardDetailPage } from './pages/staff/BaplJobCardDetailPage'
 import { PartsPage } from './pages/staff/PartsPage'
+import { ServiceHistoryPage } from './pages/staff/ServiceHistoryPage'
+import { LabourMasterPage } from './pages/staff/LabourMasterPage'
+import { VehicleSalePage } from './pages/staff/VehicleSalePage'
+import { MaterialTransferPage } from './pages/staff/MaterialTransferPage'
+import { RepairBillPage } from './pages/staff/RepairBillPage'
 import { AdminUsersPage } from './pages/staff/AdminUsersPage'
+import { EmployeesPage } from './pages/staff/EmployeesPage'
 import { AdminWorkflowPage } from './pages/staff/AdminWorkflowPage'
 import { ReportsPage } from './pages/staff/ReportsPage'
 import { PortalLoginPage } from './pages/portal/PortalLoginPage'
@@ -50,8 +56,31 @@ export default function App() {
             path, so it never collides with /jobcards/:id above (React Router matches by segment
             count/specificity, not just prefix). */}
         <Route path="/jobcards/bapl/:jobCardHeaderId" element={<BaplJobCardDetailPage />} />
+        <Route path="/service-history" element={<ServiceHistoryPage />} />
+        {/* 2026-09-19 "Labour Master" - gated to match the backend's WorkshopManagerUp policy
+            (LabourMasterController) exactly, so a role that would get a 403 from the API never
+            even sees the page render. */}
+        <Route
+          path="/labour-master"
+          element={
+            <RequireRole roles={['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
+              <LabourMasterPage />
+            </RequireRole>
+          }
+        />
+        <Route path="/vehicle-sale" element={<VehicleSalePage />} />
         <Route path="/parts" element={<PartsPage />} />
+        <Route path="/material-transfer" element={<MaterialTransferPage />} />
+        <Route path="/repair-bill" element={<RepairBillPage />} />
         <Route path="/reports" element={<ReportsPage />} />
+        <Route
+          path="/employees"
+          element={
+            <RequireRole roles={['DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
+              <EmployeesPage />
+            </RequireRole>
+          }
+        />
         <Route
           path="/admin/users"
           element={

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using JobCardScanner.Api.Auth;
 using JobCardScanner.Api.Data;
 using JobCardScanner.Api.Services;
@@ -56,6 +57,22 @@ public class AuthController : ControllerBase
             user.AvatarColor,
             user.LastLoginAt,
             AuthType = user.AuthType.ToString(),
+            // 2026-09-18: the Job Card wizard's "Service Location (workshop)" dropdown (and the
+            // equivalent picker on Material Transfer) was listing EVERY workshop for the user's
+            // dealer, even for an Employee scoped to just one or a few Work Area locations - the
+            // dropdown itself had no way to know which locations this user is actually allowed to
+            // use, since /api/auth/me never told the frontend. Server-side enforcement
+            // (JobCardsController.Create, DmsBaplDataController) already blocks a request for an
+            // out-of-scope location either way, but the UI should not offer a choice it's only
+            // going to reject - see User.WorkLocationCodes's doc comment for the full mechanism.
+            WorkLocationCodes = DeserializeLocationCodes(user.WorkLocationCodes),
         });
+    }
+
+    private static IReadOnlyList<string> DeserializeLocationCodes(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return Array.Empty<string>();
+        try { return JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>(); }
+        catch { return Array.Empty<string>(); } // tolerate hand-edited/corrupt data rather than 500 this endpoint
     }
 }

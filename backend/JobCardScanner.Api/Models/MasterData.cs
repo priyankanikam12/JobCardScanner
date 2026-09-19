@@ -55,7 +55,7 @@ public class Dealer
     /// JobCardScanner doesn't have BAPL's employee master, so there's nothing to resolve it against
     /// yet.</summary>
     [MaxLength(30)] public string? AssignedRepCode { get; set; }
-    /// <summary>DMS's own Dealercode (DealerMaster.Dealercode in the separate BAPLDMSvad
+    /// <summary>BAPL DMS's own Dealercode (DealerMaster.Dealercode in the separate BAPLDMSvad
     /// database - see Services/BaplDmsService.cs), captured when this dealer is resolved via the
     /// Job Card Wizard's "search BAPL Dealer/Workshop" picker. Deliberately a SEPARATE field from
     /// <see cref="Code"/> (which for BaplImport-sourced dealers holds BAPL ERP's CustomerCode from
@@ -103,6 +103,38 @@ public class User
     [MaxLength(100)] public string? PasswordResetTokenHash { get; set; }
     public DateTime? PasswordResetExpiresAt { get; set; }
     public bool MustChangePassword { get; set; } = false;
+
+    // ---------------- Employee profile + work-area scoping (2026-09-17 "Employees" page) ----------------
+    // Free-text State/City/Pincode - deliberately NOT a cascading State->City->Pincode master
+    // (no verified India pincode/city dataset exists anywhere in this codebase or its connected
+    // databases, and fabricating one risks silently wrong data) - see EmployeesPage.tsx's doc
+    // comment for the honest version of this: State is a fixed dropdown (standard Indian
+    // states/UTs), City is a free-text/typeahead box, Pincode is a plain validated 6-digit field,
+    // none of the three are auto-derived from each other.
+    [MaxLength(100)] public string? State { get; set; }
+    [MaxLength(100)] public string? City { get; set; }
+    [MaxLength(10)] public string? Pincode { get; set; }
+    public DateOnly? DateOfJoining { get; set; }
+    /// <summary>Free-text job title as shown in the Employees grid ("Supervisor"/"Mechanic"/etc,
+    /// exactly as picked in the Designation dropdown) - kept SEPARATE from <see cref="Role"/>
+    /// (which drives every [Authorize(Policy=...)] check in this app and has no "Supervisor"/
+    /// "Mechanic" values of its own). EmployeesPage.tsx maps Designation -> Role automatically on
+    /// save (Supervisor -> WorkshopManager, Mechanic -> ServiceAdvisor - see that page's doc
+    /// comment for exactly why ServiceAdvisor and not the seemingly-closer-sounding Technician
+    /// role) so a created employee can actually sign in and use the app, while this field
+    /// preserves the literal job-title wording for display.</summary>
+    [MaxLength(50)] public string? Designation { get; set; }
+    /// <summary>JSON array of BAPL DMS workshop LocCodes (e.g. ["CUS0288W5","CUS0071W1"]) this
+    /// user is allowed to work in - the Employees page's "Work Area" checkbox list. Stored as a
+    /// JSON string rather than a join table because the "locations" master itself lives in a
+    /// separate database (BAPL DMS's own LocationMaster via BaplDmsService, not anything in
+    /// JobCardScannerDb) - there is no local table to foreign-key against. Empty/null means
+    /// UNRESTRICTED (every existing user before this feature shipped, and any admin who hasn't
+    /// assigned specific locations yet) - see JobCardsController/DmsBaplDataController's location-
+    /// scoping checks, which only apply a filter when this is non-empty. Stamped into the sign-in
+    /// token as the "app_work_locations" claim (DealerJwtTokenService/AppClaimsTransformation) -
+    /// changing it takes effect on that user's NEXT sign-in, same staleness as a Role change.</summary>
+    [MaxLength(2000)] public string? WorkLocationCodes { get; set; }
 }
 
 public class Customer
@@ -162,7 +194,7 @@ public class Vehicle
     [MaxLength(50)] public string? MotorNo { get; set; }
     [MaxLength(50)] public string? SerialNo { get; set; }
     /// <summary>Controller/converter/charger serial numbers - added alongside BatteryNo/MotorNo
-    /// above specifically so a DMS chassis/reg-no lookup (BaplDmsService.LookupVehicleAsync)
+    /// above specifically so a BAPL DMS chassis/reg-no lookup (BaplDmsService.LookupVehicleAsync)
     /// can auto-fill everything it returns for this vehicle, not just the two fields this model
     /// already tracked. Optional/nullable since a manually-added vehicle (not sourced from BAPL
     /// DMS) has no reason to fill these in.</summary>
@@ -171,7 +203,7 @@ public class Vehicle
     [MaxLength(50)] public string? ChargerNo { get; set; }
     public DateOnly? PurchaseDate { get; set; }
     public DateOnly? LastServiceDate { get; set; }
-    /// <summary>From DMS's VehicleSaleBillDetail.InsExpDate / ModelwiseServiceSchedule-derived
+    /// <summary>From BAPL DMS's VehicleSaleBillDetail.InsExpDate / ModelwiseServiceSchedule-derived
     /// due date (see BaplDmsService) - purely informational fields carried over on auto-fill, not
     /// computed or enforced by this app.</summary>
     public DateOnly? InsuranceExpiry { get; set; }

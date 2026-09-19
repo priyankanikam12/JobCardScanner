@@ -94,6 +94,11 @@ public class AppClaimsTransformation : IClaimsTransformation
         if (user.DealerId.HasValue)
             identity.AddClaim(new Claim("app_dealer_id", user.DealerId.Value.ToString()));
         identity.AddClaim(new Claim("app_name", user.Name));
+        // 2026-09-17 "Employees" page - same Work Area location-scoping claim DealerJwtTokenService
+        // stamps for local sign-ins, added here too so an Azure AD staff account assigned specific
+        // locations is scoped the same way. Empty/null = unrestricted (unchanged behavior).
+        if (!string.IsNullOrWhiteSpace(user.WorkLocationCodes))
+            identity.AddClaim(new Claim("app_work_locations", user.WorkLocationCodes));
 
         return principal;
     }

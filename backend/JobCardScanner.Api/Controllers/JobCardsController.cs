@@ -96,6 +96,16 @@ public class JobCardsController : ControllerBase
         {
             query = query.Where(j => j.DealerId == _currentUser.DealerId);
         }
+        // 2026-09-17 "Employees" page - Work Area location scoping (see User.WorkLocationCodes's
+        // doc comment): a user assigned to specific DMS workshop locations only sees job cards
+        // opened at one of THEIR locations, on top of (not instead of) the dealer scoping above.
+        // Empty = unrestricted, so this is a no-op for every user before this feature shipped.
+        var allowedLocations = _currentUser.WorkLocationCodes;
+        if (allowedLocations.Count > 0)
+        {
+            var allowedLocationsList = allowedLocations.ToList(); // EF Core translates List<T>.Contains to SQL IN (...) reliably; IReadOnlyList<T> is not guaranteed to
+            query = query.Where(j => j.BaplServiceLocationCode != null && allowedLocationsList.Contains(j.BaplServiceLocationCode));
+        }
         var effectiveDealerId = isOrgWideRole ? dealerId : _currentUser.DealerId;
         if (status.HasValue) query = query.Where(j => j.Status == status);
         if (technicianId.HasValue) query = query.Where(j => j.AssignedTechnicianId == technicianId);
@@ -103,7 +113,22 @@ public class JobCardsController : ControllerBase
         // straight to the filtered list by workflow stage, not just by the coarser Status enum.
         if (!string.IsNullOrWhiteSpace(stageKey)) query = query.Where(j => j.CurrentStage!.StageKey == stageKey);
         if (!string.IsNullOrWhiteSpace(q))
-            query = query.Where(j => j.JobCardNumber.Contains(q) || j.Customer!.Name.Contains(q) || j.Customer!.Mobile.Contains(q) || (j.Vehicle!.RegNo != null && j.Vehicle.RegNo.Contains(q)));
+        {
+            // 2026-09-18: a registration number is commonly typed/stored with inconsistent
+            // spacing/hyphenation ("MH12AB1234" vs "MH12 AB 1234" vs "MH-12-AB-1234"), so a plain
+            // Contains(q) against the stored RegNo can silently miss a real row when the search
+            // term's formatting differs from what's stored. Strip spaces/hyphens from BOTH sides
+            // before comparing (EF Core translates .Replace() on strings to SQL REPLACE) so a
+            // search matches regardless of formatting - mirrors the same fix already applied to
+            // BaplDmsService's LookupVehicleAsync/SearchVehiclesAsync. JobCardNumber/Name/Mobile
+            // are left untouched; they don't have this formatting-inconsistency problem.
+            var normalizedQ = q.Replace(" ", "").Replace("-", "");
+            query = query.Where(j =>
+                j.JobCardNumber.Contains(q) ||
+                j.Customer!.Name.Contains(q) ||
+                j.Customer!.Mobile.Contains(q) ||
+                (j.Vehicle!.RegNo != null && j.Vehicle.RegNo.Replace(" ", "").Replace("-", "").Contains(normalizedQ)));
+        }
 
         // Dashboard KPI-card deep-link filters - each mirrors the exact same WHERE clause
         // DashboardController.Kpis uses to compute the matching card's number, so clicking a card
@@ -192,6 +217,12 @@ public class JobCardsController : ControllerBase
         // 404s now instead of opening.
         var jc = await FullQuery().FirstOrDefaultAsync(j => j.Id == id && j.BaplJobCardHeaderId != null);
         if (jc is null) return NotFound();
+        // 2026-09-17 "Employees" page - same Work Area location scoping as List() above. A job
+        // card at a location outside the caller's Work Area 404s, same as one that doesn't exist -
+        // not a 403, so this doesn't reveal that a job card exists at a location the caller can't see.
+        var allowedLocationsForGet = _currentUser.WorkLocationCodes;
+        if (allowedLocationsForGet.Count > 0 && (jc.BaplServiceLocationCode is null || !allowedLocationsForGet.Contains(jc.BaplServiceLocationCode, StringComparer.OrdinalIgnoreCase)))
+            return NotFound();
         await SyncClosedFromDmsAsync(new[] { jc }, HttpContext.RequestAborted);
         return Ok(Detail(jc));
     }
@@ -346,6 +377,13 @@ public class JobCardsController : ControllerBase
             return BadRequest(new { message = "This dealer isn't linked to DMS yet, so a job card can't be created for it. Link the dealer to DMS first (see the Job Card Wizard's dealer search)." });
         if (!req.BaplJobTypeId.HasValue || !req.BaplServiceHeadId.HasValue || !req.BaplServiceTypeId.HasValue)
             return BadRequest(new { message = "Job Type, Service Head and Service Type are required - DMS needs all three to create the job card there." });
+
+        // 2026-09-17 "Employees" page - Work Area location scoping (see User.WorkLocationCodes's
+        // doc comment). Empty WorkLocationCodes = unrestricted, unchanged from before this feature.
+        // A user WITH assigned locations can only create a job card at one of them.
+        var allowedLocations = _currentUser.WorkLocationCodes;
+        if (allowedLocations.Count > 0 && (string.IsNullOrWhiteSpace(req.BaplServiceLocationCode) || !allowedLocations.Contains(req.BaplServiceLocationCode, StringComparer.OrdinalIgnoreCase)))
+            return StatusCode(403, new { message = "You're not assigned to this service location. Ask your admin to add it under your Work Area on Admin -> Users." });
 
         BaplDmsCreateJobCardResult dmsResult;
         try

@@ -154,6 +154,8 @@ builder.Services.AddMemoryCache();
 builder.Services.AddScoped<IAzureAdDirectoryService, AzureAdDirectoryService>();
 builder.Services.AddScoped<IBaplDealerService, BaplDealerService>();
 builder.Services.AddScoped<IBaplDmsService, BaplDmsService>();
+builder.Services.AddScoped<IDmsBaplDataService, DmsBaplDataService>();
+builder.Services.AddScoped<ILabourMasterImportService, LabourMasterImportService>();
 builder.Services.AddScoped<IJobCardNumberingService, JobCardNumberingService>();
 builder.Services.AddScoped<IInvoicePdfService, InvoicePdfService>();
 builder.Services.AddScoped<IEstimatePdfService, EstimatePdfService>();
@@ -334,6 +336,20 @@ if (app.Environment.IsDevelopment())
                 ALTER TABLE [dbo].[Customers] ADD [PasswordResetTokenHash] nvarchar(100) NULL;
             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Customers]') AND name = 'PasswordResetExpiresAt')
                 ALTER TABLE [dbo].[Customers] ADD [PasswordResetExpiresAt] datetime2 NULL;
+            -- 2026-09-17 ""Employees"" page (Admin -> Users) - employee profile + work-area
+            -- location scoping columns on Users. See MasterData.cs's User class doc comments.
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Users]') AND name = 'State')
+                ALTER TABLE [dbo].[Users] ADD [State] nvarchar(100) NULL;
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Users]') AND name = 'City')
+                ALTER TABLE [dbo].[Users] ADD [City] nvarchar(100) NULL;
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Users]') AND name = 'Pincode')
+                ALTER TABLE [dbo].[Users] ADD [Pincode] nvarchar(10) NULL;
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Users]') AND name = 'DateOfJoining')
+                ALTER TABLE [dbo].[Users] ADD [DateOfJoining] date NULL;
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Users]') AND name = 'Designation')
+                ALTER TABLE [dbo].[Users] ADD [Designation] nvarchar(50) NULL;
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Users]') AND name = 'WorkLocationCodes')
+                ALTER TABLE [dbo].[Users] ADD [WorkLocationCodes] nvarchar(2000) NULL;
         ");
         Console.WriteLine("[Startup] Self-healing column migrations checked/applied.");
     }
@@ -371,7 +387,7 @@ if (app.Environment.IsDevelopment())
 //     Repair Completed, per explicit request - see JobCardsController.cs/EstimatesController.cs's
 //     calls into WorkflowStageAutomation for what now auto-advances a job card onto it.
 // Deliberately NOT included: add-bapldms-jobcard-media-table.sql and
-// add-bapldms-jobcardheader-priority-column.sql target BAPLDMSvad (DMS's own database, a
+// add-bapldms-jobcardheader-priority-column.sql target BAPLDMSvad (BAPL DMS's own database, a
 // separate connection this DbContext does not own) - those still need running by hand against that
 // database specifically if not already applied.
 // ---------------------------------------------------------------------

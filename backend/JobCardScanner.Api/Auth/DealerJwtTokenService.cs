@@ -40,6 +40,11 @@ public class DealerJwtTokenService : IDealerJwtTokenService
         };
         if (user.DealerId.HasValue)
             claims.Add(new Claim("app_dealer_id", user.DealerId.Value.ToString()));
+        // 2026-09-17 "Employees" page - Work Area location scoping (see User.WorkLocationCodes's
+        // doc comment). Empty/null means unrestricted, so nothing is added in that case - every
+        // existing local user before this feature shipped keeps working exactly as before.
+        if (!string.IsNullOrWhiteSpace(user.WorkLocationCodes))
+            claims.Add(new Claim("app_work_locations", user.WorkLocationCodes));
 
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secret));
         var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);

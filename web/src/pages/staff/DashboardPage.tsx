@@ -3,7 +3,15 @@ import { Link, useNavigate } from 'react-router-dom'
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
+import { NAV_ITEMS } from '../../components/StaffLayout'
 import type { CorporateDashboardData, CorporateDashboardFilters, DashboardKpis } from '../../types'
+
+// 2026-09-18 "in dashboardpage add this all page landing page linking" - every sidebar destination,
+// as its own clickable card, so the dashboard works as a landing page to the whole app and not just
+// the 4 hand-picked shortcuts in ACTION_CARDS/CORPORATE_ACTION_CARDS below. Reuses StaffLayout's own
+// NAV_ITEMS (now exported) rather than a second hand-maintained list, so a page's role-gating can't
+// drift between the sidebar and this grid - Dashboard itself is excluded since you're already on it.
+const ALL_PAGES = NAV_ITEMS.filter((n) => n.to !== '/dashboard')
 
 /**
  * The dashboard branches by role, same as the two screens this was modelled on: everyone
@@ -23,24 +31,20 @@ export function DashboardPage() {
 // overdue/createdToday/deliveredToday/closedThisMonth/warrantyOnly/pendingBucket), each mirroring
 // the same WHERE clause DashboardController.Kpis used to compute that same number, so a click
 // always lands on the set of job cards that make up the count just shown.
-const TILES: { key: keyof DashboardKpis; label: string; icon: string; to: string }[] = [
+// 2026-09-18: `actionNeeded` matches the BTL reference screenshot's orange "ACTION NEEDED" pill
+// (see .kpi-badge-action in global.css) - set on the three tiles that represent something waiting
+// on THIS dealer to act (parts to arrange, a customer approval to chase, a job stuck pending),
+// as opposed to the others which are just informational counts.
+const TILES: { key: keyof DashboardKpis; label: string; icon: string; to: string; actionNeeded?: boolean }[] = [
   { key: 'vehiclesReceivedToday', label: 'Vehicles Received Today', icon: '🚗', to: '/jobcards?createdToday=true' },
   { key: 'totalOpen', label: 'Open Job Cards', icon: '📋', to: '/jobcards?excludeClosed=true' },
   { key: 'underService', label: 'Under Service', icon: '🔧', to: '/jobcards?stageKey=in_repair' },
-  { key: 'waitingForParts', label: 'Waiting for Parts', icon: '📦', to: '/jobcards?stageKey=part_suggestion' },
-  { key: 'waitingCustomerApproval', label: 'Waiting Customer Approval', icon: '✅', to: '/jobcards?status=PendingCustomerApproval' },
+  { key: 'waitingForParts', label: 'Waiting for Parts', icon: '📦', to: '/jobcards?stageKey=part_suggestion', actionNeeded: true },
+  { key: 'waitingCustomerApproval', label: 'Waiting Customer Approval', icon: '⏳', to: '/jobcards?status=PendingCustomerApproval', actionNeeded: true },
   { key: 'vehiclesReady', label: 'Vehicles Ready', icon: '🏁', to: '/jobcards?stageKey=ready_for_delivery' },
   { key: 'vehiclesDeliveredToday', label: 'Vehicles Delivered', icon: '🚀', to: '/jobcards?deliveredToday=true' },
-  { key: 'pendingJobCards', label: 'Pending Job Cards', icon: '⏳', to: '/jobcards?pendingBucket=true' },
+  { key: 'pendingJobCards', label: 'Pending Job Cards', icon: '⏳', to: '/jobcards?pendingBucket=true', actionNeeded: true },
   { key: 'warrantyJobsOpen', label: 'Warranty Jobs', icon: '🛡️', to: '/jobcards?warrantyOnly=true&excludeClosed=true' },
-]
-
-const QUICK_LINKS: { label: string; to: string }[] = [
-  { label: 'Open Job Cards', to: '/jobcards' },
-  { label: 'Waiting for Parts', to: '/jobcards?stageKey=part_suggestion' },
-  { label: 'Awaiting Approval', to: '/jobcards?status=PendingCustomerApproval' },
-  { label: 'Ready for Pickup', to: '/jobcards?stageKey=ready_for_delivery' },
-  { label: 'Reports', to: '/reports' },
 ]
 
 function DealerDashboard() {
@@ -61,14 +65,30 @@ function DealerDashboard() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
-        <div>
-          <h2 style={{ margin: 0 }}>Dealer Dashboard</h2>
-          <p className="muted" style={{ margin: '4px 0 0' }}>Live workshop operations overview</p>
-        </div>
-        {hasRole('ServiceAdvisor', 'WorkshopManager', 'DealerAdmin') && (
-          <Link className="btn btn-primary" to="/jobcards/new">+ New Job Card</Link>
-        )}
+      <div style={{ marginBottom: 20 }}>
+        <h2 style={{ margin: 0 }}>Dealer Dashboard</h2>
+        <p className="muted" style={{ margin: '4px 0 0' }}>Live workshop operations overview</p>
+      </div>
+
+      {/* 2026-09-19 "remove 4 kpi cards from dashboard it will duplicate" - you clarified this
+          meant the top action-card row (New Job Card, Job Cards, Reports & Search, Employees):
+          removed outright, since "All Pages" right below already links to Job Cards, Reports &
+          Search and Employees, and New Job Card is one click away from the Job Cards page itself -
+          keeping both rows was showing the same destinations twice. */}
+      <div style={{ marginBottom: 8 }}>
+        <h3 style={{ marginBottom: 2 }}>All Pages</h3>
+        <p className="muted" style={{ marginTop: 0 }}>Every page you have access to, in one place.</p>
+      </div>
+      <div className="action-card-grid">
+        {ALL_PAGES.filter((n) => !n.roles || hasRole(...n.roles)).map((n, i) => (
+          <Link key={n.to} to={n.to} className={`action-card aa-a${(i % 6) + 1}`}>
+            <div className="action-card-icon">{n.icon}</div>
+            <div>
+              <div className="action-card-title">{n.label}</div>
+              <div className="action-card-subtitle">{n.subtitle ?? n.label}</div>
+            </div>
+          </Link>
+        ))}
       </div>
 
       <div className="kpi-grid">
@@ -77,6 +97,7 @@ function DealerDashboard() {
           // TILES' doc comment above for how each `to` matches DashboardController.Kpis' own
           // computation.
           <Link key={t.key} to={t.to} className={`kpi kpi-a${(i % 6) + 1}`} style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
+            {t.actionNeeded && <span className="kpi-badge-action">Action Needed</span>}
             <div className="kpi-icon">{t.icon}</div>
             <div className="value">{kpis[t.key] as number}</div>
             <div className="label">{t.label}</div>
@@ -107,15 +128,6 @@ function DealerDashboard() {
           <div className="label">
             Customer Satisfaction{kpis.csat.ratingsCount > 0 ? ` (${kpis.csat.ratingsCount} ratings)` : ' (no ratings yet)'}
           </div>
-        </div>
-      </div>
-
-      <div className="card">
-        <h3>Quick links</h3>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {QUICK_LINKS.map((l) => (
-            <Link key={l.label} to={l.to} className="btn btn-sm">{l.label}</Link>
-          ))}
         </div>
       </div>
 
@@ -161,7 +173,17 @@ interface CorporateFilterState {
 
 const EMPTY_FILTERS: CorporateFilterState = { region: '', state: '', city: '', dealerId: '', model: '', warranty: '' }
 
+// Same top action-card treatment as the Dealer Dashboard (see ACTION_CARDS above) - no role
+// filtering needed here since only Corporate/System Admin ever render this component at all.
+const CORPORATE_ACTION_CARDS: { label: string; subtitle: string; icon: string; to: string; featured?: boolean }[] = [
+  { label: 'Job Cards', subtitle: 'Browse job cards across every dealer', icon: '📋', to: '/jobcards' },
+  { label: 'Reports & Search', subtitle: 'Excel & PDF, by period, state, dealer', icon: '📊', to: '/reports', featured: true },
+  { label: 'Manage Users & Activity', subtitle: 'Add staff, edit roles and Work Area', icon: '👥', to: '/admin/users' },
+  { label: 'Admin: Workflow', subtitle: 'Configure job card stages', icon: '⚙️', to: '/admin/workflow' },
+]
+
 function CorporateDashboard() {
+  const { hasRole } = useStaffAuth() // used by the "All Pages" grid's role filter below
   const [filterOptions, setFilterOptions] = useState<CorporateDashboardFilters | null>(null)
   const [filters, setFilters] = useState<CorporateFilterState>(EMPTY_FILTERS)
   const [data, setData] = useState<CorporateDashboardData | null>(null)
@@ -192,6 +214,38 @@ function CorporateDashboard() {
     <div>
       <h2 style={{ marginBottom: 4 }}>Corporate Dashboard</h2>
       <p className="muted" style={{ marginTop: 0 }}>Consolidated visibility across all dealers</p>
+
+      <div className="action-card-grid">
+        {CORPORATE_ACTION_CARDS.map((a, i) => (
+          <Link key={a.label} to={a.to} className={`action-card ${a.featured ? 'action-card-featured' : `aa-a${(i % 6) + 1}`}`}>
+            <div className="action-card-icon">{a.icon}</div>
+            <div>
+              <div className="action-card-title">{a.label}</div>
+              <div className="action-card-subtitle">{a.subtitle}</div>
+            </div>
+          </Link>
+        ))}
+      </div>
+
+      <div style={{ marginBottom: 8 }}>
+        <h3 style={{ marginBottom: 2 }}>All Pages</h3>
+        <p className="muted" style={{ marginTop: 0 }}>Every page you have access to, in one place.</p>
+      </div>
+      <div className="action-card-grid">
+        {/* No role filter needed here beyond what's already on ALL_PAGES itself - only
+           Corporate/System Admin ever render this component, and every restricted NAV_ITEMS entry
+           already includes both of those roles (see StaffLayout.tsx), so nothing here would ever
+           be hidden from this dashboard anyway. Filtered anyway for safety if that ever changes. */}
+        {ALL_PAGES.filter((n) => !n.roles || hasRole(...n.roles)).map((n, i) => (
+          <Link key={n.to} to={n.to} className={`action-card aa-a${(i % 6) + 1}`}>
+            <div className="action-card-icon">{n.icon}</div>
+            <div>
+              <div className="action-card-title">{n.label}</div>
+              <div className="action-card-subtitle">{n.subtitle ?? n.label}</div>
+            </div>
+          </Link>
+        ))}
+      </div>
 
       <div className="card" style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
         <select value={filters.region} onChange={(e) => setFilters({ ...filters, region: e.target.value })}>
@@ -248,6 +302,7 @@ function CorporateDashboard() {
                region/state/city/dealer/model filter bar above isn't passed through - JobCardsListPage
                doesn't support those dimensions today, only status/stageKey/q. */}
             <Link to="/jobcards?excludeClosed=true" className="kpi kpi-a4" style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
+              <span className="kpi-badge-action">Action Needed</span>
               <div className="kpi-icon">🚗</div>
               <div className="value">{data.pendingVehicles}</div>
               <div className="label">Pending Vehicles</div>

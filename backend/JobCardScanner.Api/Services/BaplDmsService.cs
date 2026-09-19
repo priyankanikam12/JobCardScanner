@@ -824,6 +824,13 @@ public class BaplDmsService : IBaplDmsService
         // real column names - only a `SELECT *` you actually ran confirms that. lg.City/lg.Id/
         // lg.LedgerName/lg.MobileNumber were NOT in the error this raised the first time (only
         // CityId/CityName were), which is why they're trusted here unchanged. -----
+        // 2026-09-18 ("reg no also search... give proper"): RegNo now compares with spaces AND
+        // hyphens stripped from BOTH sides (REPLACE/REPLACE), not just an exact string match - a
+        // registration number is routinely typed/stored inconsistently ("MH12AB1234" vs
+        // "MH12 AB 1234" vs "MH-12-AB-1234"), so an exact `=` match silently failed to find a real,
+        // present row whenever the typed formatting didn't happen to match DMS's stored formatting
+        // byte-for-byte. ChassisNo is untouched (it never has this formatting problem - no natural
+        // separators in a real chassis number).
         const string chassisSql = @"
             SELECT TOP 1
                 ch.ChassisNo, ch.RegNo, ch.ItemName, ch.DealerId, ch.LocationCode, ch.SaleDate, ch.LedgerId,
@@ -832,7 +839,8 @@ public class BaplDmsService : IBaplDmsService
             FROM [dbo].[ChassisDetails] ch
             LEFT JOIN [dbo].[LedgerMaster] lg ON ch.LedgerId = lg.Id
             LEFT JOIN [dbo].[Cities] cty ON lg.City = cty.city_id
-            WHERE (ch.ChassisNo = @val OR ch.RegNo = @val)
+            WHERE (ch.ChassisNo = @val
+                   OR REPLACE(REPLACE(ch.RegNo, ' ', ''), '-', '') = REPLACE(REPLACE(@val, ' ', ''), '-', ''))
               AND (@dealerCode IS NULL OR ch.DealerId = @dealerCode)
             ORDER BY ch.SaleDate DESC";
 
@@ -1032,10 +1040,15 @@ public class BaplDmsService : IBaplDmsService
         // "80 near-identical rows" noise problem barely applies. Kept the spirit of the fix instead
         // of dropping it outright: sold vehicles still sort first (most-recently-sold), unsold ones
         // now follow rather than being hidden.
+        // 2026-09-18 ("reg no also search... give proper"): RegNo's LIKE now ignores spaces/hyphens
+        // on both sides too, same reasoning as LookupVehicleAsync's exact-match fix right above -
+        // typing a registration number "as you'd say it" (with or without spaces/dashes) now finds
+        // a row even when DMS stored it with different formatting.
         const string sql = @"
             SELECT TOP (@take) ch.ChassisNo, ch.RegNo, ch.ItemName, ch.DealerId, ch.SaleDate
             FROM [dbo].[ChassisDetails] ch
-            WHERE (ch.ChassisNo LIKE @q OR ch.RegNo LIKE @q)
+            WHERE (ch.ChassisNo LIKE @q
+                   OR REPLACE(REPLACE(ch.RegNo, ' ', ''), '-', '') LIKE REPLACE(REPLACE(@q, ' ', ''), '-', ''))
               AND (@dealerCode IS NULL OR ch.DealerId = @dealerCode)
             ORDER BY CASE WHEN ch.SaleDate IS NOT NULL THEN 0 ELSE 1 END, ch.SaleDate DESC, ch.ChassisNo";
 
@@ -1975,13 +1988,24 @@ public class BaplDmsService : IBaplDmsService
 
     public async Task<BaplDmsRepairBillHeaderDetail?> GetRepairBillHeaderDetailAsync(int jobCardHeaderId, CancellationToken ct = default)
     {
+        // FIX ("Invoice No" showing as "0" in the downloaded PDF, while DMS's own invoice page for
+        // the same job shows the real BGEV... number): `ORDER BY Id DESC` alone just grabs
+        // whichever RepairBillHeader row for this JobId happens to have the highest Id - if a job
+        // ever has more than one row (a proforma re-saved, a re-estimate, etc.) and a newer,
+        // still-unbilled row exists (BillNo/Prefix at their un-set defaults: 0 / null) with a
+        // higher Id than the actual billed one DMS's own /repair-bill-invoice/{id} page reads,
+        // this picked the unbilled one instead. RepairbillStatus == "Billed" is DMS's own signal
+        // for "this row is a real invoice" (same field repair-bill-invoice.ts sets on Save as
+        // Invoice, and the same one GetJobCardStatusById/JobStatus already key off) - so prefer a
+        // Billed row over a non-Billed one regardless of Id, and only fall back to "most recent"
+        // among rows that tie on that.
         const string sql = @"
             SELECT TOP 1
                 Id, JobId, LocationCode, Prefix, BillNo, BillType, CustomerLedgerId,
                 TotalDiscount, TotalTaxableAmount, TotalNetAmount, AmountReceived, RepairbillStatus
             FROM [dbo].[RepairBillHeader]
             WHERE JobId = @jobId AND ISNULL(IsDelete, 0) = 0
-            ORDER BY Id DESC";
+            ORDER BY CASE WHEN RepairbillStatus = 'Billed' THEN 0 ELSE 1 END, Id DESC";
         try
         {
             await using var conn = new SqlConnection(ConnStr);

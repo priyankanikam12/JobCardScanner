@@ -36,6 +36,12 @@ export interface CurrentUser {
   /** DMS's own dealer code (e.g. "CUS0435") - used to scope chassis/reg-no vehicle search to
    * this user's own dealer. See AuthController.Me's DealerBaplDmsCode doc comment. */
   dealerBaplDmsCode?: string | null
+  /** 2026-09-18: this user's assigned "Work Area" DMS workshop LocCode(s) (e.g. ["CUS0288W1"]),
+   * set on the Employees/create-user page - see User.WorkLocationCodes's doc comment on the
+   * backend. Empty array means unrestricted (e.g. Corporate/System Admin). Used to filter the
+   * Job Card wizard's "Select workshop" dropdown down to only this user's own location(s),
+   * matching the same enforcement JobCardsController.Create already applies server-side. */
+  workLocationCodes: string[]
 }
 
 export interface Dealer {

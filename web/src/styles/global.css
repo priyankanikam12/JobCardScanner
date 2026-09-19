@@ -33,12 +33,29 @@
      matched the sidebar's pre-existing #101828, just promoted to a named token so .topbar and
      other chrome can share it instead of hardcoding the hex. --amber is the "highlighted digits /
      badge" accent color (e.g. plate numbers, day counts) from that reference app. */
-  --navy: #101828;
-  --navy-light: #1e293b;
-  --navy-lighter: #334155;
+  /* 2026-09-18: --navy set to the exact hex you gave (--dd-navy: #0a2540) - a touch deeper/more
+     "ink blue" than the previous #101828, matching your reference screenshots' sidebar more
+     closely. --navy-light/--navy-lighter are stepped up from it by the same relative lightening
+     the old values had, so hovers/borders on the dark chrome stay proportioned to the new base. */
+  --navy: #0a2540;
+  --navy-light: #17385c;
+  --navy-lighter: #2c5079;
   --amber: #f59e0b;
   --amber-dark: #b45309;
   --amber-soft: #fef3e2;
+  /* 2026-09-18 sidebar/topbar redesign (reference: BGauss's own "BTL Activity/Proposal Approval"
+     dashboard) - a green active-nav highlight instead of the plain navy-on-navy hover, plus a
+     purple "admin" role-pill token for the topbar avatar/role badge. --nav-active reuses the same
+     green family as --success rather than inventing a new hue, so it still reads as "BGauss green"
+     next to the existing volt-green login screen. */
+  --nav-active: #22c55e;
+  --nav-active-soft: rgba(34, 197, 94, 0.16);
+  --role-admin: #7c3aed;
+  --role-admin-soft: #f3eefe;
+  --role-manager: #2563eb;
+  --role-manager-soft: #eef4ff;
+  --role-staff: #0891b2;
+  --role-staff-soft: #ecfeff;
   font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
 }
 
@@ -89,81 +106,126 @@ button {
 .btn-danger { background: var(--danger); color: #fff; border-color: var(--danger); }
 .btn-danger:hover { background: #b91c1c; border-color: #b91c1c; color: #fff; }
 .btn-sm { padding: 5px 11px; font-size: 12px; }
+/* Small square icon-only button (2026-09-18) - matched against your reference screenshot's
+   "Grid" toggle button (a plain icon in a small light square, top-right of a section) - used for
+   the Employees grid's per-row "view full saved data" toggle instead of a text "View" button. */
+.btn-icon { padding: 6px 9px; font-size: 14px; line-height: 1; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
 .btn:disabled:hover { border-color: var(--border); color: var(--text); transform: none; }
 .btn-primary:disabled:hover { background: var(--primary); border-color: var(--primary); color: #fff; }
+/* 2026-09-18 "button color add" - Download/Import buttons on the Vehicle Sale/Material
+   Transfer/Repair Bill pages, colored by the convention most people already read at a glance
+   (Excel green, PDF red, Import blue) rather than left the same neutral grey as every other .btn. */
+.btn-excel { background: #15803d; color: #fff; border-color: #15803d; }
+.btn-excel:hover { background: #166534; border-color: #166534; color: #fff; }
+.btn-pdf { background: #b91c1c; color: #fff; border-color: #b91c1c; }
+.btn-pdf:hover { background: #991b1b; border-color: #991b1b; color: #fff; }
+.btn-import { background: var(--accent-1); color: #fff; border-color: var(--accent-1); }
+.btn-import:hover { background: #1d4ed8; border-color: #1d4ed8; color: #fff; }
 
 .app-shell { display: flex; min-height: 100vh; }
-/* The sidebar is an off-canvas overlay drawer at EVERY screen width (not just mobile): hidden by
-   default (translateX(-100%)), toggled via the hamburger button in the topbar, and auto-closed by
-   StaffLayout on navigation, on backdrop click, or on clicking anywhere in the main content area.
-   Because it's position: fixed it's taken out of the .app-shell flex flow entirely, so .main
-   always fills the full width underneath/behind it - it overlays on top rather than pushing
-   content over, which is also what makes "click the page to close it" work everywhere. */
+/* 2026-09-18: per your request, removed the hamburger-button-to-open interaction entirely - the
+   sidebar is now ALWAYS visible at every screen width (no more fully-hidden-until-clicked overlay),
+   defaulting to a 64px icon-only rail, and IS ITSELF the toggle: clicking its empty background
+   (see StaffLayout's handleSidebarClick, which ignores clicks on an actual nav link/logout so those
+   still just navigate/sign out) expands it to the full 240px labeled panel, and clicking again
+   collapses it back. Also matches your BTL reference screenshots, which show this same sidebar in
+   exactly these two states. */
 .sidebar {
   position: fixed;
   top: 0;
   left: 0;
-  width: 240px;
+  width: 64px;
   max-width: 80vw;
   height: 100vh;
   background: var(--navy);
   color: #e5e7eb;
-  padding: 20px 12px;
-  transform: translateX(-100%);
-  transition: transform 0.25s ease;
+  padding: 20px 10px;
+  cursor: pointer;
+  transition: width 0.25s ease, padding 0.25s ease;
   z-index: 110;
   overflow-y: auto;
+  overflow-x: hidden;
   box-shadow: 2px 0 24px rgba(0, 0, 0, 0.25);
   display: flex;
   flex-direction: column;
 }
-.sidebar.open { transform: translateX(0); }
-.sidebar h1 { font-size: 18px; color: #fff; margin: 0 0 4px 12px; }
-.sidebar .sub { font-size: 12px; color: #9ca3af; margin: 0 0 20px 12px; }
+.sidebar.open { width: 240px; padding: 20px 12px; }
+.sidebar h1 { font-size: 18px; color: #fff; margin: 0 0 4px 12px; white-space: nowrap; }
+.sidebar .sub { font-size: 12px; color: #9ca3af; margin: 0 0 20px 12px; white-space: nowrap; }
+/* Small monogram shown ONLY in the collapsed rail, in place of the full "JobCardScanner" wordmark
+   (which has no room at 64px) - hidden again once expanded (see the h1 rule above). */
+.sidebar-brand-mark {
+  display: flex;
+  width: 36px; height: 36px; margin: 0 0 16px 2px;
+  border-radius: 10px;
+  background: var(--nav-active);
+  color: #fff;
+  font-weight: 800;
+  font-size: 13px;
+  align-items: center;
+  justify-content: center;
+}
+.sidebar.open .sidebar-brand-mark { display: none; }
+/* 2026-09-18 "in place of JobCardScanner i want add ... BGauss_Logo.png remove header
+   JobCardScanner" - the real BGauss logo image, replacing both the old "JobCardScanner" wordmark
+   (h1, still used as a fallback style below in case any other page still renders one) and the
+   briefly-used emoji "sticker" placeholder (now removed - this is the final version). Shown only
+   in the EXPANDED sidebar, same visibility rule the wordmark itself had. max-height keeps a wide
+   source image from overwhelming the 240px-wide expanded panel; object-fit keeps its aspect ratio. */
+.sidebar-logo { display: block; max-width: 176px; max-height: 40px; object-fit: contain; margin: 0 0 4px 12px; }
+.sidebar:not(.open) .sidebar-logo { display: none; }
+.sidebar:not(.open) h1, .sidebar:not(.open) .sub, .sidebar:not(.open) .nav-label, .sidebar:not(.open) .logout-label { display: none; }
+.sidebar:not(.open) nav a, .sidebar:not(.open) .sidebar-footer .logout-link { justify-content: center; padding: 11px 0; }
 .sidebar nav a {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   padding: 9px 12px;
   border-radius: 8px;
   color: #cbd5e1;
   font-size: 14px;
   margin-bottom: 2px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
 }
-.sidebar nav a:hover, .sidebar nav a.active { background: #1e293b; color: #fff; }
+.sidebar nav a .nav-icon { font-size: 17px; line-height: 1; flex: 0 0 auto; width: 20px; text-align: center; }
+.sidebar nav a:hover { background: #17385c; color: #fff; }
+/* Active nav link: a SOLID green fill (not a soft tint) - matched directly against your reference
+   screenshots, where the active item is a fully filled bright-green rounded tile in both the rail
+   and the expanded panel. */
+.sidebar nav a.active {
+  background: var(--nav-active);
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 2px 8px rgba(34, 197, 94, 0.35);
+}
 
 /* Pinned to the bottom of the sidebar regardless of how many nav links are above it, since
    .sidebar is a column flexbox - see the "Logout" entry rendered by StaffLayout. */
 .sidebar-footer { margin-top: auto; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.12); }
 .sidebar-footer .logout-link {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   padding: 9px 12px;
   border-radius: 8px;
+  white-space: nowrap;
   color: #fca5a5;
   font-size: 14px;
 }
 .sidebar-footer .logout-link:hover { background: #1e293b; color: #fecaca; }
+.sidebar-footer .logout-link .nav-icon { font-size: 17px; line-height: 1; flex: 0 0 auto; width: 20px; text-align: center; }
 
-/* Hamburger toggle in the topbar - always visible now that the sidebar is a drawer at every
-   width, not just on narrow screens. */
-.hamburger-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-size: 18px;
-  line-height: 1;
-  padding: 6px 10px;
-  color: var(--text);
-}
-
-/* The page shifts over to make room for the drawer instead of the drawer overlaying on top of it
-   - .sidebar-open is added to .main whenever the sidebar is open (see StaffLayout). The
-   min(240px, 80vw) mirrors the sidebar's own width/max-width exactly, so the gap this opens up on
-   the left always matches how wide the drawer actually rendered, even on a very narrow screen. */
-.main { flex: 1; min-width: 0; overflow-x: hidden; transition: margin-left 0.25s ease; }
-.main.sidebar-open { margin-left: min(240px, 80vw); }
+/* 2026-09-18: the hamburger button is gone (per your request) - the sidebar itself is now the
+   toggle. It's ALWAYS visible at every screen width as a 64px icon rail (no more "fully hidden
+   until you click a button" mobile mode), and clicking anywhere on its empty background (not on a
+   nav link/logout, which still just navigate/sign out as normal) expands it to the full 240px
+   labeled panel; clicking it again collapses it back to the rail. See StaffLayout's handleSidebar-
+   Click for the actual toggle logic. */
+.main { flex: 1; min-width: 0; margin-left: 64px; overflow-x: hidden; transition: margin-left 0.25s ease; }
+.main.sidebar-open { margin-left: 240px; }
 /* Dark navy topbar (Hub Pulse reskin) - matches the sidebar's navy so the whole app frame reads
    as one consistent dark chrome around a light content area, same as the reference app's dark
    phone-header bars. */
@@ -176,8 +238,9 @@ button {
   background: var(--navy);
   border-bottom: 1px solid var(--navy-light);
 }
-.topbar .hamburger-btn { background: none; border: 1px solid var(--navy-lighter); color: #e5e7eb; }
-.topbar .hamburger-btn:hover { background: var(--navy-light); }
+/* 2026-09-18 "also in navbar add logo" - same BGauss logo as the sidebar, sized to fit the topbar's
+   slim 14px vertical padding (see .topbar above) without forcing the bar taller. */
+.topbar-logo { display: block; max-height: 28px; max-width: 140px; object-fit: contain; margin-right: 4px; }
 .topbar .back-btn { background: var(--navy-light); border-color: var(--navy-lighter); color: #e5e7eb; box-shadow: none; }
 .topbar .back-btn:hover { background: var(--navy-lighter); border-color: var(--navy-lighter); color: #fff; }
 .topbar .profile-trigger:hover { background: var(--navy-light); }
@@ -220,6 +283,46 @@ button {
 .profile-details { margin: 0 0 14px; font-size: 13px; }
 .profile-details dt { color: var(--text-muted); margin-top: 6px; }
 .profile-details dd { margin: 0; font-weight: 500; }
+
+/* Avatar + role pill (2026-09-18 topbar redesign) - initials circle plus a small colored pill
+   naming the user's role tier, the same "who am I, at a glance" pairing the reference app's
+   topbar uses (its purple "ADMIN" pill + avatar). Tier color is picked by the page (see
+   StaffLayout's roleTier()) from the three tokens above - admin/manager/staff - rather than one
+   color per individual StaffRole, so it stays readable as a tier at a glance. */
+.avatar-circle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--role-admin);
+  flex: 0 0 auto;
+}
+/* 2026-09-18 update: matched against the actual BGAUSS BTL reference screenshot (now seen
+   directly, not just described) - its "ADMIN" pill is a solid filled badge, not a soft tint, so
+   .role-pill switched from soft-background to solid-fill + white text to match exactly. */
+.role-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 11px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: var(--role-admin);
+  color: #fff;
+  white-space: nowrap;
+}
+.role-pill-manager { background: var(--role-manager); }
+.avatar-circle.tier-manager { background: var(--role-manager); color: #fff; }
+.role-pill-staff { background: var(--role-staff); }
+.avatar-circle.tier-staff { background: var(--role-staff); color: #fff; }
+
 .content { padding: 24px; max-width: 1400px; }
 
 .card {
@@ -241,30 +344,126 @@ button {
    Six accent variants (kpi-a1..a6) cycle through the palette above so a dashboard full of tiles
    reads as distinct at a glance without hand-picking a color per metric; apply kpi-aN to the
    ".kpi" element itself. Cards lift slightly on hover to feel tactile even though most tiles
-   aren't clickable - a subtle cue that this is a live, current-data surface. */
-.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 20px; }
+   aren't clickable - a subtle cue that this is a live, current-data surface.
+   2026-09-18: matched directly against the BGAUSS BTL reference screenshot - its tiles use a
+   CIRCULAR icon badge (not a rounded square) and an uppercase, letter-spaced label, both changed
+   below to match; also added .kpi-badge-action for its orange "ACTION NEEDED" pill (top-left
+   corner of a tile that needs the viewer to do something) and .kpi-highlighted for its blue
+   selected-tile border + corner dot treatment - both opt-in modifiers, applied per tile by the
+   page, not on by default. */
+/* 2026-09-18: sized down to comfortably fit a full 7-9 tile row on one line at typical laptop/
+   desktop widths, matching your reference screenshot (its tiles sit noticeably more compact/dense
+   than a spacious card) - smaller minmax, tighter padding/icon/font than before. */
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
 .kpi {
+  position: relative;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 18px;
+  padding: 14px;
   box-shadow: var(--shadow-sm);
-  transition: box-shadow 0.15s ease, transform 0.15s ease;
+  transition: box-shadow 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
 }
 .kpi:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); }
 .kpi .kpi-icon {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 40px; height: 40px; border-radius: 10px; font-size: 19px; margin-bottom: 12px;
+  width: 34px; height: 34px; border-radius: 50%; font-size: 15px; margin-bottom: 8px;
   background: var(--accent-1-soft); color: var(--accent-1);
 }
-.kpi .value { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.15; }
-.kpi .label { font-size: 13px; color: var(--text-muted); margin-top: 2px; }
+.kpi .value { font-size: 21px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.15; }
+.kpi .label { font-size: 10px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; color: var(--text-muted); margin-top: 3px; }
+/* Selected/highlighted tile - blue border + a small solid-blue dot in the bottom-right corner,
+   for whichever tile represents "what the rest of this page is currently showing" (e.g. a filter
+   that's actively applied). Not wired up to every tile automatically - a page opts a specific
+   tile into this when it actually reflects the page's current state. */
+.kpi.kpi-highlighted { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
+.kpi.kpi-highlighted::after {
+  content: ''; position: absolute; right: 14px; bottom: 14px;
+  width: 8px; height: 8px; border-radius: 50%; background: var(--primary);
+}
+.kpi-badge-action {
+  position: absolute; top: -10px; left: 16px;
+  display: inline-flex; align-items: center;
+  padding: 3px 10px; border-radius: 999px;
+  background: var(--amber); color: #fff;
+  font-size: 9px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase;
+  box-shadow: 0 2px 6px rgba(245, 158, 11, 0.4);
+}
 .kpi-a1 .kpi-icon { background: var(--accent-1-soft); color: var(--accent-1); }
 .kpi-a2 .kpi-icon { background: var(--accent-2-soft); color: var(--accent-2); }
 .kpi-a3 .kpi-icon { background: var(--accent-3-soft); color: var(--accent-3); }
 .kpi-a4 .kpi-icon { background: var(--accent-4-soft); color: var(--accent-4); }
 .kpi-a5 .kpi-icon { background: var(--accent-5-soft); color: var(--accent-5); }
 .kpi-a6 .kpi-icon { background: var(--accent-6-soft); color: var(--accent-6); }
+
+/* 2026-09-18: replaced with .action-card below, matched directly against the actual BGAUSS BTL
+   reference screenshot's top row (icon-in-circle + bold title + muted subtitle, one card filled
+   solid navy) rather than the flat colored pill this class drew - kept only so nothing else in the
+   app that may still reference these classNames goes unstyled. */
+.quick-action-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.quick-action-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+.quick-action-card:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); text-decoration: none; }
+.quick-action-card .quick-action-icon { font-size: 18px; line-height: 1; }
+.quick-action-card.qa-a1 { background: var(--accent-1-soft); color: var(--accent-1); }
+.quick-action-card.qa-a2 { background: var(--accent-2-soft); color: var(--accent-2); }
+.quick-action-card.qa-a3 { background: var(--accent-3-soft); color: var(--accent-3); }
+.quick-action-card.qa-a4 { background: var(--accent-4-soft); color: var(--accent-4); }
+.quick-action-card.qa-a5 { background: var(--accent-5-soft); color: var(--accent-5); }
+.quick-action-card.qa-a6 { background: var(--accent-6-soft); color: var(--accent-6); }
+
+/* Top "action card" row (2026-09-18, matched to the BTL reference screenshot's 4-card header row):
+   a white card per action with an icon in a soft-colored circle, a bold title, and a muted
+   one-line subtitle - one of them (.action-card-featured) is filled solid navy with a white title
+   instead, the same "one card stands out" treatment the reference gives its Download Report card.
+   Distinct from .kpi (which shows a NUMBER) - these are pure navigation shortcuts, shown with no
+   value/count. */
+.action-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 20px; }
+.action-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+  box-shadow: var(--shadow-sm);
+  text-decoration: none;
+  color: inherit;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+.action-card:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); text-decoration: none; }
+.action-card-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 44px; height: 44px; border-radius: 12px; font-size: 21px; flex: 0 0 auto;
+  background: var(--accent-1-soft); color: var(--accent-1);
+}
+.action-card-title { font-weight: 800; font-size: 15px; color: var(--text); margin-bottom: 2px; }
+.action-card-subtitle { font-size: 12.5px; color: var(--text-muted); line-height: 1.4; }
+.action-card.aa-a1 .action-card-icon { background: var(--accent-1-soft); color: var(--accent-1); }
+.action-card.aa-a2 .action-card-icon { background: var(--accent-2-soft); color: var(--accent-2); }
+.action-card.aa-a3 .action-card-icon { background: var(--accent-3-soft); color: var(--accent-3); }
+.action-card.aa-a4 .action-card-icon { background: var(--accent-4-soft); color: var(--accent-4); }
+.action-card.aa-a5 .action-card-icon { background: var(--accent-5-soft); color: var(--accent-5); }
+.action-card.aa-a6 .action-card-icon { background: var(--accent-6-soft); color: var(--accent-6); }
+/* The one "stands out" card per row, like the reference's Download Report tile. */
+.action-card-featured {
+  background: var(--navy);
+  border-color: var(--navy);
+}
+.action-card-featured .action-card-title { color: #fff; }
+.action-card-featured .action-card-subtitle { color: #cbd5e1; }
+.action-card-featured .action-card-icon { background: rgba(255, 255, 255, 0.14); color: #fff; }
 
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th { text-align: left; padding: 11px 12px; border-bottom: 2px solid var(--border); color: var(--text-muted); font-weight: 700; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap; }
@@ -277,10 +476,10 @@ tr:hover td { background: #f8fafc; }
    size-specific tweaks: a tighter drawer padding, content/grids dropping to one column, and the
    profile dropdown staying on-screen instead of overflowing past the right edge. */
 @media (max-width: 860px) {
-  .app-shell { flex-direction: column; }
-  .sidebar { padding: 12px; }
-  .sidebar h1, .sidebar .sub { margin-left: 4px; }
-  .sidebar nav a { white-space: normal; }
+  /* 2026-09-18: the sidebar is now a persistent rail at every width (see .sidebar's own comment) -
+     no more mobile-specific "hidden drawer" layout here, just the label-wrapping tweak for its
+     expanded state on a narrow screen. */
+  .sidebar.open nav a { white-space: normal; }
   .content { padding: 16px; }
   .kpi-grid { grid-template-columns: repeat(2, 1fr); }
   .form-row { grid-template-columns: 1fr; }
@@ -364,7 +563,9 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 0 0 3px var(--primary-soft);
 }
 input:disabled, select:disabled, textarea:disabled { background: #f3f4f6; color: var(--text-muted); cursor: not-allowed; }
-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; color: var(--text-muted); }
+/* 2026-09-18: uppercase + letter-spaced, matched against your "Proposal Details" reference
+   screenshot's field labels ("DEALER *", "STATE *") - was plain-case before. */
+label { display: block; font-size: 11.5px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; margin-bottom: 6px; color: var(--text-muted); }
 .field { margin-bottom: 14px; }
 .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
 
@@ -376,6 +577,9 @@ label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; c
 .suggest-row .field { margin-bottom: 0; }
 .suggest-row .field-grow { flex: 1 1 260px; min-width: 220px; }
 .suggest-row .field-compact { flex: 0 0 auto; }
+
+/* Right-aligned table cells (amounts/quantities) - Repair Bill page. */
+.text-end { text-align: right; }
 
 .center-screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); }
 .login-card { background: var(--surface); border-radius: 16px; padding: 40px; width: 380px; box-shadow: var(--shadow-lg); text-align: center; }

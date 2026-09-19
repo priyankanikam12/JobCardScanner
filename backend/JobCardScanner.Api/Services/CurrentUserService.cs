@@ -22,6 +22,17 @@ public class CurrentUserService : ICurrentUserService
     public StaffRole? Role => Enum.TryParse<StaffRole>(Principal?.FindFirst("app_role")?.Value, out var r) ? r : null;
     public Guid? DealerId => Guid.TryParse(Principal?.FindFirst("app_dealer_id")?.Value, out var g) ? g : null;
 
+    public IReadOnlyList<string> WorkLocationCodes
+    {
+        get
+        {
+            var raw = Principal?.FindFirst("app_work_locations")?.Value;
+            if (string.IsNullOrWhiteSpace(raw)) return Array.Empty<string>();
+            try { return System.Text.Json.JsonSerializer.Deserialize<List<string>>(raw) ?? new List<string>(); }
+            catch { return Array.Empty<string>(); } // malformed claim -> fail open to "unrestricted" rather than lock the user out entirely
+        }
+    }
+
     public Guid? CustomerId => Guid.TryParse(Principal?.FindFirst("customer_id")?.Value, out var g) ? g : null;
     public string? CustomerMobile => Principal?.FindFirst("mobile")?.Value;
 }

@@ -44,14 +44,19 @@ export function PartsScreen() {
     if (!profile?.dealerId) return
     apiClient.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: profile.dealerId } })
       .then(({ data }) => {
-        setWorkshops(data)
+        // 2026-09-18 Work Area scoping (mirrors web/src/pages/staff/PartsPage.tsx): only offer
+        // this user's own assigned location(s) when they have any set; empty = unrestricted.
+        const scoped = profile?.workLocationCodes?.length
+          ? data.filter((w) => profile.workLocationCodes.includes(w.locCode))
+          : data
+        setWorkshops(scoped)
         // Auto-select this dealer's first workshop location so DMS Parts Inventory shows with no
         // manual search needed.
-        if (data.length > 0) setLocationCode((prev) => prev || data[0].locCode)
+        if (scoped.length > 0) setLocationCode((prev) => prev || scoped[0].locCode)
       })
       .catch(() => setWorkshops([]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile?.dealerId])
+  }, [profile?.dealerId, profile?.workLocationCodes])
 
   return (
     <ScrollView style={styles.container} keyboardShouldPersistTaps="handled">

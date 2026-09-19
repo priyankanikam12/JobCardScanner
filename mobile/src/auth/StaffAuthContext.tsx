@@ -55,6 +55,11 @@ function dealerUserToProfile(session: DealerSession): CurrentUser {
     role: session.user.role as StaffRole,
     dealerId: session.user.dealerId ?? null,
     dealerName: session.user.dealerName ?? null,
+    // Not carried in the cached DealerSession payload (same gap dealerBaplDmsCode had - see the
+    // comment above on dealerMeProfile) - defaults to unrestricted for this instant-first-paint
+    // fallback only; the /api/auth/me refresh right below replaces this with the user's real
+    // Work Area scoping within moments of sign-in.
+    workLocationCodes: [],
   }
 }
 

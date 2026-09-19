@@ -1,4 +1,3 @@
-/* web\src\pages\staff\LoginPage.css */
 /* BGauss JobCardScanner - Staff / Dealer login screen.
    Two panels: a branded hero (left, hidden on narrow screens) and the sign-in card (right).
    Palette: navy (#0b1220 / #101828) + BGauss volt-green (#8ef542) accents, matching the rest
@@ -29,9 +28,14 @@
 .jcs-hero-logo {
   height: 42px;
   width: auto;
-  max-width: 132px;
+  max-width: 220px;
   object-fit: contain;
   margin-bottom: 28px;
+  /* 2026-09-18 "login page in middle" - .jcs-login-hero is a column flexbox with everything
+     else (heading, scooter image) left-aligned to match your reference screenshots; the logo
+     itself is centered horizontally within that panel per your request, via align-self rather
+     than moving the whole hero to center (which would also re-center the heading text/scooter). */
+  align-self: center;
   /* Most logo PNGs ship on a transparent or white background - this keeps a dark logo
      legible against the navy hero panel. Remove this line if your BGauss_Logo.png is
      already designed for a dark background (e.g. a white/light wordmark). */
@@ -44,6 +48,12 @@
   margin: 0 0 14px;
   max-width: 460px;
   color: #fff;
+  /* 2026-09-19 "EV Workshop Management..wants in middle" - same two-part centering the logo
+     above already uses: align-self centers the heading's own box (capped at max-width: 460px, so
+     it wouldn't otherwise center just from the column flex's default stretch), and text-align
+     centers the wording within that box in case it ever wraps to two lines. */
+  align-self: center;
+  text-align: center;
 }
 .jcs-login-hero p {
   font-size: 15px;
@@ -59,6 +69,10 @@
   height: auto;
   object-fit: contain;
   animation: jcs-float 4.5s ease-in-out infinite;
+  /* 2026-09-19 "this bike also in middle" - same align-self centering as the logo/heading above
+     it; an explicit width (rather than auto) means the column flex's default stretch never
+     applied here either, so it was sitting at the left edge same as they were. */
+  align-self: center;
 }
 @keyframes jcs-float {
   0%, 100% { transform: translateY(0); }

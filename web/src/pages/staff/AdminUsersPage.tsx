@@ -512,8 +512,8 @@ export function AdminUsersPage() {
       )}
 
       <div className="card">
-        <h3>Add staff user manually</h3>
-        <p className="muted">The email must exactly match the email/UPN they sign in to Azure AD with - see docs/AZURE_AD_SETUP.md. Prefer the Azure AD search above when possible, so you don't have to type it by hand.</p>
+        <h3>Add staff user manually (Azure AD)</h3>
+        <p className="muted">For a corporate Azure AD sign-in with any Role (Admin, Cashier, Parts, ...). The email must exactly match the email/UPN they sign in to Azure AD with - see docs/AZURE_AD_SETUP.md. Prefer the Azure AD search above when possible, so you don't have to type it by hand. For a dealer/workshop employee with a local login and Work Area location scoping, use the "Employees" page instead.</p>
         <div className="form-row">
           <div className="field"><label>Name</label><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
           <div className="field"><label>Email (Azure AD UPN)</label><input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
@@ -530,13 +530,19 @@ export function AdminUsersPage() {
 
       <div className="card" style={{ padding: 0 }}>
         <table>
-          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Dealer</th><th>Active</th><th></th></tr></thead>
+          <thead>
+            <tr>
+              <th>Name</th><th>Email</th><th>Role</th><th>Dealer</th><th>Active</th><th></th>
+            </tr>
+          </thead>
           <tbody>
             {users.map((u) => (
               <tr key={u.id}>
                 <td>{u.name}</td><td>{u.email}</td><td>{u.role}</td><td>{u.dealerName ?? 'All'}</td>
                 <td>{u.active ? 'Yes' : 'No'}</td>
-                <td><button className="btn btn-sm" onClick={() => toggleActive(u)}>{u.active ? 'Deactivate' : 'Activate'}</button></td>
+                <td>
+                  <button className="btn btn-sm" onClick={() => toggleActive(u)}>{u.active ? 'Deactivate' : 'Activate'}</button>
+                </td>
               </tr>
             ))}
           </tbody>

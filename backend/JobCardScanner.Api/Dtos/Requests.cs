@@ -3,8 +3,29 @@ using JobCardScanner.Api.Models;
 namespace JobCardScanner.Api.Dtos;
 
 // ---------------- Users / Admin ----------------
-public record CreateUserRequest(string Name, string Email, string? Mobile, StaffRole Role, Guid? DealerId, UserAuthType AuthType = UserAuthType.AzureAd, string? Password = null);
-public record UpdateUserRequest(string? Name, string? Mobile, StaffRole? Role, Guid? DealerId, bool? Active);
+public record CreateUserRequest(
+    string Name, string Email, string? Mobile, StaffRole Role, Guid? DealerId,
+    UserAuthType AuthType = UserAuthType.AzureAd, string? Password = null,
+    // ---- Employees page (2026-09-17) - all optional so the existing "Add staff user manually" /
+    // Azure AD sync panels on Admin -> Users keep working unchanged, passing none of these. ----
+    string? State = null, string? City = null, string? Pincode = null, DateOnly? DateOfJoining = null,
+    /// <summary>Raw display label ("Supervisor"/"Mechanic") - see User.Designation's doc comment
+    /// for how this maps onto Role. When both Designation and Role are supplied, Designation wins
+    /// (the Employees page always sends both, Designation being the source of truth); when only
+    /// Role is supplied (the older "Add staff user manually" panel), Designation stays null and
+    /// Role is used exactly as given, unchanged from before this feature.</summary>
+    string? Designation = null,
+    /// <summary>BAPL DMS workshop LocCodes this user is scoped to (the "Work Area" checkboxes) -
+    /// see User.WorkLocationCodes's doc comment. Empty/omitted = unrestricted.</summary>
+    IReadOnlyList<string>? WorkLocationCodes = null);
+
+public record UpdateUserRequest(
+    string? Name, string? Mobile, StaffRole? Role, Guid? DealerId, bool? Active,
+    string? State = null, string? City = null, string? Pincode = null, DateOnly? DateOfJoining = null,
+    string? Designation = null, IReadOnlyList<string>? WorkLocationCodes = null,
+    /// <summary>Set to change this user's password (Local/AuthType.Dealer users only) - omitted
+    /// or null leaves the existing password untouched. Not required on every edit, unlike Create.</summary>
+    string? Password = null);
 
 // ---------------- Dealer / Workshop local login ----------------
 public record DealerLoginRequest(string Email, string Password);
@@ -183,3 +204,24 @@ public record CustomerChangePasswordRequest(string CurrentPassword, string NewPa
 /// in person and wants password login set up, or is locked out and calls the workshop. Mirrors
 /// DealerAdminResetPasswordRequest's shape exactly.</summary>
 public record CustomerAdminResetPasswordRequest(string NewPassword);
+
+// ---------------- Labour Master (2026-09-19) ----------------
+/// <summary>multipart/form-data body for POST /api/labour-master/{without-partwise|partwise}/import
+/// - the page's whole import form is just these two fields (Rate Type isn't part of the body since
+/// it's which of the two endpoints/URLs you post to). Plain class with setters, not a record, same
+/// reason as UploadPhotoForm above - [FromForm] binding needs property setters.</summary>
+public class LabourMasterImportForm
+{
+    public IFormFile? File { get; set; }
+    public DateTime EffectiveDate { get; set; }
+}
+
+/// <summary>PUT /api/labour-master/without-partwise/{id} body - see LabourMasterWithoutPartwiseUpdate
+/// in Services/LabourMasterImportService.cs for why LabourCode itself isn't editable here.</summary>
+public record LabourMasterWithoutPartwiseUpdateRequest(
+    string? JobDescription, string? Model, decimal? LabourRate, decimal? Igst, decimal? Cgst,
+    decimal? Sgst, int? Tier, string? Category, DateTime? EffectiveDate, bool IsActive);
+
+public record LabourMasterPartwiseUpdateRequest(
+    string? PartName, string? JobDescription, string? Model, decimal? LabourRate, decimal? Igst,
+    decimal? Cgst, decimal? Sgst, int? Tier, string? Category, DateTime? EffectiveDate, bool IsActive);

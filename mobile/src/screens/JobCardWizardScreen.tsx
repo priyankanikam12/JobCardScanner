@@ -33,7 +33,7 @@ const IST_TIME_ZONE = 'Asia/Kolkata'
 
 /** A date/time in real IST (UTC+05:30), not whatever timezone the device happens to be set to -
  * per explicit request "Current time in IST (UTC+05:30) use everywhere on ui". Used for the
- * Expected delivery picker's displayed value and DMS sale dates below. */
+ * Expected delivery picker's displayed value and BAPL DMS sale dates below. */
 function formatIST(value: Date | string, opts: Intl.DateTimeFormatOptions): string {
   const d = typeof value === 'string' ? new Date(value) : value
   return d.toLocaleString('en-IN', { timeZone: IST_TIME_ZONE, ...opts })
@@ -301,11 +301,12 @@ export function JobCardWizardScreen({ navigation }: Props) {
 
   // 2026-09-07: Coupon No. and Job Category - mirrors web's JobCardWizardPage.tsx exactly (see its
   // couponNo/jobCategory state doc comment for the full rationale: auto-fills from the chassis
-  // number's last 13 characters like DMS's own onChassisChange(), stays editable, and defaults Job
-  // Category to "B2C" matching DMS's own default).
+  // number's last 13 characters like DMS's own onChassisChange(), stays editable).
+  // 2026-09-18: Job Category now defaults to "B2B" per explicit request, matching the same change
+  // made on web - this replaces the earlier B2C default.
   const [couponNo, setCouponNo] = useState('')
   const [couponNoTouched, setCouponNoTouched] = useState(false)
-  const [jobCategory, setJobCategory] = useState<'B2C' | 'B2B'>('B2C')
+  const [jobCategory, setJobCategory] = useState<'B2C' | 'B2B'>('B2B')
   useEffect(() => {
     if (couponNoTouched) return
     const vin = newVehicle.vin || ''
@@ -388,9 +389,18 @@ export function JobCardWizardScreen({ navigation }: Props) {
     setBaplServiceLocation('')
     if (!effectiveDealerId) { setWorkshops([]); return }
     apiClient.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: effectiveDealerId } })
-      .then(({ data }) => setWorkshops(data))
+      .then(({ data }) => {
+        // 2026-09-18 Work Area scoping (mirrors web/src/pages/staff/JobCardWizardPage.tsx): only
+        // offer this user's own assigned Work Area location(s) when they have any set (from
+        // /api/auth/me's workLocationCodes - see User.WorkLocationCodes's doc comment); empty
+        // array means unrestricted (e.g. Corporate/System Admin).
+        const scoped = profile?.workLocationCodes?.length
+          ? data.filter((w) => profile.workLocationCodes.includes(w.locCode))
+          : data
+        setWorkshops(scoped)
+      })
       .catch(() => setWorkshops([]))
-  }, [effectiveDealerId])
+  }, [effectiveDealerId, profile?.workLocationCodes])
 
   useEffect(() => {
     if (selectedWorkshopLocCode || workshops.length === 0) return
@@ -823,8 +833,8 @@ export function JobCardWizardScreen({ navigation }: Props) {
             </View>
           )}
 
-          <Text style={styles.h3}>Registered customer Details</Text>
-          <Text style={styles.label}>Search by chassis no./Reg no.</Text>
+          <Text style={styles.h3}>(Registered customer Details)</Text>
+          <Text style={styles.label}>Search by chassis no. / registration no.</Text>
           <View style={styles.searchRow}>
             <TextInput
               style={[styles.input, { flex: 1 }]}
@@ -1127,7 +1137,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
               <Text style={styles.label}>Photos<Text style={styles.requiredStar}> *</Text></Text>
               <View style={{ flexDirection: 'row', gap: 10, marginBottom: 10 }}>
                 <TouchableOpacity style={styles.btn} disabled={capturingPhoto} onPress={takePhoto}>
-                  <Text style={styles.btnText}>{capturingPhoto ? 'Adding…' : '📷 Capture Photo'}</Text>
+                  <Text style={styles.btnText}>{capturingPhoto ? 'Adding…' : '📷 Take Photo'}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.btn} disabled={capturingPhoto} onPress={pickPhoto}>
                   <Text style={styles.btnText}>🖼️ Choose Photo</Text>

@@ -105,7 +105,7 @@ export function LoginPage() {
     <div className="jcs-login-screen">
       <div className="jcs-login-hero">
         <img src={bgaussLogo} alt="BGauss" className="jcs-hero-logo" />
-        <h2>EV Two-Wheeler Workshop Management</h2>
+        <h2>EV Workshop Management</h2>
         <img src={scootyImg} alt="" aria-hidden="true" className="jcs-hero-scooter" />
       </div>
 
@@ -167,9 +167,9 @@ export function LoginPage() {
             <div className="jcs-mode-body">
               {step === 'login' && (
                 <form onSubmit={handleDealerLogin}>
-                  <p className="jcs-mode-copy">For dealer workshop staff signing in with the email/dealer code &amp; password issued by your admin, or your DMS login.</p>
+                  {/* <p className="jcs-mode-copy">For dealer workshop staff signing in with the email/dealer code &amp; password issued by your admin, or your DMS login.</p> */}
                   <label className="jcs-field">
-                    <span>Email or Dealer Code</span>
+                    <span>Username</span>
                     {/* Plain text, not type="email" - a DMS login can be signed in with a
                        bare dealer code as its username (e.g. "CUS0486"), same as DMS's own
                        site accepts (see DealerAuthController.Login's fallback to
@@ -244,9 +244,9 @@ export function LoginPage() {
             </div>
           )}
 
-          <p className="muted jcs-portal-hint">
+          {/* <p className="muted jcs-portal-hint">
             Customers should use their tracking link or <Link to="/portal/login">the customer portal</Link>.
-          </p>
+          </p> */}
         </div>
       </div>
     </div>

@@ -266,6 +266,279 @@ export interface BaplDmsInvoiceLineItemsResult {
   invoiceNo?: string | null
 }
 
+/// One Part/Labour line item on a DMSBAPLDATA-sourced repair bill (dbo.DMS_RepairBillItem) - see
+/// DmsBaplDataRepairBillItemRow's doc comment in DmsBaplDataService.cs. Distinct from
+/// BaplDmsInvoiceLineItem above, which is the shaped print-preview breakdown for the LIVE BAPL DMS
+/// database (BAPLDMSvad) - this is the raw synced row from the separate DMSBAPLDATA database.
+export interface DmsBaplDataRepairBillItem {
+  id: number
+  repairBillId: number
+  itemIdno?: number | null
+  itemCode?: string | null
+  itemDesc?: string | null
+  itemType?: string | null
+  qty?: number | null
+  rate?: number | null
+  issueType?: string | null
+  sgstPer?: number | null
+  sgstAmount?: number | null
+  cgstPer?: number | null
+  cgstAmount?: number | null
+  igstPer?: number | null
+  igstAmount?: number | null
+  wavRate?: number | null
+  totAmnt?: number | null
+  mtrlIssue?: string | null
+}
+
+/// One repair bill header from DMSBAPLDATA's dbo.DMS_RepairBill - GET /api/dms-bapl-data/repair-bills.
+/// See DmsBaplDataRepairBillRow's doc comment in DmsBaplDataService.cs for what DMSBAPLDATA is and
+/// how it differs from BAPLDMSvad (the live DMS database BaplDmsRepairBill above comes from).
+export interface DmsBaplDataRepairBill {
+  id: number
+  dealerName?: string | null
+  dealerCode?: string | null
+  uniqueKey?: number | null
+  uniqueId?: number | null
+  invoiceNo?: number | null
+  invoiceDate?: string | null
+  location?: string | null
+  partyName?: string | null
+  billType?: number | null
+  cashType?: string | null
+  cashAccount?: string | null
+  regNo?: string | null
+  chassisNo?: string | null
+  createdAt?: string | null
+  updatedAt?: string | null
+  items: DmsBaplDataRepairBillItem[]
+}
+
+/// One labour line on a DMSBAPLDATA-sourced material transfer item (dbo.DMS_MaterialTransferLabor) -
+/// see DmsBaplDataMaterialTransferLaborRow's doc comment in DmsBaplDataService.cs.
+export interface DmsBaplDataMaterialTransferLabor {
+  id: number
+  materialTransferItemId: number
+  lbrIdno?: number | null
+  lbrName?: string | null
+  lbrDescription?: string | null
+  lbrRate: number
+  sgstPer: number
+  sgstAmount: number
+  cgstPer: number
+  cgstAmount: number
+  igstPer: number
+  igstAmount: number
+}
+
+/// One Part/Labour-carrying line item on a DMSBAPLDATA-sourced material transfer
+/// (dbo.DMS_MaterialTransferItem) - see DmsBaplDataMaterialTransferItemRow's doc comment in
+/// DmsBaplDataService.cs.
+export interface DmsBaplDataMaterialTransferItem {
+  id: number
+  materialTransferId: number
+  sourceLineId?: number | null
+  itemIdno?: number | null
+  itemName?: string | null
+  itemDescription?: string | null
+  itemType?: string | null
+  qty: number
+  rate: number
+  sgstPer: number
+  sgstAmount: number
+  cgstPer: number
+  cgstAmount: number
+  igstPer: number
+  igstAmount: number
+  discount: number
+  mrp: number
+  labour: DmsBaplDataMaterialTransferLabor[]
+}
+
+/// One material transfer document from DMSBAPLDATA's dbo.DMS_MaterialTransfer, scoped by LocCode -
+/// GET /api/dms-bapl-data/material-transfers?locCode=... See DmsBaplDataMaterialTransferRow's doc
+/// comment in DmsBaplDataService.cs for what DMSBAPLDATA is.
+export interface DmsBaplDataMaterialTransfer {
+  id: number
+  dealerName?: string | null
+  dealerCode?: string | null
+  sourceUniqueId?: number | null
+  sourceJobId?: number | null
+  docNo?: number | null
+  docDate?: string | null
+  docType?: string | null
+  location?: string | null
+  locCode?: string | null
+  technicianName?: string | null
+  uniqueKey?: string | null
+  createdAt: string
+  updatedAt: string
+  items: DmsBaplDataMaterialTransferItem[]
+}
+
+/// One vehicle sale row from DMSBAPLDATA's dbo.DMS_VehicleSales, filtered by SoldTo - GET
+/// /api/dms-bapl-data/vehicle-sales?soldTo=... See DmsBaplDataVehicleSaleRow's doc comment in
+/// DmsBaplDataService.cs for the column-confirmation history (2026-09-18: this shape is now
+/// independently confirmed - you ran `select * from DMS_VehicleSales` directly and its columns
+/// matched this interface exactly).
+///
+/// `regNo` and `isImported` are the two exceptions: DMS_VehicleSales itself has no Reg No column
+/// (confirmed by that same live query), so `regNo` is ONLY ever populated for rows that came from
+/// VehicleSalePage.tsx's "Import Vehicle Sale Report" feature (a real BAPL DMS/ERP report export
+/// that DOES carry Reg No) - see that page's own doc comment for the full rationale. `isImported`
+/// marks exactly those rows so the page can tell imported data apart from DMSBAPLDATA-sourced data.
+export interface DmsBaplDataVehicleSale {
+  id: number
+  dealerName?: string | null
+  dealerCode?: string | null
+  invoiceNo?: string | null
+  regNo?: string | null
+  isImported?: boolean
+  invoiceDate?: string | null
+  location?: string | null
+  locCode?: string | null
+  locationCity?: string | null
+  custDob?: string | null
+  gender?: string | null
+  soldTo?: string | null
+  accountType?: string | null
+  partyEmail?: string | null
+  cusMob?: string | null
+  address1?: string | null
+  address2?: string | null
+  city?: string | null
+  state?: string | null
+  executiveName?: string | null
+  pin?: string | null
+  chassisNo?: string | null
+  motorNo?: string | null
+  remarks?: string | null
+  itemModel?: string | null
+  oemmodel?: string | null
+  colorCode?: string | null
+  vehicleType?: string | null
+  vehicleGroup?: string | null
+  hsnsaccode?: string | null
+  saleType?: string | null
+  financedBy?: string | null
+  finAmount?: number | null
+  itemRate?: number | null
+  insuAmount?: number | null
+  regnAmount?: number | null
+  acsryAmount?: number | null
+  preGstdiscAmount?: number | null
+  discTypeName?: string | null
+  postGstdisc?: number | null
+  fameIi?: number | null
+  stateFameIi?: number | null
+  sgstper?: number | null
+  sgstamount?: number | null
+  cgstper?: number | null
+  cgstamount?: number | null
+  igstper?: number | null
+  igstamount?: number | null
+  netAmount?: number | null
+  referenceNo?: string | null
+  bookingDate?: string | null
+  totalCount?: string | null
+  battery?: string | null
+  batteryChemical?: string | null
+  batteryCapacity?: string | null
+  batteryMake?: string | null
+  chargerNo?: string | null
+  chargerNo2?: string | null
+  converter?: string | null
+  vcu?: string | null
+  controllerNo?: string | null
+  fameIirequired?: string | null
+  segmentName?: string | null
+  institutionalName?: string | null
+  schemeName?: string | null
+  createdAt?: string | null
+  updatedAt?: string | null
+}
+
+/// One job row from DMSBAPLDATA's dbo.DMS_ServiceHistory, matched by Chassis No OR Reg No - GET
+/// /api/dms-bapl-data/service-history?search=... See DmsBaplDataServiceHistoryRow's doc comment in
+/// DmsBaplDataService.cs: confirmed against your pasted AutoGeniusSync.Models.DmsServiceHistory EF
+/// model and a live `select top 1 *`. Flat job-level totals only - no Item/Labour/Battery line-item
+/// breakdown exists in this table (see that same doc comment for why the legacy report PDF's
+/// per-part/labour detail can't be shown here).
+export interface DmsBaplDataServiceHistory {
+  id: number
+  dealerCode?: string | null
+  jobNo?: string | null
+  jobDate?: string | null
+  compName?: string | null
+  location?: string | null
+  inTime?: string | null
+  closeTime?: string | null
+  jobCategory?: string | null
+  ffrpercentage?: string | null
+  docNo?: string | null
+  docType?: string | null
+  docDate?: string | null
+  model?: string | null
+  brandName?: string | null
+  regNo?: string | null
+  vehicleType?: string | null
+  engineNo?: string | null
+  chassisNo?: string | null
+  kms?: string | null
+  batterySerialNo1?: string | null
+  batterySerialNo2?: string | null
+  batterySerialNo3?: string | null
+  batterySerialNo4?: string | null
+  batterySerialNo5?: string | null
+  batterySerialNo6?: string | null
+  individualAhbattery1?: string | null
+  individualAhbattery2?: string | null
+  individualAhbattery3?: string | null
+  individualAhbattery4?: string | null
+  individualAhbattery5?: string | null
+  individualAhbattery6?: string | null
+  partyName?: string | null
+  mobileNumber?: string | null
+  supervisor?: string | null
+  technician?: string | null
+  serviceHead?: string | null
+  jobType?: string | null
+  saleDate?: string | null
+  couponNo?: string | null
+  expectedDeliveryDate?: string | null
+  proformaDate?: string | null
+  invoiceDate?: string | null
+  estimatedJobExpenses?: number | null
+  labourHours?: number | null
+  parts?: number | null
+  accessory?: number | null
+  oil?: number | null
+  labour?: number | null
+  outsideWork?: number | null
+  totalWotax?: number | null
+  gstamount?: number | null
+  igstamount?: number | null
+  netTotal?: number | null
+  createdAt?: string | null
+  updatedAt?: string | null
+  repairType?: string | null
+  completionDate?: string | null
+  jobStatus?: string | null
+  rowHash?: string | null
+  uniqueKey?: string | null
+}
+
+/// One suggestion row for the Service History page's typeahead - GET
+/// /api/dms-bapl-data/service-history/suggestions?q=... See DmsBaplDataServiceHistorySuggestion's
+/// doc comment in DmsBaplDataService.cs: deliberately sourced from DMS_ServiceHistory itself, NOT
+/// the Job Card wizard's BaplDmsVehicleSuggestion (a different table - BAPL DMS's ChassisDetails).
+export interface DmsBaplDataServiceHistorySuggestion {
+  chassisNo: string
+  regNo?: string | null
+  model?: string | null
+  lastJobDate?: string | null
+}
+
 export interface CurrentUser {
   id: string
   name: string
@@ -278,6 +551,13 @@ export interface CurrentUser {
    * this user's own dealer. See AuthController.Me's DealerBaplDmsCode doc comment. */
   dealerBaplDmsCode?: string | null
   avatarColor?: string | null
+  /** BAPL DMS workshop LocCodes (the W1..Wn series) this user is scoped to - see
+   * User.WorkLocationCodes's doc comment (backend/Models/MasterData.cs). Empty = unrestricted
+   * (every user before the Employees/Work Area feature shipped, and any admin with no locations
+   * assigned). Used to filter the Service Location / workshop pickers down to only what this user
+   * is actually allowed to use - server-side enforcement (JobCardsController, DmsBaplDataController)
+   * is the real gate; this is just so the UI doesn't offer a choice it will only reject. */
+  workLocationCodes: string[]
 }
 
 export interface Customer {
@@ -593,6 +873,60 @@ export interface CorporateDashboardFilters {
   states: string[]
   cities: string[]
   models: string[]
+}
+
+// ==================== Labour Master (2026-09-19) ====================
+// Mirrors LabourMasterWithoutPartwiseRow / LabourMasterPartwiseRow in
+// backend/Services/LabourMasterImportService.cs - camelCase field names per this project's usual
+// System.Text.Json default, same convention as every other DMSBAPLDATA-backed type above.
+
+export interface LabourMasterWithoutPartwise {
+  id: number
+  labourCode: string
+  jobDescription: string | null
+  model: string | null
+  labourRate: number | null
+  igst: number | null
+  cgst: number | null
+  sgst: number | null
+  tier: number | null
+  category: string | null
+  effectiveDate: string | null
+  isActive: boolean
+  createdBy: string | null
+  createdDate: string
+  updatedBy: string | null
+  updatedDate: string | null
+}
+
+export interface LabourMasterPartwise {
+  id: number
+  partCode: string | null
+  partName: string | null
+  labourCode: string
+  jobDescription: string | null
+  model: string | null
+  labourRate: number | null
+  igst: number | null
+  cgst: number | null
+  sgst: number | null
+  tier: number | null
+  category: string | null
+  effectiveDate: string | null
+  isActive: boolean
+  createdBy: string | null
+  createdDate: string
+  updatedBy: string | null
+  updatedDate: string | null
+}
+
+export interface LabourMasterImportResult {
+  totalDataRows: number
+  inserted: number
+  updated: number
+  unchanged: number
+  skippedBlank: number
+  warnings: string[]
 }
 
 export interface CorporateDashboardData {

@@ -61,7 +61,7 @@ function nowForDatetimeLocalInput(): string {
   return new Date(Date.now() + IST_OFFSET_MINUTES * 60 * 1000).toISOString().slice(0, 16)
 }
 
-/** A date (e.g. a vehicle's DMS sale date) in real IST, not the browser's own timezone -
+/** A date (e.g. a vehicle's BAPL DMS sale date) in real IST, not the browser's own timezone -
  * same reasoning as nowForDatetimeLocalInput above. */
 function formatISTDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-IN', { timeZone: IST_TIME_ZONE })
@@ -153,7 +153,7 @@ export function JobCardWizardPage() {
   // saleDate already fills for an auto-fetched vehicle.
   const [newCustomer, setNewCustomer] = useState({ name: '', mobile: '', email: '', city: '', address: '', state: '', saleDate: '' })
 
-  // "Registered customer Details" - by chassis no. / registration no. - auto-fetches everything
+  // "(Registered customer Details)" - by chassis no. / registration no. - auto-fetches everything
   // DMS knows about that vehicle (Controllers/BaplDmsController.cs's vehicle-lookup, ported
   // from DMS's own onChassisChange()/GetAllInspectedLotChassisAsync) and uses it to pre-fill
   // both the "register a new customer" fields below AND the vehicle step that follows -
@@ -346,12 +346,14 @@ export function JobCardWizardPage() {
   // No. auto-fills from the chassis number's last 13 characters, exactly like DMS's own
   // onChassisChange() (`this.couponNo = this.selectedChassis.slice(-13)`) - see the effect below -
   // but stays editable and stops auto-updating once the user types into it directly, same as any
-  // other auto-filled-but-overridable field in this wizard. Job Category defaults to "B2C" (DMS's
-  // own default - its b2c radio starts checked and nothing un-checks it programmatically) with a
-  // B2B option alongside, mirroring DMS's radio group.
+  // other auto-filled-but-overridable field in this wizard.
+  // 2026-09-18: Job Category now defaults to "B2B" per explicit request - this REPLACES the
+  // earlier "defaults to B2C, matching DMS's own radio default" behavior (DMS's own b2c radio
+  // starts checked, but this app's own default is now intentionally different from DMS's). Still
+  // fully editable via the B2C/B2B toggle below either way.
   const [couponNo, setCouponNo] = useState('')
   const [couponNoTouched, setCouponNoTouched] = useState(false)
-  const [jobCategory, setJobCategory] = useState<'B2C' | 'B2B'>('B2C')
+  const [jobCategory, setJobCategory] = useState<'B2C' | 'B2B'>('B2B')
   useEffect(() => {
     if (couponNoTouched) return
     const vin = newVehicle.vin || ''
@@ -462,9 +464,21 @@ export function JobCardWizardPage() {
     setBaplServiceLocation('')
     if (!effectiveDealerId) { setWorkshops([]); return }
     staffApi.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: effectiveDealerId } })
-      .then(({ data }) => setWorkshops(data))
+      .then(({ data }) => {
+        // 2026-09-18 Work Area scoping: a user with one or more assigned Work Area locations
+        // (profile.workLocationCodes, from /api/auth/me - see User.WorkLocationCodes's doc
+        // comment) should only ever be OFFERED their own location(s) here, not every workshop the
+        // dealer has - the backend (JobCardsController.Create) already rejects an out-of-scope
+        // choice, but the dropdown shouldn't present a choice it's only going to reject. An empty
+        // workLocationCodes means unrestricted (e.g. Corporate/System Admin, or a legacy user with
+        // no Work Area set) - unchanged, full list.
+        const scoped = profile?.workLocationCodes?.length
+          ? data.filter((w) => profile.workLocationCodes.includes(w.locCode))
+          : data
+        setWorkshops(scoped)
+      })
       .catch(() => setWorkshops([]))
-  }, [effectiveDealerId])
+  }, [effectiveDealerId, profile?.workLocationCodes])
 
   // Default the Service Location to this dealer's own W-series, lowest number first (W1 if it
   // has one, else W2, and so on) - per your request, so a Service Location is already picked as
@@ -843,7 +857,7 @@ export function JobCardWizardPage() {
               )}
             </div>
           )}
-          <h3>Registered customer Details</h3>
+          <h3>(Registered customer Details)</h3>
           {/* "Search by mobile number or name" commented out per your request - chassis/reg no.
              search (below) is now the only way to look up a customer here. */}
           {/* <div className="field">
