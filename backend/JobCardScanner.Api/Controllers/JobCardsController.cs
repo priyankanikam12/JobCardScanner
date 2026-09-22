@@ -281,6 +281,14 @@ public class JobCardsController : ControllerBase
             ChassisNo = j.Vehicle != null ? j.Vehicle.Vin : null,
             VehicleType = j.Vehicle != null ? j.Vehicle.Model : null,
             JobSource = j.BaplJobSourceName,
+            // 2026-09-22 ("in labour after jobcard serach this automatically details fetch") -
+            // added for the Repair Bill create page's new "Selected Job Details" panel, matching
+            // the reference DMS app's own KMs/Technician fields on that panel. Both already existed
+            // on this app's own JobCard/Vehicle rows (JobCard.AssignedTechnicianName,
+            // Vehicle.Odometer) but were never returned by this search endpoint before - real data,
+            // not invented for this panel.
+            Odometer = j.Vehicle != null ? j.Vehicle.Odometer : (double?)null,
+            Technician = j.AssignedTechnicianName,
         }));
     }
 

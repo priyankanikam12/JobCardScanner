@@ -10,7 +10,7 @@
 
   <ItemGroup>
     <!-- Azure AD authentication for staff (web + mobile clients) -->
-    <PackageReference Include="Microsoft.Identity.Web" Version="3.5.0" />
+    <PackageReference Include="Microsoft.Identity.Web" Version="3.8.2" />
 
     <!-- Customer portal uses a separate, simple JWT bearer scheme (OTP-issued tokens) -->
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.10" />

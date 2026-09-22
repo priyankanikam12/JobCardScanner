@@ -654,3 +654,533 @@ VERIFICATION:
   visible (description on hover), and picking a row still fills
   Description/HSN/Rate exactly as before (pickLabourForLine itself is
   unchanged).
+
+================================================================================
+SECTION 67 - Repair Bill Labour dropdown: filtered to the job's own vehicle model
+================================================================================
+
+YOUR WORDS: after seeing the Labour Master admin screen (SFORUV1M001/M004/N001/N004, all tagged
+Model "RUV 350 max"), you asked to add Model-based filtering to the Repair Bill labour dropdown -
+so a job's labour search only offers codes that actually apply to that job's own vehicle model,
+not every labour code across every model for the dealer.
+
+WHAT CHANGED - web/src/pages/staff/RepairBillCreatePage.tsx only:
+- FACT: JobSearchResult's `vehicleType` field is actually the vehicle's OEM Model name, not a
+  vehicle category - confirmed directly in JobCardsController.Search: `VehicleType = j.Vehicle !=
+  null ? j.Vehicle.Model : null`. Misleadingly named on that endpoint, left as-is rather than
+  renamed (renaming it would touch every other place that already consumes this field across the
+  app - out of scope for this fix).
+- New `vehicleModel` state, set from `job.vehicleType` when a Job is linked (selectJob) and cleared
+  alongside the rest of the job's state (clearJob).
+- New `labourOptionsForModel` - the dealer-wide `labours` list narrowed to rows whose
+  BaplDmsLabourRow.oemModelName matches vehicleModel (case-insensitive). Both LabourSearchInput
+  usages (Item Code cell and Description cell) now receive this filtered list instead of the raw
+  one.
+- Deliberately does NOT hide a labour row when either side is unknown: no Job linked yet (
+  vehicleModel null) shows everything, same as before this section; and a labour row with no
+  oemModelName on file (a labour rate that isn't model-specific) always stays visible regardless of
+  vehicleModel - only narrows when both are known and genuinely don't match, so this can't make a
+  real, applicable labour code silently disappear from the picker.
+- Small visible note added next to "+ Add Labour" ("Labour codes filtered to <model>") whenever
+  narrowing is active, so the dealer can see why the list is scoped rather than wondering where a
+  code went. Hidden entirely when no Job is linked.
+
+NOT CHANGED: the /api/bapl-dms/labour endpoint itself and BaplDmsLabourRow's shape - filtering is
+client-side only, over the same data this page already fetched. JobCardDetailPage.tsx's own Labour
+Suggestion panel (which filters server-side by JobType/ServiceHead/ServiceType, not Model) is
+untouched - this section only affects Repair Bill's own Labour picker.
+
+VERIFICATION:
+- cd web && npx tsc -p tsconfig.app.json --noEmit -> exit code 0, no errors.
+- No dev server available in this sandbox - please confirm on your end: linking a Job whose vehicle
+  Model is on file (e.g. "RUV 350 max") narrows the Labour search to codes tagged for that model
+  plus any untagged/generic codes; a Job with no Model on file (or none linked yet) shows every
+  labour code, unchanged from before.
+
+================================================================================
+SECTION 68 - Extended Battery Warranty Scheme: new table + logic, native to JobCardScanner
+================================================================================
+
+YOUR WORDS: "needs to create warenty table in jobcardscanner db for this functionality and add
+this in our function" - i.e. port the Extended Battery Warranty Scheme concept (which you earlier
+pasted from BAPL DMS's own separate codebase, and I delivered as a text-only patch for THAT
+codebase, since I don't have file access to it) into JobCardScanner's own database, which I do
+have full access to, and wire it into Repair Bill.
+
+WHAT THIS IS: a brand-new, dealer-configurable "Extended Battery Warranty Scheme" master table,
+native to JobCardScannerDb (NOT a copy of any BAPL DMS table, NOT written to BAPLDMSvad/baplfinal).
+Ported in SHAPE from the BAPL DMS reference you pasted, with two deliberate adaptations disclosed
+below. A Repair Bill's Part lines are checked against it automatically and non-destructively.
+
+FACT vs INTERPRETATION - please review before treating this as production-ready:
+- FACT: JobCardScannerDb has no OEM Model master table (grepped Models/ and Controllers/ for
+  "OemModel"/"VehicleModel" - nothing exists). Vehicle.Model is plain free text.
+  => Scheme.VehicleModel is therefore free text too, matched case-insensitively against
+  Vehicle.Model at save time. A typo in either place (scheme setup or the vehicle record) breaks
+  the match silently - there is no FK to catch it. Recommend a naming convention (copy-paste the
+  exact Model string from an existing Vehicle record) until/unless a real Model master exists.
+- FACT: JobCardScannerDb already has an existing, SEPARATE, simpler field -
+  Vehicle.Warranty.BatteryWarrantyExpiry (Models/MasterData.cs) - a single per-vehicle expiry date
+  with no pricing or scheme concept. This new table does NOT read, write, or replace that field;
+  they are two independent, additive concepts. Flagging this now so the two are never confused as
+  the same feature.
+- INTERPRETATION (carried over from the BAPL DMS delivery's own disclosure, not confirmed BGauss
+  policy): FromDate/ToDate on a scheme are read as "which batch of vehicle purchases this scheme's
+  pricing/terms apply to" - a scheme is a candidate only when the vehicle's own Purchase Date falls
+  inside that window. Coverage for a claim = Purchase Date + Duration(DurationType), compared
+  against the Repair Bill's own Bill Date; and the vehicle's odometer (Vehicle.Odometer) compared
+  against the scheme's Kms cap (0 = no cap) - both conditions must pass to be "eligible". This
+  formula should be checked against actual BGauss Extended Battery Warranty policy before being
+  relied on for a real claim - I have not been given that policy and have not assumed one beyond
+  what's written here.
+- ASSUMPTION: PurchaseValidityDays is stored on the scheme (matching the BAPL DMS reference's own
+  field) but NOT used anywhere in the eligibility check - same reason as the earlier BAPL DMS
+  delivery: nothing confirms what it's meant to gate.
+- Two adaptations from the BAPL DMS reference, not a 1:1 field copy: VehicleModel is free text
+  (no OemModelId FK - see above) and DurationType is a plain string "Days"/"Months"/"Years" (not a
+  numeric id into an unconfirmed lookup, avoiding the same ambiguity flagged in the BAPL DMS
+  delivery's own README).
+
+WHAT CHANGED:
+
+Backend (all in backend/JobCardScanner.Api/):
+- Models/ExtendedBatteryWarrantySchemes.cs (NEW) - the ExtendedBatteryWarrantyScheme entity. Full
+  field list: SchemeName, VehicleModel, RateType, Duration/DurationType, Kms, DealerPrice,
+  CustomerPrice, DiscountAmount, GstPercent, PurchaseValidityDays, BatteryPartCode, PartCode,
+  FromDate/ToDate, IsActive, dealer/audit fields. See its own doc comment for the full reasoning.
+- Models/RepairBillDocs.cs - RepairBillDocItem gets two new NULLABLE columns:
+  ExtendedBatteryWarrantySchemeId and IsUnderExtendedWarranty. Both audit/display metadata only -
+  NEVER change Rate/TaxableAmount/CgstAmount/SgstAmount/IgstAmount/TotalAmount, which stay exactly
+  what the dealer entered. Existing rows unaffected (both nullable).
+- Data/JobCardScannerDbContext.cs - new DbSet, new entity config (index on DealerId+VehicleModel,
+  Dealer/CreatedBy/UpdatedBy FKs), and the new FK from RepairBillDocItem onto the scheme (kept at
+  the global default Restrict, not Cascade - see next point).
+- Dtos/Requests.cs - CreateExtendedBatteryWarrantySchemeRequest (create/update) and
+  ExtendedBatteryWarrantyEligibilityResult (the eligibility check's response shape).
+- Controllers/ExtendedBatteryWarrantySchemesController.cs (NEW) - CRUD
+  (List/Get/Create/Update/Delete) plus GET .../eligible. Gated [Authorize(Policy =
+  Policies.WorkshopManagerUp)] for the WHOLE controller - same confidentiality rationale as Labour
+  Master (DealerPrice/CustomerPrice/DiscountAmount are pricing data). Delete is a real row removal
+  (not a soft delete like RepairBillDoc) but is blocked with a 409 if any RepairBillDocItem still
+  references the scheme - use Inactive instead for a scheme with claim history.
+- Services/IExtendedBatteryWarrantyEligibilityService.cs + ExtendedBatteryWarrantyEligibilityService.cs
+  (NEW) - the eligibility formula lives here ONCE, used by both the controller's GET .../eligible
+  endpoint and RepairBillDocsController.Create's automatic tagging below, so the two can never
+  silently drift apart as either is edited later. Registered in Program.cs's DI container.
+- Controllers/RepairBillDocsController.cs - Create now, for each Part line only: if req.VehicleId
+  resolves to a Vehicle with a Purchase Date on file, candidate schemes are evaluated once per
+  save (not per line); a line is tagged when its own ItemCode equals a candidate scheme's
+  BatteryPartCode or PartCode (case-insensitive). ExtendedBatteryWarrantySchemeId is set either
+  way (so a bill line shows which scheme it matched, eligible or not) and IsUnderExtendedWarranty
+  reflects the actual eligibility result. No VehicleId, no Purchase Date on file, or no matching
+  scheme leaves both fields null - identical to a bill saved before this feature existed. Both new
+  fields are also now included in the List/Get/Combined JSON responses (ToRow/ToCombinedRow).
+- Program.cs - new, separate self-healing schema try/catch block (same idempotent
+  IF OBJECT_ID(...)/COL_LENGTH(...)/sys.foreign_keys pattern used throughout this file, isolated
+  so a failure here can't block any other startup block): creates
+  dbo.ExtendedBatteryWarrantySchemes if missing, adds the two new RepairBillDocItems columns, adds
+  the FK and an index. Runs on every startup in every environment, like every other block in this
+  file - no manual SQL script to run by hand.
+
+Frontend (web/src/):
+- pages/staff/ExtendedBatteryWarrantySchemesPage.tsx (NEW) - admin list + create/edit form for the
+  scheme master (Scheme Name, Vehicle Model, Rate Type, Duration/Duration Type, Kms cap, Dealer/
+  Customer Price, Discount, GST%, Purchase Validity, Battery Part Code, Part Code, From/To Date,
+  Active). This page is CRUD only - the eligibility check itself runs automatically inside Repair
+  Bill save, there is no manual "check eligibility" button on this page (a live badge on the
+  Repair Bill Part line itself was considered but not built - see NOT DONE below).
+- App.tsx / components/StaffLayout.tsx - new route+nav entry "/battery-warranty-schemes" /
+  "Battery Warranty Schemes", gated to WorkshopManager/DealerAdmin/CorporateAdmin/SystemAdmin,
+  matching the backend policy exactly (same convention as every other gated page in this app).
+- types/index.ts - ExtendedBatteryWarrantyScheme / CreateExtendedBatteryWarrantySchemeRequest /
+  ExtendedBatteryWarrantyEligibilityResult, mirroring the new backend DTOs field-for-field.
+
+NOT DONE (flagging rather than guessing at scope):
+- No live "this line is now under Extended Battery Warranty" indicator was added to
+  RepairBillCreatePage.tsx's Part grid itself - the tagging happens silently on save
+  (RepairBillDocsController.Create) and is visible afterward via the bill's own Items (now
+  carrying ExtendedBatteryWarrantySchemeId/IsUnderExtendedWarranty), not as a live badge while the
+  dealer is still building the bill. Say the word if you want that added as its own section.
+- No bulk import (Excel) for schemes, unlike Labour Master/Part Upload - this table is expected to
+  hold a handful of dealer-defined schemes, not thousands of rows; can be added later if that
+  assumption is wrong.
+
+VERIFICATION:
+- Backend: hand-reviewed only - no C# compiler available in this sandbox (NuGet restore blocked).
+  Please build once merged in.
+- Frontend: cd web && npx tsc -p tsconfig.app.json --noEmit -> exit code 0, no errors, across the
+  new page plus App.tsx/StaffLayout.tsx/types/index.ts.
+- Please verify end-to-end once merged: (1) start the API once so the new table/columns appear
+  (self-healing block runs on startup); (2) create a scheme under Battery Warranty Schemes for a
+  Vehicle Model and Battery Part Code that match a real test vehicle/part; (3) create a Repair Bill
+  against that vehicle with a Part line whose Item Code equals that Battery Part Code, and confirm
+  the saved bill's item comes back with ExtendedBatteryWarrantySchemeId set and
+  IsUnderExtendedWarranty true/false as expected, WITHOUT any change to that line's own
+  Rate/TaxableAmount/TotalAmount; (4) confirm a scheme cannot be deleted once referenced by a
+  saved bill line (409), and that Inactive still works as the "retire" path instead.
+
+================================================================================
+SECTION 69 - Repair Bill: "Save as Proforma" then "Save as Invoice" lifecycle
+================================================================================
+
+YOUR WORDS: "in repiar bill save as proforma and after save as proforma then save as invoice that
+same functionality we need to create in our jc" - the reference DMS app's own two-step Repair Bill
+lifecycle (save a Proforma first, finalize it as an Invoice afterwards), read as a SEQUENCE on the
+SAME bill, not two independent create-time buttons.
+
+WHAT CHANGED:
+
+FACT (checked before building this): RepairBillDocsController already had a
+`PUT /api/repair-bill-docs/{id}/status` endpoint (UpdateStatus) that moves a bill's Status between
+Performa/Billed/Cancelled - it was written earlier this session but NO page anywhere in the app
+ever called it. So this section is entirely FRONTEND wiring onto an existing, already-correct
+backend endpoint - no backend files changed.
+
+- web/src/pages/staff/RepairBillCreatePage.tsx:
+  - The create-form button is relabelled "Save Repair Bill" -> "Save as Proforma". Behaviour is
+    UNCHANGED - it always creates the bill with Status=Performa (the backend hard-codes this on
+    Create regardless of what's sent), exactly as before this section; this is a label-only change
+    to make the two-step lifecycle explicit in the UI.
+  - New "Save as Invoice" action, reachable by clicking a bill row to open its detail popup (the
+    existing "click to view full details" flow) - a button now appears at the bottom of that popup
+    ONLY when the bill is this app's own (Source = JobCardScanner, not a DMSBAPLDATA-synced row)
+    AND its Status is still Performa. Clicking it, after a confirm prompt, calls the existing
+    PUT .../status endpoint with "Billed" and refreshes both the popup and the list below.
+  - This does NOT add a line-item edit screen. "Save as Invoice" finalizes the STATUS only - Rate/
+    Qty/GST/discount cannot be changed at that point (this app still has no edit-bill screen at
+    all, only create/status-change/delete, per this page's own pre-existing doc comment). If a
+    Proforma bill's line items are wrong, today's only options are re-entering a fresh bill, or
+    (SystemAdmin) deleting it - flagging this rather than quietly building a bigger edit feature
+    you didn't ask for.
+- web/src/components/RecordDetailModal.tsx - added an optional `actions` prop (a footer row below
+  the fields/items, only rendered when passed) so Repair Bill's "Save as Invoice" button has
+  somewhere to live. Purely additive - PartUploadPage.tsx and MaterialTransferCreatePage.tsx's own
+  uses of this shared component don't pass it and render exactly as before.
+
+NOT CHANGED: RepairBillDocsController.UpdateStatus itself (already correct/unused before this
+section) and RepairBillDocStatus's three values (Performa/Billed/Cancelled) - no "Cancelled" UI
+was added since you only asked for the Proforma -> Invoice step; say the word if you also want a
+"Cancel Bill" action surfaced the same way.
+
+VERIFICATION:
+- cd web && npx tsc -p tsconfig.app.json --noEmit -> exit code 0, no errors.
+- No dev server available in this sandbox - please confirm on your end: (1) "Save as Proforma"
+  still creates a bill exactly as before, status shows "Performa" in the list; (2) clicking that
+  row opens the detail popup with a "Save as Invoice" button at the bottom; (3) clicking it,
+  confirming, updates the row's Status to "Billed" in the list and the button disappears from the
+  popup on next open (status no longer Performa); (4) a DMSBAPLDATA-sourced row, or a bill already
+  Billed/Cancelled, shows no "Save as Invoice" button at all.
+
+================================================================================
+SECTION 70 - Repair Bill UI clean-up: column naming, hide Tax Type/Issue Type default
+selectors, "Selected Job Details" panel after Job Search
+================================================================================
+
+YOUR WORDS (pasted alongside two screenshots of the real BAPL DMS reference's own /repair-bill
+page): "AMount and Rate colums also shown in table give proper in after IGST Amt proper heading
+name ..Tax Type hide dont show in ui automatically login dealer state wise it select and Issue
+Type (default for new lines) that also hide..in labour after jobcard serach this automatically
+details fetch then we adding labour details see screenshot that type add ui and all"
+
+Four separate asks in that message - the first three are done below; the fourth (matching the
+screenshot's own Labour/Part "add" UI exactly) needs a scoping decision from you first - see the
+question I'm asking alongside this delivery.
+
+WHAT CHANGED (web/src/pages/staff/RepairBillCreatePage.tsx unless noted):
+
+1. Column heading after IGST Amt: renamed "Est. Total" -> "Net Amount", matching the reference
+   screenshot's own Labour Details List column name (its Part Details List calls the equivalent
+   column "Amount" - close enough to the same concept that one shared name across both Labour and
+   Part rows in our single combined grid is clearer than switching the header per row type). The
+   "still a live estimate, not final until Save" meaning is now carried as a hover tooltip on the
+   header instead of the word "Est." - the bill-level "Estimated Total: ₹X" caption below the grid
+   (unchanged) already says this plainly in words.
+
+2. Tax Type selector removed from the visible form. FACT: this page already auto-detected Same
+   State (CGST+SGST) vs Different State (IGST) from comparing the signed-in dealer's own State
+   against the linked job's Customer.State (built 2026-09-21) - the dropdown you're looking at in
+   your screenshot was only ever a manual OVERRIDE on top of that auto-detection, which is exactly
+   what you're now asking to remove. The underlying computation is UNCHANGED (same compare, same
+   default of Same State when either state isn't known yet, e.g. no job linked) - it's now a plain
+   derived value instead of state you could edit, since there's no control left to edit it from.
+
+3. "Issue Type (default for new lines)" selector removed from the visible form. This was a
+   bill-level convenience that pre-filled new Labour lines' own Issue Type - each LINE's own Issue
+   Type selector (Paid / U/W / FSC, in the item grid itself) is UNTOUCHED and still fully
+   controllable per line; only the bill-level default picker is gone. Since nobody using this
+   picker was required, hiding it simply means every new line now starts at "— default —" (which
+   already meant "falls back to Paid/no zero-tax behaviour" before this change too).
+
+4. NEW "Selected Job Details" read-only panel, shown once a Job is linked via Job Search - Job
+   Date, Job No., Reg No, Model, KMs, Chassis, Technician, matching the reference screenshot's own
+   panel field-for-field. FACT: KMs (Vehicle.Odometer) and Technician (JobCard.AssignedTechnicianName)
+   both already existed as real columns on this app's own Vehicle/JobCard tables but were never
+   returned by the Job Search endpoint before now - backend/Controllers/JobCardsController.cs's
+   Search() action now also returns Odometer and Technician (real data pulled from those existing
+   columns, nothing invented). Job Date/Job No/Reg No/Model/Chassis were already available and are
+   simply displayed here too, read-only, ALONGSIDE the existing editable Party Name/Reg No/Chassis
+   No/Location fields below (which remain the real, editable source of truth saved on the bill -
+   this panel is a recap, not a second set of inputs, so there's no duplicate-editing risk).
+
+NOT YET DONE - see my question alongside this delivery: matching the screenshot's own Labour/Part
+"add" UI exactly (a dedicated staging input row with its own +Add button, feeding a separate
+read-only "Details List" table with Edit/Delete icons per row) is a bigger, structurally different
+change from this page's current single inline-edit grid, and Part lines specifically are already
+built to auto-load read-only from Material Transfer with no manual add at all (per an earlier
+section this same session) - the reference's own Part-adding row wouldn't apply to them the same
+way. I didn't want to guess at how far to take that redesign and risk breaking what's already
+working, so I'm asking first rather than rebuilding it silently.
+
+VERIFICATION:
+- cd web && npx tsc -p tsconfig.app.json --noEmit -> exit code 0, no errors.
+- npx oxlint (this project's configured linter, not eslint directly) on every file touched this
+  section -> zero warnings.
+- No dev server available in this sandbox - please confirm on your end: (1) linking a Job via Job
+  Search shows the new "Selected Job Details" panel with real KMs/Technician values (or "—" when a
+  job card has neither on file yet - not blank/broken); (2) Tax Type/Issue Type-default fields are
+  gone from the form but CGST/SGST/IGST split still comes out correct for both a same-state and a
+  different-state customer, same as before this section; (3) the item grid's last column now reads
+  "Net Amount" instead of "Est. Total" with the same live-updating values as before.
+
+================================================================================
+SECTION 71 - Repair Bill: Labour/Part "add" UI redesigned to match the reference screenshot
+================================================================================
+
+YOUR ANSWER to the scoping question asked alongside SECTION 70: "Redesign both Labour and Part
+display" (the third option - full redesign of both, not just Labour, and not "keep as-is").
+
+WHAT CHANGED (web/src/pages/staff/RepairBillCreatePage.tsx only):
+
+The old single inline-edit grid - one table where every line, including a not-yet-added one, was
+edited directly in its own row - is replaced by the reference's own two-part pattern, per your
+screenshots:
+
+- Labour: a dedicated "staging row" above a new "Labour Details List" table - Labour (search),
+  Description, Qty, Rate, Disc. Type, Discount, Issue Type, then a "+ Add" button, matching the
+  reference's addLabour() exactly. Clicking a row's own pencil (Edit) icon in the list below loads
+  that line back into the staging row (button becomes "Update"); a trash icon deletes it directly.
+  The Labour Details List table itself is now pure read-only display (Sr.No/Labour Code/
+  Description/Qty/Rate/HSN Code/Discount Amt./Disc.Type/CGST Amt./SGST Amt./IGST Amt./Net Amount) -
+  no more editable cells sitting inside it.
+- Part: DATA AND BEHAVIOUR ARE UNCHANGED - still auto-loaded read-only from whatever Material
+  Transfer was already saved against the linked Job (no search box, no manual add - this was a
+  deliberate, confirmed correction earlier this session: the reference's own Part-adding UI is
+  commented out of its source and Parts there load the same way). Only the TABLE was restyled into
+  its own separate "Part Details List" with the reference's column set (Action/Sr.No/Part No./
+  Description/Qty/Rate/HSN Code/MRP/Discount/Discount Type/CGST Amt./SGST Amt./IGST Amt./Amount/
+  Issue Type/GST %). Its pencil icon toggles ONLY Discount/Issue Type into inline inputs on that
+  one row (the only fields ever editable on a Part line, same rule as before this section) - there
+  is still no Delete icon for a Part row, matching the reference.
+- FACT, flagged rather than silently worked around: the reference's Part Details List also shows a
+  "FOC Rate" column. This app's RepairBillDocItem has no equivalent field at all (checked the
+  model - there's no FOC/free-of-cost concept stored anywhere on a Repair Bill line), so that
+  column is OMITTED here rather than displaying a fake/always-empty one. Say the word if FOC
+  tracking is something you actually need captured - that would be a new backend field, not a
+  display change.
+- The bill's saved data shape is completely unchanged - `items` (the array actually sent to
+  POST /api/repair-bill-docs on Save) still holds the exact same Labour/Part line objects as
+  before; only how they're ADDED/EDITED/DISPLAYED changed. Nothing about SECTION 68's Extended
+  Battery Warranty Scheme tagging, SECTION 69's Save as Proforma/Invoice, or SECTION 70's Tax Type/
+  Issue Type-default/Selected Job Details work needed to change alongside this.
+
+VERIFICATION:
+- cd web && npx tsc -p tsconfig.app.json --noEmit -> exit code 0, no errors.
+- npx oxlint src/pages/staff/RepairBillCreatePage.tsx -> zero warnings.
+- No dev server available in this sandbox - please confirm on your end: (1) the Labour staging row
+  adds a new row to Labour Details List on "+ Add" and clears itself; (2) clicking a Labour row's
+  pencil loads it back into the staging row, "+ Add" becomes "Update", and saving there updates
+  that same row in place (not a duplicate); (3) the trash icon removes a Labour row; (4) Part
+  Details List still populates automatically from a saved Material Transfer with no way to
+  manually add a Part row, and its pencil icon only lets you change Discount/Issue Type; (5) Save
+  as Proforma still posts the correct combined Labour+Part items exactly as before this section.
+
+================================================================================
+SECTION 72 - OEM Model Master + OEM Model Warranty (new tables in JobCardScannerDb),
+              linked to Extended Battery Warranty Scheme
+================================================================================
+
+YOUR REQUEST (verbatim): "this wants to integrate for my battery-warranty-schemes for link models
+for warrenty and this all table add in jobcard db that all functionality need to craete in jc" -
+alongside a full paste of the real BAPL DMS reference's OemmodelMaster + OemmodelWarranty tables,
+Angular list/add/edit screens, and C# controller/repo/service/viewmodel layers.
+
+Before building this I asked 3 scoping questions (AskUserQuestion) because the schema/scope
+decisions here are hard to reverse once data exists. YOUR ANSWERS, all "Recommended":
+  1. OEM Model Master scope: GLOBAL (one shared catalog, not per-dealer) - matches the reference
+     table's own shape (it has no DealerId at all).
+  2. Vehicle.Model (the existing free-text field used across the whole app - wizard, vehicle
+     records, etc.): STAYS FREE TEXT, unchanged. Only the new warranty-linking features use the
+     new OEM Model FK.
+  3. ExtendedBatteryWarrantyScheme's existing free-text VehicleModel column: a new OemModelId FK
+     is ADDED ALONGSIDE it, not replacing it - nothing about existing schemes breaks.
+
+WHAT WAS BUILT:
+
+1. TWO NEW TABLES, native to JobCardScannerDb (self-healing schema, same pattern as every other
+   table added this session - see Program.cs's new "OEM MODEL MASTER + OEM MODEL WARRANTY" block):
+
+   dbo.OemModels (GLOBAL - no DealerId):
+     Id, ModelName (required, unique), ModelShortName, IsActive, CreatedById/CreatedAt/
+     UpdatedById/UpdatedAt (FK to Users, this app's own audit convention - the reference used raw
+     CreatedBy/UpdatedBy ints from its own separate user table).
+
+   dbo.OemModelWarranties (the OEM's own STANDARD warranty terms per model - separate from the
+   dealer-priced Extended Battery Warranty Scheme, same distinction the SECTION 68 doc comment
+   already draws against Vehicle.Warranty.BatteryWarrantyExpiry):
+     Id, OemModelId (FK, Cascade delete - a warranty term is owned by its model), EffectiveDate,
+     OdoReading, DurationType ("Months"/"Years" only - see below for why not "Days" too), Duration,
+     IsB2b, same CreatedBy/UpdatedBy audit columns.
+     BUSINESS RULE (ported from the reference's add-oemmodel-warranty.ts): a new EffectiveDate for
+     a model must be strictly AFTER that model's most recent existing EffectiveDate. The reference
+     only enforces this client-side (an HTML min= attribute); this build enforces it SERVER-SIDE
+     too (OemModelWarrantiesController.Create/Update), since a client-only check is trivially
+     bypassed by a direct API call - flagging this as a deliberate hardening beyond the reference,
+     not a change to what the rule means.
+
+   FACT/ADAPTATION disclosed in Models/OemModels.cs's own doc comment: the reference's
+   DurationType was a numeric FK into a frontend-only, never-confirmed lookup whose real values
+   were never verified (same gap already flagged for ExtendedBatteryWarrantyScheme.DurationType
+   back in SECTION 68). Kept as a plain string here, restricted to "Months"/"Years" only (NOT
+   "Days" - the reference itself never offered Days for this specific table, unlike Extended
+   Battery Warranty Scheme's own DurationType which does).
+
+2. LINKING TO Extended Battery Warranty Scheme (per your answer #3):
+   - ExtendedBatteryWarrantyScheme gained a new nullable OemModelId column (FK, Restrict) ALONGSIDE
+     its existing VehicleModel free-text column. VehicleModel is still required and still the ONLY
+     field ExtendedBatteryWarrantyEligibilityService reads for matching - nothing about eligibility
+     MATCHING changed.
+   - The admin page (ExtendedBatteryWarrantySchemesPage.tsx) now has an "OEM Model (optional)"
+     dropdown next to the Vehicle Model text box. Picking a model sets OemModelId AND auto-fills
+     Vehicle Model from that model's real name, so the two stay in sync going forward. Manually
+     retyping Vehicle Model clears the OemModelId link (since it may no longer match a catalog
+     entry) - existing schemes with no matching OEM Model row keep working exactly as before,
+     shown as "Unlinked" in the list.
+
+3. AUTHORIZATION (both new controllers, OemModelsController/OemModelWarrantiesController):
+   GLOBAL master data, so List/Get are gated at WorkshopManagerUp (any dealer's own Workshop
+   Manager can browse the catalog to link a scheme) but Create/Update/Delete are additionally
+   gated at the stricter CorporateAdminUp - a catalog shared by every dealer shouldn't be editable
+   by dealer-level staff. This "controller-level policy + a stricter one stacked on specific
+   actions" is NOT a new convention invented for this feature - it's the exact same pattern
+   ReportsController.ExportInvoices already uses in this codebase (ReportsController is
+   [Authorize(Staff)], but ExportInvoices itself additionally requires CashierUp).
+
+4. CRUD + Excel download for both new masters (OemModelsController/OemModelWarrantiesController -
+   direct-_db pattern, matching ExtendedBatteryWarrantySchemesController's own rationale: these
+   tables live in JobCardScannerDb, not BAPLDMSvad/DMSBAPLDATA, so no repo/service layer). Excel
+   export uses this app's EXISTING IExcelExportService (the same service ReportsController already
+   uses) - no new export mechanism invented. OEM Model Master delete is blocked (409) if any
+   Extended Battery Warranty Scheme still references it (mark Inactive instead); OEM Model
+   Warranty delete has no such block (nothing else in this app references it).
+
+5. TWO NEW ADMIN PAGES (OemModelsPage.tsx / OemModelWarrantiesPage.tsx), routed at /oem-models and
+   /oem-model-warranties, with nav entries in StaffLayout.tsx (same WorkshopManagerUp+ role gate as
+   the route - App.tsx). OemModelWarrantiesPage has the model dropdown, an Effective Date
+   date-range filter (matching the reference's own filter), the same min-date UI hint as the
+   reference (with the real enforcement server-side, per #1 above), and an Excel download button.
+
+FACT (checked, not assumed): grepped this codebase before starting - no OemModel/VehicleModel FK
+of any kind existed anywhere before this section, confirming the gap SECTION 68's own doc comment
+already flagged ("no OEM Model master exists in JobCardScannerDb").
+
+NOT DONE (by your own explicit choice, answers #2 and #3 above) - flagging so it's not mistaken
+for an oversight: Vehicle.Model itself is NOT an FK and has no dropdown anywhere in this app - a
+vehicle's model is still typed free text exactly as before this section. If you later want new
+vehicles to be picked from this same OEM Model catalog too, that's a separate, larger change (Job
+Card Wizard, Vehicle add/edit screens, Android app) and would need its own scoping pass, the same
+way this one did.
+
+VERIFICATION:
+- cd web && npx tsc -p tsconfig.app.json --noEmit -> exit code 0, no errors.
+- npx oxlint on every web file touched this section (OemModelsPage.tsx, OemModelWarrantiesPage.tsx,
+  ExtendedBatteryWarrantySchemesPage.tsx, App.tsx, StaffLayout.tsx, types/index.ts) -> zero new
+  warnings (StaffLayout.tsx carries two PRE-EXISTING warnings unrelated to this section's edits -
+  a Fast Refresh export-shape warning and a set-state-in-effect warning, both already present
+  before this change, not introduced by it).
+- Backend: `dotnet build` was attempted directly this time (dotnet 8.0.130 is present in this
+  sandbox) but NuGet restore is blocked by this environment's network policy (api.nuget.org
+  returns 403 via the sandbox's proxy) - so this is still a careful hand-review, not a compiled
+  build, same limitation as every earlier section. Please run an actual `dotnet build` on your end
+  before deploying.
+- Please confirm on your end after merging: (1) OEM Models page loads, and a CorporateAdmin/
+  SystemAdmin login can create/edit/delete a model while a plain WorkshopManager login can view
+  the list but gets a 403 trying to save (by design - see #3 above); (2) OEM Model Warranty page's
+  Effective Date min-date hint updates correctly per selected model, and saving a date on/before
+  the last one for that model is rejected with a clear message from the server; (3) on the
+  Extended Battery Warranty Scheme page, picking a model from the new dropdown fills Vehicle Model
+  correctly, and an existing (pre-this-section) scheme still opens/saves fine with "Unlinked"
+  shown for its OEM Model column; (4) the self-healing schema block in Program.cs actually creates
+  both new tables + the new OemModelId column on your real database on next app startup (check the
+  startup console log for the "[Startup] Self-healing schema catch-up (OemModels +
+  OemModelWarranties tables...)" line).
+
+================================================================================
+SECTION 73 - Repair Bill page: Labour row spacing fix, auto-filled fields made
+              read-only, Part Details List gets a working Delete, page made "attractive"
+================================================================================
+
+YOUR REQUEST (verbatim, two messages):
+1. "in this page css not proper in Labour after Qtyfeild have much space that all feilds fix in 1
+   link with Add button ..Party Name *,Reg No Chassis No,Location that also auto fetched feild
+   that also dont show editable only this page give me after fixing"
+2. "and in Part Details List with edit delete button also add and proper give me this page
+   attractive page"
+
+WHAT CHANGED (web/src/pages/staff/RepairBillCreatePage.tsx only):
+
+1. LABOUR ROW SPACING - FACT, root cause found: the Labour staging row used the page's own
+   .form-row class, whose CSS (styles/global.css) is an equal-width grid -
+   `grid-template-columns: repeat(auto-fit, minmax(200px, 1fr))` - so even a tiny field like Qty
+   or Disc. Type was stretched out to at least 200px, leaving a lot of visible empty space and
+   uneven wrapping after Qty. Fixed by switching to .suggest-row + .field-grow/.field-compact -
+   NOT a new class invented for this: it's the exact SAME fix already used for this exact same
+   problem on the Job Card Detail page's own "Suggest a part"/"Suggest labour" rows
+   (JobCardDetailPage.tsx). Labour/Description now grow to fill space, Qty/Rate/Disc.Type/
+   Discount/Issue Type/Add size to their own content - the whole row now reads as one compact
+   line instead of a stretched-out grid.
+
+2. Party Name / Reg No / Chassis No / Location now become READ-ONLY the moment a Job is linked
+   (new `autoFilledFromJob` = `!!jobCardId`) - matching your ask that an auto-fetched field
+   shouldn't also look freely editable. Each field shows a tooltip ("Auto-filled from the linked
+   Job - unlink the Job to edit."). Unlinking the Job (the existing ✕ button next to Job No) hands
+   editing back immediately, for a standalone bill with no Job - these fields work exactly as
+   before this section whenever no Job is linked.
+
+3. Part Details List DELETE button - FACT, explicit departure from the reference disclosed rather
+   than silently added: every earlier section's own doc comments said the reference's own Part
+   Details List has Edit only, no Delete, and this app matched that on purpose. You've now asked
+   for Delete there too, so it's added - a ✕ icon next to the existing pencil (Edit) icon, same
+   style/placement as Labour's own Edit+Delete pair. IMPORTANT - what Delete actually does: a Part
+   row here is a read-only reflection of a real Material Transfer record, and this app has no
+   "undo a transfer" concept - so Delete only EXCLUDES that part from THIS bill (it won't be
+   billed/sent to the backend on Save), it does NOT reverse, cancel, or edit the underlying
+   Material Transfer itself. The confirm dialog says this in the wording, and the exclusion is
+   remembered (excludedPartKeys) so the row doesn't silently reappear if the page re-fetches
+   Material Transfer data later in the same session; it resets automatically whenever you link a
+   different Job (or unlink the current one) or after a bill is saved.
+
+4. "attractive page" - the flat run of .form-rows had no visual grouping, so the three logical
+   sections (Job & Bill Details / Labour / Part Details List) now each sit in their own bordered,
+   colour-accented panel with an icon + title (and a live count badge for Labour/Part). Reuses
+   this app's own EXISTING design tokens only (--border/--radius-sm/--primary/--accent-2/
+   --accent-3 from styles/global.css) - no new colors or CSS file changes, purely a visual
+   regrouping of fields/tables that were already there. This is presentation only - no field,
+   calculation, or save behaviour moved or changed.
+
+NOT CHANGED: item/save data shape, tax/GST calculation, the Job Search flow itself, the Labour
+staging-row add/edit logic, or the Part auto-load-from-Material-Transfer behaviour - all exactly
+as delivered in SECTION 71/72.
+
+VERIFICATION:
+- cd web && npx tsc -p tsconfig.app.json --noEmit -> exit code 0, no errors.
+- npx oxlint src/pages/staff/RepairBillCreatePage.tsx -> zero warnings.
+- No dev server available in this sandbox - please confirm on your end: (1) the Labour staging row
+  now sits on one compact line with Qty/Rate/Disc.Type/Discount/Issue Type/Add all close together,
+  no large gaps; (2) linking a Job via Job Search turns Party Name/Reg No/Chassis No/Location
+  read-only (grey/non-editable), and unlinking the Job (✕) makes them editable again; (3) a Part
+  row's new ✕ (Delete) removes it from the Part Details List and from the Estimated Total, and
+  Saving as Proforma afterwards does NOT include that part in the saved bill, while the original
+  Material Transfer record is untouched; (4) deleting a Part row, then unlinking and re-linking
+  the SAME Job, brings that part back (exclusion is per-Job-selection, not permanent); (5) the
+  three new bordered panels (Job & Bill Details / Labour / Part Details List) render with visible
+  left-border color accents and don't break on a narrow/mobile-width screen.

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
 import type { BaplDmsLabourRow, BaplDmsWorkshop, BaplItemMaster, CombinedRepairBillRow, JobSearchResult, MaterialTransferItemForJob, RepairBillDocItemType } from '../../types'
@@ -9,140 +9,43 @@ import { LabourSearchInput } from '../../components/LabourSearchInput'
 import { RecordDetailModal } from '../../components/RecordDetailModal'
 
 /**
- * "Repair Bill" sidebar page (2026-09-19: "now i want Create Repair Bill and Material Transfer
- * Bill ... i want to now this both pages data i want save in JobCardScannerDb ... fetched data
- * both from DMSBAPLDATAConnection from this db repair bill and material transfer this both data
- * wants to show in 1 place"; corrected 2026-09-21, "backend logic which u gave u and ui same make
- * only according to our project dont chnage Repair Bill and Material tranfer logic"). Two parts:
- *  1. A create form that POSTs to /api/repair-bill-docs - saved into JobCardScanner's OWN
- *     database (RepairBillDocs/RepairBillDocItems), never into BAPL DMS or DMSBAPLDATA.
- *  2. A combined list below (GET /api/repair-bill-docs/combined) showing bills created here
- *     side-by-side with the existing read-only DMSBAPLDATA-synced repair bills - each row tagged
- *     with its Source so the two are never presented as if they were the same record.
+ * "Repair Bill" sidebar page - see this file's many earlier doc-comment rounds (Proforma/Invoice
+ * lifecycle, per-job Material Transfer Part auto-load, Labour staging row, model-based labour
+ * filtering, colour-accented section panels, Part Details List Edit/Delete, etc.) for the full
+ * history - all unchanged in this round.
  *
- * This is a NEW page/route, distinct from the existing read-only RepairBillPage.tsx ("Repair Bill
- * Report" in the sidebar) - that page and its route are unchanged.
- *
- * Corrected 2026-09-21: the backend no longer infers CGST+SGST-vs-IGST from Customer/Dealer State
- * (that guess never existed in the reference RepairBillRepo - it only persists whatever
- * Cgst/Sgst/Igst the CALLER already resolved). The "Tax Type" selector below is the same kind of
- * caller-side convenience the reference's own Angular UI had (resolving LabourMaster/
- * PartWiseLabour's stored rate into one pair before saving) - it runs here in the browser instead,
- * and the three independent CgstPct/SgstPct/IgstPct are sent explicitly per line, matching what
- * RepairBillDocItem now stores.
- *
- * Location is a dropdown scoped to the signed-in user's own accessible workshop location(s)
- * (profile.workLocationCodes via GET /api/bapl-dms/workshops?dealerId=...) - same scoped-picker
- * pattern already used on MaterialTransferCreatePage.tsx, not a free-text field.
- *
- * 2026-09-21 ("give me this and proper flow of this", modelled on the reference DMS app's own Job
- * Search modal + Part Name combo): "Job No" opens a Job Search picker (JobSearchModal, GET
- * /api/jobcards/search over this app's OWN JobCards - JobCardId is a local FK, not a raw DMS id)
- * - picking a job auto-fills Party Name/Reg No/Chassis No/Location and links JobCardId onto the
- * bill. Once Location is set (from the picked job, or chosen directly), each line's Item Code
- * AND Description are both a search-select against GET /api/bapl-dms/parts?locationCode=... (same
- * PartSearchInput component as MaterialTransferCreatePage.tsx, wired to both cells - "Item Code
- * not search when i type anything in textbox" 2026-09-21) instead of free-text fields.
- *
- * 2026-09-21 ("Labour - Rate + GST%(CGST,IGST,SGST) according to state Intra state and inter
- * state ... with discount" / "Part - Rate = MRP - GST%(CGST,IGST,SGST) .. BILL Creating (without
- * discount) - use all calculation part from dms"): re-verified against the actual pasted
- * repair-bill.ts (addLabour()/calculatePart()/calculateTotals()) and material-transfer.ts
- * (calculateGST()), not re-derived from paraphrase. What the reference actually does, confirmed:
- *  - EVERY line (Part or Labour) in the Repair Bill itself is taxed the SAME way: gross = qty x
- *    rate (rate already GST-exclusive, i.e. "taxable"), an optional discount (% or flat, defaults
- *    to none) reduces gross to a taxable amount, then CGST+SGST (same state) or IGST (different
- *    state) is added ON TOP of the taxable amount - never reverse-calculated out of it at this
- *    stage. This is what RepairBillDocsController.Create already does server-side; nothing about
- *    that arithmetic changes here. The "Part ... without discount" phrase does NOT mean the
- *    reference blocks discount on Part lines in the Repair Bill (calculatePart() takes the same
- *    optional item.discount/discountType as addLabour() does) - discount simply defaults to none
- *    on both line types unless entered, same as before.
- *  - Where Part and Labour genuinely differ is EARLIER, at Material Transfer time: a Part's Rate
- *    is derived ONCE, when the part is picked from stock, by reverse-calculating GST OUT of its
- *    GST-inclusive MRP (material-transfer.ts calculateGST: basePrice = mrp / (1 + gst% / 100)) -
- *    this is literally "Rate = MRP - GST%". That derived, GST-exclusive Rate is what then flows
- *    into the Repair Bill and gets taxed forward like any other line. Picking a part here via
- *    PartSearchInput reproduces that same reverse calc (see pickPartForLine below) using the
- *    line's own GST % (no confirmed per-part tax-rate source exists in this app - see
- *    PartSearchInput.tsx's doc comment - so GST % stays a manual/estimated per-line input,
- *    defaulted to 18% same as before).
- *  - "according to state Intra state and inter state": the reference determines this with a
- *    straight Dealer.State == Customer.State compare (repair-bill.ts's own isSameState), not
- *    anything more elaborate - now auto-detected below from GET /api/auth/me's DealerState vs the
- *    picked job's Customer.State (JobSearchResult.partyState), with the existing Tax Type
- *    dropdown left in place as a manual override for a standalone bill with no job/customer
- *    linked (where neither state is known).
- * 2026-09-21 second correction ("Issue Type - U/W and Paid ... give proper flow"): Issue Type is
- * now genuinely per LINE, not per bill - re-reading the reference confirmed RepairBillDetail.
- * IssutypeId is a detail-row column (RepairBillHeader has no IssueType column at all). The
- * bill-level Issue Type field is now only a default that prefills each new line (still editable
- * per line afterwards) - RepairBillDocItem/CreateRepairBillItemRequest both carry their own
- * IssueType now, and it (falling back to the bill-level value if a line's own is unset) is what
- * decides that line's own zero-tax treatment, matching the reference's own per-line behaviour.
- *
- * 2026-09-21 ("and if stock add available then that will add"): picking a part now records its
- * AvailableQty (from GET /api/bapl-dms/parts) on the line, and Qty is capped to it with an inline
- * warning if exceeded - same stock-limit guard as the reference's own onBlurQuantity ("Stock limit
- * exceeded. Please reduce the quantity."). Only enforced for a line whose Item Code came from a
- * picked stock row (a hand-typed Part not in PartsInventory, or a Labour line, has no stock figure
- * to check against).
- *
- * 2026-09-21 third correction ("GST % remove that was shown in IGST, CGST, SGST in this row
- * automatic fetch according this item code ... already linked with state so IGST, CGST, SGST
- * according that shown in repair bill also"): the GST % column is no longer a visible/editable
- * input - same removal as MaterialTransferCreatePage.tsx's own third 2026-09-21 correction, now
- * applied here too since CGST Amt/SGST Amt/IGST Amt already show the equivalent information per
- * line. The underlying gstPct STAYS on each line's state ("already linked with state") - it still
- * drives splitGst()/lineEstimate() exactly as before, defaulting to 18% (see PartSearchInput.tsx's
- * doc comment on why no confirmed per-part GST% source exists) - it just isn't a typed field
- * anymore, so it can't be hand-edited away from that default or the value derived when a Part-
- * Upload row is picked.
- *
- * 2026-09-21 fourth correction ("stock also shown from partuploads and in repair bill"): parts
- * uploaded via the "Part Upload" tab now merge into this page's own Item Code/Description search
- * too, alongside the live DMS PartsInventory list - same treatment as
- * MaterialTransferCreatePage.tsx's own fifth 2026-09-21 correction (BalQty as AvailableQty,
- * BillPrice as Rate directly, tagged "Uploaded" in the dropdown - see pickPartForLine below).
- *
- * 2026-09-22 REPLACED BY THE CORRECTION BELOW - kept only for history: everything above about a
- * manual Item Code/Description PART search (PartSearchInput, dmsParts/uploadedParts/
- * itemMasterByCode/itemMasterCatalog/pickPartForLine) was REMOVED this round. Labour is still a
- * manual search-and-add (unchanged, see pickLabourForLine below).
- *
- * 2026-09-22 ("now i saved from material transfer bill now this will shown in repair bill with
- * which i material transfer and from repair bill we can add only labour from labour master in
- * dropdown and that will add save as proforma" + you pasted the REAL BAPL DMS reference source -
- * RepairBillController.cs/RepairBillRepo.cs, repair-bill.ts/.html, repair-bill-list.ts/.html,
- * repair-bill-invoice.ts/.html): this is a confirmed architecture correction, not an
- * interpretation - the pasted repair-bill.html's own Part search UI is commented out entirely
- * (`<!-- <ul *ngIf="showPartDropdown" ...> -->`), and repair-bill.ts's loadMaterialedJobCardList()
- * (called from onSelect() the moment a Job is picked) is what actually populates the reference's
- * Part Details List - straight from whatever Material Transfer already saved against that job
- * (jobCardService.getMaterialedJobCardList(jobId, dealerCode)), never from a live parts search
- * inside Repair Bill itself. Only Labour has a real search-and-add flow there (addLabour()).
- *
- * This page now mirrors that: once a Job is linked (jobCardId set, via Search Job same as before),
- * a new effect fetches GET /api/material-transfer-docs/for-job/{jobCardId} (every non-Cancelled
- * Material Transfer item already saved against this job - see MaterialTransferDocsController.
- * ForJob's doc comment) and turns each into a read-only Part row in the grid below: Item Code/
- * Description/HSN/Qty/Rate come straight from that Material Transfer line (Rate already reflects
- * SECTION 64's C_ItemMaster-driven calculation from when it was transferred - not recomputed here),
- * while Discount Type/Discount Value/Issue Type stay editable per line, matching the reference's
- * own editPart()/updatePart() (edit only, no delete - Part rows have no ✕ here either, since they
- * represent parts that were physically transferred, not something this bill invents). GST% for the
- * CGST/SGST/IGST split still comes from a fresh C_ItemMaster by-codes lookup (SGST/CGST/IGST aren't
- * stored on MaterialTransferDocItem - see that model's doc comment), same source Material Transfer
- * itself used, just fetched again since the split isn't persisted there.
- *
- * The "+ Add Line" button (and the whole itemType Part/Labour picker) is GONE - every manually
- * added line is now always Labour (addLabour()'s reference equivalent), searched via
- * LabourSearchInput exactly as before. A standalone bill with no Job linked simply has no Part rows
- * at all (nothing to auto-load), matching the reference (Part Details List only ever renders after
- * onSelect() runs loadMaterialedJobCardList()).
+ * 2026-09-22 ("only this div fix according to fetched data range that text box fix dont add extra
+ * space and after filled labour code which data fetch that will block its not editable") - the
+ * Labour staging row's fields (below) are resized to fit the data they actually hold instead of
+ * generic/stretched widths, and Description locks once a Labour code is picked:
+ *   - Every field's width is sized to its real content: a Labour code is ~12 chars, Qty/Rate/
+ *     Discount are short numbers, the two selects are boxed to their own content (their OPEN
+ *     dropdown list still shows full option text - only the CLOSED box is narrower, since a plain
+ *     `<select>` otherwise sizes its closed box to its WIDEST option in most browsers).
+ *   - Description no longer has a fixed pixel width while searching - it flex-grows
+ *     (`flex: '1 1 160px'`) to fill whatever space is left in the row.
+ *   - `labourFetched` (new state, alongside draftLabour/labourEditingKey) tracks whether the
+ *     current Description value came from an actual Labour-code pick. Once true, Description
+ *     swaps to a plain, disabled, grey "locked" input (`lockedFieldStyle`, new here) instead of
+ *     staying a second searchable box for data that's already fetched - typing a new search in
+ *     the Labour code field (onChangeText) resets it back to false so the search box reopens.
+ *     Rate now locks the same way once fetched (this round's follow-up ask) - a plain, disabled,
+ *     grey input, not editable-with-override.
+ *   - Every field's wrapping `<div>` also gets `minWidth: 0` - the standard fix that lets a flex
+ *     child actually shrink below its own content's intrinsic width, which the flex default of
+ *     `min-width: auto` otherwise blocks.
  */
 type TaxMode = 'Same State (CGST+SGST)' | 'Different State (IGST)'
 type DiscountType = 'None' | 'Percentage' | 'Amount'
+
+/** Visually "locked" look for a field whose value came from a fetch rather than direct typing -
+ * distinct grey background/text/cursor so it reads as non-interactive at a glance. */
+const lockedFieldStyle: CSSProperties = {
+  background: '#eef0f3',
+  color: '#6b7280',
+  cursor: 'not-allowed',
+  borderColor: '#d7dbe0',
+}
 
 type DraftItem = {
   /** A manually-added Labour line gets a locally-minted "manual-N" string; an auto-loaded Part
@@ -233,7 +136,32 @@ export function RepairBillCreatePage() {
 
   // ---------------- Create form ----------------
   const [jobCardId, setJobCardId] = useState<string | null>(null)
+  // 2026-09-22 ("Party Name, Reg No, Chassis No, Location that also auto fetched feild that also
+  // dont show editable") - true once a Job is linked, since Party Name/Reg No/Chassis No/Location
+  // are then auto-filled straight from that Job (selectJob() below) and are turned read-only in
+  // the JSX further down rather than staying editable right next to the Job that just filled them.
+  const autoFilledFromJob = !!jobCardId
   const [jobCardNumber, setJobCardNumber] = useState('')
+  // 2026-09-22 "in labour after jobcard serach this automatically details fetch" - read-only
+  // "Selected Job Details" panel fields, matching the reference DMS app's own screenshot (Job
+  // Date/Job No/Reg No/Model/KMs/Chassis/Technician). Job No/Reg No/Model/Chassis already existed
+  // as this page's own Party Name/Reg No/Chassis No/Location fields (now ALSO read-only whenever a
+  // Job is linked, see autoFilledFromJob above) - this panel remains an ADDITIONAL read-only
+  // summary alongside them, not a replacement; Job
+  // Date/KMs/Technician are new here, sourced from GET /api/jobcards/search's own real
+  // JobCard.CreatedAt/Vehicle.Odometer/JobCard.AssignedTechnicianName fields (see
+  // JobCardsController.Search's own 2026-09-22 doc comment) - never fabricated.
+  const [jobDate, setJobDate] = useState<string | null>(null)
+  const [odometer, setOdometer] = useState<number | null>(null)
+  const [technician, setTechnician] = useState<string | null>(null)
+  // 2026-09-22 ("Add Model-based filtering to the Repair Bill labour dropdown"): JobSearchResult's
+  // own `vehicleType` field is actually the vehicle's OEM Model name, not a vehicle category -
+  // confirmed in JobCardsController.Search: `VehicleType = j.Vehicle != null ? j.Vehicle.Model :
+  // null` (misleadingly named on that endpoint, left as-is rather than renamed everywhere it's
+  // already consumed). Used below to narrow the Labour search to codes tagged for this job's own
+  // model (BaplDmsLabourRow.oemModelName), same field JobCardDetailPage's own Labour Suggestion
+  // panel already carries but never filtered on client-side until now.
+  const [vehicleModel, setVehicleModel] = useState<string | null>(null)
   const [showJobSearch, setShowJobSearch] = useState(false)
   const [partyName, setPartyName] = useState('')
   const [regNo, setRegNo] = useState('')
@@ -241,30 +169,33 @@ export function RepairBillCreatePage() {
   const [location, setLocation] = useState('')
   const [billType, setBillType] = useState('Cash')
   const [issueType, setIssueType] = useState('')
-  const [taxMode, setTaxMode] = useState<TaxMode>('Same State (CGST+SGST)')
-  const [taxModeAuto, setTaxModeAuto] = useState(false)
   const [partyState, setPartyState] = useState<string | null>(null)
   const [billDate, setBillDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [remarks, setRemarks] = useState('')
-  const [items, setItems] = useState<DraftItem[]>([emptyItem('manual-1')])
+  // 2026-09-22: starts empty now that adding a Labour line goes through the dedicated staging row
+  // (see draftLabour below) instead of always having one blank editable row sitting in the grid.
+  const [items, setItems] = useState<DraftItem[]>([])
   // 2026-09-22 - mints a unique "manual-N" key per manually-added Labour line; an auto-loaded Part
   // line's key is its own MaterialTransferDocItem.Id instead (see DraftItem.key's doc comment), so
   // this counter only ever needs to stay unique among Labour lines, not globally sequential.
   const nextManualKeyRef = useRef(2)
 
-  // 2026-09-21 ("according to state Intra state and inter state"): auto-detect Same State vs
-  // Different State from this dealer's own State (GET /api/auth/me's DealerState) compared
-  // against the picked job's Customer.State (JobSearchResult.partyState) - the exact compare the
-  // reference's repair-bill.ts addLabour()/calculatePart() do (isSameState = dealerState.trim()
-  // .toUpperCase() === custState.trim().toUpperCase()). Only auto-sets when BOTH states are known
-  // (a job is linked and that job's customer has a State on file); otherwise this page falls back
-  // to the existing manual Tax Type dropdown, since guessing would be worse than asking.
-  useEffect(() => {
+  // 2026-09-21 ("according to state Intra state and inter state"): Same State vs Different State,
+  // from this dealer's own State (GET /api/auth/me's DealerState) compared against the picked
+  // job's Customer.State (JobSearchResult.partyState) - the exact compare the reference's
+  // repair-bill.ts addLabour()/calculatePart() do (isSameState = dealerState.trim().toUpperCase()
+  // === custState.trim().toUpperCase()). Defaults to Same State (CGST+SGST) whenever either state
+  // isn't known yet (no job linked yet, or that job's customer has no State on file) - same
+  // default this page already had before.
+  //
+  // 2026-09-22 "Tax Type hide dont show in ui automatically login dealer state wise it select":
+  // this is now a plain derived value (useMemo), not useState+useEffect - there is no manual
+  // override selector left in the UI to set it from, so there was nothing left for a setter to do.
+  const taxMode: TaxMode = useMemo(() => {
     const dealerState = profile?.dealerState
-    if (!dealerState || !partyState) { setTaxModeAuto(false); return }
-    setTaxMode(dealerState.trim().toUpperCase() === partyState.trim().toUpperCase()
-      ? 'Same State (CGST+SGST)' : 'Different State (IGST)')
-    setTaxModeAuto(true)
+    if (!dealerState || !partyState) return 'Same State (CGST+SGST)'
+    return dealerState.trim().toUpperCase() === partyState.trim().toUpperCase()
+      ? 'Same State (CGST+SGST)' : 'Different State (IGST)'
   }, [profile?.dealerState, partyState])
 
   // Insurance / discount / payment - reference RepairBillHeader fields, collapsed by default since
@@ -284,22 +215,72 @@ export function RepairBillCreatePage() {
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saveOk, setSaveOk] = useState<string | null>(null)
 
-  // 2026-09-22 - manually adding a line always adds Labour now (see this module's doc comment);
-  // Part rows are never created this way, only auto-loaded from Material Transfer below.
-  const addItem = () => setItems((prev) => [...prev, emptyItem(`manual-${nextManualKeyRef.current++}`, issueType)])
-  // A Part row auto-loaded from Material Transfer has no Remove button in the UI (matching the
-  // reference's own Part Details List, which has Edit but no Delete) - this guard is defense in
-  // depth in case anything ever calls removeItem on one directly.
-  const removeItem = (key: string) =>
-    setItems((prev) => (prev.length > 1 ? prev.filter((i) => i.key !== key || i.fromMaterialTransfer) : prev))
+  const removeItem = (key: string) => setItems((prev) => prev.filter((i) => i.key !== key))
   const updateItem = (key: string, patch: Partial<DraftItem>) =>
     setItems((prev) => prev.map((i) => (i.key === key ? { ...i, ...patch } : i)))
+
+  // 2026-09-22 ("in Part Details List with edit delete button also add") - explicit ask to add a
+  // working Delete for Part rows, a deliberate departure from the reference (whose own Part
+  // Details List has Edit only, no Delete - see this module's earlier doc comment, which this
+  // supersedes). Deleting a Part row here only removes it from THIS bill's own item list - it does
+  // NOT touch, undo, or reverse the underlying Material Transfer the part was physically issued
+  // on (there is no "un-transfer" concept anywhere in this app); it just means that part won't be
+  // billed on this Repair Bill. excludedPartKeys remembers which MaterialTransferDocItem.Id(s)
+  // were removed so the materialTransferItems sync effect below (which otherwise re-derives every
+  // Part row fresh from GET .../for-job/{jobCardId} whenever that data changes) doesn't silently
+  // bring a deleted row back later in the same session - cleared whenever the linked Job changes
+  // (see the for-job fetch effect) and after a successful save (see save() below).
+  const [excludedPartKeys, setExcludedPartKeys] = useState<Set<string>>(new Set())
+  const removePart = (it: DraftItem) => {
+    if (!window.confirm(`Remove Part "${it.itemDescription}" from this bill? The Material Transfer record itself is unaffected - this only excludes it from this Repair Bill.`)) return
+    setExcludedPartKeys((prev) => new Set(prev).add(it.key))
+    removeItem(it.key)
+    if (editingPartKey === it.key) setEditingPartKey(null)
+  }
+
+  // 2026-09-22 ("in labour...we adding labour details see screenshot that type add ui"): a
+  // dedicated staging row for adding/editing ONE Labour line at a time, matching the reference's
+  // own addLabour()/editLabour() (a separate input row above a read-only Labour Details List,
+  // rather than editing every line in place inside the list itself). `labourEditingKey` is null
+  // while staging a brand-new line, or an existing item's key while re-opening it for edit (the
+  // reference's own pencil icon) - commitLabourDraft() below either updates that item in place or
+  // appends a new one, matching editLabour()/updateLabour() vs addLabour().
+  const [draftLabour, setDraftLabour] = useState<DraftItem>(() => emptyItem('draft', issueType))
+  const [labourEditingKey, setLabourEditingKey] = useState<string | null>(null)
+  // 2026-09-22 ("after filled labour code which data fetch that will block its not editable"):
+  // true once the current draftLabour.itemDescription actually came from a Labour-code pick (see
+  // pickLabourForDraft below) rather than free typing - drives whether Description renders as a
+  // searchable box or a locked, disabled recap (see the Labour section JSX further down).
+  const [labourFetched, setLabourFetched] = useState(false)
+  const resetDraftLabour = () => { setDraftLabour(emptyItem('draft', issueType)); setLabourEditingKey(null); setLabourFetched(false) }
+  const startEditLabour = (it: DraftItem) => { setDraftLabour({ ...it }); setLabourEditingKey(it.key); setLabourFetched(!!it.itemCode) }
+  const commitLabourDraft = () => {
+    if (!draftLabour.itemCode.trim() || !draftLabour.itemDescription.trim()) return
+    if (labourEditingKey) {
+      updateItem(labourEditingKey, { ...draftLabour, key: labourEditingKey })
+    } else {
+      setItems((prev) => [...prev, { ...draftLabour, key: `manual-${nextManualKeyRef.current++}` }])
+    }
+    resetDraftLabour()
+  }
+  const removeLabour = (key: string) => { removeItem(key); if (labourEditingKey === key) resetDraftLabour() }
+
+  // Part lines stay auto-loaded/read-only (see this module's 2026-09-22 doc comment on why there's
+  // no Part search/add row) - only Discount Type/Discount Value/Issue Type are ever editable on
+  // one, so "Edit" here just toggles those three fields into inline inputs on that one row instead
+  // of opening the shared staging row above (which is Labour-only).
+  const [editingPartKey, setEditingPartKey] = useState<string | null>(null)
 
   const estimatedTotal = items.reduce((sum, it) => sum + lineEstimate(it, taxMode, issueType).total, 0)
   // Per-line Issue Type (2026-09-21 correction) means zero-tax is no longer a single whole-bill
   // flag - this counts how many of the current lines actually resolve to zero-tax (own IssueType,
   // falling back to the bill-level default), for the summary line below.
   const zeroTaxLineCount = items.filter((it) => isZeroTaxIssue(it.issueType || issueType)).length
+  // 2026-09-22 - `items` stays the single source of truth saved to the backend (unchanged shape);
+  // these two are just how the two separate Details List tables below read from it, matching the
+  // reference's own Labour Details List / Part Details List split.
+  const labourRows = items.filter((it) => it.itemType === 'Labour')
+  const partRows = items.filter((it) => it.itemType === 'Part')
 
   // 2026-09-22 ("now i saved from material transfer bill now this will shown in repair bill with
   // which i material transfer"): every Material Transfer item already saved against the linked
@@ -316,6 +297,7 @@ export function RepairBillCreatePage() {
   const [mtFetchDone, setMtFetchDone] = useState(false)
   useEffect(() => {
     setMtFetchDone(false)
+    setExcludedPartKeys(new Set()) // a different (or unlinked) Job's Parts are a clean slate - see removePart's own doc comment.
     if (!jobCardId) { setMaterialTransferItems([]); return }
     staffApi.get<MaterialTransferItemForJob[]>(`/api/material-transfer-docs/for-job/${jobCardId}`)
       .then(({ data }) => setMaterialTransferItems(data))
@@ -349,7 +331,7 @@ export function RepairBillCreatePage() {
   useEffect(() => {
     setItems((prev) => {
       const manual = prev.filter((i) => !i.fromMaterialTransfer)
-      const partRows: DraftItem[] = materialTransferItems.map((m) => {
+      const partRows: DraftItem[] = materialTransferItems.filter((m) => !excludedPartKeys.has(m.id)).map((m) => {
         const im = mtItemMasterByCode[m.itemCode.trim().toUpperCase()]
         const sgstPct = im?.sgst ?? 9
         const cgstPct = im?.cgst ?? 9
@@ -374,7 +356,7 @@ export function RepairBillCreatePage() {
       })
       return [...partRows, ...manual]
     })
-  }, [materialTransferItems, mtItemMasterByCode])
+  }, [materialTransferItems, mtItemMasterByCode, excludedPartKeys])
 
   // 2026-09-21 ("Labour - when labor type select then Labour Code suggestion shown"): sourced from
   // DMS's own Labour Master (GET /api/bapl-dms/labour, the SAME endpoint/data
@@ -395,22 +377,36 @@ export function RepairBillCreatePage() {
       .catch(() => setLabours([]))
   }, [location])
 
+  // 2026-09-22 ("Add Model-based filtering to the Repair Bill labour dropdown"): narrows the
+  // dealer-wide `labours` list above to this job's own vehicleModel before it reaches
+  // LabourSearchInput. Deliberately keeps a labour row when EITHER vehicleModel isn't resolved yet
+  // (no Job linked, or this job's Vehicle has no Model on file) OR the row itself has no
+  // oemModelName (a labour rate that applies across every model) - only narrows when both sides are
+  // known and don't match, so this never makes a genuinely-applicable labour code disappear from
+  // the picker on an unconfirmed guess.
+  const labourOptionsForModel = !vehicleModel
+    ? labours
+    : labours.filter((l) => !l.oemModelName || l.oemModelName.trim().toLowerCase() === vehicleModel.trim().toLowerCase())
+
   /** Picking a Labour Master row sets Rate DIRECTLY from LabourRate (not reverse-calculated - a
    * labour rate card's own GST-exclusive rate, unlike a Part's tax-inclusive MRP/Dealer Price) and
    * its OWN Sgst/Cgst/Igst percentages (already confirmed real columns - see BaplDmsLabourRow's
    * doc comment in BaplDmsService.cs) as this line's gstPct total, which then flows through the
    * SAME taxMode/splitGst() pipeline every other line already uses (see lineEstimate/splitGst
-   * below) - no separate tax model needed for Labour vs Part lines. */
-  const pickLabourForLine = (key: string, l: BaplDmsLabourRow) => {
+   * below) - no separate tax model needed for Labour vs Part lines. Also marks the Description
+   * field as "fetched" (see labourFetched's own doc comment above) so it locks. */
+  const pickLabourForDraft = (l: BaplDmsLabourRow) => {
     const totalGst = (l.cgst ?? 0) + (l.sgst ?? 0) > 0 ? (l.cgst ?? 0) + (l.sgst ?? 0) : (l.igst ?? 18)
-    updateItem(key, {
+    setDraftLabour((prev) => ({
+      ...prev,
       itemCode: l.labourCode,
       itemDescription: l.labourDescription || l.labourCode,
       hsnCode: l.hsnCode || '',
       mrp: '',
       rate: l.labourRate != null ? String(l.labourRate) : '0',
       gstPct: String(totalGst),
-    })
+    }))
+    setLabourFetched(true)
   }
 
   const selectJob = (job: JobSearchResult) => {
@@ -421,10 +417,17 @@ export function RepairBillCreatePage() {
     if (job.chassisNo) setChassisNo(job.chassisNo)
     if (job.locationCode) setLocation(job.locationCode)
     setPartyState(job.partyState ?? null)
+    setVehicleModel(job.vehicleType || null)
+    setJobDate(job.jobDate || null)
+    setOdometer(job.odometer ?? null)
+    setTechnician(job.technician || null)
     setShowJobSearch(false)
   }
 
-  const clearJob = () => { setJobCardId(null); setJobCardNumber(''); setPartyState(null) }
+  const clearJob = () => {
+    setJobCardId(null); setJobCardNumber(''); setPartyState(null); setVehicleModel(null)
+    setJobDate(null); setOdometer(null); setTechnician(null)
+  }
 
   const save = () => {
     setSaveError(null)
@@ -477,7 +480,9 @@ export function RepairBillCreatePage() {
         setInsuranceCompanyName(''); setInsuranceDescription(''); setSurveyorName(''); setSurveyorContactNumber('')
         setPolicyNo(''); setInsuranceValidTill(''); setZeroDepreciation(false); setTotalDiscount('0'); setAmountReceived('0')
         nextManualKeyRef.current = 2
-        setItems([emptyItem('manual-1')])
+        setItems([])
+        resetDraftLabour()
+        setEditingPartKey(null)
         loadCombined()
       })
       .catch((err) => setSaveError(err?.response?.data?.message ?? 'Could not save the repair bill.'))
@@ -529,6 +534,28 @@ export function RepairBillCreatePage() {
       .catch((err) => alert(err?.response?.data?.message ?? 'Could not delete the repair bill.'))
   }
 
+  // 2026-09-22 "save as proforma and after save as proforma then save as invoice" - see this
+  // file's own doc comment above for the full lifecycle. PUT .../status expects the raw enum
+  // VALUE as the JSON body (RepairBillDocsController.UpdateStatus takes `[FromBody]
+  // RepairBillDocStatus status`, no wrapper object) - Program.cs registers a global
+  // JsonStringEnumConverter, so the body must be the JSON STRING "Billed", not the bare word
+  // Billed or a {status:...} object. Explicit JSON.stringify + Content-Type below rather than
+  // relying on axios's default string handling, which does NOT auto-quote/auto-JSON a plain
+  // string payload the way it does for an object.
+  const [convertingId, setConvertingId] = useState<string | null>(null)
+  const saveAsInvoice = (bill: CombinedRepairBillRow) => {
+    if (!window.confirm(`Save Bill ${bill.billNumber} as Invoice? This finalizes it - line items can no longer be changed afterwards.`)) return
+    setConvertingId(bill.id)
+    staffApi
+      .put(`/api/repair-bill-docs/${bill.id}/status`, JSON.stringify('Billed'), { headers: { 'Content-Type': 'application/json' } })
+      .then(() => {
+        setViewingBill((v) => (v && v.id === bill.id ? { ...v, status: 'Billed' } : v))
+        loadCombined()
+      })
+      .catch((err) => alert(err?.response?.data?.message ?? 'Could not save this bill as an Invoice.'))
+      .finally(() => setConvertingId(null))
+  }
+
   const { page, setPage, pageSize, setPageSize, pageCount, pageRows, total } = usePagination(rows)
 
   // ---------------- Detail view (2026-09-21 "all upload data and exist data are clickable on
@@ -560,6 +587,16 @@ export function RepairBillCreatePage() {
 
       <div className="card">
         <h3>New Repair Bill</h3>
+        {/* 2026-09-22 ("proper give me this page attractive page"): the page's fields were a flat
+            run of .form-rows with no visual grouping - each of the three logical sections (job/
+            bill header fields, Labour, Part Details List) now gets its own bordered, colour-
+            accented panel (reusing this app's own existing --accent-N/--border/--radius-sm design
+            tokens - see styles/global.css - nothing new invented) with a small icon+title caption,
+            purely a visual/CSS change, no field, data, or save behaviour moved or altered. */}
+        <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', borderLeft: '4px solid var(--primary)', padding: '14px 16px', marginBottom: 18, background: 'var(--surface)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, color: 'var(--primary-dark)', fontWeight: 600 }}>
+            <span>🧾</span><span>Job &amp; Bill Details</span>
+          </div>
         <div className="form-row">
           <div className="field">
             <label>Job No</label>
@@ -570,30 +607,107 @@ export function RepairBillCreatePage() {
             </div>
           </div>
         </div>
+
+        {/* 2026-09-22 "in labour after jobcard serach this automatically details fetch" - read-only
+            summary of the linked job, matching the reference DMS app's own "Selected Job Details"
+            panel (Job Date/Job No/Reg No/Model/KMs/Chassis/Technician). Shown only once a job is
+            actually linked; the fields below (Party Name/Reg No/Chassis No/Location) are the real
+            values actually saved on the bill (this panel is a read-only recap, not a second set of
+            inputs) - and, per the later 2026-09-22 correction just below, become read-only
+            themselves too once a Job is linked, since they're auto-filled from it. */}
+        {jobCardId && (
+          <div className="form-row" style={{ background: 'var(--surface-muted, #f8f9fa)', borderRadius: 8, padding: '10px 12px', marginBottom: 4 }}>
+            <div className="field">
+              <label>Job Date</label>
+              <input value={jobDate ? new Date(jobDate).toLocaleDateString('en-IN') : '—'} readOnly />
+            </div>
+            <div className="field">
+              <label>Job No.</label>
+              <input value={jobCardNumber || '—'} readOnly />
+            </div>
+            <div className="field">
+              <label>Reg No</label>
+              <input value={regNo || '—'} readOnly />
+            </div>
+            <div className="field">
+              <label>Model</label>
+              <input value={vehicleModel || '—'} readOnly />
+            </div>
+            <div className="field">
+              <label>KMs</label>
+              <input value={odometer != null ? odometer.toLocaleString('en-IN') : '—'} readOnly title="Vehicle.Odometer at last update - not necessarily today's reading." />
+            </div>
+            <div className="field">
+              <label>Chassis</label>
+              <input value={chassisNo || '—'} readOnly />
+            </div>
+            <div className="field">
+              <label>Technician</label>
+              <input value={technician || '—'} readOnly title={!technician ? 'No technician assigned on this Job Card yet.' : undefined} />
+            </div>
+          </div>
+        )}
+
+        {/* 2026-09-22 ("Party Name, Reg No, Chassis No, Location that also auto fetched feild that
+            also dont show editable"): these four are auto-filled from selectJob() the moment a Job
+            is linked (same as the read-only "Selected Job Details" panel above, which is a separate
+            recap - these are the actual fields saved on the bill). Once a Job IS linked
+            (jobCardId set) they become read-only here too, since editing them by hand would just
+            silently drift from the linked Job's own real data - autoFilledFromJob (below) makes
+            that explicit rather than leaving them editable right next to a job that just filled
+            them in. Unlinking the Job (the ✕ button above) hands editing back for a standalone
+            bill, exactly as before this change. */}
         <div className="form-row">
           <div className="field">
             <label>Party Name *</label>
-            <input value={partyName} onChange={(e) => setPartyName(e.target.value)} placeholder="Customer or fleet party name" />
+            <input
+              value={partyName}
+              onChange={(e) => setPartyName(e.target.value)}
+              placeholder="Customer or fleet party name"
+              readOnly={autoFilledFromJob}
+              title={autoFilledFromJob ? 'Auto-filled from the linked Job - unlink the Job to edit.' : undefined}
+            />
           </div>
           <div className="field">
             <label>Reg No</label>
-            <input value={regNo} onChange={(e) => setRegNo(e.target.value)} />
+            <input
+              value={regNo}
+              onChange={(e) => setRegNo(e.target.value)}
+              readOnly={autoFilledFromJob}
+              title={autoFilledFromJob ? 'Auto-filled from the linked Job - unlink the Job to edit.' : undefined}
+            />
           </div>
           <div className="field">
             <label>Chassis No</label>
-            <input value={chassisNo} onChange={(e) => setChassisNo(e.target.value)} />
+            <input
+              value={chassisNo}
+              onChange={(e) => setChassisNo(e.target.value)}
+              readOnly={autoFilledFromJob}
+              title={autoFilledFromJob ? 'Auto-filled from the linked Job - unlink the Job to edit.' : undefined}
+            />
           </div>
           <div className="field">
             <label>Location</label>
             {workshops.length > 0 ? (
-              <select value={location} onChange={(e) => setLocation(e.target.value)}>
+              <select
+                value={location}
+                onChange={(e) => setLocation(e.target.value)}
+                disabled={autoFilledFromJob}
+                title={autoFilledFromJob ? 'Auto-filled from the linked Job - unlink the Job to edit.' : undefined}
+              >
                 <option value="">— select —</option>
                 {workshops.map((w) => (
                   <option key={w.locCode} value={w.locCode}>{w.locCode} — {w.locName}</option>
                 ))}
               </select>
             ) : (
-              <input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Workshop location" />
+              <input
+                value={location}
+                onChange={(e) => setLocation(e.target.value)}
+                placeholder="Workshop location"
+                readOnly={autoFilledFromJob}
+                title={autoFilledFromJob ? 'Auto-filled from the linked Job - unlink the Job to edit.' : undefined}
+              />
             )}
           </div>
         </div>
@@ -606,26 +720,14 @@ export function RepairBillCreatePage() {
               <option value="Warranty">Warranty</option>
             </select>
           </div>
-          <div className="field">
-            <label>Issue Type (default for new lines)</label>
-            <select value={issueType} onChange={(e) => setIssueType(e.target.value)}>
-              <option value="">— none —</option>
-              <option value="Paid">Paid (taxed)</option>
-              <option value="U/W">U/W - Under Warranty (zero tax)</option>
-              <option value="FSC">FSC - Free Service Coupon (zero tax)</option>
-            </select>
-          </div>
-          <div className="field">
-            <label>Tax Type{taxModeAuto ? ' (auto-detected)' : ''}</label>
-            <select
-              value={taxMode}
-              onChange={(e) => { setTaxMode(e.target.value as TaxMode); setTaxModeAuto(false) }}
-              title={taxModeAuto ? `Auto-detected from Dealer State (${profile?.dealerState}) vs Party State (${partyState}) - change to override.` : 'Pick a job with a customer on file to auto-detect this from state.'}
-            >
-              <option value="Same State (CGST+SGST)">Same State (CGST+SGST)</option>
-              <option value="Different State (IGST)">Different State (IGST)</option>
-            </select>
-          </div>
+          {/* 2026-09-22 "Tax Type hide dont show in ui automatically login dealer state wise it
+              select" and "Issue Type (default for new lines) that also hide": both selectors
+              removed from the visible form. taxMode keeps auto-computing from Dealer State vs
+              Party State exactly as before (see the useMemo above this component's JSX), and
+              issueType stays at its default '' (no bill-level override), which was already its
+              normal value on every bill nobody had touched this dropdown on. Each line's OWN
+              Issue Type selector (in the item grid below) is untouched - only this bill-level
+              DEFAULT picker is hidden. */}
           <div className="field">
             <label>Bill Date</label>
             <input type="date" value={billDate} onChange={(e) => setBillDate(e.target.value)} />
@@ -635,148 +737,298 @@ export function RepairBillCreatePage() {
             <input value={remarks} onChange={(e) => setRemarks(e.target.value)} />
           </div>
         </div>
+        </div>
+
+        {/* 2026-09-22 ("in labour...we adding labour details see screenshot that type add ui and
+            all"): rebuilt to match the reference DMS app's own two-part layout - a dedicated
+            staging row for adding/editing ONE Labour line (below), feeding a separate read-only
+            Labour Details List table, instead of the old single grid where every line (including a
+            not-yet-added one) was edited in place. Part lines are unchanged in substance (still
+            auto-loaded read-only from Material Transfer, still no manual search/add row - the
+            reference's own Part-adding row never applied to them here, see this module's
+            2026-09-22 doc comment above) - only their table's look was restyled to match the
+            reference's own Part Details List column set. */}
+        <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', borderLeft: '4px solid var(--accent-2)', padding: '14px 16px', marginBottom: 18, background: 'var(--surface)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, color: 'var(--accent-2)', fontWeight: 600 }}>
+            <span>🔧</span><span>Labour</span>
+            {labourRows.length > 0 && <span className="badge badge-success">{labourRows.length}</span>}
+          </div>
+        {/* 2026-09-22 ("only this div fix according to fetched data range that text box fix dont
+            add extra space and after filled labour code which data fetch that will block its not
+            editable" - see this module's own doc comment at the top of the file for the full
+            reasoning): every field below is now sized to the data it actually holds, every
+            wrapping div gets minWidth: 0, and Description locks (locked/disabled, grey) once a
+            Labour code has actually been picked - typing a new search in the Labour field reopens
+            it. */}
+      <div style={{ overflowX: 'auto' }}>
+        <div className="suggest-row" style={{ background: 'var(--surface-muted, #f8f9fa)', borderRadius: 8, padding: '10px 12px', flexWrap: 'nowrap' }}>
+          <div className="field field-compact" style={{ minWidth: 0 }}>
+            <label>Labour</label>
+            <LabourSearchInput
+              labours={labourOptionsForModel}
+              locationSelected={!!location}
+              value={draftLabour.itemCode}
+              onChangeText={(text) => { setLabourFetched(false); setDraftLabour((p) => ({ ...p, itemCode: text })) }}
+              onPick={pickLabourForDraft}
+              placeholder="Labour code…"
+              width={120}
+            />
+          </div>
+          <div className="field field-grow" style={{ minWidth: 0, flex: '1 1 160px' }}>
+            <label>Description</label>
+            {labourFetched ? (
+              <input
+                value={draftLabour.itemDescription}
+                readOnly
+                disabled
+                style={{ ...lockedFieldStyle, width: '100%' }}
+                title="Fetched from the picked Labour code - not directly editable. Search a different Labour code to change it."
+              />
+            ) : (
+              <LabourSearchInput
+                labours={labourOptionsForModel}
+                locationSelected={!!location}
+                value={draftLabour.itemDescription}
+                onChangeText={(text) => setDraftLabour((p) => ({ ...p, itemDescription: text }))}
+                onPick={pickLabourForDraft}
+                width={220}
+              />
+            )}
+          </div>
+          <div className="field field-compact" style={{ minWidth: 0 }}>
+            <label>Qty</label>
+            <input type="number" value={draftLabour.qty} onChange={(e) => setDraftLabour((p) => ({ ...p, qty: e.target.value }))} style={{ width: 48, textAlign: 'right' }} />
+          </div>
+          <div className="field field-compact" style={{ minWidth: 0 }}>
+            <label>Rate</label>
+            {labourFetched ? (
+              <input
+                value={draftLabour.rate}
+                readOnly
+                disabled
+                style={{ ...lockedFieldStyle, width: 68, textAlign: 'right' }}
+                title="Fetched from the picked Labour code - not editable. Search a different Labour code to change it."
+              />
+            ) : (
+              <input
+                type="number" value={draftLabour.rate}
+                onChange={(e) => setDraftLabour((p) => ({ ...p, rate: e.target.value }))}
+                style={{ width: 68, textAlign: 'right' }}
+              />
+            )}
+          </div>
+          <div className="field field-compact" style={{ minWidth: 0 }}>
+            <label>Disc. Type</label>
+            <select value={draftLabour.discountType} onChange={(e) => setDraftLabour((p) => ({ ...p, discountType: e.target.value as DiscountType }))} style={{ width: 64 }}>
+              <option value="None">None</option>
+              <option value="Percentage">%</option>
+              <option value="Amount">₹</option>
+            </select>
+          </div>
+          <div className="field field-compact" style={{ minWidth: 0 }}>
+            <label>Discount</label>
+            <input type="number" value={draftLabour.discountValue} onChange={(e) => setDraftLabour((p) => ({ ...p, discountValue: e.target.value }))} disabled={draftLabour.discountType === 'None'} style={{ width: 60, textAlign: 'right' }} />
+          </div>
+          <div className="field field-compact" style={{ minWidth: 0 }}>
+            <label>Issue Type</label>
+            <select value={draftLabour.issueType} onChange={(e) => setDraftLabour((p) => ({ ...p, issueType: e.target.value }))} style={{ width: 110 }} title={draftLabour.issueType || '— default —'}>
+              <option value="">— default —</option>
+              <option value="Paid">Paid</option>
+              <option value="U/W">U/W</option>
+              {/* <option value="FSC">FSC - Free Service Coupon (zero tax)</option> */}
+            </select>
+          </div>
+          <div className="field field-compact" style={{ minWidth: 0, whiteSpace: 'nowrap' }}>
+            <button
+              className="btn btn-primary btn-sm"
+              type="button"
+              onClick={commitLabourDraft}
+              disabled={!draftLabour.itemCode.trim() || !draftLabour.itemDescription.trim()}
+              title={!draftLabour.itemCode.trim() ? 'Pick a Labour code first.' : undefined}
+            >
+              {labourEditingKey ? 'Update' : '+ Add'}
+            </button>
+            {labourEditingKey && (
+              <button className="btn btn-sm" type="button" onClick={resetDraftLabour} style={{ marginLeft: 6 }}>Cancel</button>
+            )}
+          </div>
+        </div>
+      </div>
+        {vehicleModel && (
+          <p className="muted" style={{ fontSize: 12, margin: '6px 0 0' }} title="Labour codes tagged for a different model are hidden - a code with no model tag on file still shows up regardless.">
+            Labour codes filtered to {vehicleModel}
+          </p>
+        )}
+
+        <div style={{ overflowX: 'auto', marginTop: 12 }}>
+          <table>
+            <thead>
+              <tr>
+                <th style={{ width: 70 }}>Action</th>
+                <th>Sr.No</th>
+                <th>Labour Code</th>
+                <th>Description</th>
+                <th className="text-end">Qty</th>
+                <th className="text-end">Rate</th>
+                <th>HSN Code</th>
+                <th className="text-end">Discount Amt.</th>
+                <th>Disc.Type</th>
+                <th className="text-end">CGST Amt.</th>
+                <th className="text-end">SGST Amt.</th>
+                <th className="text-end">IGST Amt.</th>
+                <th className="text-end" title="Taxable + CGST + SGST + IGST for this line - recalculated live as you edit, finalized once you Save.">Net Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {labourRows.map((it, i) => {
+                const est = lineEstimate(it, taxMode, issueType)
+                return (
+                  <tr key={it.key} style={labourEditingKey === it.key ? { background: 'var(--surface-muted, #f8f9fa)' } : undefined}>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      <button className="btn btn-icon" type="button" onClick={() => startEditLabour(it)} title="Edit">✎</button>{' '}
+                      <button className="btn btn-icon btn-danger" type="button" onClick={() => removeLabour(it.key)} title="Delete">✕</button>
+                    </td>
+                    <td>{i + 1}</td>
+                    <td>{it.itemCode}</td>
+                    <td>{it.itemDescription}</td>
+                    <td className="text-end">{it.qty}</td>
+                    <td className="text-end">₹{Number(it.rate || 0).toFixed(2)}</td>
+                    <td>{it.hsnCode || '—'}</td>
+                    <td className="text-end">₹{est.discountAmt.toFixed(2)}</td>
+                    <td>{it.discountType === 'None' ? '—' : `${it.discountValue}${it.discountType === 'Percentage' ? '(%)' : '(RS)'}`}</td>
+                    <td className="text-end">₹{est.cgstAmt.toFixed(2)}</td>
+                    <td className="text-end">₹{est.sgstAmt.toFixed(2)}</td>
+                    <td className="text-end">₹{est.igstAmt.toFixed(2)}</td>
+                    <td className="text-end">₹{est.total.toFixed(2)}</td>
+                  </tr>
+                )
+              })}
+              {labourRows.length === 0 && (
+                <tr><td colSpan={13} className="muted" style={{ textAlign: 'center', padding: 12 }}>No Labour lines added yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        </div>
+
+        {/* 2026-09-22 ("in Part Details List with edit delete button also add and proper give me
+            this page attractive page"): own bordered/accented panel matching Labour's above, plus
+            a working Delete icon (see removePart's own doc comment above for what Delete actually
+            does/doesn't affect - the underlying Material Transfer is never touched). */}
+        <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', borderLeft: '4px solid var(--accent-3)', padding: '14px 16px', marginBottom: 18, background: 'var(--surface)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, color: 'var(--warning)', fontWeight: 600 }}>
+            <span>📦</span><span>Part Details List</span>
+            {partRows.length > 0 && <span className="badge" style={{ background: 'var(--accent-3-soft)', color: 'var(--warning)' }}>{partRows.length}</span>}
+          </div>
 
         {/* 2026-09-22: mirrors the real BAPL DMS reference's own onSelect() warning ("Material
             Transfer is not completed for this Job Card") - shown here once the for-job fetch has
             actually completed (mtFetchDone) so it never flashes during the initial load, and only
             when a Job is linked at all (jobCardId) and that fetch came back empty. Client-side only,
-            derived from data already fetched for the grid below - no new backend flag invented for
-            this. */}
+            derived from data already fetched below - no new backend flag invented for this. */}
         {jobCardId && mtFetchDone && materialTransferItems.length === 0 && (
-          <p className="muted" style={{ color: '#b45309', marginBottom: 10 }}>
+          <p className="muted" style={{ color: '#b45309', margin: '0 0 10px' }}>
             ⚠ No Material Transfer found yet for this Job Card. Parts must be issued via Material
             Transfer first - they will appear here automatically once saved. You can still add
-            Labour below.
+            Labour above.
           </p>
         )}
 
-        {/* 2026-09-21 ("adjust all textbox according there size we already added scroll so
-            proper show textbox value"): wrapped in a horizontally-scrollable container, same as
-            MaterialTransferCreatePage.tsx's own item grid - this table had no such wrapper before,
-            so on a narrow window its columns were squeezed instead of scrolling. Column widths
-            below were widened at the same time so each value (Type/Qty/Rate especially) actually
-            fits instead of being clipped by its `<select>`/`<input>`'s own box. */}
         <div style={{ overflowX: 'auto' }}>
-        <table>
-          <thead>
-            <tr>
-              <th style={{ width: 120 }}>Type</th>
-              <th style={{ width: 140 }}>Item Code</th>
-              <th style={{ width: 220 }}>Description</th>
-              <th style={{ width: 100 }}>HSN</th>
-              <th style={{ width: 150 }}>Issue Type</th>
-              <th className="text-end" style={{ width: 80 }}>Qty</th>
-              <th className="text-end" style={{ width: 100 }}>Rate</th>
-              <th style={{ width: 110 }}>Discount</th>
-              <th className="text-end" style={{ width: 100 }}>Disc. Val</th>
-              <th className="text-end" style={{ width: 100 }}>Taxable</th>
-              <th className="text-end" style={{ width: 100 }}>CGST Amt</th>
-              <th className="text-end" style={{ width: 100 }}>SGST Amt</th>
-              <th className="text-end" style={{ width: 100 }}>IGST Amt</th>
-              <th className="text-end" style={{ width: 120 }}>Est. Total</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((it) => {
-              const est = lineEstimate(it, taxMode, issueType)
-              return (
-                <tr key={it.key} style={it.fromMaterialTransfer ? { background: 'var(--surface-muted, #f8f9fa)' } : undefined}>
-                  <td>
-                    {it.itemType}
-                    {it.fromMaterialTransfer && (
-                      <><br /><span className="badge badge-muted" title="Auto-loaded from a Material Transfer already saved against this job - Item Code/Description/HSN/Qty/Rate come from there, not typed here." style={{ fontSize: 10 }}>Material Transfer</span></>
-                    )}
-                  </td>
-                  <td>
-                    {it.itemType === 'Labour' ? (
-                      <LabourSearchInput
-                        labours={labours}
-                        locationSelected={!!location}
-                        value={it.itemCode}
-                        onChangeText={(text) => updateItem(it.key, { itemCode: text })}
-                        onPick={(l) => pickLabourForLine(it.key, l)}
-                        placeholder="Labour code…"
-                        width={130}
-                      />
-                    ) : (
-                      <input value={it.itemCode} readOnly style={{ width: 130 }} />
-                    )}
-                  </td>
-                  <td>
-                    {it.itemType === 'Labour' ? (
-                      <LabourSearchInput
-                        labours={labours}
-                        locationSelected={!!location}
-                        value={it.itemDescription}
-                        onChangeText={(text) => updateItem(it.key, { itemDescription: text })}
-                        onPick={(l) => pickLabourForLine(it.key, l)}
-                        width={210}
-                      />
-                    ) : (
-                      <input value={it.itemDescription} readOnly style={{ width: 210 }} />
-                    )}
-                  </td>
-                  <td>
-                    {it.itemType === 'Labour' ? (
-                      <input value={it.hsnCode} onChange={(e) => updateItem(it.key, { hsnCode: e.target.value })} style={{ width: 90 }} />
-                    ) : (
-                      <input value={it.hsnCode} readOnly style={{ width: 90 }} />
-                    )}
-                  </td>
-                  <td>
-                    <select
-                      value={it.issueType}
-                      onChange={(e) => updateItem(it.key, { issueType: e.target.value })}
-                      title={!it.issueType ? `Defers to the bill-level default (${issueType || '— none —'}).` : undefined}
-                      style={{ minWidth: 130 }}
-                    >
-                      <option value="">— default —</option>
-                      <option value="Paid">Paid (taxed)</option>
-                      <option value="U/W">U/W - Under Warranty (zero tax)</option>
-                      <option value="FSC">FSC - Free Service Coupon (zero tax)</option>
-                    </select>
-                  </td>
-                  <td>
-                    {it.itemType === 'Labour' ? (
-                      <input type="number" value={it.qty} onChange={(e) => updateItem(it.key, { qty: e.target.value })} style={{ width: 70, textAlign: 'right' }} />
-                    ) : (
-                      <input type="number" value={it.qty} readOnly title="Qty transferred - see the Material Transfer Bill to change it." style={{ width: 70, textAlign: 'right' }} />
-                    )}
-                  </td>
-                  <td>
-                    {it.itemType === 'Labour' ? (
-                      <input type="number" value={it.rate} onChange={(e) => updateItem(it.key, { rate: e.target.value })} style={{ width: 90, textAlign: 'right' }} />
-                    ) : (
-                      <input type="number" value={it.rate} readOnly title={it.mrp ? `From the Material Transfer item's own C_ItemMaster-derived Rate (MRP ₹${it.mrp}).` : `From the Material Transfer item's own Rate.`} style={{ width: 90, textAlign: 'right' }} />
-                    )}
-                  </td>
-                  <td>
-                    <select value={it.discountType} onChange={(e) => updateItem(it.key, { discountType: e.target.value as DiscountType })} style={{ minWidth: 90 }}>
-                      <option value="None">None</option>
-                      <option value="Percentage">%</option>
-                      <option value="Amount">₹</option>
-                    </select>
-                  </td>
-                  <td><input type="number" value={it.discountValue} onChange={(e) => updateItem(it.key, { discountValue: e.target.value })} disabled={it.discountType === 'None'} style={{ width: 90, textAlign: 'right' }} /></td>
-                  <td className="text-end">₹{est.taxable.toFixed(2)}</td>
-                  <td className="text-end">₹{est.cgstAmt.toFixed(2)}{est.cgstPct > 0 && <><br /><span className="muted" style={{ fontSize: 11 }}>@{est.cgstPct}%</span></>}</td>
-                  <td className="text-end">₹{est.sgstAmt.toFixed(2)}{est.sgstPct > 0 && <><br /><span className="muted" style={{ fontSize: 11 }}>@{est.sgstPct}%</span></>}</td>
-                  <td className="text-end">₹{est.igstAmt.toFixed(2)}{est.igstPct > 0 && <><br /><span className="muted" style={{ fontSize: 11 }}>@{est.igstPct}%</span></>}</td>
-                  <td className="text-end">₹{est.total.toFixed(2)}</td>
-                  <td>
-                    {!it.fromMaterialTransfer && (
-                      <button className="btn btn-icon btn-danger" onClick={() => removeItem(it.key)} title="Remove line">✕</button>
-                    )}
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
+          <table>
+            <thead>
+              <tr>
+                <th style={{ width: 64 }}>Action</th>
+                <th>Sr.No</th>
+                <th>Part No.</th>
+                <th>Description</th>
+                <th className="text-end">Qty</th>
+                <th className="text-end">Rate</th>
+                <th>HSN Code</th>
+                <th className="text-end">MRP</th>
+                <th className="text-end">Discount</th>
+                <th>Discount Type</th>
+                <th className="text-end">CGST Amt.</th>
+                <th className="text-end">SGST Amt.</th>
+                <th className="text-end">IGST Amt.</th>
+                <th className="text-end">Amount</th>
+                <th>Issue Type</th>
+                <th className="text-end">GST %</th>
+              </tr>
+            </thead>
+            <tbody>
+              {partRows.map((it, i) => {
+                const est = lineEstimate(it, taxMode, issueType)
+                const editing = editingPartKey === it.key
+                return (
+                  <tr key={it.key} style={editing ? { background: 'var(--surface-muted, #f8f9fa)' } : undefined}>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {/* Only Discount Type/Discount Value/Issue Type are ever editable on a Part
+                          row (Item Code/Description/HSN/Qty/Rate come straight from Material
+                          Transfer, see this module's own doc comment). Delete (2026-09-22, "in
+                          Part Details List with edit delete button also add") excludes this row
+                          from the bill only - see removePart's own doc comment for exactly what it
+                          does and doesn't affect; this is a deliberate departure from the
+                          reference's own Edit-only Part Details List. */}
+                      <button className="btn btn-icon" type="button" onClick={() => setEditingPartKey(editing ? null : it.key)} title={editing ? 'Done' : 'Edit Discount / Issue Type'}>
+                        {editing ? '✓' : '✎'}
+                      </button>{' '}
+                      <button className="btn btn-icon btn-danger" type="button" onClick={() => removePart(it)} title="Remove from this bill">✕</button>
+                    </td>
+                    <td>{i + 1}</td>
+                    <td>{it.itemCode}</td>
+                    <td>{it.itemDescription}</td>
+                    <td className="text-end" title="Qty transferred - see the Material Transfer Bill to change it.">{it.qty}</td>
+                    <td className="text-end">₹{Number(it.rate || 0).toFixed(2)}</td>
+                    <td>{it.hsnCode || '—'}</td>
+                    <td className="text-end">{it.mrp ? `₹${Number(it.mrp).toFixed(2)}` : '—'}</td>
+                    <td className="text-end">
+                      {editing ? (
+                        <input type="number" value={it.discountValue} onChange={(e) => updateItem(it.key, { discountValue: e.target.value })} disabled={it.discountType === 'None'} style={{ width: 80, textAlign: 'right' }} />
+                      ) : (
+                        `₹${est.discountAmt.toFixed(2)}`
+                      )}
+                    </td>
+                    <td>
+                      {editing ? (
+                        <select value={it.discountType} onChange={(e) => updateItem(it.key, { discountType: e.target.value as DiscountType })}>
+                          <option value="None">None</option>
+                          <option value="Percentage">%</option>
+                          <option value="Amount">₹</option>
+                        </select>
+                      ) : (
+                        it.discountType === 'None' ? '—' : it.discountType
+                      )}
+                    </td>
+                    <td className="text-end">₹{est.cgstAmt.toFixed(2)}</td>
+                    <td className="text-end">₹{est.sgstAmt.toFixed(2)}</td>
+                    <td className="text-end">₹{est.igstAmt.toFixed(2)}</td>
+                    <td className="text-end">₹{est.total.toFixed(2)}</td>
+                    <td>
+                      {editing ? (
+                        <select value={it.issueType} onChange={(e) => updateItem(it.key, { issueType: e.target.value })}>
+                          <option value="">— default —</option>
+                          <option value="Paid">Paid (taxed)</option>
+                          <option value="U/W">U/W - Under Warranty (zero tax)</option>
+                          <option value="FSC">FSC - Free Service Coupon (zero tax)</option>
+                        </select>
+                      ) : (
+                        it.issueType || `default (${issueType || '— none —'})`
+                      )}
+                    </td>
+                    <td className="text-end">{it.gstPct}%</td>
+                  </tr>
+                )
+              })}
+              {partRows.length === 0 && (
+                <tr><td colSpan={16} className="muted" style={{ textAlign: 'center', padding: 12 }}>No Part lines yet - these load automatically once a Material Transfer is saved for this Job.</td></tr>
+              )}
+            </tbody>
+          </table>
         </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
-          <button className="btn btn-sm" onClick={addItem}>+ Add Labour</button>
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
           <span className="muted">
             {zeroTaxLineCount > 0 && <>{zeroTaxLineCount} zero-tax line{zeroTaxLineCount > 1 ? 's' : ''} - </>}
             Estimated Total: <strong>₹{estimatedTotal.toFixed(2)}</strong>
@@ -834,7 +1086,11 @@ export function RepairBillCreatePage() {
         )}
 
         <div style={{ marginTop: 14 }}>
-          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save Repair Bill'}</button>
+          {/* 2026-09-22: relabelled from "Save Repair Bill" - this button always creates the bill
+              as Performa (unchanged behaviour, see this file's own doc comment above for the full
+              Proforma -> Invoice lifecycle); "Save as Invoice" is a separate later step from the
+              list below, not a second button here. */}
+          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save as Proforma'}</button>
           {saveError && <p className="muted" style={{ color: '#b91c1c' }}>{saveError}</p>}
           {saveOk && <p className="muted" style={{ color: '#15803d' }}>{saveOk}</p>}
         </div>
@@ -978,6 +1234,17 @@ export function RepairBillCreatePage() {
           itemsTitle="Items"
           itemColumns={billItemColumns}
           itemRows={billItemRows}
+          actions={
+            viewingBill.source === 'JobCardScanner' && viewingBill.status === 'Performa' ? (
+              <button
+                className="btn btn-primary btn-sm"
+                disabled={convertingId === viewingBill.id}
+                onClick={() => saveAsInvoice(viewingBill)}
+              >
+                {convertingId === viewingBill.id ? 'Saving…' : 'Save as Invoice'}
+              </button>
+            ) : undefined
+          }
         />
       )}
     </div>

@@ -981,6 +981,126 @@ export interface LabourMasterImportResult {
   warnings: string[]
 }
 
+// ==================== Extended Battery Warranty Scheme (2026-09-22) ====================
+// "needs to create warenty table in jobcardscanner db for this functionality and add this in our
+// function" - mirrors ExtendedBatteryWarrantySchemesController.ToRow / CreateExtendedBatteryWarrantySchemeRequest
+// (backend/Controllers/ExtendedBatteryWarrantySchemesController.cs, backend/Dtos/Requests.cs). See
+// backend/Models/ExtendedBatteryWarrantySchemes.cs's own doc comment for why VehicleModel is free
+// text (no OEM Model master existed in JobCardScannerDb when this was first built) and DurationType
+// is a fixed-choice string rather than a numeric id.
+//
+// 2026-09-22 UPDATE: oemModelId/oemModelName added - see OemModel below (Types.OemModel) and that
+// same backend doc comment's update. Added ALONGSIDE vehicleModel, not replacing it, per an
+// explicit choice confirmed via AskUserQuestion - vehicleModel is still required and still what
+// eligibility matching reads; oemModelId just lets the admin form pick from a real catalog instead
+// of typing free text, and keeps the two in sync when it does.
+export interface ExtendedBatteryWarrantyScheme {
+  id: string
+  schemeName: string
+  vehicleModel: string
+  rateType: string | null
+  duration: number
+  durationType: 'Days' | 'Months' | 'Years'
+  kms: number
+  dealerPrice: number
+  customerPrice: number
+  discountAmount: number
+  gstPercent: number
+  purchaseValidityDays: number | null
+  batteryPartCode: string | null
+  partCode: string | null
+  fromDate: string
+  toDate: string | null
+  isActive: boolean
+  oemModelId: string | null
+  oemModelName: string | null
+  createdAt: string
+  updatedAt: string | null
+}
+
+export interface CreateExtendedBatteryWarrantySchemeRequest {
+  schemeName: string
+  vehicleModel: string
+  rateType: string | null
+  duration: number
+  durationType: 'Days' | 'Months' | 'Years'
+  kms: number
+  dealerPrice: number
+  customerPrice: number
+  discountAmount: number
+  gstPercent: number
+  purchaseValidityDays: number | null
+  batteryPartCode: string | null
+  partCode: string | null
+  fromDate: string
+  toDate: string | null
+  isActive: boolean
+  oemModelId?: string | null
+}
+
+// ==================== OEM Model Master / OEM Model Warranty (2026-09-22) ====================
+// "this wants to integrate for my battery-warranty-schemes for link models for warrenty and this
+// all table add in jobcard db that all functionality need to craete in jc" - mirrors
+// OemModelsController.ToRow/CreateOemModelRequest and OemModelWarrantiesController.ToRow/
+// CreateOemModelWarrantyRequest (backend/Controllers/OemModel*.cs, backend/Dtos/Requests.cs). See
+// backend/Models/OemModels.cs's own doc comment for the full reasoning ported from the BAPL DMS
+// reference's OemmodelMaster/OemmodelWarranty tables, including why this is a GLOBAL (not
+// dealer-scoped) master.
+export interface OemModel {
+  id: string
+  modelName: string
+  modelShortName: string | null
+  isActive: boolean
+  createdAt: string
+  updatedAt: string | null
+}
+
+export interface CreateOemModelRequest {
+  modelName: string
+  modelShortName: string | null
+  isActive: boolean
+}
+
+/** DurationType intentionally has no "Days" option here (unlike ExtendedBatteryWarrantyScheme) -
+ * see OemModelWarranty's own backend doc comment for why. */
+export interface OemModelWarranty {
+  id: string
+  oemModelId: string
+  oemModelName: string | null
+  effectiveDate: string
+  odoReading: number | null
+  durationType: 'Months' | 'Years' | null
+  duration: number | null
+  isB2b: boolean | null
+  createdAt: string
+  updatedAt: string | null
+}
+
+export interface CreateOemModelWarrantyRequest {
+  oemModelId: string
+  effectiveDate: string
+  odoReading: number | null
+  durationType: 'Months' | 'Years' | null
+  duration: number | null
+  isB2b: boolean | null
+}
+
+/** Result of GET /api/extended-battery-warranty-schemes/eligible - see that endpoint's own doc
+ * comment (backend) for the eligibility formula, which is INTERPRETATION, not confirmed policy. */
+export interface ExtendedBatteryWarrantyEligibilityResult {
+  schemeId: string
+  schemeName: string
+  isEligible: boolean
+  ineligibilityReason: string | null
+  dealerPrice: number
+  customerPrice: number
+  gstPercent: number
+  coverageEndDate: string
+  coverageUptoKms: number
+  batteryPartCode: string | null
+  partCode: string | null
+}
+
 // 2026-09-21 "Part Upload" tab - see backend Models/PartUploads.cs's doc comment for the
 // confirmed source spreadsheet columns (Stock Summary Detail Report) and why there is no
 // GST/tax-rate field here (the source file has none).
@@ -1065,6 +1185,11 @@ export interface JobSearchResult {
   /** 2026-09-21: this picker now also returns job cards that never synced to BAPL DMS (see
    * JobCardsController.Search's doc comment) - true when this one did. */
   isDmsLinked?: boolean
+  /** 2026-09-22 - Vehicle.Odometer / JobCard.AssignedTechnicianName, added for Repair Bill's
+   * "Selected Job Details" panel (see JobCardsController.Search's own doc comment on why these
+   * two were added here). Both null when not on file, same as every other optional field above. */
+  odometer?: number | null
+  technician?: string | null
 }
 
 // ---------------- Repair Bill / Material Transfer Bill (2026-09-19) - JobCardScannerDb-native,

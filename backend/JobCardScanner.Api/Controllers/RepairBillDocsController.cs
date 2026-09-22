@@ -31,17 +31,20 @@ public class RepairBillDocsController : ControllerBase
     private readonly ICurrentUserService _currentUser;
     private readonly IJobCardNumberingService _numbering;
     private readonly IDmsBaplDataService _dmsBaplData;
+    private readonly IExtendedBatteryWarrantyEligibilityService _ebwEligibility;
     private readonly IAuditLogService _audit;
     private readonly ILogger<RepairBillDocsController> _logger;
 
     public RepairBillDocsController(
         JobCardScannerDbContext db, ICurrentUserService currentUser, IJobCardNumberingService numbering,
-        IDmsBaplDataService dmsBaplData, IAuditLogService audit, ILogger<RepairBillDocsController> logger)
+        IDmsBaplDataService dmsBaplData, IExtendedBatteryWarrantyEligibilityService ebwEligibility,
+        IAuditLogService audit, ILogger<RepairBillDocsController> logger)
     {
         _db = db;
         _currentUser = currentUser;
         _numbering = numbering;
         _dmsBaplData = dmsBaplData;
+        _ebwEligibility = ebwEligibility;
         _audit = audit;
         _logger = logger;
     }
@@ -176,6 +179,20 @@ public class RepairBillDocsController : ControllerBase
     /// of the three applies from Customer/Dealer state. IssueType "U/W" or "FSC" zeroes every
     /// line's taxable/tax amounts, matching the reference app's own special-casing for
     /// warranty/free-service work (confirmed in the reference's Angular sanitizeForSave).
+    ///
+    /// 2026-09-22 "needs to create warenty table in jobcardscanner db for this functionality and
+    /// add this in our function": each Part line is checked, NON-DESTRUCTIVELY, against this
+    /// dealer's Extended Battery Warranty Schemes (see Models/ExtendedBatteryWarrantySchemes.cs
+    /// and Services/IExtendedBatteryWarrantyEligibilityService.cs for the formula) when req.VehicleId
+    /// resolves to a Vehicle with a PurchaseDate on file. A match is found by the line's ItemCode
+    /// equalling a candidate scheme's BatteryPartCode or PartCode (case-insensitive) - when found,
+    /// RepairBillDocItem.ExtendedBatteryWarrantySchemeId/IsUnderExtendedWarranty are set for
+    /// audit/display only. This NEVER changes Rate/DiscountValue/CgstPct/SgstPct/IgstPct/
+    /// TaxableAmount/TotalAmount above, which stay exactly what the caller submitted - a dealer's
+    /// own pricing entry always wins, this is metadata layered on top of it, not a substitute for
+    /// it. No match (no VehicleId, no PurchaseDate on file, or no scheme configured for this
+    /// model/part) silently leaves both fields null, same as any bill saved before this feature
+    /// existed.
     /// </summary>
     [HttpPost]
     public async Task<IActionResult> Create(CreateRepairBillRequest req)
@@ -219,6 +236,22 @@ public class RepairBillDocsController : ControllerBase
             CreatedById = _currentUser.UserId,
             Status = RepairBillDocStatus.Performa,
         };
+
+        // 2026-09-22 (Extended Battery Warranty Scheme, see this method's own doc comment above) -
+        // resolved once per save, not per line: candidate schemes only depend on the vehicle's
+        // Model/PurchaseDate/Odometer and the bill date, none of which vary line to line.
+        var ebwCandidates = new List<ExtendedBatteryWarrantyEligibilityResult>();
+        if (req.VehicleId is not null)
+        {
+            var ebwVehicle = await _db.Vehicles.AsNoTracking()
+                .FirstOrDefaultAsync(v => v.Id == req.VehicleId && v.DealerId == dealerId, HttpContext.RequestAborted);
+            if (ebwVehicle?.PurchaseDate is not null)
+            {
+                ebwCandidates = await _ebwEligibility.EvaluateAsync(
+                    dealerId.Value, ebwVehicle.Model, ebwVehicle.PurchaseDate.Value,
+                    (decimal)ebwVehicle.Odometer, bill.BillDate, HttpContext.RequestAborted);
+            }
+        }
 
         // 2026-09-21 ("part-upload balance qty use for that stock and when this will we saved
         // from part-upload balance qty minus from"): same PartUploads.BalQty decrement as
@@ -272,6 +305,24 @@ public class RepairBillDocsController : ControllerBase
             decimal sgstAmt = taxable * sgstPct / 100m;
             decimal igstAmt = taxable * igstPct / 100m;
 
+            // Extended Battery Warranty Scheme match (see this method's own doc comment above) -
+            // Part lines only; a Labour line's ItemCode is a labour code and never matches a
+            // scheme's BatteryPartCode/PartCode. Audit/display metadata only - never feeds back
+            // into taxable/cgstAmt/sgstAmt/igstAmt computed above.
+            Guid? ebwSchemeId = null;
+            bool? isUnderEbw = null;
+            if (it.ItemType == RepairBillDocItemType.Part && !string.IsNullOrWhiteSpace(it.ItemCode) && ebwCandidates.Count > 0)
+            {
+                var ebwMatch = ebwCandidates.FirstOrDefault(s =>
+                    (s.BatteryPartCode is not null && string.Equals(s.BatteryPartCode, it.ItemCode, StringComparison.OrdinalIgnoreCase))
+                    || (s.PartCode is not null && string.Equals(s.PartCode, it.ItemCode, StringComparison.OrdinalIgnoreCase)));
+                if (ebwMatch is not null)
+                {
+                    ebwSchemeId = ebwMatch.SchemeId;
+                    isUnderEbw = ebwMatch.IsEligible;
+                }
+            }
+
             bill.Items.Add(new RepairBillDocItem
             {
                 ItemType = it.ItemType,
@@ -291,6 +342,8 @@ public class RepairBillDocsController : ControllerBase
                 SgstAmount = sgstAmt,
                 IgstAmount = igstAmt,
                 TotalAmount = taxable + cgstAmt + sgstAmt + igstAmt,
+                ExtendedBatteryWarrantySchemeId = ebwSchemeId,
+                IsUnderExtendedWarranty = isUnderEbw,
             });
         }
 
@@ -415,6 +468,8 @@ public class RepairBillDocsController : ControllerBase
             i.SgstAmount,
             i.IgstAmount,
             i.TotalAmount,
+            i.ExtendedBatteryWarrantySchemeId,
+            i.IsUnderExtendedWarranty,
         }),
     };
 
@@ -454,5 +509,7 @@ public class RepairBillDocsController : ControllerBase
             i.SgstAmount,
             i.IgstAmount,
             i.TotalAmount,
+            i.ExtendedBatteryWarrantySchemeId,
+            i.IsUnderExtendedWarranty,
         }).ToList());
 }

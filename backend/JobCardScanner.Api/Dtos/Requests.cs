@@ -289,9 +289,8 @@ public record CreateRepairBillRequest(
 public record CreateMaterialTransferItemRequest(
     Guid? PartId, string ItemCode, string ItemDescription, double Qty, decimal Rate,
     string? RackNo = null, string? Bin = null, string? SerialNo = null, decimal? Mrp = null,
-    int? ValidDays = null, string? ItemReceived = null, string? IssueType = null, string? HsnCode = null,
-    string? DiscountType = null, decimal DiscountValue = 0);
-    
+    int? ValidDays = null, string? ItemReceived = null, string? IssueType = null, string? HsnCode = null);
+
 // TechnicianId: reference MaterialTransfer.Technician, mapped onto this app's own User FK instead
 // of a meaningless raw DMS employee int - see MaterialTransferDoc.TechnicianId's doc comment.
 public record CreateMaterialTransferRequest(
@@ -334,3 +333,42 @@ public record CombinedMaterialTransferRow(
     string Source, string Id, string TransferNumber, DateTime SortDate, string? Location,
     string? TransferType, string? PartyName, string? Status, decimal TotalAmount, int ItemCount,
     IReadOnlyList<object>? Items = null);
+
+// 2026-09-22 "create warenty table in jobcardscanner db" - see
+// Models/ExtendedBatteryWarrantySchemes.cs's own doc comment for every field's meaning and the
+// two deliberate adaptations from the BAPL DMS reference (free-text VehicleModel instead of an
+// OemModelId FK, free-text DurationType instead of a guessed numeric id).
+// 2026-09-22 OemModelId added (nullable) - see ExtendedBatteryWarrantyScheme's own updated doc
+// comment: the admin UI's model picker sends this alongside VehicleModel so the two stay in sync,
+// but VehicleModel is still required/still what eligibility matching reads.
+public record CreateExtendedBatteryWarrantySchemeRequest(
+    string SchemeName, string VehicleModel, string? RateType, int Duration, string DurationType,
+    decimal Kms, decimal DealerPrice, decimal CustomerPrice, decimal DiscountAmount, decimal GstPercent,
+    int? PurchaseValidityDays, string? BatteryPartCode, string? PartCode, DateOnly FromDate,
+    DateOnly? ToDate, bool IsActive = true, Guid? OemModelId = null);
+
+// ---------------------------------------------------------------------------------------------
+// OEM Model Master + OEM Model Warranty (2026-09-22) - see Models/OemModels.cs's own doc comment
+// for the full reasoning ported from the BAPL DMS reference's OemmodelMaster/OemmodelWarranty.
+// ---------------------------------------------------------------------------------------------
+public record CreateOemModelRequest(string ModelName, string? ModelShortName, bool IsActive = true);
+
+/// <summary>OdoReading/Duration are decimal? (not required) matching the reference's own optional
+/// fields on this table - a warranty term can specify just a date cap, just a mileage cap, or
+/// both. DurationType, if given, must be "Months" or "Years" (see OemModelWarranty's own doc
+/// comment for why "Days" isn't offered here unlike ExtendedBatteryWarrantyScheme).</summary>
+public record CreateOemModelWarrantyRequest(
+    Guid OemModelId, DateOnly EffectiveDate, decimal? OdoReading, string? DurationType,
+    decimal? Duration, bool? IsB2b);
+
+/// <summary>Result of GET /api/extended-battery-warranty-schemes/eligible - see
+/// ExtendedBatteryWarrantySchemesController's own doc comment for the eligibility formula and what
+/// in it is INTERPRETATION rather than confirmed BGauss policy. BatteryPartCode/PartCode are
+/// carried through from the scheme (not just eligibility/pricing fields) so a caller - specifically
+/// RepairBillDocsController.Create's non-destructive per-line tagging, see that method's own
+/// comment - can match a Repair Bill Part line's ItemCode against a candidate scheme without a
+/// second round-trip query.</summary>
+public record ExtendedBatteryWarrantyEligibilityResult(
+    Guid SchemeId, string SchemeName, bool IsEligible, string? IneligibilityReason,
+    decimal DealerPrice, decimal CustomerPrice, decimal GstPercent, DateOnly CoverageEndDate, decimal CoverageUptoKms,
+    string? BatteryPartCode = null, string? PartCode = null);

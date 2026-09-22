@@ -171,4 +171,15 @@ public class RepairBillDocItem
     [Column(TypeName = "decimal(12,2)")] public decimal SgstAmount { get; set; }
     [Column(TypeName = "decimal(12,2)")] public decimal IgstAmount { get; set; }
     [Column(TypeName = "decimal(12,2)")] public decimal TotalAmount { get; set; }
+
+    // ---- 2026-09-22 "add this in our function" (Extended Battery Warranty Scheme) - see
+    // Models/ExtendedBatteryWarrantySchemes.cs's own doc comment for the full eligibility formula
+    // and RepairBillDocsController.Create for where this is set. NON-DESTRUCTIVE: neither field
+    // ever changes Rate/TaxableAmount/CgstAmount/SgstAmount/IgstAmount/TotalAmount above, which stay
+    // exactly what the caller submitted - this is audit/display metadata only, same principle used
+    // for the BAPL DMS version of this same feature earlier in this session. Both nullable so
+    // existing rows are unaffected. ----
+    public Guid? ExtendedBatteryWarrantySchemeId { get; set; }
+    public ExtendedBatteryWarrantyScheme? ExtendedBatteryWarrantyScheme { get; set; }
+    public bool? IsUnderExtendedWarranty { get; set; }
 }

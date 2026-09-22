@@ -47,7 +47,7 @@ export const NAV_ITEMS: NavItem[] = [
   // DMSBAPLDATA's DMS_VehicleSales, same "no roles = every staff role can see it" convention as its
   // sibling DMSBAPLDATA pages (Material Transfer, Repair Bill) below.
   { to: '/vehicle-sale', label: 'Vehicle Sale', icon: '🚗', subtitle: 'Synced vehicle sale data (DMSBAPLDATA)' },
-  { to: '/parts', label: 'Parts & Inventory', icon: '📦', subtitle: 'Stock, DMS parts, suggestions', roles: ['PartsUser', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
+  // { to: '/parts', label: 'Parts & Inventory', icon: '📦', subtitle: 'Stock, DMS parts, suggestions', roles: ['PartsUser', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
   // 2026-09-21 "add in sidebar option in Item master page fetch data from C _ItemMaster table from
   // baplfinal databse": read-only browse of BAPL's item catalog (Dealer Price + per-item GST%) -
   // the same source Material Transfer Bill/Repair Bill's Rate/MRP/GST calculation now reads from.
@@ -70,6 +70,14 @@ export const NAV_ITEMS: NavItem[] = [
   { to: '/material-transfer', label: 'Material Transfer Report', icon: '🔄', subtitle: 'Synced material transfer docs (DMSBAPLDATA)' },
   { to: '/repair-bill-new', label: 'Repair Bill', icon: '🧾', subtitle: 'Create a repair bill - saves to JobCardScanner', roles: ['ServiceAdvisor', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
   { to: '/repair-bill', label: 'Repair Bill Report', icon: '📄', subtitle: 'Synced repair bill data (DMSBAPLDATA)' },
+  // 2026-09-22 "needs to create warenty table in jobcardscanner db for this functionality and add
+  // this in our function" - gated the same as Labour Master (WorkshopManagerUp): pricing data.
+  { to: '/battery-warranty-schemes', label: 'Battery Warranty Schemes', icon: '🔋', subtitle: 'Extended Battery Warranty pricing & coverage by model', roles: ['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
+  // 2026-09-22 "this all table add in jobcard db that all functionality need to craete in jc" -
+  // global masters (see OemModelsController's own doc comment for why List/Get is
+  // WorkshopManagerUp here even though writes are CorporateAdminUp-only server-side).
+  { to: '/oem-models', label: 'OEM Model Master', icon: '🚗', subtitle: 'Shared vehicle model catalog (global, not per-dealer)', roles: ['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
+  { to: '/oem-model-warranties', label: 'OEM Model Warranty', icon: '🛡️', subtitle: 'Standard manufacturer warranty terms by model', roles: ['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
   { to: '/reports', label: 'Reports & Search', icon: '📊', subtitle: 'Excel & PDF, by date range' },
   // Employees (2026-09-17): create/edit/delete local dealer logins with Work Area location
   // scoping. Gated to DealerAdmin and up - the same DealerAdminUp floor UsersController's API

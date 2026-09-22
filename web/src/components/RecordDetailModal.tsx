@@ -1,4 +1,3 @@
-// web\src\components\RecordDetailModal.tsx
 import type { ReactNode } from 'react'
 
 /**
@@ -17,6 +16,12 @@ import type { ReactNode } from 'react'
  * labels and each `itemRows` entry is one row's cells in the same order, already formatted by the
  * caller (this component does no formatting/number-crunching of its own, since the two callers'
  * item shapes differ - JobCardScanner's own items vs DMSBAPLDATA's synced items).
+ *
+ * `actions`, if given, renders below everything else (a footer row) - added 2026-09-22 for Repair
+ * Bill's "Save as Invoice" button (see RepairBillCreatePage.tsx's own doc comment for the Proforma
+ * -> Invoice lifecycle), an action that only makes sense from this detail view, not from every
+ * caller's row. Optional and additive - PartUploadPage.tsx/MaterialTransferCreatePage.tsx's
+ * existing calls omit it and render exactly as before.
  */
 type Field = { label: string; value: ReactNode }
 
@@ -27,10 +32,11 @@ type Props = {
   itemsTitle?: string
   itemColumns?: string[]
   itemRows?: ReactNode[][]
+  actions?: ReactNode
   onClose: () => void
 }
 
-export function RecordDetailModal({ title, subtitle, fields, itemsTitle, itemColumns, itemRows, onClose }: Props) {
+export function RecordDetailModal({ title, subtitle, fields, itemsTitle, itemColumns, itemRows, actions, onClose }: Props) {
   return (
     <div
       style={{
@@ -82,6 +88,12 @@ export function RecordDetailModal({ title, subtitle, fields, itemsTitle, itemCol
                 </tbody>
               </table>
             </div>
+          </div>
+        )}
+
+        {actions && (
+          <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid #e5e7eb', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {actions}
           </div>
         )}
       </div>

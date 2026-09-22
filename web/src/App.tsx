@@ -23,6 +23,13 @@ import { RepairBillPage } from './pages/staff/RepairBillPage'
 // unchanged.
 import { RepairBillCreatePage } from './pages/staff/RepairBillCreatePage'
 import { MaterialTransferCreatePage } from './pages/staff/MaterialTransferCreatePage'
+// 2026-09-22 "needs to create warenty table in jobcardscanner db for this functionality and add
+// this in our function" - admin CRUD page for the new Extended Battery Warranty Scheme master.
+import { ExtendedBatteryWarrantySchemesPage } from './pages/staff/ExtendedBatteryWarrantySchemesPage'
+// 2026-09-22 "this all table add in jobcard db that all functionality need to craete in jc" -
+// admin CRUD pages for the new global OEM Model Master / OEM Model Warranty masters.
+import { OemModelsPage } from './pages/staff/OemModelsPage'
+import { OemModelWarrantiesPage } from './pages/staff/OemModelWarrantiesPage'
 import { AdminUsersPage } from './pages/staff/AdminUsersPage'
 import { EmployeesPage } from './pages/staff/EmployeesPage'
 import { AdminWorkflowPage } from './pages/staff/AdminWorkflowPage'
@@ -122,6 +129,39 @@ export default function App() {
           }
         />
         <Route path="/repair-bill" element={<RepairBillPage />} />
+        {/* 2026-09-22 "needs to create warenty table in jobcardscanner db for this functionality
+            and add this in our function" - gated to match the backend's WorkshopManagerUp policy
+            (ExtendedBatteryWarrantySchemesController) exactly, same convention as Labour Master. */}
+        <Route
+          path="/battery-warranty-schemes"
+          element={
+            <RequireRole roles={['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
+              <ExtendedBatteryWarrantySchemesPage />
+            </RequireRole>
+          }
+        />
+        {/* 2026-09-22 - global masters (not dealer-scoped, see OemModelsController's own doc
+            comment): List/Get is WorkshopManagerUp so any dealer's staff can browse the catalog
+            when linking a scheme; Create/Update/Delete are additionally CorporateAdminUp-gated
+            server-side (stacked [Authorize]), not duplicated as a stricter client-side route gate
+            here since ICurrentUserService.Role isn't exposed to route guards today - see
+            OemModelsPage.tsx's own doc comment. */}
+        <Route
+          path="/oem-models"
+          element={
+            <RequireRole roles={['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
+              <OemModelsPage />
+            </RequireRole>
+          }
+        />
+        <Route
+          path="/oem-model-warranties"
+          element={
+            <RequireRole roles={['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
+              <OemModelWarrantiesPage />
+            </RequireRole>
+          }
+        />
         <Route path="/reports" element={<ReportsPage />} />
         <Route
           path="/employees"

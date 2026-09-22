@@ -160,12 +160,15 @@ builder.Services.AddScoped<IBaplDmsService, BaplDmsService>();
 builder.Services.AddScoped<IDmsBaplDataService, DmsBaplDataService>();
 builder.Services.AddScoped<ILabourMasterImportService, LabourMasterImportService>();
 builder.Services.AddScoped<IPartUploadService, PartUploadService>();
-builder.Services.AddScoped<IBaplItemPricingService, BaplItemPricingService>();
 builder.Services.AddScoped<IJobCardNumberingService, JobCardNumberingService>();
 builder.Services.AddScoped<IInvoicePdfService, InvoicePdfService>();
 builder.Services.AddScoped<IEstimatePdfService, EstimatePdfService>();
 builder.Services.AddScoped<IExcelExportService, ExcelExportService>();
 builder.Services.AddScoped<IAuditLogService, AuditLogService>();
+// 2026-09-22 "create warenty table in jobcardscanner db" - shared formula used by both
+// ExtendedBatteryWarrantySchemesController's GET .../eligible and RepairBillDocsController.Create's
+// non-destructive per-line tagging, see IExtendedBatteryWarrantyEligibilityService's own doc comment.
+builder.Services.AddScoped<IExtendedBatteryWarrantyEligibilityService, ExtendedBatteryWarrantyEligibilityService>();
 
 builder.Services.AddControllers().AddJsonOptions(o =>
 {
@@ -604,6 +607,155 @@ if (app.Environment.IsDevelopment())
     catch (Exception ex)
     {
         Console.WriteLine($"[Startup] WARNING: self-healing schema catch-up failed - {ex.Message}");
+    }
+}
+
+// ---------------------------------------------------------------------
+// EXTENDED BATTERY WARRANTY SCHEME (2026-09-22) - "needs to create warenty table in jobcardscanner
+// db for this functionality and add this in our function". Own try/catch block, separate from the
+// one above, so a failure here (or in any future block) never blocks any other block from running -
+// same isolation convention already used throughout this file. See
+// Models/ExtendedBatteryWarrantySchemes.cs for the table's full field-by-field reasoning and
+// Models/RepairBillDocs.cs (RepairBillDocItem) for the two new nullable tag-only columns.
+// ---------------------------------------------------------------------
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
+    try
+    {
+        await db.Database.ExecuteSqlRawAsync(@"
+            IF OBJECT_ID('dbo.ExtendedBatteryWarrantySchemes', 'U') IS NULL
+            BEGIN
+                CREATE TABLE dbo.ExtendedBatteryWarrantySchemes (
+                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+                    DealerId UNIQUEIDENTIFIER NOT NULL,
+                    SchemeName NVARCHAR(150) NOT NULL,
+                    VehicleModel NVARCHAR(100) NOT NULL,
+                    RateType NVARCHAR(60) NULL,
+                    Duration INT NOT NULL DEFAULT (0),
+                    DurationType NVARCHAR(10) NOT NULL DEFAULT ('Months'),
+                    Kms DECIMAL(10,2) NOT NULL DEFAULT (0),
+                    DealerPrice DECIMAL(12,2) NOT NULL DEFAULT (0),
+                    CustomerPrice DECIMAL(12,2) NOT NULL DEFAULT (0),
+                    DiscountAmount DECIMAL(12,2) NOT NULL DEFAULT (0),
+                    GstPercent DECIMAL(5,2) NOT NULL DEFAULT (0),
+                    PurchaseValidityDays INT NULL,
+                    BatteryPartCode NVARCHAR(60) NULL,
+                    PartCode NVARCHAR(60) NULL,
+                    FromDate DATE NOT NULL,
+                    ToDate DATE NULL,
+                    IsActive BIT NOT NULL DEFAULT (1),
+                    CreatedById UNIQUEIDENTIFIER NULL,
+                    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+                    UpdatedById UNIQUEIDENTIFIER NULL,
+                    UpdatedAt DATETIME2 NULL,
+                    CONSTRAINT FK_ExtendedBatteryWarrantySchemes_Dealers FOREIGN KEY (DealerId) REFERENCES dbo.Dealers(Id),
+                    CONSTRAINT FK_ExtendedBatteryWarrantySchemes_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id),
+                    CONSTRAINT FK_ExtendedBatteryWarrantySchemes_UpdatedBy FOREIGN KEY (UpdatedById) REFERENCES dbo.Users(Id)
+                );
+                CREATE INDEX IX_ExtendedBatteryWarrantySchemes_DealerId_VehicleModel ON dbo.ExtendedBatteryWarrantySchemes(DealerId, VehicleModel);
+            END
+
+            IF COL_LENGTH('dbo.RepairBillDocItems', 'ExtendedBatteryWarrantySchemeId') IS NULL
+                ALTER TABLE [dbo].[RepairBillDocItems] ADD [ExtendedBatteryWarrantySchemeId] UNIQUEIDENTIFIER NULL;
+            IF COL_LENGTH('dbo.RepairBillDocItems', 'IsUnderExtendedWarranty') IS NULL
+                ALTER TABLE [dbo].[RepairBillDocItems] ADD [IsUnderExtendedWarranty] BIT NULL;
+            IF COL_LENGTH('dbo.RepairBillDocItems', 'ExtendedBatteryWarrantySchemeId') IS NOT NULL
+               AND OBJECT_ID('dbo.ExtendedBatteryWarrantySchemes', 'U') IS NOT NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM sys.foreign_keys
+                   WHERE name = 'FK_RepairBillDocItems_ExtendedBatteryWarrantySchemes' AND parent_object_id = OBJECT_ID('dbo.RepairBillDocItems')
+               )
+            BEGIN
+                ALTER TABLE [dbo].[RepairBillDocItems]
+                    ADD CONSTRAINT [FK_RepairBillDocItems_ExtendedBatteryWarrantySchemes]
+                    FOREIGN KEY ([ExtendedBatteryWarrantySchemeId]) REFERENCES [dbo].[ExtendedBatteryWarrantySchemes]([Id]);
+            END
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_RepairBillDocItems_ExtendedBatteryWarrantySchemeId' AND object_id = OBJECT_ID('dbo.RepairBillDocItems'))
+                CREATE INDEX IX_RepairBillDocItems_ExtendedBatteryWarrantySchemeId ON dbo.RepairBillDocItems(ExtendedBatteryWarrantySchemeId);
+        ");
+        Console.WriteLine("[Startup] Self-healing schema catch-up (ExtendedBatteryWarrantySchemes table + RepairBillDocItems tag columns) checked/applied.");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Startup] WARNING: ExtendedBatteryWarrantySchemes schema catch-up failed - {ex.Message}");
+    }
+}
+
+// ---------------------------------------------------------------------
+// OEM MODEL MASTER + OEM MODEL WARRANTY (2026-09-22) - "this wants to integrate for my
+// battery-warranty-schemes for link models for warrenty and this all table add in jobcard db that
+// all functionality need to craete in jc". Own try/catch block, separate from the one above, for
+// the same isolation reason as every other block in this file. See Models/OemModels.cs for the
+// full field-by-field reasoning (ported from the BAPL DMS reference's OemmodelMaster/
+// OemmodelWarranty tables) and Models/ExtendedBatteryWarrantySchemes.cs for the new OemModelId
+// column added there to link the two features together.
+// ---------------------------------------------------------------------
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
+    try
+    {
+        await db.Database.ExecuteSqlRawAsync(@"
+            IF OBJECT_ID('dbo.OemModels', 'U') IS NULL
+            BEGIN
+                CREATE TABLE dbo.OemModels (
+                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+                    ModelName NVARCHAR(100) NOT NULL,
+                    ModelShortName NVARCHAR(30) NULL,
+                    IsActive BIT NOT NULL DEFAULT (1),
+                    CreatedById UNIQUEIDENTIFIER NULL,
+                    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+                    UpdatedById UNIQUEIDENTIFIER NULL,
+                    UpdatedAt DATETIME2 NULL,
+                    CONSTRAINT FK_OemModels_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id),
+                    CONSTRAINT FK_OemModels_UpdatedBy FOREIGN KEY (UpdatedById) REFERENCES dbo.Users(Id)
+                );
+                CREATE UNIQUE INDEX IX_OemModels_ModelName ON dbo.OemModels(ModelName);
+            END
+
+            IF OBJECT_ID('dbo.OemModelWarranties', 'U') IS NULL
+            BEGIN
+                CREATE TABLE dbo.OemModelWarranties (
+                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+                    OemModelId UNIQUEIDENTIFIER NOT NULL,
+                    EffectiveDate DATE NOT NULL,
+                    OdoReading DECIMAL(10,2) NULL,
+                    DurationType NVARCHAR(10) NULL,
+                    Duration DECIMAL(10,2) NULL,
+                    IsB2b BIT NULL,
+                    CreatedById UNIQUEIDENTIFIER NULL,
+                    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+                    UpdatedById UNIQUEIDENTIFIER NULL,
+                    UpdatedAt DATETIME2 NULL,
+                    CONSTRAINT FK_OemModelWarranties_OemModels FOREIGN KEY (OemModelId) REFERENCES dbo.OemModels(Id) ON DELETE CASCADE,
+                    CONSTRAINT FK_OemModelWarranties_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id),
+                    CONSTRAINT FK_OemModelWarranties_UpdatedBy FOREIGN KEY (UpdatedById) REFERENCES dbo.Users(Id)
+                );
+                CREATE INDEX IX_OemModelWarranties_OemModelId_EffectiveDate ON dbo.OemModelWarranties(OemModelId, EffectiveDate);
+            END
+
+            IF COL_LENGTH('dbo.ExtendedBatteryWarrantySchemes', 'OemModelId') IS NULL
+                ALTER TABLE [dbo].[ExtendedBatteryWarrantySchemes] ADD [OemModelId] UNIQUEIDENTIFIER NULL;
+            IF COL_LENGTH('dbo.ExtendedBatteryWarrantySchemes', 'OemModelId') IS NOT NULL
+               AND OBJECT_ID('dbo.OemModels', 'U') IS NOT NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM sys.foreign_keys
+                   WHERE name = 'FK_ExtendedBatteryWarrantySchemes_OemModels' AND parent_object_id = OBJECT_ID('dbo.ExtendedBatteryWarrantySchemes')
+               )
+            BEGIN
+                ALTER TABLE [dbo].[ExtendedBatteryWarrantySchemes]
+                    ADD CONSTRAINT [FK_ExtendedBatteryWarrantySchemes_OemModels]
+                    FOREIGN KEY ([OemModelId]) REFERENCES [dbo].[OemModels]([Id]);
+            END
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ExtendedBatteryWarrantySchemes_OemModelId' AND object_id = OBJECT_ID('dbo.ExtendedBatteryWarrantySchemes'))
+                CREATE INDEX IX_ExtendedBatteryWarrantySchemes_OemModelId ON dbo.ExtendedBatteryWarrantySchemes(OemModelId);
+        ");
+        Console.WriteLine("[Startup] Self-healing schema catch-up (OemModels + OemModelWarranties tables + ExtendedBatteryWarrantySchemes.OemModelId column) checked/applied.");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Startup] WARNING: OemModels/OemModelWarranties schema catch-up failed - {ex.Message}");
     }
 }
 

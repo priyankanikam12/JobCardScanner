@@ -46,6 +46,14 @@ public class JobCardScannerDbContext : DbContext
     // native, same as RepairBillDocs/MaterialTransferDocs above.
     public DbSet<PartUpload> PartUploads => Set<PartUpload>();
 
+    // 2026-09-22 "create warenty table in jobcardscanner db" - see
+    // Models/ExtendedBatteryWarrantySchemes.cs's own doc comment.
+    public DbSet<ExtendedBatteryWarrantyScheme> ExtendedBatteryWarrantySchemes => Set<ExtendedBatteryWarrantyScheme>();
+
+    // 2026-09-22 "this all table add in jobcard db" - see Models/OemModels.cs's own doc comment.
+    public DbSet<OemModel> OemModels => Set<OemModel>();
+    public DbSet<OemModelWarranty> OemModelWarranties => Set<OemModelWarranty>();
+
     public DbSet<NotificationTemplate> NotificationTemplates => Set<NotificationTemplate>();
     public DbSet<NotificationRecord> NotificationRecords => Set<NotificationRecord>();
     public DbSet<OtpRequest> OtpRequests => Set<OtpRequest>();
@@ -248,6 +256,10 @@ public class JobCardScannerDbContext : DbContext
         {
             e.HasOne(x => x.RepairBillDoc).WithMany(r => r.Items).HasForeignKey(x => x.RepairBillDocId).OnDelete(DeleteBehavior.Cascade);
             e.Property(x => x.ItemType).HasConversion<string>().HasMaxLength(20);
+            // 2026-09-22 - Restrict (the global default) is deliberately kept here, not overridden:
+            // a scheme referenced by an existing bill line can't be hard-deleted out from under it -
+            // see ExtendedBatteryWarrantySchemesController.Delete.
+            e.HasOne(x => x.ExtendedBatteryWarrantyScheme).WithMany().HasForeignKey(x => x.ExtendedBatteryWarrantySchemeId);
         });
         b.Entity<MaterialTransferDoc>(e =>
         {
@@ -270,6 +282,36 @@ public class JobCardScannerDbContext : DbContext
         {
             e.HasIndex(x => new { x.DealerId, x.LocationCode, x.PartNo }).IsUnique();
             e.HasOne(x => x.Dealer).WithMany().HasForeignKey(x => x.DealerId);
+        });
+
+        // ----- ExtendedBatteryWarrantyScheme (2026-09-22, see Models/ExtendedBatteryWarrantySchemes.cs) -----
+        b.Entity<ExtendedBatteryWarrantyScheme>(e =>
+        {
+            e.HasIndex(x => new { x.DealerId, x.VehicleModel });
+            e.HasOne(x => x.Dealer).WithMany().HasForeignKey(x => x.DealerId);
+            e.HasOne(x => x.CreatedBy).WithMany().HasForeignKey(x => x.CreatedById);
+            e.HasOne(x => x.UpdatedBy).WithMany().HasForeignKey(x => x.UpdatedById);
+            // Restrict (global default) is deliberately kept - a model referenced by a scheme
+            // can't be hard-deleted out from under it, see OemModelsController.Delete's own check.
+            e.HasOne(x => x.OemModel).WithMany().HasForeignKey(x => x.OemModelId);
+        });
+
+        // ----- OemModel / OemModelWarranty (2026-09-22, see Models/OemModels.cs) -----
+        b.Entity<OemModel>(e =>
+        {
+            e.HasIndex(x => x.ModelName).IsUnique();
+            e.HasOne(x => x.CreatedBy).WithMany().HasForeignKey(x => x.CreatedById);
+            e.HasOne(x => x.UpdatedBy).WithMany().HasForeignKey(x => x.UpdatedById);
+        });
+        b.Entity<OemModelWarranty>(e =>
+        {
+            // Cascade here (unlike the global Restrict default) mirrors Customer -> Vehicles: a
+            // warranty-term row is owned by exactly one model, so deleting the model removes its
+            // own warranty history with it - see OemModelsController.Delete's own comment.
+            e.HasOne(x => x.OemModel).WithMany(m => m.Warranties).HasForeignKey(x => x.OemModelId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.CreatedBy).WithMany().HasForeignKey(x => x.CreatedById);
+            e.HasOne(x => x.UpdatedBy).WithMany().HasForeignKey(x => x.UpdatedById);
+            e.HasIndex(x => new { x.OemModelId, x.EffectiveDate });
         });
 
         // ----- Notifications / OTP -----
