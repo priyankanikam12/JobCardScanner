@@ -9,6 +9,11 @@ import { JobCardsListScreen } from '../screens/JobCardsListScreen'
 import { JobCardDetailScreen } from '../screens/JobCardDetailScreen'
 import { JobCardWizardScreen } from '../screens/JobCardWizardScreen'
 import { PartsScreen } from '../screens/PartsScreen'
+// 2026-09-21 ("add changes in android also"): the Android counterparts of web's Item Master/
+// Material Transfer Bill/Repair Bill sidebar pages - see each screen's own doc comment.
+import { ItemMasterScreen } from '../screens/ItemMasterScreen'
+import { MaterialTransferCreateScreen } from '../screens/MaterialTransferCreateScreen'
+import { RepairBillCreateScreen } from '../screens/RepairBillCreateScreen'
 import { colors } from '../theme/colors'
 
 /** Optional /jobcards-equivalent filters the Dashboard's KPI cards deep-link with - each name
@@ -32,6 +37,9 @@ export type RootStackParamList = {
   JobCardDetail: { id: string }
   JobCardWizard: undefined
   Parts: undefined
+  ItemMaster: undefined
+  MaterialTransferCreate: undefined
+  RepairBillCreate: undefined
 }
 
 const Stack = createNativeStackNavigator<RootStackParamList>()
@@ -80,6 +88,9 @@ export function RootNavigator() {
           <Stack.Screen name="JobCardDetail" component={JobCardDetailScreen} options={{ title: 'Job Card' }} />
           <Stack.Screen name="JobCardWizard" component={JobCardWizardScreen} options={{ title: 'New Job Card' }} />
           <Stack.Screen name="Parts" component={PartsScreen} options={{ title: 'Parts Catalog' }} />
+          <Stack.Screen name="ItemMaster" component={ItemMasterScreen} options={{ title: 'Item Master' }} />
+          <Stack.Screen name="MaterialTransferCreate" component={MaterialTransferCreateScreen} options={{ title: 'Material Transfer Bill' }} />
+          <Stack.Screen name="RepairBillCreate" component={RepairBillCreateScreen} options={{ title: 'Repair Bill' }} />
         </Stack.Navigator>
       )}
     </NavigationContainer>

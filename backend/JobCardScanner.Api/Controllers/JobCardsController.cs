@@ -210,6 +210,80 @@ public class JobCardsController : ControllerBase
         return Ok(new { items = merged, baplDmsWarning });
     }
 
+    /// <summary>
+    /// GET /api/jobcards/search?dateFrom=&amp;dateTo=&amp;jobNo=&amp;regNo=&amp;chassisNo= -
+    /// lightweight job-card picker for the Repair Bill / Material Transfer Bill create pages' "Job
+    /// Search" (2026-09-21, modelled on the reference DMS app's own Job Search modal screenshot:
+    /// Date From/To, Job No, Registration No, Chassis Number filters, returning Job No/Job Date/
+    /// Location/Job Type-Service Name/Party Name/Regn.-Chassis No/Vehicle Type/Job Source).
+    /// Searches THIS APP'S OWN JobCards table only (not the blended DMS view List() above builds) -
+    /// both RepairBillDoc.JobCardId and MaterialTransferDoc.JobCardId are FKs into JobCardScanner's
+    /// own JobCards, not a raw DMS JobCardHeaderId, so only a local job card is ever a valid pick
+    /// here. Same dealer + Work Area (WorkLocationCodes) scoping as List() above.
+    ///
+    /// 2026-09-21 ("jobcards wants to save in our JobCardScannerDb not in dms" - clarified via
+    /// AskUserQuestion to mean specifically this picker, not a reversal of the 2026-09-05 "DMS is
+    /// the sole source of truth" rule on List()/Get()/Create(), which is unchanged): unlike
+    /// List()/Get(), this picker is NOT restricted to BaplJobCardHeaderId != null - it now returns
+    /// every JobCardScanner job card in scope, DMS-linked or not, since a Repair Bill/Material
+    /// Transfer can legitimately be raised against a job card that hasn't synced to DMS (or never
+    /// will, e.g. DMS is unreachable) - it only needs a local JobCard row to link
+    /// RepairBillDoc.JobCardId/MaterialTransferDoc.JobCardId to. IsDmsLinked in the response tags
+    /// which is which, so the Job Search modal can label them rather than hiding the difference.
+    /// </summary>
+    [HttpGet("search")]
+    public async Task<IActionResult> Search(
+        [FromQuery] DateOnly? dateFrom, [FromQuery] DateOnly? dateTo, [FromQuery] string? jobNo,
+        [FromQuery] string? regNo, [FromQuery] string? chassisNo)
+    {
+        var isOrgWideRole = _currentUser.Role is StaffRole.CorporateAdmin or StaffRole.SystemAdmin;
+        var query = _db.JobCards.AsNoTracking()
+            .Include(j => j.Customer).Include(j => j.Vehicle)
+            .AsQueryable();
+
+        query = isOrgWideRole ? query : query.Where(j => j.DealerId == _currentUser.DealerId);
+
+        var allowedLocations = _currentUser.WorkLocationCodes;
+        if (allowedLocations.Count > 0)
+        {
+            var allowedLocationsList = allowedLocations.ToList();
+            query = query.Where(j => j.BaplServiceLocationCode != null && allowedLocationsList.Contains(j.BaplServiceLocationCode));
+        }
+
+        if (dateFrom is not null) { var from = dateFrom.Value.ToDateTime(TimeOnly.MinValue); query = query.Where(j => j.CreatedAt >= from); }
+        if (dateTo is not null) { var to = dateTo.Value.ToDateTime(TimeOnly.MaxValue); query = query.Where(j => j.CreatedAt <= to); }
+        if (!string.IsNullOrWhiteSpace(jobNo)) query = query.Where(j => j.JobCardNumber.Contains(jobNo));
+        if (!string.IsNullOrWhiteSpace(regNo)) query = query.Where(j => j.Vehicle!.RegNo != null && j.Vehicle.RegNo.Contains(regNo));
+        if (!string.IsNullOrWhiteSpace(chassisNo)) query = query.Where(j => j.Vehicle!.Vin != null && j.Vehicle.Vin.Contains(chassisNo));
+
+        var rows = await query.OrderByDescending(j => j.CreatedAt).Take(100).ToListAsync();
+
+        return Ok(rows.Select(j => new
+        {
+            j.Id,
+            j.JobCardNumber,
+            JobDate = DateOnly.FromDateTime(j.CreatedAt),
+            Location = j.BaplServiceLocation,
+            LocationCode = j.BaplServiceLocationCode,
+            // Now includes job cards that never synced to BAPL DMS (see the widened Search() doc
+            // comment above) - flagged so the Job Search modal can show which is which rather than
+            // presenting them identically.
+            IsDmsLinked = j.BaplJobCardHeaderId != null,
+            JobTypeService = string.Join(" / ", new[] { j.BaplJobType, j.BaplServiceTypeName }.Where(s => !string.IsNullOrWhiteSpace(s))),
+            PartyName = j.Customer != null ? j.Customer.Name : null,
+            // 2026-09-21 ("according to state Intra state and inter state"): so the Repair Bill /
+            // Material Transfer create pages can compare this against the signed-in user's own
+            // Dealer.State (GET /api/auth/me's new DealerState) the same way the reference's
+            // repair-bill.ts addLabour()/calculatePart() compare dealerState/custState, instead of
+            // requiring a manual Same State/Different State pick every time.
+            PartyState = j.Customer != null ? j.Customer.State : null,
+            RegNo = j.Vehicle != null ? j.Vehicle.RegNo : null,
+            ChassisNo = j.Vehicle != null ? j.Vehicle.Vin : null,
+            VehicleType = j.Vehicle != null ? j.Vehicle.Model : null,
+            JobSource = j.BaplJobSourceName,
+        }));
+    }
+
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id)
     {

@@ -11,4 +11,11 @@ public interface IJobCardNumberingService
     Task<string> NextJobCardNumberAsync(Guid dealerId);
     Task<string> NextEstimateNumberAsync(Guid dealerId);
     Task<string> NextInvoiceNumberAsync(Guid dealerId);
+    /// <summary>2026-09-19 "Repair Bill" create page - same per-dealer Counter-table convention
+    /// as Estimate/Invoice numbers above, e.g. "RB-DL01-2026-000001". Not BAPL DMS's own bill
+    /// numbering (see RepairBillDoc's doc comment).</summary>
+    Task<string> NextRepairBillNumberAsync(Guid dealerId);
+    /// <summary>2026-09-19 "Material Transfer Bill" create page - same convention, e.g.
+    /// "MT-DL01-2026-000001".</summary>
+    Task<string> NextMaterialTransferNumberAsync(Guid dealerId);
 }

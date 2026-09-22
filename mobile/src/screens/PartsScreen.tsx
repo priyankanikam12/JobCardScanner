@@ -3,7 +3,7 @@ import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import { apiClient } from '../api/client'
 import { useStaffAuth } from '../auth/StaffAuthContext'
 import { PickerField } from '../components/PickerField'
-import type { BaplDmsPartStock, BaplDmsWorkshop, PartMaster } from '../types'
+import type { BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaster, PartMaster } from '../types'
 
 interface PartsSearchResponse {
   localParts: PartMaster[]
@@ -22,6 +22,12 @@ export function PartsScreen() {
   const [localParts, setLocalParts] = useState<PartMaster[]>([])
   const [dmsParts, setDmsParts] = useState<BaplDmsPartStock[]>([])
   const [dmsWarning, setDmsWarning] = useState<string | null>(null)
+  // 2026-09-21 ("add changes in android also" - mirrors web's PartsPage.tsx "still ... not
+  // fetched data from baplfinal" fix): enriches the DMS Parts Inventory list below with BAPL's own
+  // C_ItemMaster (baplfinal) - Dealer Price and per-item GST% - the SAME source Material Transfer
+  // Bill/Repair Bill now read from. Purely additive display data; no backend change needed (same
+  // GET /api/item-master/by-codes endpoint web already uses).
+  const [itemMasterByCode, setItemMasterByCode] = useState<Record<string, BaplItemMaster>>({})
 
   const search = (loc: string) =>
     apiClient.get<PartsSearchResponse>('/api/parts', { params: { q: q || undefined, locationCode: loc || undefined } })
@@ -32,6 +38,18 @@ export function PartsScreen() {
       })
 
   useEffect(() => { search(locationCode) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const codes = Array.from(new Set(dmsParts.map((p) => p.itemCode.trim().toUpperCase()).filter(Boolean)))
+    if (codes.length === 0) { setItemMasterByCode({}); return }
+    apiClient.get<BaplItemMaster[]>('/api/item-master/by-codes', { params: { codes: codes.join(',') } })
+      .then(({ data }) => {
+        const byCode: Record<string, BaplItemMaster> = {}
+        data.forEach((im) => { byCode[im.itemCode.trim().toUpperCase()] = im })
+        setItemMasterByCode(byCode)
+      })
+      .catch(() => setItemMasterByCode({}))
+  }, [dmsParts])
 
   // Item 11: search-as-you-type (debounced) instead of requiring the keyboard's search key.
   useEffect(() => {
@@ -100,15 +118,21 @@ export function PartsScreen() {
       {!!locationCode && dmsParts.length === 0 && !dmsWarning && (
         <Text style={styles.muted}>No stock found at "{locationCode}"{q ? ` matching "${q}"` : ''}.</Text>
       )}
-      {dmsParts.map((item) => (
-        <View key={item.itemCode} style={styles.row}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.name}>{item.itemCode}</Text>
-            {item.description && <Text style={styles.muted}>{item.description}</Text>}
+      {dmsParts.map((item) => {
+        const im = itemMasterByCode[item.itemCode.trim().toUpperCase()]
+        return (
+          <View key={item.itemCode} style={styles.row}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.name}>{item.itemCode}</Text>
+              {item.description && <Text style={styles.muted}>{item.description}</Text>}
+              <Text style={styles.muted}>
+                Dealer Price {im?.dlrPrice != null ? `₹${im.dlrPrice.toFixed(2)}` : '—'} · SGST {im?.sgst != null ? `${im.sgst}%` : '—'} · CGST {im?.cgst != null ? `${im.cgst}%` : '—'} · IGST {im?.igst != null ? `${im.igst}%` : '—'}
+              </Text>
+            </View>
+            <Text style={styles.price}>{item.availableQty} avail.</Text>
           </View>
-          <Text style={styles.price}>{item.availableQty} avail.</Text>
-        </View>
-      ))}
+        )
+      })}
     </ScrollView>
   )
 }

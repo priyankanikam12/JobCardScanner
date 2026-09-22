@@ -33,6 +33,19 @@ public class JobCardScannerDbContext : DbContext
 
     public DbSet<Invoice> Invoices => Set<Invoice>();
 
+    // 2026-09-19 "Create Repair Bill and Material Transfer Bill ... save in JobCardScannerDb" -
+    // see Models/RepairBillDocs.cs / MaterialTransferDocs.cs doc comments for how these differ
+    // from both BAPL DMS's own (never-written-to) tables and the read-only DMSBAPLDATA-synced
+    // report pages of the same name.
+    public DbSet<RepairBillDoc> RepairBillDocs => Set<RepairBillDoc>();
+    public DbSet<RepairBillDocItem> RepairBillDocItems => Set<RepairBillDocItem>();
+    public DbSet<MaterialTransferDoc> MaterialTransferDocs => Set<MaterialTransferDoc>();
+    public DbSet<MaterialTransferDocItem> MaterialTransferDocItems => Set<MaterialTransferDocItem>();
+
+    // 2026-09-21 "Part Upload" tab - see Models/PartUploads.cs's doc comment. JobCardScannerDb-
+    // native, same as RepairBillDocs/MaterialTransferDocs above.
+    public DbSet<PartUpload> PartUploads => Set<PartUpload>();
+
     public DbSet<NotificationTemplate> NotificationTemplates => Set<NotificationTemplate>();
     public DbSet<NotificationRecord> NotificationRecords => Set<NotificationRecord>();
     public DbSet<OtpRequest> OtpRequests => Set<OtpRequest>();
@@ -216,6 +229,47 @@ public class JobCardScannerDbContext : DbContext
             e.HasOne(x => x.Dealer).WithMany().HasForeignKey(x => x.DealerId);
             e.HasOne(x => x.Customer).WithMany().HasForeignKey(x => x.CustomerId);
             e.HasOne(x => x.GeneratedBy).WithMany().HasForeignKey(x => x.GeneratedById);
+        });
+
+        // ----- RepairBillDoc / MaterialTransferDoc (2026-09-19, JobCardScannerDb-native, see
+        // Models/RepairBillDocs.cs / MaterialTransferDocs.cs) -----
+        b.Entity<RepairBillDoc>(e =>
+        {
+            e.HasIndex(x => x.BillNumber).IsUnique();
+            e.Property(x => x.Status).HasConversion<string>().HasMaxLength(20);
+            e.HasOne(x => x.Dealer).WithMany().HasForeignKey(x => x.DealerId);
+            e.HasOne(x => x.JobCard).WithMany().HasForeignKey(x => x.JobCardId);
+            e.HasOne(x => x.Customer).WithMany().HasForeignKey(x => x.CustomerId);
+            e.HasOne(x => x.Vehicle).WithMany().HasForeignKey(x => x.VehicleId);
+            e.HasOne(x => x.CreatedBy).WithMany().HasForeignKey(x => x.CreatedById);
+            e.HasOne(x => x.UpdatedBy).WithMany().HasForeignKey(x => x.UpdatedById);
+        });
+        b.Entity<RepairBillDocItem>(e =>
+        {
+            e.HasOne(x => x.RepairBillDoc).WithMany(r => r.Items).HasForeignKey(x => x.RepairBillDocId).OnDelete(DeleteBehavior.Cascade);
+            e.Property(x => x.ItemType).HasConversion<string>().HasMaxLength(20);
+        });
+        b.Entity<MaterialTransferDoc>(e =>
+        {
+            e.HasIndex(x => x.TransferNumber).IsUnique();
+            e.Property(x => x.TransferType).HasConversion<string>().HasMaxLength(20);
+            e.Property(x => x.Status).HasConversion<string>().HasMaxLength(20);
+            e.HasOne(x => x.Dealer).WithMany().HasForeignKey(x => x.DealerId);
+            e.HasOne(x => x.JobCard).WithMany().HasForeignKey(x => x.JobCardId);
+            e.HasOne(x => x.CreatedBy).WithMany().HasForeignKey(x => x.CreatedById);
+            e.HasOne(x => x.Technician).WithMany().HasForeignKey(x => x.TechnicianId);
+        });
+        b.Entity<MaterialTransferDocItem>(e =>
+        {
+            e.HasOne(x => x.MaterialTransferDoc).WithMany(m => m.Items).HasForeignKey(x => x.MaterialTransferDocId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.Part).WithMany().HasForeignKey(x => x.PartId);
+        });
+
+        // ----- PartUpload (2026-09-21, see Models/PartUploads.cs) -----
+        b.Entity<PartUpload>(e =>
+        {
+            e.HasIndex(x => new { x.DealerId, x.LocationCode, x.PartNo }).IsUnique();
+            e.HasOne(x => x.Dealer).WithMany().HasForeignKey(x => x.DealerId);
         });
 
         // ----- Notifications / OTP -----

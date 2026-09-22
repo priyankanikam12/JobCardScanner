@@ -19,32 +19,39 @@ public class PartsController : ControllerBase
     private readonly ICurrentUserService _currentUser;
     private readonly IDmsClient _dms;
     private readonly IBaplDmsService _baplDms;
+    private readonly IBaplItemPricingService _baplPricing;
     private readonly IAuditLogService _audit;
     private readonly ILogger<PartsController> _logger;
 
-    public PartsController(JobCardScannerDbContext db, ICurrentUserService currentUser, IDmsClient dms, IBaplDmsService baplDms, IAuditLogService audit, ILogger<PartsController> logger)
+    public PartsController(
+        JobCardScannerDbContext db, ICurrentUserService currentUser, IDmsClient dms, IBaplDmsService baplDms,
+        IBaplItemPricingService baplPricing, IAuditLogService audit, ILogger<PartsController> logger)
     {
         _db = db;
         _currentUser = currentUser;
         _dms = dms;
         _baplDms = baplDms;
+        _baplPricing = baplPricing;
         _audit = audit;
         _logger = logger;
     }
 
     /// <summary>
     /// GET /api/parts?q=...&amp;locationCode=... - the Parts &amp; Inventory catalog page. Always
-    /// searches JobCardScanner's own local PartMaster catalog (unchanged from before); ADDITIONALLY
-    /// searches DMS's own PartsInventory (see BaplDmsService.GetPartsInventoryAsync) whenever a
-    /// DMS workshop location code is supplied - unlike PartMaster, PartsInventory is scoped to
-    /// one workshop location (e.g. "CUS0435W1"), not a dealer-wide catalog, so there's no location
-    /// to search without one being given. dmsParts entries carry only ItemCode + AvailableQty (no
-    /// confirmed name/price/category master table exists for DMS parts anywhere in this
-    /// codebase - see BaplDmsRepairBillDetailRow's doc comment on the same gap) and are NOT tied to
-    /// a local PartMaster.Id, so they can't be "Request"-ed against a job card the way a local part
-    /// can - a job card that needs a specific DMS item uses the Job Card Detail page's own
-    /// "Part Suggestion" panel instead (POST /api/jobcards/{id}/part-suggestions), which is already
-    /// scoped to that job card's own BaplServiceLocationCode.
+    /// searches JobCardScanner's own local PartMaster catalog (unchanged); searches DMS's own
+    /// PartsInventory (BAPLDMSvad - see BaplDmsService.GetPartsInventoryAsync) whenever a DMS
+    /// workshop location code is supplied, exactly as before.
+    ///
+    /// 2026-09-21 ("still in PartsPage.tsx not fetched data from baplfinal"): ADDITIONALLY, once
+    /// dmsParts is known, batch-enriches with real Rate (Dlr_Price)/GST%/HSN from BAPL's own
+    /// C_ItemMaster (baplfinal, via BaplItemPricingService - the SAME source Material Transfer
+    /// Bill/Repair Bill/Item Master already use) - a DIFFERENT item master than BAPLDMSvad's own
+    /// ItemMaster, whose "Mrp" here is only that database's CustPrice with no per-item GST split.
+    /// Returned as its own `baplPricing` array (keyed by ItemCode, joined client-side) rather than
+    /// merged into dmsParts server-side, so a BAPL pricing failure never has to reshape the
+    /// already-working dmsParts response - same "never let an enrichment break the main list"
+    /// convention this action already followed for the dmsWarning branch. Best-effort: a failure
+    /// here is logged and swallowed, dmsParts/localParts are returned regardless.
     /// </summary>
     [HttpGet("parts")]
     public async Task<IActionResult> Search([FromQuery] string? q, [FromQuery] string? locationCode)
@@ -56,6 +63,8 @@ public class PartsController : ControllerBase
 
         IReadOnlyList<BaplDmsPartStockRow> dmsParts = Array.Empty<BaplDmsPartStockRow>();
         string? dmsWarning = null;
+        IReadOnlyList<BaplItemPricingRow> baplPricing = Array.Empty<BaplItemPricingRow>();
+
         if (!string.IsNullOrWhiteSpace(locationCode))
         {
             try
@@ -70,9 +79,22 @@ public class PartsController : ControllerBase
                 _logger.LogWarning(ex, "Could not read DMS parts inventory for location {LocationCode}", locationCode);
                 dmsWarning = "Could not reach DMS's parts inventory right now - showing JobCardScanner's own catalog only.";
             }
+
+            if (dmsParts.Count > 0)
+            {
+                try
+                {
+                    baplPricing = await _baplPricing.GetItemsPricingAsync(
+                        dmsParts.Select(p => p.ItemCode).ToList(), HttpContext.RequestAborted);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    _logger.LogWarning(ex, "Could not read BAPL item pricing (C_ItemMaster) for location {LocationCode}", locationCode);
+                }
+            }
         }
 
-        return Ok(new { localParts, dmsParts, dmsWarning });
+        return Ok(new { localParts, dmsParts, dmsWarning, baplPricing });
     }
 
     [HttpGet("parts/{partNumber}/network-availability")]

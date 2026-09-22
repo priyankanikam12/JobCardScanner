@@ -42,6 +42,11 @@ export interface CurrentUser {
    * Job Card wizard's "Select workshop" dropdown down to only this user's own location(s),
    * matching the same enforcement JobCardsController.Create already applies server-side. */
   workLocationCodes: string[]
+  /** 2026-09-21 (Material Transfer Bill/Repair Bill create screens): this dealer's own State,
+   * from GET /api/auth/me - already returned by the backend, just not previously read by mobile.
+   * Compared against a picked job's Customer.State to auto-detect Same State (CGST+SGST) vs
+   * Different State (IGST), same as web/src/types/index.ts's CurrentUser.dealerState. */
+  dealerState?: string | null
 }
 
 export interface Dealer {
@@ -173,13 +178,113 @@ export interface BaplDmsJobCardHistory {
 // ---- Part Suggestion / Labour Suggestion ----
 
 /// One part-availability row from DMS's own PartsInventory for a given service location -
-/// GET /api/bapl-dms/parts?locationCode=... .
+/// GET /api/bapl-dms/parts?locationCode=... . Extended 2026-09-21 to match
+/// web/src/types/index.ts's same interface field-for-field (Material Transfer Bill/Repair Bill/
+/// Item Master, "add changes in android also").
 export interface BaplDmsPartStock {
   itemCode: string
   availableQty: number
   description?: string | null
   mrp?: number | null
   hsnCode?: string | null
+  /// Set only when this row was merged in from the "Part Upload" tab (web-only feature; mobile has
+  /// no Part Upload screen) rather than fetched live from DMS's own PartsInventory - kept here only
+  /// so this type matches web's exactly; mobile never actually sets this field itself.
+  source?: 'partUpload'
+  billPrice?: number | null
+  /// 2026-09-21 ("Rate = Dlr_Price - GST% ... fetch from baplfinal databse"): merged in client-side
+  /// from BAPL's own C_ItemMaster (baplfinal) by ItemCode, via GET /api/item-master/by-codes - see
+  /// MaterialTransferCreateScreen.tsx/RepairBillCreateScreen.tsx's itemMasterByCode lookup. Same
+  /// role as web's identical fields - see BaplItemMaster below for the confirmed schema.
+  dlrPrice?: number | null
+  sgstPct?: number | null
+  cgstPct?: number | null
+  igstPct?: number | null
+}
+
+/// One row from BAPL's C_ItemMaster (baplfinal) - see BaplItemMasterRow's doc comment in
+/// BaplDealerService.cs (backend) for the confirmed schema/sample data. Backs the "Item Master"
+/// screen and the Dealer Price/GST% enrichment on Parts Catalog/Material Transfer/Repair Bill.
+export interface BaplItemMaster {
+  itemCode: string
+  itemName?: string | null
+  displayName?: string | null
+  hsnCode?: string | null
+  dlrPrice?: number | null
+  sgst?: number | null
+  cgst?: number | null
+  igst?: number | null
+  itemType?: string | null
+  status?: string | null
+}
+
+/// One row of GET /api/jobcards/search - the "Job Search" picker on the Material Transfer Bill/
+/// Repair Bill create screens. Mirrors web/src/types/index.ts's JobSearchResult exactly.
+export interface JobSearchResult {
+  id: string
+  jobCardNumber: string
+  jobDate: string
+  location?: string | null
+  locationCode?: string | null
+  jobTypeService?: string | null
+  partyName?: string | null
+  /** Customer.State for the job's linked customer - drives Same State/Different State
+   * auto-detection once a job is picked. Null if no customer is linked or it has no State. */
+  partyState?: string | null
+  regNo?: string | null
+  chassisNo?: string | null
+  vehicleType?: string | null
+  jobSource?: string | null
+  isDmsLinked?: boolean
+}
+
+// ---------------- Repair Bill / Material Transfer Bill (2026-09-21, "add changes in android
+// also") - JobCardScannerDb-native, mirrors web/src/pages/staff/RepairBillCreatePage.tsx /
+// MaterialTransferCreatePage.tsx and their backing types in web/src/types/index.ts. Posts to the
+// SAME backend endpoints web already uses (RepairBillDocsController/MaterialTransferDocsController)
+// - no backend change was needed for this Android round, only these mobile screens/types. ----------------
+export type RepairBillDocItemType = 'Part' | 'Labour'
+export type RepairBillDocStatus = 'Performa' | 'Billed' | 'Cancelled'
+
+/** One row of GET /api/repair-bill-docs/combined - either this app's own bill or a read-only
+ * DMSBAPLDATA-synced one (see `source`); DMSBAPLDATA rows have `status: null`. `items` is left
+ * loosely typed (matches web) since a JobCardScanner row's items and a DMSBAPLDATA row's items are
+ * different shapes. */
+export interface CombinedRepairBillRow {
+  source: 'JobCardScanner' | 'DMSBAPLDATA'
+  id: string
+  billNumber: string
+  sortDate: string
+  partyName?: string | null
+  regNo?: string | null
+  chassisNo?: string | null
+  location?: string | null
+  billType?: string | null
+  status: RepairBillDocStatus | string | null
+  totalAmount: number
+  itemCount: number
+  items?: Record<string, unknown>[]
+  jobNo?: string | null
+  preparedBy?: string | null
+  modifiedBy?: string | null
+}
+
+export type MaterialTransferDocType = 'Issue' | 'Return'
+export type MaterialTransferDocStatus = 'Draft' | 'Confirmed' | 'Cancelled'
+
+/** One row of GET /api/material-transfer-docs/combined - see CombinedRepairBillRow's doc comment. */
+export interface CombinedMaterialTransferRow {
+  source: 'JobCardScanner' | 'DMSBAPLDATA'
+  id: string
+  transferNumber: string
+  sortDate: string
+  location?: string | null
+  transferType?: string | null
+  partyName?: string | null
+  status: MaterialTransferDocStatus | string | null
+  totalAmount: number
+  itemCount: number
+  items?: Record<string, unknown>[]
 }
 
 /// A part suggested for this job card (POST .../part-suggestions) - itemCode + a Paid/U-W status

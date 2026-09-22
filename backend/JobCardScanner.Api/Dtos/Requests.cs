@@ -222,6 +222,115 @@ public record LabourMasterWithoutPartwiseUpdateRequest(
     string? JobDescription, string? Model, decimal? LabourRate, decimal? Igst, decimal? Cgst,
     decimal? Sgst, int? Tier, string? Category, DateTime? EffectiveDate, bool IsActive);
 
+// ---------------- Part Upload (2026-09-21) ----------------
+/// <summary>multipart/form-data body for POST /api/part-uploads/import, same [FromForm]-needs-
+/// setters reasoning as LabourMasterImportForm above. Dealer is taken from the signed-in user
+/// (ICurrentUserService), not a form field - see Services/PartUploadService.cs. LocationCode and
+/// ReportDate are REQUIRED (2026-09-21 correction: "before that 4 feild need to select Date,
+/// Location ... otherwise dont take the file need to select this feild then upload") - the
+/// controller returns 400 if either is missing/blank, same as LabourMasterImportForm's own
+/// required EffectiveDate.</summary>
+public class PartUploadImportForm
+{
+    public IFormFile? File { get; set; }
+    public string? LocationCode { get; set; }
+    public DateOnly? ReportDate { get; set; }
+}
+
+/// <summary>PUT /api/part-uploads/{id} body (the grid's own Edit button) - mirrors
+/// Services/PartUploadService.cs's PartUploadUpdate record exactly; kept as a separate Dtos type
+/// (rather than reusing that record directly as the request body) only to match this file's own
+/// convention of Dtos being the wire contract and Services types being internal.</summary>
+public record PartUploadUpdateRequest(
+    string? Description, decimal? BalQty, decimal? BalAmnt, decimal? BillPrice,
+    decimal? QtyReqd, decimal? MinOrder, string? HsnSacCode, string? GroupName, string? ItemType);
+
 public record LabourMasterPartwiseUpdateRequest(
     string? PartName, string? JobDescription, string? Model, decimal? LabourRate, decimal? Igst,
     decimal? Cgst, decimal? Sgst, int? Tier, string? Category, DateTime? EffectiveDate, bool IsActive);
+
+// ---------------- Repair Bill / Material Transfer Bill (2026-09-19, corrected 2026-09-21 per
+// "backend logic which u gave u ... dont chnage Repair Bill and Material tranfer logic") - see
+// Controllers/RepairBillDocsController.cs / MaterialTransferDocsController.cs and
+// Models/RepairBillDocs.cs / MaterialTransferDocs.cs for what these save and why they're
+// JobCardScannerDb-native, distinct from both BAPL DMS's own tables and the read-only
+// DMSBAPLDATA-synced report pages of a similar name. ----------------
+// CgstPct/SgstPct/IgstPct: three INDEPENDENT caller-supplied rates, matching the reference
+// RepairBillRepo which never infers same-state/different-state itself - it only persists
+// whatever the caller (originally Angular, reading LabourMaster/PartWiseLabour's own stored
+// rates) already resolved. Replaces the first version's single combined GstPct + server-side
+// state-comparison guess, which was NOT something the reference does.
+// DiscountType/DiscountValue: reference RepairBillDetail.DiscountType/DiscountValue - applied to
+// reduce the taxable base before GST (same order as the reference's own save flow).
+// IssueType: per-line, see RepairBillDocItem.IssueType's doc comment on why this moved off the
+// bill header (reference RepairBillDetail.IssutypeId is a detail-row column, confirmed by
+// re-reading that entity - RepairBillHeader has none).
+public record CreateRepairBillItemRequest(
+    RepairBillDocItemType ItemType, string ItemCode, string ItemDescription, string? HsnCode,
+    double Qty, decimal Rate, decimal CgstPct = 0, decimal SgstPct = 0, decimal IgstPct = 0,
+    string? DiscountType = null, decimal DiscountValue = 0, string? IssueType = null);
+
+// InsuranceCompanyName/InsuranceDescription/SurveyorName/SurveyorContactNumber/PolicyNo/
+// InsuranceValidTill/ZeroDepreciation/TotalDiscount/AmountReceived: reference
+// RepairBillHeader.InsuranceId(->name)/InsDecription/SurveyorName/ContactNumber/PolicyNo/
+// InsValidTill/ZeroDepo/TotalDiscount/AmountReceived - present on the reference, missing from the
+// first version of this request, added back here.
+public record CreateRepairBillRequest(
+    Guid? JobCardId, Guid? CustomerId, Guid? VehicleId, string PartyName, string? RegNo,
+    string? ChassisNo, string? Location, string? BillType, string? IssueType, string? Remarks,
+    DateOnly? BillDate, List<CreateRepairBillItemRequest> Items,
+    string? InsuranceCompanyName = null, string? InsuranceDescription = null, string? SurveyorName = null,
+    string? SurveyorContactNumber = null, string? PolicyNo = null, DateOnly? InsuranceValidTill = null,
+    bool ZeroDepreciation = false, decimal TotalDiscount = 0, decimal AmountReceived = 0);
+
+// RackNo/Bin/SerialNo/Mrp/ValidDays/ItemReceived: reference MaterialTransfer's real per-line
+// columns, missing from the first version, added back - see MaterialTransferDocItem's doc comment.
+// IssueType: per-line "Paid"/"U/W", see MaterialTransferDocItem.IssueType's doc comment.
+public record CreateMaterialTransferItemRequest(
+    Guid? PartId, string ItemCode, string ItemDescription, double Qty, decimal Rate,
+    string? RackNo = null, string? Bin = null, string? SerialNo = null, decimal? Mrp = null,
+    int? ValidDays = null, string? ItemReceived = null, string? IssueType = null, string? HsnCode = null,
+    string? DiscountType = null, decimal DiscountValue = 0);
+    
+// TechnicianId: reference MaterialTransfer.Technician, mapped onto this app's own User FK instead
+// of a meaningless raw DMS employee int - see MaterialTransferDoc.TechnicianId's doc comment.
+public record CreateMaterialTransferRequest(
+    Guid? JobCardId, string? Location, MaterialTransferDocType TransferType, string? IssueType,
+    string? PartyName, Guid? TechnicianId, string? Remarks, DateOnly? TransferDate,
+    List<CreateMaterialTransferItemRequest> Items);
+
+/// <summary>Shared row shape for GET /api/repair-bill-docs/combined - one row per bill regardless
+/// of whether it came from this app's own RepairBillDocs table or the read-only DMSBAPLDATA sync
+/// (Source distinguishes them; Id is prefixed "dms-" for the latter since DMSBAPLDATA's own ids
+/// are plain ints that could otherwise collide with a JobCardScannerDb Guid's string form only by
+/// coincidence, but keeping them visibly distinct is safer than relying on that). SortDate is a
+/// concrete, always-comparable field specifically so the controller can order the combined list
+/// with a plain OrderByDescending instead of a dynamic/object comparison across two differently-
+/// shaped sources.
+///
+/// 2026-09-21 ("all upload data and exist data are clickable on any record we click this all
+/// details can openable"): Items carries each row's own line items (a JobCardScanner bill's own
+/// RepairBillDocItem rows, or a DMSBAPLDATA DMS_RepairBillItem rows for a "dms-" row) so the
+/// frontend can open a full detail view straight from data already fetched by /combined, without a
+/// second round trip - untyped `object` on purpose, since the two sources have different, already-
+/// defined item shapes (RepairBillDocItem vs DmsBaplDataRepairBillItemRow) and this DTO only needs
+/// to carry them through to JSON, not manipulate them. Optional/defaulted so this is additive - no
+/// existing caller of this record (the flat, non-combined endpoints don't use it) breaks.</summary>
+/// 2026-09-21 sixth round ("according /repair-bill-list do in our repair bill" - the reference
+/// DMS app's own Repair Bill List page/columns you pasted, repair-bill-list.ts/html): JobNo/
+/// PreparedBy/ModifiedBy added to match that reference's own column set (Job No, Prepared by,
+/// Modified by) - only ever populated for a "JobCardScanner" row (this app's own bill, which can
+/// have a linked JobCard and a CreatedBy/UpdatedBy user); a "DMSBAPLDATA" row has no such data in
+/// DmsBaplDataRepairBillRow (no JobNo/CreatedBy/UpdatedBy columns confirmed there), so those three
+/// stay null for it rather than being guessed.
+public record CombinedRepairBillRow(
+    string Source, string Id, string BillNumber, DateTime SortDate, string? PartyName, string? RegNo,
+    string? ChassisNo, string? Location, string? BillType, string? Status, decimal TotalAmount, int ItemCount,
+    IReadOnlyList<object>? Items = null, string? JobNo = null, string? PreparedBy = null, string? ModifiedBy = null);
+
+/// <summary>Shared row shape for GET /api/material-transfer-docs/combined - see
+/// CombinedRepairBillRow's doc comment for the same Source/Id/SortDate/Items reasoning.</summary>
+public record CombinedMaterialTransferRow(
+    string Source, string Id, string TransferNumber, DateTime SortDate, string? Location,
+    string? TransferType, string? PartyName, string? Status, decimal TotalAmount, int ItemCount,
+    IReadOnlyList<object>? Items = null);

@@ -21,6 +21,8 @@ public class JobCardNumberingService : IJobCardNumberingService
 
     public Task<string> NextEstimateNumberAsync(Guid dealerId) => NextAsync(dealerId, "Estimate", "EST");
     public Task<string> NextInvoiceNumberAsync(Guid dealerId) => NextAsync(dealerId, "Invoice", "INV");
+    public Task<string> NextRepairBillNumberAsync(Guid dealerId) => NextAsync(dealerId, "RepairBillDoc", "RB");
+    public Task<string> NextMaterialTransferNumberAsync(Guid dealerId) => NextAsync(dealerId, "MaterialTransferDoc", "MT");
 
     /// <summary>
     /// JC/{last 3 digits of the dealer's DMS dealer code}/{Indian FY, e.g. "26-27"}/

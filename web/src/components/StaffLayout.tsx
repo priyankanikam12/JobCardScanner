@@ -48,8 +48,28 @@ export const NAV_ITEMS: NavItem[] = [
   // sibling DMSBAPLDATA pages (Material Transfer, Repair Bill) below.
   { to: '/vehicle-sale', label: 'Vehicle Sale', icon: '🚗', subtitle: 'Synced vehicle sale data (DMSBAPLDATA)' },
   { to: '/parts', label: 'Parts & Inventory', icon: '📦', subtitle: 'Stock, DMS parts, suggestions', roles: ['PartsUser', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
+  // 2026-09-21 "add in sidebar option in Item master page fetch data from C _ItemMaster table from
+  // baplfinal databse": read-only browse of BAPL's item catalog (Dealer Price + per-item GST%) -
+  // the same source Material Transfer Bill/Repair Bill's Rate/MRP/GST calculation now reads from.
+  // Same role floor as Parts & Inventory/Part Upload - it's the same pricing-data audience.
+  { to: '/item-master', label: 'Item Master', icon: '🗂️', subtitle: 'BAPL item catalog - Dealer Price & GST% (baplfinal)', roles: ['PartsUser', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
+  // 2026-09-21 "Part Upload" tab ("new tab add Part Upload using this excel create table and
+  // functionality to upload using this excel file for upload") - same role floor as Parts &
+  // Inventory above, matching PartUploadController's PartsUserUp policy.
+  { to: '/part-upload', label: 'Part Upload', icon: '📤', subtitle: 'Import a Stock Summary Detail Report (.xlsx)', roles: ['PartsUser', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
+  // 2026-09-19 "now i want Create Repair Bill and Material Transfer Bill ... Repair Bill tab
+  // before Repair Bill Report and Material Transfer Bill before Material Transfer Report" - these
+  // two CREATE pages save into JobCardScannerDb's own tables (see RepairBillCreatePage.tsx/
+  // MaterialTransferCreatePage.tsx), unlike their read-only DMSBAPLDATA-report siblings right
+  // below, so they're gated to ServiceAdvisorUp (same floor as Estimates/JobCard creation) rather
+  // than open to every staff role. The two report items just below were relabelled with "Report"
+  // (were "Material Transfer"/"Repair Bill") so the two pairs read distinctly in the sidebar - the
+  // ROUTES/PAGES those relabelled items point to (MaterialTransferPage.tsx/RepairBillPage.tsx) are
+  // completely unchanged, only the nav label text and subtitle wording were touched.
+  { to: '/material-transfer-bill', label: 'Material Transfer Bill', icon: '🆕', subtitle: 'Create a material transfer - saves to JobCardScanner', roles: ['ServiceAdvisor', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
   { to: '/material-transfer', label: 'Material Transfer Report', icon: '🔄', subtitle: 'Synced material transfer docs (DMSBAPLDATA)' },
-  { to: '/repair-bill', label: 'Repair Bill Report', icon: '🧾', subtitle: 'Synced repair bill data (DMSBAPLDATA)' },
+  { to: '/repair-bill-new', label: 'Repair Bill', icon: '🧾', subtitle: 'Create a repair bill - saves to JobCardScanner', roles: ['ServiceAdvisor', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
+  { to: '/repair-bill', label: 'Repair Bill Report', icon: '📄', subtitle: 'Synced repair bill data (DMSBAPLDATA)' },
   { to: '/reports', label: 'Reports & Search', icon: '📊', subtitle: 'Excel & PDF, by date range' },
   // Employees (2026-09-17): create/edit/delete local dealer logins with Work Area location
   // scoping. Gated to DealerAdmin and up - the same DealerAdminUp floor UsersController's API

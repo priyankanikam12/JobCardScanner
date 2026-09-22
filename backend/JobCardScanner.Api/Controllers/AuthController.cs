@@ -54,6 +54,13 @@ public class AuthController : ControllerBase
             // (BaplDmsController.VehicleLookup/VehicleSuggestions) to only this dealer's own
             // ChassisDetails rows for a dealer-login user, instead of searching across every dealer.
             DealerBaplDmsCode = user.Dealer?.BaplDmsDealerCode,
+            // 2026-09-21 ("Labour - ... according to state Intra state and inter state"): the
+            // reference RepairBillRepo/Angular never guesses this from anywhere but a straight
+            // Dealer.State == Customer.State string compare (repair-bill.ts addLabour()/
+            // calculatePart(), confirmed against the pasted source) - exposed here so the Repair
+            // Bill / Material Transfer create pages can do the same compare client-side instead of
+            // asking the user to pick "Same State/Different State" by hand every time.
+            DealerState = user.Dealer?.State,
             user.AvatarColor,
             user.LastLoginAt,
             AuthType = user.AuthType.ToString(),

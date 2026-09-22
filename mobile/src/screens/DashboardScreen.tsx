@@ -118,6 +118,11 @@ export function DashboardScreen({ navigation }: Props) {
           <ActionCard title="+ New Job Card" subtitle="Start a new vehicle check-in" onPress={() => navigation.navigate('JobCardWizard')} />
           <ActionCard title="Job Cards" subtitle="View & update assigned job cards" onPress={() => navigation.navigate('JobCardsList')} />
           <ActionCard title="Parts Catalog" subtitle="Search spare parts" onPress={() => navigation.navigate('Parts')} />
+          {/* 2026-09-21 ("add changes in android also"): Android counterparts of web's Item
+             Master/Material Transfer Bill/Repair Bill sidebar pages. */}
+          <ActionCard title="Item Master" subtitle="BAPL item catalog - Dealer Price & GST% (baplfinal)" onPress={() => navigation.navigate('ItemMaster')} />
+          <ActionCard title="Material Transfer Bill" subtitle="Create & view material transfers" onPress={() => navigation.navigate('MaterialTransferCreate')} />
+          <ActionCard title="Repair Bill" subtitle="Create & view repair bills" onPress={() => navigation.navigate('RepairBillCreate')} />
         </View>
       </ScrollView>
     </View>

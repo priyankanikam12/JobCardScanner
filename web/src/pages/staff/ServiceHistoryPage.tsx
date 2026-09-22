@@ -1,3 +1,4 @@
+// web\src\pages\staff\ServiceHistoryPage.tsx
 import { useEffect, useState } from 'react'
 import { staffApi } from '../../api/client'
 import type { DmsBaplDataServiceHistory, DmsBaplDataServiceHistorySuggestion } from '../../types'
@@ -131,8 +132,7 @@ export function ServiceHistoryPage() {
     <div>
       <h2>Service History</h2>
       <p className="muted">
-        Synced service job history from DMSBAPLDATA. Search by Chassis No. or Reg No. Read-only -
-        this app never writes to DMSBAPLDATA.
+        Chassis No. / Registration No. 
       </p>
 
       {/* 2026-09-18 "this also override fix this" - .card's own CSS sets overflow-x: auto (so wide

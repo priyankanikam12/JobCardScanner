@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
-import type { BaplDmsPartStock, BaplDmsWorkshop, PartMaster } from '../../types'
+import type { BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaster, PartMaster } from '../../types'
 
 interface PartsSearchResponse {
   localParts: PartMaster[]
@@ -23,6 +23,13 @@ export function PartsPage() {
   const [localParts, setLocalParts] = useState<PartMaster[]>([])
   const [dmsParts, setDmsParts] = useState<BaplDmsPartStock[]>([])
   const [dmsWarning, setDmsWarning] = useState<string | null>(null)
+  // 2026-09-21 ("still web\src\pages\staff\PartsPage.tsx not fetched data from baplfinal"):
+  // enriches the DMS Parts Inventory table below with BAPL's own C_ItemMaster (baplfinal) - Dealer
+  // Price and per-item GST% - the SAME source Material Transfer Bill/Repair Bill's Rate/MRP/GST
+  // calculation now reads from (see BaplItemMasterRow's doc comment in BaplDealerService.cs). This
+  // is purely additive display data here; this page's own "Request" flow (against JobCardScanner's
+  // local PartMaster catalog) is unaffected.
+  const [itemMasterByCode, setItemMasterByCode] = useState<Record<string, BaplItemMaster>>({})
   const [jobCardId, setJobCardId] = useState('')
   const [msg, setMsg] = useState<string | null>(null)
 
@@ -36,6 +43,18 @@ export function PartsPage() {
       })
 
   useEffect(() => { search() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const codes = Array.from(new Set(dmsParts.map((p) => p.itemCode.trim().toUpperCase()).filter(Boolean)))
+    if (codes.length === 0) { setItemMasterByCode({}); return }
+    staffApi.get<BaplItemMaster[]>('/api/item-master/by-codes', { params: { codes: codes.join(',') } })
+      .then(({ data }) => {
+        const byCode: Record<string, BaplItemMaster> = {}
+        data.forEach((im) => { byCode[im.itemCode.trim().toUpperCase()] = im })
+        setItemMasterByCode(byCode)
+      })
+      .catch(() => setItemMasterByCode({}))
+  }, [dmsParts])
 
   useEffect(() => {
     if (!profile?.dealerId) return
@@ -124,24 +143,42 @@ export function PartsPage() {
       <div className="card">
         <h3>DMS Parts Inventory</h3>
         <p className="muted">
-          Live stock from DMS at the location code above. These items aren't in JobCardScanner's
-          own catalog (no name/price on file) and can't be requested against a job card here - use
-          the "Part Suggestion" panel on a specific job card's Detail page for that instead.
+          Live stock from DMS at the location code above, with Dealer Price and GST% (SGST/CGST/
+          IGST) from BAPL's own item catalog (C_ItemMaster, baplfinal - see the "Item Master"
+          sidebar page for the full catalog) where a matching item code exists. These items aren't
+          in JobCardScanner's own catalog and can't be requested against a job card here - use the
+          "Part Suggestion" panel on a specific job card's Detail page for that instead.
         </p>
         {!locationCode && <p className="muted">Select or enter a DMS workshop location above to see its live stock.</p>}
         {dmsWarning && <p className="muted" style={{ color: '#b91c1c' }}>{dmsWarning}</p>}
         {locationCode && (
           <table>
-            <thead><tr><th>Item Code</th><th>Available Qty</th></tr></thead>
+            <thead>
+              <tr>
+                <th>Item Code</th>
+                <th>Available Qty</th>
+                <th className="text-end">Dealer Price</th>
+                <th className="text-end">SGST %</th>
+                <th className="text-end">CGST %</th>
+                <th className="text-end">IGST %</th>
+              </tr>
+            </thead>
             <tbody>
-              {dmsParts.map((p) => (
-                <tr key={p.itemCode}>
-                  <td>{p.itemCode}</td>
-                  <td>{p.availableQty}</td>
-                </tr>
-              ))}
+              {dmsParts.map((p) => {
+                const im = itemMasterByCode[p.itemCode.trim().toUpperCase()]
+                return (
+                  <tr key={p.itemCode}>
+                    <td>{p.itemCode}</td>
+                    <td>{p.availableQty}</td>
+                    <td className="text-end">{im?.dlrPrice != null ? `₹${im.dlrPrice.toFixed(2)}` : '—'}</td>
+                    <td className="text-end">{im?.sgst != null ? `${im.sgst}%` : '—'}</td>
+                    <td className="text-end">{im?.cgst != null ? `${im.cgst}%` : '—'}</td>
+                    <td className="text-end">{im?.igst != null ? `${im.igst}%` : '—'}</td>
+                  </tr>
+                )
+              })}
               {dmsParts.length === 0 && !dmsWarning && (
-                <tr><td colSpan={2} className="muted" style={{ textAlign: 'center', padding: 16 }}>No stock found at "{locationCode}"{q ? ` matching "${q}"` : ''}.</td></tr>
+                <tr><td colSpan={6} className="muted" style={{ textAlign: 'center', padding: 16 }}>No stock found at "{locationCode}"{q ? ` matching "${q}"` : ''}.</td></tr>
               )}
             </tbody>
           </table>

@@ -195,6 +195,52 @@ export interface BaplDmsPartStock {
   description?: string | null
   mrp?: number | null
   hsnCode?: string | null
+  /// 2026-09-21 ("this part pick in materil transfer with balance quantity"): set only when this
+  /// row was merged in from the "Part Upload" tab (see PartUploadPage.tsx) rather than fetched live
+  /// from DMS's own PartsInventory - lets PartSearchInput/pickPartForLine tell the two apart so a
+  /// Part-Upload-sourced row is never mistaken for a live DMS stock figure. Undefined/omitted for
+  /// every live-DMS row (the vast majority), exactly as before this field existed.
+  /// 2026-09-22 ("take Item Code from /item-master ... we cant select"): 'itemMaster' marks a row
+  /// that came ONLY from the C_ItemMaster catalog preload (no matching live DMS stock or Part
+  /// Upload row at the current Location) - see MaterialTransferCreatePage.tsx/
+  /// RepairBillCreatePage.tsx's `parts` builder. availableQty is 0 for these (no real figure known,
+  /// not necessarily "0 in stock") - PartSearchInput.tsx renders these differently for that reason.
+  source?: 'partUpload' | 'itemMaster'
+  /// Only set for a source: 'partUpload' row - PartUpload.BillPrice. NO LONGER used as Rate
+  /// directly (2026-09-21: "Bal Amount, Bill Price that was dealer rate not the Rate,MRP, Amount,
+  /// CGST Amt SGST Amt IGST Amt that all we want to fetch from baplfinal databse") - kept only for
+  /// display/reference; see dlrPrice below for what Rate/MRP/GST are actually derived from now,
+  /// for a Part-Upload-sourced row exactly the same as a live-DMS one.
+  billPrice?: number | null
+  /// 2026-09-21 ("Rate = Dlr_Price - GST% ... fetch from baplfinal databse"): merged in client-side
+  /// (see MaterialTransferCreatePage.tsx/RepairBillCreatePage.tsx's itemMasterByCode lookup, built
+  /// from GET /api/item-master/by-codes) from BAPL's own C_ItemMaster (baplfinal) by ItemCode -
+  /// NOT part of the raw GET /api/bapl-dms/parts or /api/part-uploads response. Dlr_Price is
+  /// C_ItemMaster's dealer price, GST-INCLUSIVE (same role Mrp played before this round, just a
+  /// confirmed real per-item figure instead of BAPLDMSvad ItemMaster's CustPrice). sgstPct/cgstPct/
+  /// igstPct are that same item's own stored tax-master percentages (CONFIRMED via a live
+  /// `select * from C_ItemMaster` - see BaplItemMasterRow's doc comment in BaplDealerService.cs).
+  /// Undefined when this item code has no C_ItemMaster match - callers fall back to the previous
+  /// Mrp/default-18%-split behavior in that case (see pickPartForLine).
+  dlrPrice?: number | null
+  sgstPct?: number | null
+  cgstPct?: number | null
+  igstPct?: number | null
+}
+
+/// One row from BAPL's C_ItemMaster (baplfinal) - see BaplItemMasterRow's doc comment in
+/// BaplDealerService.cs for the confirmed schema/sample data. Backs the "Item Master" sidebar page.
+export interface BaplItemMaster {
+  itemCode: string
+  itemName?: string | null
+  displayName?: string | null
+  hsnCode?: string | null
+  dlrPrice?: number | null
+  sgst?: number | null
+  cgst?: number | null
+  igst?: number | null
+  itemType?: string | null
+  status?: string | null
 }
 
 /// One search-as-you-type match for the chassis/registration-no. autocomplete - see
@@ -550,6 +596,12 @@ export interface CurrentUser {
   /** DMS's own dealer code (e.g. "CUS0435") - used to scope chassis/reg-no vehicle search to
    * this user's own dealer. See AuthController.Me's DealerBaplDmsCode doc comment. */
   dealerBaplDmsCode?: string | null
+  /** This dealer's own State (Dealer.State) - see AuthController.Me's DealerState doc comment.
+   * Compared against a party/customer's own State to auto-detect intra-state (CGST+SGST) vs
+   * inter-state (IGST) on the Repair Bill / Material Transfer create pages, same compare the
+   * reference's repair-bill.ts addLabour()/calculatePart() do. Null if this dealer has no State
+   * recorded - callers fall back to a manual pick. */
+  dealerState?: string | null
   avatarColor?: string | null
   /** BAPL DMS workshop LocCodes (the W1..Wn series) this user is scoped to - see
    * User.WorkLocationCodes's doc comment (backend/Models/MasterData.cs). Empty = unrestricted
@@ -929,6 +981,54 @@ export interface LabourMasterImportResult {
   warnings: string[]
 }
 
+// 2026-09-21 "Part Upload" tab - see backend Models/PartUploads.cs's doc comment for the
+// confirmed source spreadsheet columns (Stock Summary Detail Report) and why there is no
+// GST/tax-rate field here (the source file has none).
+export interface PartUpload {
+  id: string
+  /** Workshop LocCode picked on the upload form - required, part of the upsert key (see
+   * PartUploads.cs's 2026-09-21 correction). */
+  locationCode: string
+  /** The report's "as of" date, picked on the upload form. */
+  reportDate: string
+  partNo: string
+  description: string | null
+  openBal: number | null
+  purchase: number | null
+  receipt: number | null
+  pPurChln: number | null
+  total: number | null
+  sale: number | null
+  brIss: number | null
+  mtrlIss: number | null
+  stAdj: number | null
+  partsChln: number | null
+  purReturn: number | null
+  saleReturn: number | null
+  saleChln: number | null
+  balQty: number | null
+  balAmnt: number | null
+  qtyReqd: number | null
+  minOrder: number | null
+  billPrice: number | null
+  hsnSacCode: string | null
+  groupName: string | null
+  itemType: string | null
+  sourceFileName: string | null
+  uploadedBy: string | null
+  uploadedAt: string
+  updatedAt: string | null
+}
+
+export interface PartUploadImportResult {
+  totalDataRows: number
+  inserted: number
+  updated: number
+  unchanged: number
+  skippedBlank: number
+  warnings: string[]
+}
+
 export interface CorporateDashboardData {
   revenue: number
   warrantyCost: number
@@ -939,4 +1039,183 @@ export interface CorporateDashboardData {
   avgTatByDealer: { dealerName: string; avgHours: number }[]
   topPartsConsumption: { partName: string; qty: number }[]
   repeatComplaints: { regNo?: string | null; visits: number }[]
+}
+
+/// One row of GET /api/jobcards/search - the "Job Search" picker on the Repair Bill / Material
+/// Transfer Bill create pages (2026-09-21). See JobCardsController.Search's doc comment: searches
+/// this app's own JobCards only (not a blended DMS view), since JobCardId on both doc types is a
+/// local FK. LocationCode (a DMS LocCode) is what drives the Part Name search-select afterwards -
+/// same value GET /api/bapl-dms/parts?locationCode=... expects.
+export interface JobSearchResult {
+  id: string
+  jobCardNumber: string
+  jobDate: string
+  location?: string | null
+  locationCode?: string | null
+  jobTypeService?: string | null
+  partyName?: string | null
+  /** Customer.State for the job's linked customer - see JobCardsController.Search's PartyState
+   * doc comment. Used to auto-detect intra-state vs inter-state GST on the Repair Bill / Material
+   * Transfer create pages once a job is picked. Null if no customer is linked or it has no State. */
+  partyState?: string | null
+  regNo?: string | null
+  chassisNo?: string | null
+  vehicleType?: string | null
+  jobSource?: string | null
+  /** 2026-09-21: this picker now also returns job cards that never synced to BAPL DMS (see
+   * JobCardsController.Search's doc comment) - true when this one did. */
+  isDmsLinked?: boolean
+}
+
+// ---------------- Repair Bill / Material Transfer Bill (2026-09-19) - JobCardScannerDb-native,
+// see backend Models/RepairBillDocs.cs / MaterialTransferDocs.cs and
+// Controllers/RepairBillDocsController.cs / MaterialTransferDocsController.cs. Distinct from
+// DmsBaplDataRepairBill / DmsBaplDataMaterialTransfer above, which are the read-only
+// DMSBAPLDATA-synced rows behind the existing "Repair Bill Report"/"Material Transfer Report"
+// pages. ----------------
+export type RepairBillDocItemType = 'Part' | 'Labour'
+export type RepairBillDocStatus = 'Performa' | 'Billed' | 'Cancelled'
+
+export interface RepairBillDocItem {
+  id: string
+  itemType: RepairBillDocItemType
+  itemCode: string
+  itemDescription: string
+  hsnCode?: string | null
+  /** Reference: RepairBillDetail.IssutypeId - per LINE, not per bill (see RepairBillDocItem.
+   * IssueType's backend doc comment). "U/W"/"FSC" zero this line's tax; "Paid" or null is taxed
+   * normally. */
+  issueType?: string | null
+  qty: number
+  rate: number
+  /** Reference: RepairBillDetail.DiscountType - free text, "Percentage" or "Amount". */
+  discountType?: string | null
+  discountValue: number
+  cgstPct: number
+  sgstPct: number
+  igstPct: number
+  taxableAmount: number
+  cgstAmount: number
+  sgstAmount: number
+  igstAmount: number
+  totalAmount: number
+}
+
+export interface RepairBillDoc {
+  source: 'JobCardScanner'
+  id: string
+  billNumber: string
+  billDate: string
+  partyName: string
+  regNo?: string | null
+  chassisNo?: string | null
+  location?: string | null
+  billType?: string | null
+  issueType?: string | null
+  status: RepairBillDocStatus
+  // ---- Insurance claim fields - reference RepairBillHeader.InsuranceId(->name)/InsDecription/
+  // SurveyorName/ContactNumber/PolicyNo/InsValidTill/ZeroDepo. ----
+  insuranceCompanyName?: string | null
+  insuranceDescription?: string | null
+  surveyorName?: string | null
+  surveyorContactNumber?: string | null
+  policyNo?: string | null
+  insuranceValidTill?: string | null
+  zeroDepreciation: boolean
+  totalDiscount: number
+  amountReceived: number
+  taxableAmount: number
+  cgstAmount: number
+  sgstAmount: number
+  igstAmount: number
+  totalAmount: number
+  itemCount: number
+  items: RepairBillDocItem[]
+}
+
+/** One row of GET /api/repair-bill-docs/combined - either this app's own bill or a read-only
+ * DMSBAPLDATA-synced one (see `source`); DMSBAPLDATA rows have `status: null`.
+ * 2026-09-21 ("all upload data and exist data are clickable ... this all details can openable"):
+ * `items` now carries each row's own line items straight from /combined (a JobCardScanner bill's
+ * RepairBillDocItem shape, or a DMSBAPLDATA DMS_RepairBillItem shape for a "dms-" row) - the two
+ * shapes differ, so this is intentionally untyped (`Record<string, unknown>`) rather than forced
+ * into one interface; the detail modal that renders these reads fields defensively by source. */
+export interface CombinedRepairBillRow {
+  source: 'JobCardScanner' | 'DMSBAPLDATA'
+  id: string
+  billNumber: string
+  sortDate: string
+  partyName?: string | null
+  regNo?: string | null
+  chassisNo?: string | null
+  location?: string | null
+  billType?: string | null
+  status: RepairBillDocStatus | string | null
+  totalAmount: number
+  itemCount: number
+  items?: Record<string, unknown>[]
+  /** 2026-09-21 ("according /repair-bill-list do in our repair bill" - the reference DMS app's
+   * own list columns): only ever set for a `source: 'JobCardScanner'` row - see
+   * RepairBillDocsController.ToCombinedRow's doc comment for why a DMSBAPLDATA row has none. */
+  jobNo?: string | null
+  preparedBy?: string | null
+  modifiedBy?: string | null
+}
+
+export type MaterialTransferDocType = 'Issue' | 'Return'
+export type MaterialTransferDocStatus = 'Draft' | 'Confirmed' | 'Cancelled'
+
+export interface MaterialTransferDocItem {
+  id: string
+  itemCode: string
+  itemDescription: string
+  /** Auto-filled from the picked part (BaplDmsPartStock.hsnCode) - see MaterialTransferDocItem's
+   * backend doc comment (added 2026-09-21, third correction). */
+  hsnCode?: string | null
+  /** Reference: MaterialTransfer.IssueType - a required per-row "Paid"/"U/W" value in the
+   * reference (see MaterialTransferDocItem's backend doc comment), kept optional here. */
+  issueType?: string | null
+  qty: number
+  rate: number
+  amount: number
+  /** Reference: MaterialTransfer.RackNo/Bin/SerialNo/Mrp/ValidDays/ItemReceived. */
+  rackNo?: string | null
+  bin?: string | null
+  serialNo?: string | null
+  mrp?: number | null
+  validDays?: number | null
+  itemReceived?: string | null
+}
+
+export interface MaterialTransferDoc {
+  source: 'JobCardScanner'
+  id: string
+  transferNumber: string
+  transferDate: string
+  location?: string | null
+  transferType: MaterialTransferDocType
+  issueType?: string | null
+  partyName?: string | null
+  /** Reference: MaterialTransfer.Technician, mapped onto this app's own User FK. */
+  technicianId?: string | null
+  status: MaterialTransferDocStatus
+  totalAmount: number
+  itemCount: number
+  items: MaterialTransferDocItem[]
+}
+
+/** One row of GET /api/material-transfer-docs/combined - see CombinedRepairBillRow's doc comment
+ * (including its 2026-09-21 `items` note). */
+export interface CombinedMaterialTransferRow {
+  source: 'JobCardScanner' | 'DMSBAPLDATA'
+  id: string
+  transferNumber: string
+  sortDate: string
+  location?: string | null
+  transferType?: string | null
+  partyName?: string | null
+  status: MaterialTransferDocStatus | string | null
+  totalAmount: number
+  itemCount: number
+  items?: Record<string, unknown>[]
 }

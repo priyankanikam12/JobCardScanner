@@ -127,6 +127,9 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy(Policies.ServiceAdvisorUp, p => RoleUp(p, "ServiceAdvisor", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
     options.AddPolicy(Policies.WorkshopManagerUp, p => RoleUp(p, "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
     options.AddPolicy(Policies.PartsUserUp, p => RoleUp(p, "PartsUser", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
+    // See Policies.PartsReadUp's doc comment - union of ServiceAdvisorUp + PartsUserUp's roles,
+    // read-only Part Upload access for Repair Bill/Material Transfer's part picker.
+    options.AddPolicy(Policies.PartsReadUp, p => RoleUp(p, "ServiceAdvisor", "PartsUser", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
     options.AddPolicy(Policies.CashierUp, p => RoleUp(p, "Cashier", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
     options.AddPolicy(Policies.DealerAdminUp, p => RoleUp(p, "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
     options.AddPolicy(Policies.CorporateAdminUp, p => RoleUp(p, "CorporateAdmin", "SystemAdmin"));
@@ -156,6 +159,8 @@ builder.Services.AddScoped<IBaplDealerService, BaplDealerService>();
 builder.Services.AddScoped<IBaplDmsService, BaplDmsService>();
 builder.Services.AddScoped<IDmsBaplDataService, DmsBaplDataService>();
 builder.Services.AddScoped<ILabourMasterImportService, LabourMasterImportService>();
+builder.Services.AddScoped<IPartUploadService, PartUploadService>();
+builder.Services.AddScoped<IBaplItemPricingService, BaplItemPricingService>();
 builder.Services.AddScoped<IJobCardNumberingService, JobCardNumberingService>();
 builder.Services.AddScoped<IInvoicePdfService, InvoicePdfService>();
 builder.Services.AddScoped<IEstimatePdfService, EstimatePdfService>();
