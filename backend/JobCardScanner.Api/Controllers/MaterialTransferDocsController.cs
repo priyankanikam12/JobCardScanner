@@ -10,14 +10,12 @@ using Microsoft.EntityFrameworkCore;
 namespace JobCardScanner.Api.Controllers;
 
 /// <summary>
-/// See MaterialTransferDoc's own doc comment for the full history. This round's change: Create()
-/// now computes each line's discounted Amount server-side from DiscountType/DiscountValue (same
-/// "server is the source of truth for money" convention RepairBillDocsController.Create already
-/// follows) instead of the previous plain Qty x Rate, and both List()/Combined()/Get()'s row
-/// projections now include DiscountType/DiscountValue so the combined-list detail popup can show
-/// them. RackNo/Bin/SerialNo/ValidDays/ItemReceived stay in every projection unchanged - the
-/// create page's grid no longer collects them, but a reader can still see them on an older saved
-/// row.
+/// 2026-09-19 "now i want Create Repair Bill and Material Transfer Bill" - the Material Transfer
+/// sibling of RepairBillDocsController.cs; see that controller's doc comment for the shared
+/// reasoning (new controller, JobCardScannerDb-native save target, combined view reusing the
+/// existing read-only IDmsBaplDataService rather than duplicating it). Backs the new "Material
+/// Transfer Bill" sidebar page - NOT a change to the existing read-only
+/// MaterialTransferPage.tsx/"Material Transfer Report" page.
 /// </summary>
 [ApiController]
 [Route("api/material-transfer-docs")]
@@ -43,6 +41,12 @@ public class MaterialTransferDocsController : ControllerBase
         _logger = logger;
     }
 
+    /// <summary>GET /api/material-transfer-docs - this dealer's own JobCardScannerDb-native
+    /// transfers only (newest first). Search filters mirror the reference
+    /// GetMaterialTransferDetailByDealer's own filter set (dealer scoping is implicit here - the
+    /// current user's dealer - so only searchTerm/dateFrom/dateTo are exposed; searchTerm matches
+    /// TransferNumber or ItemCode/ItemDescription on any line). For the combined DMSBAPLDATA +
+    /// JobCardScannerDb view, use /combined below.</summary>
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] string? searchTerm = null, [FromQuery] DateOnly? dateFrom = null, [FromQuery] DateOnly? dateTo = null)
@@ -63,6 +67,17 @@ public class MaterialTransferDocsController : ControllerBase
         return Ok(docs.Select(ToRow));
     }
 
+    /// <summary>
+    /// GET /api/material-transfer-docs/combined?locCode=CUS0288W5 - "this both data wants to show
+    /// in 1 place": this dealer's own newly-created JobCardScannerDb transfers, UNION'd with the
+    /// existing read-only DMSBAPLDATA transfer rows for that workshop location (reusing
+    /// GetMaterialTransfersAsync exactly as the "Material Transfer Report" page already does - no
+    /// query logic duplicated), sorted by date descending. A missing/blank locCode returns only
+    /// this app's own rows (DMSBAPLDATA's own endpoint requires one; JobCardScannerDb rows don't
+    /// carry a LocCode at all - see MaterialTransferDoc's doc comment). DMSBAPLDATA connectivity
+    /// problems don't fail the whole request - dmsBaplDataError is set instead so the page can say
+    /// so without hiding this app's own rows.
+    /// </summary>
     [HttpGet("combined")]
     public async Task<IActionResult> Combined([FromQuery] string? locCode)
     {
@@ -111,6 +126,54 @@ public class MaterialTransferDocsController : ControllerBase
         return Ok(new { rows = combined.OrderByDescending(r => r.SortDate), dmsBaplDataError = dmsError });
     }
 
+    /// <summary>
+    /// GET /api/material-transfer-docs/for-job/{jobCardId} - 2026-09-22 ("now i saved from
+    /// material transfer bill now this will shown in repair bill with which i material transfer"):
+    /// the real BAPL DMS reference you pasted (repair-bill.ts's loadMaterialedJobCardList calling
+    /// JobCardService.getMaterialedJobCardList(jobId, dealerCode)) auto-populates a Repair Bill's
+    /// own Part grid from whatever Material Transfer items already exist for the SAME job - Parts
+    /// are never manually searched/added inside Repair Bill itself there (confirmed: the pasted
+    /// repair-bill.html's Part search dropdown is commented out entirely; only Labour has a live
+    /// search-and-add flow, addLabour()). This is the equivalent lookup for JobCardScannerDb's own
+    /// MaterialTransferDocs: every item line from every Draft/Confirmed (not Cancelled) transfer
+    /// doc linked to this JobCardId, for the caller's own dealer. Flattened (not grouped by
+    /// document) since Repair Bill's Part grid shows one row per item regardless of which transfer
+    /// it came from - each row still carries its source TransferNumber/TransferDate so the UI can
+    /// show where it came from. Rate/Mrp on each row already reflect SECTION 64's C_ItemMaster-
+    /// driven calculation from when the part was transferred - this endpoint does not recompute
+    /// them, only re-exposes what Material Transfer already saved.
+    /// </summary>
+    [HttpGet("for-job/{jobCardId:guid}")]
+    public async Task<IActionResult> ForJob(Guid jobCardId)
+    {
+        var dealerId = _currentUser.DealerId;
+        if (dealerId is null) return Forbid();
+
+        var docs = await _db.MaterialTransferDocs.AsNoTracking()
+            .Where(m => m.DealerId == dealerId && m.JobCardId == jobCardId && m.Status != MaterialTransferDocStatus.Cancelled)
+            .Include(m => m.Items)
+            .OrderBy(m => m.TransferDate)
+            .ToListAsync();
+
+        var rows = docs.SelectMany(d => d.Items.Select(i => new
+        {
+            MaterialTransferDocId = d.Id,
+            d.TransferNumber,
+            d.TransferDate,
+            i.Id,
+            i.ItemCode,
+            i.ItemDescription,
+            i.HsnCode,
+            i.IssueType,
+            i.Qty,
+            i.Rate,
+            i.Amount,
+            i.Mrp,
+        }));
+
+        return Ok(rows);
+    }
+
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id)
     {
@@ -120,22 +183,23 @@ public class MaterialTransferDocsController : ControllerBase
         return doc is null ? NotFound() : Ok(ToRow(doc));
     }
 
-    /// <summary>
-    /// POST /api/material-transfer-docs - creates and saves a material transfer document into
-    /// JobCardScannerDb. Live DMS PartsInventory is still NOT touched.
+    /// <summary>POST /api/material-transfer-docs - creates and saves a material transfer document
+    /// into JobCardScannerDb. Live DMS PartsInventory is still NOT touched (see MaterialTransferDoc's
+    /// doc comment for why the reference app's own debit/credit against that table isn't ported
+    /// here - this app has no write access to BAPLDMSvad).
     ///
-    /// 2026-09-21 CORRECTION: each line's Amount is now computed here, server-side, from Qty x
-    /// Rate minus a discount (DiscountType "Percentage" or "Amount", capped so it can never exceed
-    /// the gross) - previously this was a plain Qty x Rate with no discount concept at all
-    /// (Material Transfer's reference app has none - see MaterialTransferDoc's class doc comment
-    /// on why this is a deliberate deviation from that reference, added per explicit instruction).
-    /// Never trusts a client-computed Amount, matching RepairBillDocsController.Create's own
-    /// "server is the source of truth for money" convention.
-    ///
-    /// PartUploads.BalQty decrement/restore-on-delete logic (see this method's earlier doc-comment
-    /// rounds) is unchanged - it still keys off Item Code/Location/Qty only, independent of
-    /// discount.
-    /// </summary>
+    /// 2026-09-21 ("part-upload balance qty use for that stock and when this will we saved from
+    /// part-upload balance qty minus from"): for any line whose Item Code matches a PartUploads
+    /// row at this dealer's SAME Location (the merge-in source the Item Code picker already reads
+    /// - see MaterialTransferCreatePage.tsx), that row's BalQty is decremented by the line's Qty,
+    /// in the same SaveChangesAsync transaction as the transfer itself (so a request that can't be
+    /// fully stocked fails atomically - nothing is half-saved). A line with no matching PartUploads
+    /// row (e.g. picked from live DMS stock, or a hand-typed code) is left untouched - only rows
+    /// that genuinely exist in Part Upload are adjusted, matching "part-upload balance qty" being
+    /// the explicit, named source of truth here, not live DMS stock (which this app can't write to
+    /// regardless). Two or more lines for the same Item Code accumulate against the same tracked
+    /// row (partUploadCache keeps one EF-tracked instance per Item Code), so the check below is
+    /// already cumulative across the whole request, not just per-line.</summary>
     [HttpPost]
     public async Task<IActionResult> Create(CreateMaterialTransferRequest req)
     {
@@ -182,13 +246,7 @@ public class MaterialTransferDocsController : ControllerBase
 
         foreach (var it in req.Items)
         {
-            var gross = (decimal)it.Qty * it.Rate;
-            var discountAmt = string.Equals(it.DiscountType, "Percentage", StringComparison.OrdinalIgnoreCase)
-                ? gross * it.DiscountValue / 100m
-                : string.Equals(it.DiscountType, "Amount", StringComparison.OrdinalIgnoreCase) ? it.DiscountValue : 0m;
-            if (discountAmt > gross) discountAmt = gross;
-            var amount = gross - discountAmt;
-
+            var amount = (decimal)it.Qty * it.Rate;
             doc.Items.Add(new MaterialTransferDocItem
             {
                 PartId = it.PartId,
@@ -198,8 +256,6 @@ public class MaterialTransferDocsController : ControllerBase
                 IssueType = it.IssueType,
                 Qty = it.Qty,
                 Rate = it.Rate,
-                DiscountType = string.IsNullOrWhiteSpace(it.DiscountType) || it.DiscountType == "None" ? null : it.DiscountType,
-                DiscountValue = it.DiscountValue,
                 Amount = amount,
                 RackNo = it.RackNo,
                 Bin = it.Bin,
@@ -218,6 +274,18 @@ public class MaterialTransferDocsController : ControllerBase
         return Ok(ToRow(doc));
     }
 
+    /// <summary>
+    /// DELETE /api/material-transfer-docs/{id} - reference: MaterialTransferService.
+    /// DeleteMaterialsByJobId blocks a non-SuperAdmin delete when the same job's repair bill is
+    /// already Billed ("This job card has already been billed and its material transfer cannot be
+    /// deleted."), else hard-deletes (ExecuteDeleteAsync). Ported as-is: SystemAdmin bypasses the
+    /// check (matching the reference's SuperAdmin bypass), everyone else is blocked when a
+    /// RepairBillDoc for the same JobCardId has Status == Billed, and the row is hard-removed, not
+    /// soft-deleted (MaterialTransferDoc has no IsDelete column, matching the reference). The
+    /// reference's stock-ledger reversal (a PartsInventory "SD" transaction against BAPLDMSvad's
+    /// own live inventory) is NOT ported - this app has no equivalent live-stock table to reverse
+    /// against; see MaterialTransferDoc's doc comment.
+    /// </summary>
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id)
     {
@@ -236,6 +304,12 @@ public class MaterialTransferDocsController : ControllerBase
                 return BadRequest(new { message = "This job card has already been billed and its material transfer cannot be deleted." });
         }
 
+        // 2026-09-21 ("we delete thi material tranfer then as it is add this bal qty in
+        // part-upload page"): reverses the Create-time decrement above, for any line whose Item
+        // Code still matches a PartUploads row at this doc's own Location - restores BalQty by
+        // the line's Qty. Scoped to Delete only (not the UpdateStatus "Cancelled" transition
+        // below, which the user didn't ask about and which this app treats as a status change,
+        // not a removal).
         if (!string.IsNullOrWhiteSpace(doc.Location))
         {
             foreach (var it in doc.Items)
@@ -254,6 +328,7 @@ public class MaterialTransferDocsController : ControllerBase
         return NoContent();
     }
 
+    /// <summary>PUT /api/material-transfer-docs/{id}/status - Draft -> Confirmed/Cancelled.</summary>
     [HttpPut("{id:guid}/status")]
     public async Task<IActionResult> UpdateStatus(Guid id, [FromBody] MaterialTransferDocStatus status)
     {
@@ -282,8 +357,7 @@ public class MaterialTransferDocsController : ControllerBase
         ItemCount = m.Items.Count,
         Items = m.Items.Select(i => new
         {
-            i.Id, i.ItemCode, i.ItemDescription, i.HsnCode, i.IssueType, i.Qty, i.Rate,
-            i.DiscountType, i.DiscountValue, i.Amount,
+            i.Id, i.ItemCode, i.ItemDescription, i.HsnCode, i.IssueType, i.Qty, i.Rate, i.Amount,
             i.RackNo, i.Bin, i.SerialNo, i.Mrp, i.ValidDays, i.ItemReceived,
         }),
     };
@@ -301,8 +375,7 @@ public class MaterialTransferDocsController : ControllerBase
         ItemCount: m.Items.Count,
         Items: m.Items.Select(i => (object)new
         {
-            i.Id, i.ItemCode, i.ItemDescription, i.HsnCode, i.IssueType, i.Qty, i.Rate,
-            i.DiscountType, i.DiscountValue, i.Amount,
+            i.Id, i.ItemCode, i.ItemDescription, i.HsnCode, i.IssueType, i.Qty, i.Rate, i.Amount,
             i.RackNo, i.Bin, i.SerialNo, i.Mrp, i.ValidDays, i.ItemReceived,
         }).ToList());
 }

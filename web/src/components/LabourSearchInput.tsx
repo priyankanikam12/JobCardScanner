@@ -31,8 +31,24 @@ export function LabourSearchInput({ labours, locationSelected, value, onChangeTe
   const inputRef = useRef<HTMLInputElement>(null)
   const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null)
   const q = value.trim().toLowerCase()
+  // 2026-09-22 ("in labour only labour code need to shown in dropdown and its shown duplicate that
+  // also fix"): the backing `labours` list can carry more than one row for the exact same
+  // labourCode/labourDescription/labourRate/source combination (e.g. the same LabourMaster row
+  // surfaced once per Location or per OEM Model it applies to, upstream in GET /api/bapl-dms/labour)
+  // - those are true duplicates, shown here with nothing to actually distinguish them, so they're
+  // collapsed to one entry each via this key. Rows sharing a labourCode but a genuinely different
+  // labourRate are NOT collapsed - that's a real difference (a different applicable rate for the
+  // same code) and picking the wrong one would silently bill at the wrong rate, so the rate stays
+  // visible in the list precisely so a dealer can tell those apart even with the description gone.
+  const seen = new Set<string>()
   const matches = q.length === 0 ? [] : labours
     .filter((l) => l.labourCode.toLowerCase().includes(q) || (l.labourDescription ?? '').toLowerCase().includes(q))
+    .filter((l) => {
+      const dedupeKey = `${l.labourCode.toLowerCase()}|${l.labourRate ?? ''}|${l.source ?? ''}`
+      if (seen.has(dedupeKey)) return false
+      seen.add(dedupeKey)
+      return true
+    })
     .slice(0, 20)
 
   const reposition = () => {
@@ -81,8 +97,9 @@ export function LabourSearchInput({ labours, locationSelected, value, onChangeTe
                   className="btn btn-sm"
                   style={{ width: '100%', textAlign: 'left', border: 'none', background: 'transparent', padding: '6px 8px' }}
                   onMouseDown={(e) => { e.preventDefault(); onPick(l); setOpen(false) }}
+                  title={l.labourDescription || undefined}
                 >
-                  <strong>{l.labourCode}</strong>{l.labourDescription ? ` — ${l.labourDescription}` : ''}{' '}
+                  <strong>{l.labourCode}</strong>{' '}
                   <span className="muted">({l.labourRate != null ? `₹${l.labourRate}` : 'no rate'})</span>
                   {l.source === 'PartWiseLabourMaster' && (
                     <span className="badge badge-muted" title="Part-linked labour rate (PartWiseLabourMaster)." style={{ marginLeft: 6, fontSize: 10 }}>Part-wise</span>

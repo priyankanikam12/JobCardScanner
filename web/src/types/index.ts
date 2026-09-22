@@ -1204,6 +1204,27 @@ export interface MaterialTransferDoc {
   items: MaterialTransferDocItem[]
 }
 
+/** One row of GET /api/material-transfer-docs/for-job/{jobCardId} - 2026-09-22
+ * ("now i saved from material transfer bill now this will shown in repair bill with which i
+ * material transfer"): every Material Transfer item already saved against this Job Card, flattened
+ * across all its (non-Cancelled) transfer docs. RepairBillCreatePage.tsx auto-loads these as its
+ * Part grid rows instead of offering a manual Part search - see that page's doc comment. Rate/Mrp
+ * here are already SECTION 64's C_ItemMaster-derived figures from when the part was transferred. */
+export interface MaterialTransferItemForJob {
+  materialTransferDocId: string
+  transferNumber: string
+  transferDate: string
+  id: string
+  itemCode: string
+  itemDescription: string
+  hsnCode?: string | null
+  issueType?: string | null
+  qty: number
+  rate: number
+  amount: number
+  mrp?: number | null
+}
+
 /** One row of GET /api/material-transfer-docs/combined - see CombinedRepairBillRow's doc comment
  * (including its 2026-09-21 `items` note). */
 export interface CombinedMaterialTransferRow {

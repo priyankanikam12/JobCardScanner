@@ -1,11 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
-import type { BaplDmsLabourRow, BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaster, CombinedRepairBillRow, JobSearchResult, PartUpload, RepairBillDocItemType } from '../../types'
+import type { BaplDmsLabourRow, BaplDmsWorkshop, BaplItemMaster, CombinedRepairBillRow, JobSearchResult, MaterialTransferItemForJob, RepairBillDocItemType } from '../../types'
 import { Pagination } from '../../components/Pagination'
 import { usePagination } from '../../lib/usePagination'
 import { JobSearchModal } from '../../components/JobSearchModal'
-import { PartSearchInput } from '../../components/PartSearchInput'
 import { LabourSearchInput } from '../../components/LabourSearchInput'
 import { RecordDetailModal } from '../../components/RecordDetailModal'
 
@@ -105,23 +104,62 @@ import { RecordDetailModal } from '../../components/RecordDetailModal'
  * too, alongside the live DMS PartsInventory list - same treatment as
  * MaterialTransferCreatePage.tsx's own fifth 2026-09-21 correction (BalQty as AvailableQty,
  * BillPrice as Rate directly, tagged "Uploaded" in the dropdown - see pickPartForLine below).
+ *
+ * 2026-09-22 REPLACED BY THE CORRECTION BELOW - kept only for history: everything above about a
+ * manual Item Code/Description PART search (PartSearchInput, dmsParts/uploadedParts/
+ * itemMasterByCode/itemMasterCatalog/pickPartForLine) was REMOVED this round. Labour is still a
+ * manual search-and-add (unchanged, see pickLabourForLine below).
+ *
+ * 2026-09-22 ("now i saved from material transfer bill now this will shown in repair bill with
+ * which i material transfer and from repair bill we can add only labour from labour master in
+ * dropdown and that will add save as proforma" + you pasted the REAL BAPL DMS reference source -
+ * RepairBillController.cs/RepairBillRepo.cs, repair-bill.ts/.html, repair-bill-list.ts/.html,
+ * repair-bill-invoice.ts/.html): this is a confirmed architecture correction, not an
+ * interpretation - the pasted repair-bill.html's own Part search UI is commented out entirely
+ * (`<!-- <ul *ngIf="showPartDropdown" ...> -->`), and repair-bill.ts's loadMaterialedJobCardList()
+ * (called from onSelect() the moment a Job is picked) is what actually populates the reference's
+ * Part Details List - straight from whatever Material Transfer already saved against that job
+ * (jobCardService.getMaterialedJobCardList(jobId, dealerCode)), never from a live parts search
+ * inside Repair Bill itself. Only Labour has a real search-and-add flow there (addLabour()).
+ *
+ * This page now mirrors that: once a Job is linked (jobCardId set, via Search Job same as before),
+ * a new effect fetches GET /api/material-transfer-docs/for-job/{jobCardId} (every non-Cancelled
+ * Material Transfer item already saved against this job - see MaterialTransferDocsController.
+ * ForJob's doc comment) and turns each into a read-only Part row in the grid below: Item Code/
+ * Description/HSN/Qty/Rate come straight from that Material Transfer line (Rate already reflects
+ * SECTION 64's C_ItemMaster-driven calculation from when it was transferred - not recomputed here),
+ * while Discount Type/Discount Value/Issue Type stay editable per line, matching the reference's
+ * own editPart()/updatePart() (edit only, no delete - Part rows have no ✕ here either, since they
+ * represent parts that were physically transferred, not something this bill invents). GST% for the
+ * CGST/SGST/IGST split still comes from a fresh C_ItemMaster by-codes lookup (SGST/CGST/IGST aren't
+ * stored on MaterialTransferDocItem - see that model's doc comment), same source Material Transfer
+ * itself used, just fetched again since the split isn't persisted there.
+ *
+ * The "+ Add Line" button (and the whole itemType Part/Labour picker) is GONE - every manually
+ * added line is now always Labour (addLabour()'s reference equivalent), searched via
+ * LabourSearchInput exactly as before. A standalone bill with no Job linked simply has no Part rows
+ * at all (nothing to auto-load), matching the reference (Part Details List only ever renders after
+ * onSelect() runs loadMaterialedJobCardList()).
  */
 type TaxMode = 'Same State (CGST+SGST)' | 'Different State (IGST)'
 type DiscountType = 'None' | 'Percentage' | 'Amount'
 
 type DraftItem = {
-  key: number
+  /** A manually-added Labour line gets a locally-minted "manual-N" string; an auto-loaded Part
+   * line uses its own MaterialTransferDocItem.Id (a real GUID from the backend) directly - see
+   * this module's 2026-09-22 doc comment. String, not a number, specifically so the two spaces
+   * can never collide. */
+  key: string
   itemType: RepairBillDocItemType
   itemCode: string
   itemDescription: string
   hsnCode: string
   qty: string
   rate: string
-  /** GST-inclusive MRP, captured when a part is picked via search - kept only so Rate can be
-   * re-derived (MRP / (1 + gst% / 100)) if the line's GST % is edited afterwards; not itself sent
-   * to the backend (RepairBillDocItem has no Mrp column, matching the reference's own
-   * RepairBillDetail, which stores PartMRP only as display data, not as this page's source of
-   * truth for Rate). Empty for a Labour line or a hand-typed Part with no picked stock row. */
+  /** GST-inclusive MRP - for a Labour line this stays empty (Labour's Rate is never MRP-derived);
+   * for an auto-loaded Part line this is that Material Transfer item's own Mrp, display-only (not
+   * sent to the backend - RepairBillDocItem has no Mrp column, matching the reference's own
+   * RepairBillDetail, which stores PartMRP only as display data). */
   mrp: string
   gstPct: string
   discountType: DiscountType
@@ -129,21 +167,17 @@ type DraftItem = {
   /** Reference: RepairBillDetail.IssutypeId, per line - "Paid" (taxed normally), "U/W" or "FSC"
    * (zero tax). Empty defers to the bill-level Issue Type default. */
   issueType: string
-  /** Stock available at the current Location for this line's Item Code, captured when a part is
-   * picked via search - used only to cap/warn on Qty (see updateQty below), never sent to the
-   * backend. Null for a Labour line or a hand-typed Part with no picked stock row. */
-  availableQty: number | null
+  /** 2026-09-22: true for a Part row auto-loaded from GET /api/material-transfer-docs/for-job -
+   * Item Code/Description/HSN/Qty/Rate are read-only for these (see this module's doc comment);
+   * only Discount Type/Discount Value/Issue Type stay editable, and there is no Remove button.
+   * False (the default) for every manually-added Labour line. */
+  fromMaterialTransfer: boolean
 }
 
-const emptyItem = (key: number, defaultIssueType = ''): DraftItem => ({
-  key, itemType: 'Part', itemCode: '', itemDescription: '', hsnCode: '', qty: '1', rate: '0', mrp: '', gstPct: '18',
-  discountType: 'None', discountValue: '0', issueType: defaultIssueType, availableQty: null,
+const emptyItem = (key: string, defaultIssueType = ''): DraftItem => ({
+  key, itemType: 'Labour', itemCode: '', itemDescription: '', hsnCode: '', qty: '1', rate: '0', mrp: '', gstPct: '18',
+  discountType: 'None', discountValue: '0', issueType: defaultIssueType, fromMaterialTransfer: false,
 })
-
-/** Reverse-calculates a GST-exclusive base Rate out of a GST-inclusive MRP, matching the
- * reference's own material-transfer.ts calculateGST(): basePrice = finalPrice / (1 + gst% / 100).
- * "Part - Rate = MRP - GST%" - confirmed against that pasted source, not inferred. */
-const rateFromMrp = (mrp: number, gstPct: number) => mrp / (1 + gstPct / 100)
 
 const isZeroTaxIssue = (issueType: string) => issueType === 'U/W' || issueType === 'FSC'
 
@@ -212,7 +246,11 @@ export function RepairBillCreatePage() {
   const [partyState, setPartyState] = useState<string | null>(null)
   const [billDate, setBillDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [remarks, setRemarks] = useState('')
-  const [items, setItems] = useState<DraftItem[]>([emptyItem(1)])
+  const [items, setItems] = useState<DraftItem[]>([emptyItem('manual-1')])
+  // 2026-09-22 - mints a unique "manual-N" key per manually-added Labour line; an auto-loaded Part
+  // line's key is its own MaterialTransferDocItem.Id instead (see DraftItem.key's doc comment), so
+  // this counter only ever needs to stay unique among Labour lines, not globally sequential.
+  const nextManualKeyRef = useRef(2)
 
   // 2026-09-21 ("according to state Intra state and inter state"): auto-detect Same State vs
   // Different State from this dealer's own State (GET /api/auth/me's DealerState) compared
@@ -246,29 +284,16 @@ export function RepairBillCreatePage() {
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saveOk, setSaveOk] = useState<string | null>(null)
 
-  const addItem = () => setItems((prev) => [...prev, emptyItem((prev.at(-1)?.key ?? 0) + 1, issueType)])
-  const removeItem = (key: number) => setItems((prev) => (prev.length > 1 ? prev.filter((i) => i.key !== key) : prev))
-  const updateItem = (key: number, patch: Partial<DraftItem>) =>
+  // 2026-09-22 - manually adding a line always adds Labour now (see this module's doc comment);
+  // Part rows are never created this way, only auto-loaded from Material Transfer below.
+  const addItem = () => setItems((prev) => [...prev, emptyItem(`manual-${nextManualKeyRef.current++}`, issueType)])
+  // A Part row auto-loaded from Material Transfer has no Remove button in the UI (matching the
+  // reference's own Part Details List, which has Edit but no Delete) - this guard is defense in
+  // depth in case anything ever calls removeItem on one directly.
+  const removeItem = (key: string) =>
+    setItems((prev) => (prev.length > 1 ? prev.filter((i) => i.key !== key || i.fromMaterialTransfer) : prev))
+  const updateItem = (key: string, patch: Partial<DraftItem>) =>
     setItems((prev) => prev.map((i) => (i.key === key ? { ...i, ...patch } : i)))
-
-  // "and if stock add available then that will add" - caps Qty to the picked stock row's
-  // AvailableQty, same guard as the reference's own onBlurQuantity stock-limit check.
-  const [stockWarning, setStockWarning] = useState<string | null>(null)
-  // 2026-09-22 - see pickPartForLine's doc comment below: tells the user WHY Rate/MRP weren't
-  // auto-filled (no C_ItemMaster match for the picked Item Code) instead of silently falling back
-  // to a non-Item-Master number.
-  const [priceWarning, setPriceWarning] = useState<string | null>(null)
-  const updateQty = (key: number, qtyText: string) => {
-    const it = items.find((i) => i.key === key)
-    const qty = Number(qtyText)
-    if (it?.availableQty != null && !isNaN(qty) && qty > it.availableQty) {
-      setStockWarning(`Only ${it.availableQty} in stock for ${it.itemCode || it.itemDescription} - quantity capped.`)
-      updateItem(key, { qty: String(it.availableQty) })
-      return
-    }
-    setStockWarning(null)
-    updateItem(key, { qty: qtyText })
-  }
 
   const estimatedTotal = items.reduce((sum, it) => sum + lineEstimate(it, taxMode, issueType).total, 0)
   // Per-line Issue Type (2026-09-21 correction) means zero-tax is no longer a single whole-bill
@@ -276,113 +301,91 @@ export function RepairBillCreatePage() {
   // falling back to the bill-level default), for the summary line below.
   const zeroTaxLineCount = items.filter((it) => isZeroTaxIssue(it.issueType || issueType)).length
 
-  // Parts available at the currently-selected Location - fetched once per location change, then
-  // searched client-side by each line's own PartSearchInput (same pattern PartSuggestionCard on
-  // the Job Card Detail page already uses).
-  //
-  // 2026-09-21 ("stock also shown from partuploads and in repair bill"): merged in with parts
-  // uploaded via the "Part Upload" tab for the SAME location, same as
-  // MaterialTransferCreatePage.tsx's own fifth 2026-09-21 correction - see that page's doc comment
-  // for the full reasoning (source: 'partUpload' tagging, BillPrice-direct Rate, no reverse-GST).
-  const [dmsParts, setDmsParts] = useState<BaplDmsPartStock[]>([])
-  const [uploadedParts, setUploadedParts] = useState<BaplDmsPartStock[]>([])
+  // 2026-09-22 ("now i saved from material transfer bill now this will shown in repair bill with
+  // which i material transfer"): every Material Transfer item already saved against the linked
+  // Job (GET /api/material-transfer-docs/for-job/{jobCardId} - see that controller action's doc
+  // comment) - fetched fresh whenever jobCardId changes, cleared when no Job is linked. This
+  // REPLACES the old manual Item Code/Description Part search entirely - see this module's own
+  // 2026-09-22 doc comment for why.
+  const [materialTransferItems, setMaterialTransferItems] = useState<MaterialTransferItemForJob[]>([])
+  // Reference: onSelect() warns "Material Transfer is not completed for this Job Card" off a
+  // stored IsMaterialTransfer flag this app has no equivalent column for (never confirmed to exist
+  // in JobCardScannerDb) - this derives the same warning from data already fetched here instead:
+  // true once the for-job call above has settled (success or failure), so the "no items yet" note
+  // below only shows after a real answer, not while still loading.
+  const [mtFetchDone, setMtFetchDone] = useState(false)
   useEffect(() => {
-    if (!location) { setDmsParts([]); return }
-    staffApi.get<BaplDmsPartStock[]>('/api/bapl-dms/parts', { params: { locationCode: location } })
-      .then(({ data }) => setDmsParts(data))
-      .catch(() => setDmsParts([]))
-  }, [location])
-  useEffect(() => {
-    if (!location) { setUploadedParts([]); return }
-    staffApi.get<PartUpload[]>('/api/part-uploads', { params: { locationCode: location } })
-      .then(({ data }) => setUploadedParts(data.map((u): BaplDmsPartStock => ({
-        itemCode: u.partNo,
-        availableQty: u.balQty ?? 0,
-        description: u.description,
-        hsnCode: u.hsnSacCode,
-        source: 'partUpload',
-        billPrice: u.billPrice,
-      }))))
-      .catch(() => setUploadedParts([]))
-  }, [location])
-  // 2026-09-21 ninth correction ("why duplicate Item Code shown") - see
-  // MaterialTransferCreatePage.tsx's own identical correction for the full reasoning: dedupe by
-  // Item Code, Part Upload winning over live DMS stock.
-  const uploadedCodes = new Set(uploadedParts.map((p) => p.itemCode.trim().toUpperCase()))
+    setMtFetchDone(false)
+    if (!jobCardId) { setMaterialTransferItems([]); return }
+    staffApi.get<MaterialTransferItemForJob[]>(`/api/material-transfer-docs/for-job/${jobCardId}`)
+      .then(({ data }) => setMaterialTransferItems(data))
+      .catch(() => setMaterialTransferItems([]))
+      .finally(() => setMtFetchDone(true))
+  }, [jobCardId])
 
-  // 2026-09-21 ("Rate = Dlr_Price - GST% ... fetch from baplfinal databse ... use in material
-  // transfer and repair bill"): same C_ItemMaster enrichment as MaterialTransferCreatePage.tsx -
-  // see that page's identical block for the full reasoning (this bulk-enriches BOTH live-DMS and
-  // Part-Upload rows alike, since Part Upload's BillPrice is no longer used for Rate here either).
-  const [itemMasterByCode, setItemMasterByCode] = useState<Record<string, BaplItemMaster>>({})
+  // Rate/Mrp/Qty/HSN already come straight off the Material Transfer item (SECTION 64's
+  // C_ItemMaster-derived figures, not recomputed here) - but SGST/CGST/IGST % were never stored on
+  // MaterialTransferDocItem (see that model's own doc comment), so a fresh, precise-by-code
+  // C_ItemMaster lookup (same endpoint as before, just for this job's own item codes) is still
+  // needed to compute this bill's own CGST/SGST/IGST split.
+  const [mtItemMasterByCode, setMtItemMasterByCode] = useState<Record<string, BaplItemMaster>>({})
   useEffect(() => {
-    const codes = Array.from(new Set([...dmsParts, ...uploadedParts].map((p) => p.itemCode.trim().toUpperCase()).filter(Boolean)))
-    if (codes.length === 0) { setItemMasterByCode({}); return }
+    const codes = Array.from(new Set(materialTransferItems.map((m) => m.itemCode.trim().toUpperCase()).filter(Boolean)))
+    if (codes.length === 0) { setMtItemMasterByCode({}); return }
     staffApi.get<BaplItemMaster[]>('/api/item-master/by-codes', { params: { codes: codes.join(',') } })
       .then(({ data }) => {
         const byCode: Record<string, BaplItemMaster> = {}
         data.forEach((im) => { byCode[im.itemCode.trim().toUpperCase()] = im })
-        setItemMasterByCode(byCode)
+        setMtItemMasterByCode(byCode)
       })
-      .catch(() => setItemMasterByCode({}))
-  }, [dmsParts, uploadedParts])
+      .catch(() => setMtItemMasterByCode({}))
+  }, [materialTransferItems])
 
-  // 2026-09-22 ("take Item Code from /item-master and with Search Job below Item Code we cant
-  // select"): same fix as MaterialTransferCreatePage.tsx's own identical block - `parts` is now
-  // seeded primarily from the full, dealer/location-agnostic C_ItemMaster catalog (fetched once on
-  // mount, not scoped to a Location), so Item Code/Description search works whether or not a
-  // Location/Job has been chosen yet. Live DMS stock/Part Upload rows for the current Location are
-  // then merged on top (for availableQty and the "Uploaded" badge) - see PartSearchInput.tsx's own
-  // updated doc comment for the full reasoning.
-  const [itemMasterCatalog, setItemMasterCatalog] = useState<BaplItemMaster[]>([])
+  // Turns the loaded Material Transfer items into read-only Part rows in `items`, replacing
+  // whatever Part rows were there before (there can only ever be one set, always sourced from this
+  // same job) while leaving every manually-added Labour row untouched. Keyed by each row's own
+  // MaterialTransferDocItem.Id, so a Discount/Issue Type the user already edited on a still-present
+  // row survives a re-fetch (e.g. after adding another Material Transfer for the same job).
   useEffect(() => {
-    staffApi.get<BaplItemMaster[]>('/api/item-master')
-      .then(({ data }) => setItemMasterCatalog(data))
-      .catch(() => setItemMasterCatalog([]))
-  }, [])
-
-  const parts: BaplDmsPartStock[] = (() => {
-    const byCode: Record<string, BaplDmsPartStock> = {}
-    itemMasterCatalog.forEach((im) => {
-      const code = im.itemCode.trim().toUpperCase()
-      byCode[code] = {
-        itemCode: im.itemCode,
-        description: im.itemName || im.displayName || im.itemCode,
-        hsnCode: im.hsnCode,
-        availableQty: 0,
-        dlrPrice: im.dlrPrice,
-        sgstPct: im.sgst,
-        cgstPct: im.cgst,
-        igstPct: im.igst,
-        source: 'itemMaster',
-      }
+    setItems((prev) => {
+      const manual = prev.filter((i) => !i.fromMaterialTransfer)
+      const partRows: DraftItem[] = materialTransferItems.map((m) => {
+        const im = mtItemMasterByCode[m.itemCode.trim().toUpperCase()]
+        const sgstPct = im?.sgst ?? 9
+        const cgstPct = im?.cgst ?? 9
+        const igstPct = im?.igst ?? 18
+        const totalGst = sgstPct + cgstPct > 0 ? sgstPct + cgstPct : igstPct
+        const existing = prev.find((i) => i.key === m.id)
+        return {
+          key: m.id,
+          itemType: 'Part',
+          itemCode: m.itemCode,
+          itemDescription: m.itemDescription,
+          hsnCode: m.hsnCode || '',
+          qty: String(m.qty),
+          rate: String(m.rate),
+          mrp: m.mrp != null ? String(m.mrp) : '',
+          gstPct: String(totalGst),
+          discountType: existing?.discountType ?? 'None',
+          discountValue: existing?.discountValue ?? '0',
+          issueType: existing?.issueType ?? (m.issueType || ''),
+          fromMaterialTransfer: true,
+        }
+      })
+      return [...partRows, ...manual]
     })
-    ;[...dmsParts.filter((p) => !uploadedCodes.has(p.itemCode.trim().toUpperCase())), ...uploadedParts].forEach((p) => {
-      const code = p.itemCode.trim().toUpperCase()
-      const im = itemMasterByCode[code]
-      const existing = byCode[code]
-      byCode[code] = {
-        ...existing,
-        ...p,
-        dlrPrice: im?.dlrPrice ?? existing?.dlrPrice ?? p.mrp,
-        sgstPct: im?.sgst ?? existing?.sgstPct,
-        cgstPct: im?.cgst ?? existing?.cgstPct,
-        igstPct: im?.igst ?? existing?.igstPct,
-        hsnCode: p.hsnCode || im?.hsnCode || existing?.hsnCode,
-      }
-    })
-    return Object.values(byCode)
-  })()
+  }, [materialTransferItems, mtItemMasterByCode])
 
-  // 2026-09-21 ("Labour - when labor type select then Labour Code suggestion shown"): a SEPARATE
-  // list from `parts` above, sourced from DMS's own Labour Master (GET /api/bapl-dms/labour, the
-  // SAME endpoint/data JobCardDetailPage.tsx's Labour Suggestion panel already uses) - scoped to
-  // this location's owning dealer (LocCode is always {DealerCode}W{n} - see BaplDmsService's own
+  // 2026-09-21 ("Labour - when labor type select then Labour Code suggestion shown"): sourced from
+  // DMS's own Labour Master (GET /api/bapl-dms/labour, the SAME endpoint/data
+  // JobCardDetailPage.tsx's Labour Suggestion panel already uses) - scoped to this location's
+  // owning dealer (LocCode is always {DealerCode}W{n} - see BaplDmsService's own
   // WorkshopLocCodeRegex - so the trailing W<digits> is stripped the same way
   // DmsBaplDataController.cs already recovers a dealer code from a workshop LocCode elsewhere in
   // this codebase). No JobType/ServiceHead/ServiceType cascade filter here (this page has none of
   // those loaded, unlike the Job Card Detail page) - every active labour row for this dealer is
-  // offered, narrowed by the picker's own free-text search.
+  // offered, narrowed by the picker's own free-text search. This is now the ONLY manual add flow
+  // left on this page (see this module's 2026-09-22 doc comment).
   const [labours, setLabours] = useState<BaplDmsLabourRow[]>([])
   useEffect(() => {
     if (!location) { setLabours([]); return }
@@ -398,7 +401,7 @@ export function RepairBillCreatePage() {
    * doc comment in BaplDmsService.cs) as this line's gstPct total, which then flows through the
    * SAME taxMode/splitGst() pipeline every other line already uses (see lineEstimate/splitGst
    * below) - no separate tax model needed for Labour vs Part lines. */
-  const pickLabourForLine = (key: number, l: BaplDmsLabourRow) => {
+  const pickLabourForLine = (key: string, l: BaplDmsLabourRow) => {
     const totalGst = (l.cgst ?? 0) + (l.sgst ?? 0) > 0 ? (l.cgst ?? 0) + (l.sgst ?? 0) : (l.igst ?? 18)
     updateItem(key, {
       itemCode: l.labourCode,
@@ -407,63 +410,7 @@ export function RepairBillCreatePage() {
       mrp: '',
       rate: l.labourRate != null ? String(l.labourRate) : '0',
       gstPct: String(totalGst),
-      availableQty: null,
     })
-  }
-
-  // 2026-09-21 ("Rate = Dlr_Price - GST% ... fetch from baplfinal databse"): picking a Part now
-  // reverse-calculates its GST-exclusive Rate out of C_ItemMaster's confirmed, GST-INCLUSIVE
-  // Dlr_Price using that item's own SGST/CGST/IGST percentages (via the itemMasterByCode merge
-  // above), same replacement as MaterialTransferCreatePage.tsx's own pickPartForLine - see that
-  // page's doc comment for the full reasoning, including why Part-Upload's BillPrice is no longer
-  // used for Rate. Falls back to the previous Mrp-based/default-18%/BillPrice-direct behaviour only
-  // when this item code has no C_ItemMaster match.
-  // 2026-09-22 ("which dealer price are there in item-master that will not came in material
-  // transfer ... dont take this calclation from parts-upload for clculation take item-master
-  // rate , mrp , amount calculation"): same fix as MaterialTransferCreatePage.tsx's own
-  // pickPartForLine - see that page's doc comment for the full race-condition/1000-row-cap
-  // reasoning this closes. Picking a Part now fetches C_ItemMaster fresh, for this EXACT Item
-  // Code, at the moment of picking (GET /api/item-master/by-codes?codes=<one code>) - Rate/MRP/
-  // GST% are ALWAYS computed from that fresh row; Part Upload/live DMS stock now only ever
-  // supplies Item Code/Description/HSN/availableQty, never a price. If C_ItemMaster genuinely has
-  // no row for this code, Rate/MRP are left for manual entry, with priceWarning below explaining
-  // why instead of silently falling back to Part Upload's Bill Price.
-  const pickPartForLine = async (key: number, p: BaplDmsPartStock) => {
-    const current = items.find((i) => i.key === key)
-    setPriceWarning(null)
-    updateItem(key, {
-      itemCode: p.itemCode,
-      itemDescription: p.description || p.itemCode,
-      hsnCode: p.hsnCode || '',
-      availableQty: p.availableQty,
-    })
-    if (Number(current?.qty) > p.availableQty) {
-      setStockWarning(`Only ${p.availableQty} in stock for ${p.itemCode} - quantity capped.`)
-      updateItem(key, { qty: String(p.availableQty) })
-    }
-
-    let im: BaplItemMaster | undefined
-    try {
-      const { data } = await staffApi.get<BaplItemMaster[]>('/api/item-master/by-codes', { params: { codes: p.itemCode } })
-      im = data.find((row) => row.itemCode.trim().toUpperCase() === p.itemCode.trim().toUpperCase())
-    } catch {
-      im = undefined
-    }
-
-    if (im?.dlrPrice != null) {
-      const sgstPct = im.sgst ?? 9
-      const cgstPct = im.cgst ?? 9
-      const igstPct = im.igst ?? 18
-      const totalGst = sgstPct + cgstPct > 0 ? sgstPct + cgstPct : igstPct
-      updateItem(key, {
-        mrp: String(im.dlrPrice),
-        rate: rateFromMrp(im.dlrPrice, totalGst).toFixed(2),
-        gstPct: String(totalGst),
-        hsnCode: im.hsnCode || p.hsnCode || '',
-      })
-    } else {
-      setPriceWarning(`No Item Master (C_ItemMaster) price found for ${p.itemCode} - Rate/MRP left for manual entry.`)
-    }
   }
 
   const selectJob = (job: JobSearchResult) => {
@@ -526,11 +473,11 @@ export function RepairBillCreatePage() {
       .then((r) => {
         setSaveOk(`Saved as ${r.data.billNumber}.`)
         clearJob()
-        setStockWarning(null)
         setPartyName(''); setRegNo(''); setChassisNo(''); setBillType('Cash'); setIssueType(''); setRemarks('')
         setInsuranceCompanyName(''); setInsuranceDescription(''); setSurveyorName(''); setSurveyorContactNumber('')
         setPolicyNo(''); setInsuranceValidTill(''); setZeroDepreciation(false); setTotalDiscount('0'); setAmountReceived('0')
-        setItems([emptyItem(1)])
+        nextManualKeyRef.current = 2
+        setItems([emptyItem('manual-1')])
         loadCombined()
       })
       .catch((err) => setSaveError(err?.response?.data?.message ?? 'Could not save the repair bill.'))
@@ -689,6 +636,20 @@ export function RepairBillCreatePage() {
           </div>
         </div>
 
+        {/* 2026-09-22: mirrors the real BAPL DMS reference's own onSelect() warning ("Material
+            Transfer is not completed for this Job Card") - shown here once the for-job fetch has
+            actually completed (mtFetchDone) so it never flashes during the initial load, and only
+            when a Job is linked at all (jobCardId) and that fetch came back empty. Client-side only,
+            derived from data already fetched for the grid below - no new backend flag invented for
+            this. */}
+        {jobCardId && mtFetchDone && materialTransferItems.length === 0 && (
+          <p className="muted" style={{ color: '#b45309', marginBottom: 10 }}>
+            ⚠ No Material Transfer found yet for this Job Card. Parts must be issued via Material
+            Transfer first - they will appear here automatically once saved. You can still add
+            Labour below.
+          </p>
+        )}
+
         {/* 2026-09-21 ("adjust all textbox according there size we already added scroll so
             proper show textbox value"): wrapped in a horizontally-scrollable container, same as
             MaterialTransferCreatePage.tsx's own item grid - this table had no such wrapper before,
@@ -720,16 +681,12 @@ export function RepairBillCreatePage() {
             {items.map((it) => {
               const est = lineEstimate(it, taxMode, issueType)
               return (
-                <tr key={it.key}>
+                <tr key={it.key} style={it.fromMaterialTransfer ? { background: 'var(--surface-muted, #f8f9fa)' } : undefined}>
                   <td>
-                    <select
-                      value={it.itemType}
-                      onChange={(e) => updateItem(it.key, { itemType: e.target.value as RepairBillDocItemType })}
-                      style={{ minWidth: 100 }}
-                    >
-                      <option value="Part">Part</option>
-                      <option value="Labour">Labour</option>
-                    </select>
+                    {it.itemType}
+                    {it.fromMaterialTransfer && (
+                      <><br /><span className="badge badge-muted" title="Auto-loaded from a Material Transfer already saved against this job - Item Code/Description/HSN/Qty/Rate come from there, not typed here." style={{ fontSize: 10 }}>Material Transfer</span></>
+                    )}
                   </td>
                   <td>
                     {it.itemType === 'Labour' ? (
@@ -743,14 +700,7 @@ export function RepairBillCreatePage() {
                         width={130}
                       />
                     ) : (
-                      <PartSearchInput
-                        parts={parts}
-                        value={it.itemCode}
-                        onChangeText={(text) => updateItem(it.key, { itemCode: text })}
-                        onPick={(p) => pickPartForLine(it.key, p)}
-                        placeholder="Item code…"
-                        width={130}
-                      />
+                      <input value={it.itemCode} readOnly style={{ width: 130 }} />
                     )}
                   </td>
                   <td>
@@ -764,16 +714,16 @@ export function RepairBillCreatePage() {
                         width={210}
                       />
                     ) : (
-                      <PartSearchInput
-                        parts={parts}
-                        value={it.itemDescription}
-                        onChangeText={(text) => updateItem(it.key, { itemDescription: text })}
-                        onPick={(p) => pickPartForLine(it.key, p)}
-                        width={210}
-                      />
+                      <input value={it.itemDescription} readOnly style={{ width: 210 }} />
                     )}
                   </td>
-                  <td><input value={it.hsnCode} onChange={(e) => updateItem(it.key, { hsnCode: e.target.value })} style={{ width: 90 }} /></td>
+                  <td>
+                    {it.itemType === 'Labour' ? (
+                      <input value={it.hsnCode} onChange={(e) => updateItem(it.key, { hsnCode: e.target.value })} style={{ width: 90 }} />
+                    ) : (
+                      <input value={it.hsnCode} readOnly style={{ width: 90 }} />
+                    )}
+                  </td>
                   <td>
                     <select
                       value={it.issueType}
@@ -787,8 +737,20 @@ export function RepairBillCreatePage() {
                       <option value="FSC">FSC - Free Service Coupon (zero tax)</option>
                     </select>
                   </td>
-                  <td><input type="number" value={it.qty} onChange={(e) => updateQty(it.key, e.target.value)} style={{ width: 70, textAlign: 'right' }} /></td>
-                  <td><input type="number" value={it.rate} onChange={(e) => updateItem(it.key, { rate: e.target.value })} title={it.mrp ? `Reverse-calculated from MRP ₹${it.mrp} at ${it.gstPct}% GST - edit to override.` : undefined} style={{ width: 90, textAlign: 'right' }} /></td>
+                  <td>
+                    {it.itemType === 'Labour' ? (
+                      <input type="number" value={it.qty} onChange={(e) => updateItem(it.key, { qty: e.target.value })} style={{ width: 70, textAlign: 'right' }} />
+                    ) : (
+                      <input type="number" value={it.qty} readOnly title="Qty transferred - see the Material Transfer Bill to change it." style={{ width: 70, textAlign: 'right' }} />
+                    )}
+                  </td>
+                  <td>
+                    {it.itemType === 'Labour' ? (
+                      <input type="number" value={it.rate} onChange={(e) => updateItem(it.key, { rate: e.target.value })} style={{ width: 90, textAlign: 'right' }} />
+                    ) : (
+                      <input type="number" value={it.rate} readOnly title={it.mrp ? `From the Material Transfer item's own C_ItemMaster-derived Rate (MRP ₹${it.mrp}).` : `From the Material Transfer item's own Rate.`} style={{ width: 90, textAlign: 'right' }} />
+                    )}
+                  </td>
                   <td>
                     <select value={it.discountType} onChange={(e) => updateItem(it.key, { discountType: e.target.value as DiscountType })} style={{ minWidth: 90 }}>
                       <option value="None">None</option>
@@ -802,17 +764,19 @@ export function RepairBillCreatePage() {
                   <td className="text-end">₹{est.sgstAmt.toFixed(2)}{est.sgstPct > 0 && <><br /><span className="muted" style={{ fontSize: 11 }}>@{est.sgstPct}%</span></>}</td>
                   <td className="text-end">₹{est.igstAmt.toFixed(2)}{est.igstPct > 0 && <><br /><span className="muted" style={{ fontSize: 11 }}>@{est.igstPct}%</span></>}</td>
                   <td className="text-end">₹{est.total.toFixed(2)}</td>
-                  <td><button className="btn btn-icon btn-danger" onClick={() => removeItem(it.key)} title="Remove line">✕</button></td>
+                  <td>
+                    {!it.fromMaterialTransfer && (
+                      <button className="btn btn-icon btn-danger" onClick={() => removeItem(it.key)} title="Remove line">✕</button>
+                    )}
+                  </td>
                 </tr>
               )
             })}
           </tbody>
         </table>
         </div>
-        {stockWarning && <p className="muted" style={{ color: '#b45309', marginTop: 10 }}>⚠ {stockWarning}</p>}
-        {priceWarning && <p className="muted" style={{ color: '#b45309', marginTop: 10 }}>⚠ {priceWarning}</p>}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
-          <button className="btn btn-sm" onClick={addItem}>+ Add Line</button>
+          <button className="btn btn-sm" onClick={addItem}>+ Add Labour</button>
           <span className="muted">
             {zeroTaxLineCount > 0 && <>{zeroTaxLineCount} zero-tax line{zeroTaxLineCount > 1 ? 's' : ''} - </>}
             Estimated Total: <strong>₹{estimatedTotal.toFixed(2)}</strong>

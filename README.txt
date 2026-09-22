@@ -434,3 +434,223 @@ VERIFICATION:
   picking 0301-A01-1025 (or any item with a known C_ItemMaster Dealer Price) now shows Rate ~Rs
   205.08 and MRP Rs 242.00, not Rs 130; picking an Item Code with genuinely no C_ItemMaster row
   shows the new "Rate/MRP left for manual entry" warning instead of a wrong number.
+
+================================================================================
+SECTION 65 - Repair Bill Part grid: auto-load from Material Transfer (no manual
+Part search on Repair Bill), matching the real BAPL DMS reference architecture
+================================================================================
+
+YOUR WORDS: "now i saved from material transfer bill now this will shown in
+repair bill with which i material transfer and from repair bill we can add only
+labour from labour master in dropdown and that will add save as proforma" ...
+"give proper flow for repair bill material transfer is ok now"
+
+CONTEXT - confirmed from the real BAPL DMS production reference source you
+pasted (RepairBillController.cs, RepairBillRepo.cs, repair-bill-service.ts,
+repair-bill.ts/.html, repair-bill-list.ts/.html, repair-bill-invoice.ts/.html):
+FACT - the reference's repair-bill.html has NO manual Part search dropdown at
+  all - it is literally commented out in that file.
+FACT - Parts are populated the moment a Job is selected, via
+  loadMaterialedJobCardList() -> jobCardService.getMaterialedJobCardList(jobId,
+  dealerCode) - i.e. pulled from whatever Material Transfer already exists for
+  that job, not typed/searched on the Repair Bill screen itself.
+FACT - only Labour has a live search-and-add flow on that screen (addLabour()
+  against the Labour Master).
+FACT - Part rows in the reference grid have an Edit action but no Delete action.
+
+WHAT CHANGED (web only - this correction is scoped to the Repair Bill create
+page; screenshots and reference source were both web):
+
+1. backend/JobCardScanner.Api/Controllers/MaterialTransferDocsController.cs
+   - New endpoint: GET /api/material-transfer-docs/for-job/{jobCardId}
+   - Returns every Item row from every non-Cancelled Material Transfer Doc
+     already saved against that Job Card, for the caller's own dealer
+     (DealerId scoped, same as every other endpoint in this controller).
+   - Flat list (MaterialTransferDocId/TransferNumber/TransferDate + each
+     item's Id/ItemCode/ItemDescription/HsnCode/IssueType/Qty/Rate/Amount/Mrp)
+     - this is the JobCardScanner equivalent of the reference's
+     getMaterialedJobCardList().
+
+2. web/src/types/index.ts
+   - New MaterialTransferItemForJob interface matching that endpoint's shape.
+
+3. web/src/pages/staff/RepairBillCreatePage.tsx - Part flow rewritten:
+   - REMOVED: the manual Item Code/Description Part search UI (PartSearchInput
+     wiring, dmsParts/uploadedParts/uploadedCodes fetches, the old synchronous
+     itemMasterByCode/itemMasterCatalog-based pickPartForLine). Repair Bill no
+     longer searches Parts itself, matching the reference exactly.
+   - ADDED: a fetch of the new for-job endpoint whenever the linked Job
+     (jobCardId) changes, plus a follow-up /api/item-master/by-codes lookup
+     (same endpoint SECTION 64 already uses) to re-derive each Part row's
+     GST% fresh from C_ItemMaster for the Taxable/CGST/SGST/IGST columns -
+     Material Transfer's own item rows don't carry GST% (see
+     MaterialTransferDocItem's own doc comment - by design, GST is computed
+     live wherever it's shown, never persisted there), so Repair Bill has
+     to look it up the same way Material Transfer's own display already does.
+   - Part rows in the grid are now READ-ONLY: Item Code/Description/HSN/
+     Qty/Rate all come straight from the Material Transfer item and cannot be
+     typed or edited (each has a `readOnly`/tooltip explaining it comes from
+     Material Transfer). Discount Type/Value and Issue Type remain editable
+     per line, same as before, since the reference's own grid lets you set
+     those per line too.
+   - Part rows have NO Remove (X) button, matching the reference's "Edit only,
+     no Delete" Part row - only manually-added Labour lines can be removed.
+   - "+ Add Line" button relabelled "+ Add Labour" and now only ever creates a
+     Labour-type row - Labour remains the one item type with a live search
+     (LabourSearchInput, unchanged from before this section).
+   - New inline warning (muted amber text, same style as the existing
+     stock/price warnings elsewhere in this app) shown once a Job is linked
+     and its Material Transfer fetch has completed with zero items: "No
+     Material Transfer found yet for this Job Card. Parts must be issued via
+     Material Transfer first - they will appear here automatically once
+     saved. You can still add Labour below." This mirrors the reference's own
+     onSelect() toaster ("Material Transfer is not completed for this Job
+     Card") but is derived client-side from the already-fetched for-job list,
+     not a new backend flag.
+   - React key type for grid rows changed from number to string: manually-
+     added Labour lines get "manual-N" (a useRef counter), auto-loaded Part
+     lines use their own backend MaterialTransferDocItem GUID directly as the
+     key - this keeps edits to Discount/Issue Type on a Part row intact across
+     re-fetches (matched back to the same row by that same id) and guarantees
+     no key collision between the two kinds of rows.
+
+WHAT WAS DELIBERATELY NOT DONE (disclosed, not an oversight):
+- INTERPRETATION, not Fact: no "already consumed by a Repair Bill" tracking
+  was added between MaterialTransferDocItem and RepairBillDocItem (no FK, no
+  IsUsedInRepairBill flag). Nothing in the pasted reference source or the
+  existing codebase evidences this mechanism, and MaterialTransferDocItem has
+  no such column today - adding one would be inventing an unconfirmed business
+  rule. Practical effect: the same Material Transfer item will keep appearing
+  on this Job's Repair Bill screen even if it was already billed once before
+  (e.g. if the first Repair Bill was later cancelled and a new one started).
+  Flag this back to us if BAPL DMS actually does track/prevent double-billing
+  a transferred part - we did not see it in what was pasted.
+- MaterialTransferCreatePage.tsx (Material Transfer's OWN creation screen) is
+  UNCHANGED this section. Its manual Part search (SECTION 63/64) stays exactly
+  as is - that screen is genuinely where Parts first enter the system, so it
+  still needs a live search; this section's correction is specific to Repair
+  Bill's grid, which should only ever consume what Material Transfer already
+  produced, per the reference.
+- Android's Repair Bill screen (SECTION 62) still has its own, separate Part-
+  entry flow and was NOT touched this section - the screenshots and reference
+  source you provided this time were web-only (repair-bill.html/.ts). Let us
+  know if you want the same auto-load-from-Material-Transfer correction
+  applied to the Android app's Repair Bill screen as a follow-up.
+
+VERIFICATION:
+- cd web && npx tsc --noEmit -> exit code 0, no errors, whole project.
+- Grepped RepairBillCreatePage.tsx for every identifier removed in this
+  rewrite (stockWarning/priceWarning/updateQty/availableQty/BaplDmsPartStock/
+  PartUpload/PartSearchInput/rateFromMrp) - the only remaining matches are in
+  doc-comment prose describing the OLD flow for context, none in live code.
+- No dev server available in this sandbox to click through the UI - please
+  confirm on your end: after saving a Material Transfer for a Job, opening
+  Repair Bill and linking that same Job auto-fills its Part rows (read-only,
+  "Material Transfer" badge, no X button) with the correct Item Code/
+  Description/HSN/Qty/Rate/GST%; linking a Job with no Material Transfer saved
+  yet shows the new amber warning instead of an empty/broken grid; Labour can
+  still be searched and added/removed as before; Save still posts a Performa
+  Repair Bill with both the auto Part rows and manually-added Labour rows.
+
+FILES CHANGED:
+- backend/JobCardScanner.Api/Controllers/MaterialTransferDocsController.cs -
+  new GET for-job/{jobCardId} endpoint.
+- web/src/types/index.ts - new MaterialTransferItemForJob interface.
+- web/src/pages/staff/RepairBillCreatePage.tsx - Part flow rewritten to
+  auto-load read-only rows from Material Transfer; Labour-only manual
+  search/add/remove retained; new "no Material Transfer yet" warning.
+
+================================================================================
+SECTION 65 CORRECTION - two real compile errors slipped through, plus a
+verification-process bug on my end that let them through undetected
+================================================================================
+
+WHAT HAPPENED: you reported two real TypeScript errors from your own editor in
+RepairBillCreatePage.tsx:
+  - Line 476: Cannot find name 'setStockWarning' (a leftover call to the
+    priceWarning/stockWarning state I removed in SECTION 65's rewrite - I
+    missed this one call site, inside the Save-success handler's field-reset
+    block, since my earlier grep sweep for stray references happened to only
+    match doc-comment prose elsewhere in the file, not this).
+  - Line 480: setItems([emptyItem(1)]) - the same Save-success reset block
+    still passed a number (1) as the new line's key, but DraftItem.key was
+    changed to string this section (manual-N) - so this is a real type error,
+    not a false positive.
+
+BOTH ARE NOW FIXED:
+  - setStockWarning(null) call removed (the state it referenced no longer
+    exists anywhere in this file).
+  - setItems([emptyItem(1)]) -> setItems([emptyItem('manual-1')]), with
+    nextManualKeyRef.current reset to 2 alongside it, so a line added right
+    after a Save gets key 'manual-2' and never collides with 'manual-1'.
+
+THE MORE IMPORTANT ISSUE - why "npx tsc --noEmit" didn't catch this:
+This project's tsconfig.json has "files": [] and only "references" to
+tsconfig.app.json/tsconfig.node.json (a TS solution/project-references setup).
+Plain `tsc --noEmit` against that root config does NOT follow references
+unless run in build mode (`tsc -b`) - so every "npx tsc --noEmit -> clean, no
+errors" I reported this session (SECTION 64 and SECTION 65 both) was checking
+essentially nothing. It always exited 0 whether or not there were real errors,
+which is why these two got through. The correct commands, which I re-ran just
+now and which DID surface both problems: `npx tsc -p tsconfig.app.json
+--noEmit` (finds this pair of errors) and `npx tsc -p tsconfig.node.json
+--noEmit`. Both are clean now, genuinely - re-verified after the fix above.
+
+I'm flagging this plainly rather than quietly fixing it: any prior "tsc clean"
+claim in this README before this correction was not a real guarantee. Going
+forward I'll use `npx tsc -p tsconfig.app.json --noEmit` (and the node
+config) instead of the bare command.
+
+FILE CHANGED (replaces the SECTION 65 copy in this same zip):
+- web/src/pages/staff/RepairBillCreatePage.tsx
+
+================================================================================
+SECTION 66 - Labour search dropdown: code-only display, duplicate rows removed
+================================================================================
+
+YOUR WORDS: "in labour only labour code need to shown in dropdown and its
+shown duplicate that also fix" (screenshot: typing "f" on a Labour line in
+Repair Bill showed rows like "SFOM001 — FREE SERVICE (₹130)" with the exact
+same code/description/rate appearing more than once in the list).
+
+FILE CHANGED: web/src/components/LabourSearchInput.tsx (shared by
+RepairBillCreatePage.tsx's Labour line and anywhere else this component is
+used - no other file needed a change for this).
+
+WHAT CHANGED:
+- Dropdown row text dropped the " — <description>" segment - it now shows
+  just the Labour Code and its rate, e.g. "SFOM001 (₹130)". The description
+  is still available as a hover tooltip on the row (title attribute), not
+  gone entirely, just not shown inline per your ask.
+- Deliberately KEPT the rate in the row text rather than showing the code
+  alone: your own screenshot has the same code (SFOM001) appearing with
+  different rates (₹130 / ₹150 / ₹145) - those are NOT duplicates, they're
+  genuinely different LabourMaster/PartWiseLabourMaster rows sharing a code
+  (most likely one per OEM Model or Location the labour applies to - the
+  upstream GET /api/bapl-dms/labour endpoint wasn't something I changed here,
+  so I can't confirm the exact reason without looking at it). If the code
+  were shown with nothing else, those would become visually identical and a
+  dealer could pick the wrong one and bill at the wrong rate - so the rate
+  stays as the one thing that still tells them apart.
+- Real duplicates (same code AND same rate AND same source) ARE now removed:
+  added a dedupe pass over the search matches keyed on
+  labourCode+labourRate+source, keeping only the first occurrence. This is
+  what was producing the exact repeated rows in your screenshot.
+
+NOT CHANGED / NOT INVESTIGATED: why the backing labour list has duplicate
+source rows in the first place (i.e. whether GET /api/bapl-dms/labour itself
+is returning true duplicates from LabourMaster/PartWiseLabourMaster, or
+whether this component was simply never deduping before). This fix removes
+the symptom in the dropdown; if you want the root cause traced in the backend
+query itself, send me that controller/service and I'll look.
+
+VERIFICATION:
+- cd web && npx tsc -p tsconfig.app.json --noEmit -> exit code 0, no errors
+  (using the corrected command - see SECTION 65's correction note above for
+  why the plain `tsc --noEmit` doesn't actually check anything in this repo).
+- No dev server available in this sandbox to click through the UI - please
+  confirm on your end: typing "f" in a Labour line's search box now shows
+  each distinct code+rate combination once, with just the code and rate
+  visible (description on hover), and picking a row still fills
+  Description/HSN/Rate exactly as before (pickLabourForLine itself is
+  unchanged).
