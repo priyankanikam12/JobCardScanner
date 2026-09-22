@@ -169,12 +169,12 @@ export function PartUploadPage() {
   return (
     <div>
       <h2>Part Upload</h2>
-      <p className="muted">
+      {/* <p className="muted">
         Upload a Stock Summary Detail Report (.xlsx) to build a searchable parts stock table here -
         saved into JobCardScanner's own database, scoped to your dealer. Re-uploading a newer report
         for the same Location updates each part's stock figures in place by Part No rather than
         adding duplicates.
-      </p>
+      </p> */}
 
       <div className="card">
         <h3>Upload Excel</h3>
@@ -212,7 +212,7 @@ export function PartUploadPage() {
             />
           </div>
         </div>
-        {!canUpload && <p className="muted" style={{ marginTop: 4 }}>Select Date and Location above to enable the file upload.</p>}
+        {!canUpload && <p className="muted" style={{ marginTop: 4 }}></p>}
         {importing && <p className="muted">Importing…</p>}
         {importError && <p className="error-text">{importError}</p>}
         {importResult && (

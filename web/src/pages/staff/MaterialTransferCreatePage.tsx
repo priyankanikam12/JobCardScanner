@@ -610,11 +610,11 @@ export function MaterialTransferCreatePage() {
   return (
     <div>
       <h2>Material Transfer Bill</h2>
-      <p className="muted">
+      {/* <p className="muted">
         Create a material transfer document - saved into JobCardScanner's own database. The list
         below shows transfers created here together with the read-only material transfer data
         synced from DMSBAPLDATA, tagged by source.
-      </p>
+      </p> */}
 
       <div className="card">
         <h3>New Material Transfer</h3>
@@ -757,7 +757,7 @@ export function MaterialTransferCreatePage() {
           <span className="muted">
             {partyState
               ? `Tax: ${isSameState ? 'Same State (CGST+SGST)' : 'Different State (IGST)'}, auto-detected from the linked job's customer state - `
-              : `Tax: Same State (CGST+SGST), defaulted (no job linked - this dealer's own stock moving internally) - `}
+              : `Tax: Same State (CGST+SGST) `}
             Total (excl. GST, not persisted): <strong>₹{estimatedTotal.toFixed(2)}</strong>
           </span>
         </div>

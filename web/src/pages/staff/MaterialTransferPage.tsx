@@ -91,10 +91,10 @@ export function MaterialTransferPage() {
   return (
     <div>
       <h2>Material Transfer</h2>
-      <p className="muted">
+      {/* <p className="muted">
         Synced material transfer documents from DMSBAPLDATA, scoped to your own workshop location.
         Read-only - this app never writes to DMSBAPLDATA.
-      </p>
+      </p> */}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
         <ReportDownloadButtons
