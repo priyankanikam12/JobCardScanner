@@ -14,6 +14,10 @@ import { PartsScreen } from '../screens/PartsScreen'
 import { ItemMasterScreen } from '../screens/ItemMasterScreen'
 import { MaterialTransferCreateScreen } from '../screens/MaterialTransferCreateScreen'
 import { RepairBillCreateScreen } from '../screens/RepairBillCreateScreen'
+// 2026-09-23 ("this main in 1 page not on same only which are save in jobcard db that in grid
+// button"): new list screen for JobCardScanner's own saved Repair Bills, split out of
+// RepairBillCreateScreen above - see that screen's own doc comment and RepairBillListScreen.tsx.
+import { RepairBillListScreen } from '../screens/RepairBillListScreen'
 import { colors } from '../theme/colors'
 
 /** Optional /jobcards-equivalent filters the Dashboard's KPI cards deep-link with - each name
@@ -39,7 +43,10 @@ export type RootStackParamList = {
   Parts: undefined
   ItemMaster: undefined
   MaterialTransferCreate: undefined
-  RepairBillCreate: undefined
+  // 2026-09-23 - optional editBillId param lets RepairBillListScreen open this same screen already
+  // in edit mode for a given bill, the Android equivalent of web's /repair-bill-new?editId={id}.
+  RepairBillCreate: { editBillId?: string } | undefined
+  RepairBillList: undefined
 }
 
 const Stack = createNativeStackNavigator<RootStackParamList>()
@@ -90,6 +97,7 @@ export function RootNavigator() {
           <Stack.Screen name="Parts" component={PartsScreen} options={{ title: 'Parts Catalog' }} />
           <Stack.Screen name="ItemMaster" component={ItemMasterScreen} options={{ title: 'Item Master' }} />
           <Stack.Screen name="MaterialTransferCreate" component={MaterialTransferCreateScreen} options={{ title: 'Material Transfer Bill' }} />
+          <Stack.Screen name="RepairBillList" component={RepairBillListScreen} options={{ title: 'Repair Bill List' }} />
           <Stack.Screen name="RepairBillCreate" component={RepairBillCreateScreen} options={{ title: 'Repair Bill' }} />
         </Stack.Navigator>
       )}

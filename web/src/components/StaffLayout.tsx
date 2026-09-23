@@ -67,17 +67,24 @@ export const NAV_ITEMS: NavItem[] = [
   // ROUTES/PAGES those relabelled items point to (MaterialTransferPage.tsx/RepairBillPage.tsx) are
   // completely unchanged, only the nav label text and subtitle wording were touched.
   { to: '/material-transfer-bill', label: 'Material Transfer Bill', icon: '🆕', subtitle: 'Create a material transfer - saves to JobCardScanner', roles: ['ServiceAdvisor', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
+  // 2026-09-23 - new list page for transfers already saved in JobCardScanner (Draft/Confirmed/
+  // Cancelled) - split out of the Material Transfer Bill create page above, mirroring the Repair
+  // Bill List entry below.
+  { to: '/material-transfer-list', label: 'Material Transfer List', icon: '📋', subtitle: 'Saved material transfers (JobCardScanner) - view, edit, Confirm Transfer', roles: ['ServiceAdvisor', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
   { to: '/material-transfer', label: 'Material Transfer Report', icon: '🔄', subtitle: 'Synced material transfer docs (DMSBAPLDATA)' },
   { to: '/repair-bill-new', label: 'Repair Bill', icon: '🧾', subtitle: 'Create a repair bill - saves to JobCardScanner', roles: ['ServiceAdvisor', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
+  // 2026-09-23 - new list page for bills already saved in JobCardScanner (Performa/Billed) -
+  // split out of the Repair Bill create page above.
+  //{ to: '/repair-bill-list', label: 'Repair Bill List', icon: '📋', subtitle: 'Saved repair bills (JobCardScanner) - view, edit, Save as Invoice', roles: ['ServiceAdvisor', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
   { to: '/repair-bill', label: 'Repair Bill Report', icon: '📄', subtitle: 'Synced repair bill data (DMSBAPLDATA)' },
   // 2026-09-22 "needs to create warenty table in jobcardscanner db for this functionality and add
   // this in our function" - gated the same as Labour Master (WorkshopManagerUp): pricing data.
-  { to: '/battery-warranty-schemes', label: 'Battery Warranty Schemes', icon: '🔋', subtitle: 'Extended Battery Warranty pricing & coverage by model', roles: ['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
+  //{ to: '/battery-warranty-schemes', label: 'Battery Warranty Schemes', icon: '🔋', subtitle: 'Extended Battery Warranty pricing & coverage by model', roles: ['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
   // 2026-09-22 "this all table add in jobcard db that all functionality need to craete in jc" -
   // global masters (see OemModelsController's own doc comment for why List/Get is
   // WorkshopManagerUp here even though writes are CorporateAdminUp-only server-side).
-  { to: '/oem-models', label: 'OEM Model Master', icon: '🚗', subtitle: 'Shared vehicle model catalog (global, not per-dealer)', roles: ['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
-  { to: '/oem-model-warranties', label: 'OEM Model Warranty', icon: '🛡️', subtitle: 'Standard manufacturer warranty terms by model', roles: ['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
+ // { to: '/oem-models', label: 'OEM Model Master', icon: '🚗', subtitle: 'Shared vehicle model catalog (global, not per-dealer)', roles: ['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
+  //{ to: '/oem-model-warranties', label: 'OEM Model Warranty', icon: '🛡️', subtitle: 'Standard manufacturer warranty terms by model', roles: ['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
   { to: '/reports', label: 'Reports & Search', icon: '📊', subtitle: 'Excel & PDF, by date range' },
   // Employees (2026-09-17): create/edit/delete local dealer logins with Work Area location
   // scoping. Gated to DealerAdmin and up - the same DealerAdminUp floor UsersController's API

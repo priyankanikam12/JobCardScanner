@@ -122,7 +122,10 @@ export function DashboardScreen({ navigation }: Props) {
              Master/Material Transfer Bill/Repair Bill sidebar pages. */}
           <ActionCard title="Item Master" subtitle="BAPL item catalog - Dealer Price & GST% (baplfinal)" onPress={() => navigation.navigate('ItemMaster')} />
           <ActionCard title="Material Transfer Bill" subtitle="Create & view material transfers" onPress={() => navigation.navigate('MaterialTransferCreate')} />
-          <ActionCard title="Repair Bill" subtitle="Create & view repair bills" onPress={() => navigation.navigate('RepairBillCreate')} />
+          <ActionCard title="Repair Bill" subtitle="Create a repair bill" onPress={() => navigation.navigate('RepairBillCreate')} />
+          {/* 2026-09-23 - new list screen for bills already saved in JobCardScanner, split out of
+             the Repair Bill create screen above. */}
+          <ActionCard title="Repair Bill List" subtitle="Saved repair bills - view, edit, Save as Invoice" onPress={() => navigation.navigate('RepairBillList')} />
         </View>
       </ScrollView>
     </View>

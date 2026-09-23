@@ -1843,3 +1843,608 @@ VERIFICATION:
   since editing only ever opens for a Performa bill, but worth confirming the backend guard too);
   (5) Part Upload stock nets out correctly if you edit a bill's Part quantities (compare Parts
   Inward/Part Upload balance before and after an edit).
+
+SECTION 81 (2026-09-23)
+================================================================================
+USER REQUEST (verbatim, follow-up to SECTION 80): "this button not added why? please add and
+there history maintain in which job card which item material transfered and there we can add
+labour"
+
+INTERPRETATION: the reopen-as-editable flow just built for Repair Bill (SECTION 80) had not yet
+been built for Material Transfer Bill - this section is that same capability's Material Transfer
+sibling, plus two things explicitly named in this request: (a) "history ... which job card" - a
+Job No column on the Material Transfer combined list so it's visible per row which Job Card each
+transfer belongs to; (b) "we can add labour" - confirming the existing per-Part-row "+ Add"
+button (SECTION 79-era) still works once a transfer is reopened for editing (it does, unchanged -
+it just operates on the same `items` state either way).
+
+IMPORTANT ARCHITECTURAL DIFFERENCE FROM SECTION 80, called out rather than blindly copied:
+Repair Bill's Part lines re-derive FRESH from the Job's current Material Transfer on reopen (only
+Labour is restored from the bill's own saved rows) - Material Transfer is a separate, still-live
+upstream source for Repair Bill to pull from. Material Transfer has no such separate upstream
+source for ITS OWN Part lines - a Material Transfer document IS the record being edited. So this
+section's reopen restores EVERY saved line (Part and Labour alike) directly from the transfer's
+own saved Items, not just Labour.
+
+BACKEND (Controllers/MaterialTransferDocsController.cs):
+- List()/Combined()/Get(): added `.Include(m => m.JobCard)` (same change RepairBillDocsController
+  made in SECTION 80, for the same reason - JobCardNumber needed on the row/detail response).
+- New `PUT /api/material-transfer-docs/{id}` Update(): the Material Transfer sibling of
+  RepairBillDocsController.Update. Guards: Items required; transfer must exist; Status must still
+  be Draft (Confirmed/Cancelled -> 400, no "undo" here); a non-SystemAdmin is blocked if the same
+  Job's own Repair Bill has already been Billed (re-uses Delete's exact existing check, rather
+  than inventing a looser rule for Update alone - editing what was transferred after the
+  resulting bill is finalized would silently make what's billed and what's on hand disagree).
+  Restores the OLD items' PartUploads.BalQty impact first (same restore Delete already performs),
+  THEN re-decrements for the NEW items via the shared ApplyStockAndBuildItemsAsync - so editing a
+  Part line's Qty (or adding/removing one) nets out correctly instead of double-counting.
+- Create() refactored: item-build/stock logic extracted into the new shared
+  ApplyStockAndBuildItemsAsync(doc, req, dealerId), called by both Create and Update - so the two
+  paths can never drift apart the way Repair Bill's own Create/Update do (see SECTION 80).
+- ToRow(): now also returns JobCardId/JobCardNumber/Remarks (previously not returned at all - a
+  reopened edit form needs these to re-link the same Job and not silently drop Remarks on save).
+- ToCombinedRow(): now also returns JobNo (from the new JobCard include) - the "history ... which
+  job card" column.
+- Dtos/Requests.cs: CombinedMaterialTransferRow extended with `string? JobNo = null`.
+- Verified: brace-balanced (72 open / 72 close via a python script), hand-reviewed only - no
+  dotnet build available in this sandbox (NuGet restore fails with 403 through the sandbox's own
+  egress proxy - a known, standing limitation, not new this round).
+
+WEB (web/src/pages/staff/MaterialTransferCreatePage.tsx):
+- New state: editingTransferId/editingTransferNumber/editingTransferStatus/editLoadError/
+  convertingId - mirrors RepairBillCreatePage.tsx's own editingBillId/editingBillNumber/
+  editingBillStatus/editLoadError/convertingId from SECTION 80.
+- New resetFormToNew(): factored out of save()'s old POST-success handler, reused by cancelEdit.
+- New startEditTransfer(row): GETs the full transfer, restores header fields (Transfer Type/
+  Party/Remarks/Transfer Date/Location), and restores EVERY saved item (Part and Labour) directly
+  onto `items` - see the architectural-difference note above for why this differs from Repair
+  Bill's Parts-re-derive/Labour-only-restore split. Two disclosed ASSUMPTIONS on the restored
+  lines, both flagged in code comments since nothing is silently guessed:
+    (1) GST%/CGST/SGST/IGST are never persisted on MaterialTransferDocItem (confirmed on that
+        model's own doc comment - display-only, computed live from C_ItemMaster at pick time), so
+        a restored line has nothing saved to read them back from - reset to the same 9/9/18
+        fallback emptyItem() already uses. Does not affect the saved Rate/Amount, only the CGST
+        Amt/SGST Amt/IGST Amt DISPLAY columns on this form.
+    (2) discountType/discountValue reset to '%'/'0' on restore (no re-discount stacked on top) -
+        a saved line's own Rate already has any prior discount baked in (see lineCalc's own doc
+        comment), so this avoids silently double-discounting.
+  A third best-effort/ASSUMPTION: sourcePartKey (which Part row a Labour row's Issue Type is
+  governed by) has no persisted relationship on MaterialTransferDocItem either - rebuilt via
+  "nearest preceding Part row in the saved item order" (items are always originally saved in that
+  order, since a Labour row is appended immediately after its parent Part row via
+  autoAddLabourForPart) - flagged as an assumption that would need revisiting if line reordering
+  is ever added, though it only affects the Issue-Type-cascade/cascade-delete convenience, never
+  what's actually saved.
+- If the linked Job re-fetch (for Party State / tax-mode detection) fails, it's caught silently -
+  same non-fatal pattern RepairBillCreatePage.tsx's own startEditBill already uses.
+- save() now branches PUT (editingTransferId set) vs POST, mirroring RepairBillCreatePage.tsx's
+  own save(). PUT does NOT reset the form on success (so Confirm Transfer can immediately follow);
+  POST still resets to a blank form via resetFormToNew(), same as before this round.
+- New finalizeEditingTransferAsConfirmed(): reuses the existing PUT .../status endpoint (already
+  used elsewhere for Draft->Confirmed/Cancelled), the Material Transfer sibling of Repair Bill's
+  own finalizeEditingBillAsInvoice.
+- JSX: card header conditionally shows "Editing Transfer {no} [status badge]" + a Cancel button,
+  vs "New Material Transfer"; editLoadError rendered below; Save button label becomes "Update
+  Draft" when editing (disabled once the transfer is Confirmed/Cancelled), with a "Confirm
+  Transfer" button next to it while still Draft, and a message when the transfer is already
+  finalized - same layout pattern as Repair Bill's own Save-as-Proforma/Save-as-Invoice pairing.
+- Combined list table: new "Job No" column (CombinedMaterialTransferRow.jobNo, already wired
+  through by the backend change above) - the explicit "history maintain in which job card" ask.
+  Row onClick now branches: a still-Draft JobCardScanner-own row opens editable (startEditTransfer)
+  instead of always opening the existing read-only popup; a Confirmed/Cancelled/DMSBAPLDATA row
+  still opens that same read-only popup as before. colSpan on the "no rows" placeholder bumped
+  10 -> 11 for the new column.
+
+NOT CHANGED: the existing read-only popup (RecordDetailModal) for a Confirmed/Cancelled/
+DMSBAPLDATA row; the "+ Add" Labour button and its own logic (SECTION 79); Repair Bill's own
+SECTION 80 reopen flow; mobile app; everything else.
+
+VERIFICATION:
+- Web: `cd web && npx tsc -p tsconfig.app.json --noEmit` -> exit 0. `npx oxlint` -> zero warnings
+  or errors on MaterialTransferCreatePage.tsx (confirmed via `grep -i MaterialTransferCreatePage`
+  on the full oxlint output - no matches; all warnings printed belong to other, untouched files).
+- Backend: hand-reviewed only (same dotnet-build limitation noted above). Checked brace balance
+  and that every new/changed line references only fields/DbSets that already exist elsewhere in
+  this same file (ApplyStockAndBuildItemsAsync, the Delete-mirrored billed-job guard, the
+  PartUploads restore-then-redecrement pattern).
+- Please confirm on your end: (1) creating a fresh transfer still works exactly as before; (2)
+  clicking an existing Draft transfer (JobCardScanner-own) reopens it editable, with Job/Part/
+  Labour lines populated; (3) editing and re-saving (Update Draft) doesn't lose Remarks, and nets
+  out Part Upload stock correctly if you change a Part line's Qty (compare Part Upload balance
+  before/after); (4) Confirm Transfer correctly locks the transfer from further edits, and Update
+  Draft correctly refuses on a transfer that's no longer Draft; (5) the new Job No column shows
+  the right Job Card for a handful of existing transfers; (6) the "+ Add" Labour button still
+  works normally on a reopened transfer, and a re-added/edited Labour line still flows into Repair
+  Bill for the same Job afterwards (unchanged sync effect on that page).
+
+SECTION 82 (2026-09-23)
+================================================================================
+USER REQUEST (verbatim, 2 screenshots attached of the Repair Bill create form's Job & Bill
+Details panel): "add grid button and in that that job card shown which will transfer from
+material transfer to save as proforma using adding labour details add this only this page give me
+for android and web adding this button and in that fix header in all pages like in my table have
+100 records but when i scroll then with header that will scroll so for all pages that fix and me
+all"
+
+INTERPRETATION (two separate asks in one message, flagged since the wording is broken English/
+Hinglish and each is a real, distinct change):
+  1. "add grid button ... which will transfer from material transfer to save as proforma using
+     adding labour details ... give me for android and web" - the SECTION 80 reopen-as-editable
+     flow (click a saved Repair Bill, it reopens as the same form pre-filled with Job/Material
+     Transfer/Labour data, ready for Save as Proforma/Save as Invoice) already exists on WEB but
+     had NO Android equivalent at all - this section builds that Android equivalent, and ALSO adds
+     an explicit "grid button" (a literal button, not just a row click) on both platforms.
+     "add this only this page" is read as: this capability is scoped to the Repair Bill page only
+     (matching both screenshots, which are of that page) - Material Transfer's own Android reopen-
+     as-editable flow (the mobile sibling of SECTION 81) is NOT included here; ask if you want that
+     too.
+  2. "fix header in all pages ... table have 100 records but when i scroll then with header that
+     will scroll" - every table's own column-header row (<thead>) scrolling away with the page on
+     a long list, instead of staying visible - a GLOBAL, app-wide CSS fix (web only - "my table" in
+     the screenshots is clearly the web app; there is no comparable HTML-table concept on Android,
+     which already keeps the header form fields and list rows in one continuous ScrollView with no
+     separate scrolling grid).
+
+PART 1a - WEB (web/src/pages/staff/RepairBillCreatePage.tsx): explicit Edit button
+  - The combined list's Bill row already opens editable on a click anywhere on the row (SECTION
+    80, unchanged) - a "✎" icon button now ALSO sits in the row's own action column (next to
+    Delete) for the same JobCardScanner-own, still-Performa row, so the capability is directly
+    visible as a literal button, not only discoverable by clicking the row itself.
+  - That action column header/cell is no longer gated on `canDelete` (a SystemAdmin-only flag) -
+    it's now always rendered, since the Edit button should be visible to every user who can reach
+    this page (row-click already grants everyone the same capability today), while Delete inside
+    it stays exactly as gated as before (SystemAdmin only).
+  - "no rows" placeholder colSpan simplified from `canDelete ? 14 : 13` to a flat 14 to match.
+
+PART 1b - ANDROID (mobile/src/screens/RepairBillCreateScreen.tsx + mobile/src/types/index.ts):
+new reopen-as-editable flow, the Android port of SECTION 80/81's web-side flow
+  - mobile/src/types/index.ts: added RepairBillDocItem/RepairBillDoc interfaces (the full GET
+    /api/repair-bill-docs/{id} response shape) - mirrors web/src/types/index.ts's own copies
+    exactly; these didn't exist on mobile before (only RepairBillDocItemType/RepairBillDocStatus/
+    the flatter CombinedRepairBillRow did).
+  - New state: editingBillId/editingBillNumber/editingBillStatus/editLoadError/convertingId, plus
+    editSnapshotByCodeRef/dedupeLabourAfterEditRef/scrollRef - direct ports of web's own
+    equivalents (see RepairBillCreatePage.tsx's own doc comment for the original reasoning).
+  - New resetFormToNew()/startEditBill(row)/cancelEdit()/finalizeEditingBillAsInvoice() - same
+    shape and same Part-vs-Labour restoration asymmetry as web's SECTION 80: Part lines are
+    DELIBERATELY NOT restored from the bill's own saved items - they re-derive fresh from the
+    Job's CURRENT Material Transfer via this screen's own existing sync effect (unchanged,
+    2026-09-22-era). Only Labour lines are restored (as manual "edit-N" rows, a new key prefix
+    distinct from "manual-N" and from a real Material Transfer GUID), then deduplicated once the
+    fresh Material Transfer fetch resolves via a new one-time effect, so a Labour line that WAS
+    Material-Transfer-sourced doesn't show twice.
+  - A line's own saved Discount/Issue Type is best-effort restored (matched by item type + code,
+    since a saved bill line has no direct FK back to the Material Transfer row it came from) via
+    editSnapshotByCodeRef, applied inside the existing materialTransferItems sync effect - same
+    disclosed best-effort limitation as web (two lines sharing a code with different discounts
+    would only recover one correctly).
+  - save() now branches PUT (editingBillId set) vs POST, mirroring web. PUT does NOT reset the
+    form (so Save as Invoice can immediately follow); POST still resets via resetFormToNew().
+  - UI: since this screen has NO separate list page (form + combined list are one continuous
+    ScrollView, tap-to-expand already existed for a row's summary), the "grid button" ask is
+    implemented as an explicit "✎ Edit this Bill" button INSIDE a tapped row's expanded detail
+    (only for a JobCardScanner-own, still-Performa row) - tap-to-expand itself is unchanged, this
+    is a new, additional button, not a repurposing of the existing gesture. The header above the
+    form shows "Editing Bill {no} [status]" + a Cancel button while editing, same pattern as web;
+    Save becomes "Update Proforma" (disabled once Billed/Cancelled), with "Save as Invoice" next
+    to it while still Performa.
+
+NOT CHANGED: Material Transfer's own Android screen (no reopen-as-editable added there this
+round - see the "add this only this page" interpretation above); RepairBillDocsController.cs/
+MaterialTransferDocsController.cs (no backend change needed - both PUT endpoints already exist
+from SECTION 80/81 and this section's mobile screen calls the same one web already uses).
+
+PART 2 - WEB GLOBAL STICKY TABLE HEADER (web/src/styles/global.css):
+  - One CSS rule added: `thead th { position: sticky; top: 0; background: var(--surface);
+    z-index: 5; }`, plus `@media print { thead th { position: static; } }` so it doesn't affect
+    a printed page.
+  - Applied via a plain element selector, not a class - takes effect on EVERY table on every page
+    (confirmed via a `<table` grep across the web app - 26 files: Job Cards list, Parts, Repair
+    Bill, Material Transfer, Item Master, Labour Master, Part Upload, and every other grid) with
+    NO per-page markup change needed, and covers every future table too.
+  - `top: 0` (not a topbar-height offset) is correct: .topbar is NOT position:fixed in this app's
+    CSS, so it scrolls away with the rest of the page content too - by the time a sticky header
+    needs to "stick" the topbar has already scrolled clear of it.
+  - An explicit solid background stops table body rows from visibly showing/bleeding through
+    behind the header as they scroll underneath it (browsers give <th> no opaque background by
+    default). z-index kept low (5), well under the sidebar (110) and the profile dropdown (40).
+  - Not something I could screenshot-verify myself in this sandbox (no way to open the running
+    web app here) - please confirm on your end with an actual 100+-row table (Job Cards list is
+    probably the easiest to check) that the column-label row now stays visible while you scroll
+    through the data rows, on both light and any custom theming this app has.
+
+VERIFICATION:
+- Web: `cd web && npx tsc -p tsconfig.app.json --noEmit` -> exit 0. `npx oxlint` -> zero warnings
+  or errors on RepairBillCreatePage.tsx or global.css (confirmed via grep on the full oxlint
+  output - no matches for either file).
+- Android: `cd mobile && npx tsc --noEmit -p tsconfig.json` -> exit 0, WHOLE PROJECT (no separate
+  lint config exists on this mobile project - tsc is the only automated check available here,
+  same as every prior Android round in this changeset).
+- Backend: NOT TOUCHED this round - both endpoints this screen calls (PUT /api/repair-bill-docs/
+  {id} and PUT .../status) already existed from SECTION 80, already hand-reviewed there.
+- Please confirm on your end: (1) on Android, tapping an existing Performa bill's row, then its
+  new "Edit this Bill" button, reopens it with Job/Party/Insurance/Discount fields and Labour
+  lines populated correctly, and Part lines re-appear from the linked Job's current Material
+  Transfer; (2) Update Proforma and Save as Invoice both work from that reopened Android form;
+  (3) on web, the new "✎" button in the Repair Bill list behaves identically to clicking the row
+  itself; (4) the sticky table header looks right (correct background, no visual overlap with the
+  topbar or with dropdowns/modals) on a few different pages, especially any page with a genuinely
+  long table.
+
+================================================================================================
+SECTION 83 - 2026-09-23 - "in 1 line row this Labour1 ..Issue Type and button add in 1 line and
+when i click from repair bill previous saved details then this will shown in same page new under
+new page maintaing this details and Source SR.No Bill No Date Party Name Reg No Chassis No
+Location Bill Type Job No Bill Amount Status Prepared by Modified by this main in 1 page not on
+same only which are save in jobcard db that in grid button and which material transfer that
+jobcard"
+================================================================================================
+
+Two changes this round, both on the Repair Bill feature: (1) a small layout fix on the web
+create form's Labour staging row, and (2) splitting the combined Repair Bill list OFF the
+create/edit form onto its own page/screen, on both web and Android - confirmed via
+AskUserQuestion before building: "Android + Web: both get a separate list screen/page" and
+"JobCardScanner rows only (Recommended)" (i.e. the new list shows only bills saved in
+JobCardScanner's own database, not the read-only DMSBAPLDATA-synced rows the old combined list
+also blended in).
+
+PART 1 - WEB LABOUR STAGING ROW, 1-LINE FIX (web/src/pages/staff/RepairBillCreatePage.tsx):
+  - Your screenshot showed the "🔧Labour1 ... Issue Type [button]" staging row dropping its Issue
+    Type pills + Add button to a second line at realistic browser widths.
+  - Root cause: that row uses the SHARED `.suggest-row` class (also used by JobCardDetailPage.tsx's
+    own "Suggest a part"/"Suggest labour" rows), which has `flex-wrap: wrap` baked into
+    web/src/styles/global.css - a prior round's `field-compact` change alone couldn't stop it from
+    wrapping, since the shared class was still free to wrap the row.
+  - Fix: a LOCAL inline `flexWrap: 'nowrap'` override on this one row's own `style` prop (not a
+    change to the shared `.suggest-row` class, which stays wrap-capable everywhere else it's used),
+    wrapped in a new `overflowX: 'auto'` container - the same horizontal-scroll-on-overflow pattern
+    this same file already uses for its Part Details List / Material Transfer grids. On a narrow
+    screen the row now scrolls sideways instead of wrapping to a second line.
+
+PART 2 - REPAIR BILL LIST SPLIT OUT TO ITS OWN PAGE/SCREEN:
+
+Backend (backend/JobCardScanner.Api/Controllers/RepairBillDocsController.cs):
+  - `Combined()` gets one new optional query param: `ownOnly` (bool, default false). When true, the
+    DMSBAPLDATA fetch is skipped entirely (`if (!ownOnly) try { ... fetch DMSBAPLDATA ... } catch
+    { ... }`) - the new list pages below never need those rows, so this avoids the extra DMS round-
+    trip/failure-sensitivity for them. Default `false` means every EXISTING caller (there were none
+    left calling Combined without it by the time this shipped, but this is the safe default
+    regardless) is unaffected.
+  - No other backend change. Both PUT endpoints the list pages/screens use (`.../status` for Save as
+    Invoice, `/{id}` for Edit) already existed from SECTION 80/81.
+
+Web (NEW web/src/pages/staff/RepairBillListPage.tsx; route `/repair-bill-list`):
+  - Direct port of the list section that used to render below RepairBillCreatePage.tsx's own
+    create/edit form on the SAME page - same column set (Source/SR.No/Bill No/Date/Party Name/
+    Reg No/Chassis No/Location/Bill Type/Job No/Bill Amount/Status/Prepared by/Modified by, exactly
+    matching what you listed), same filters (Date From/To/Service Location/Bill No/Job No/Chassis
+    No - the old "Filter DMSBAPLDATA rows by Party Name" filter is DROPPED here since it only ever
+    narrowed the DMSBAPLDATA half this page no longer fetches), same pagination, same read-only
+    RecordDetailModal popup (with its own "Save as Invoice" action) for a Billed/Cancelled row.
+  - Calls `GET /api/repair-bill-docs/combined?ownOnly=true`, then defensively filters to
+    `source === 'JobCardScanner'` client-side too (belt-and-braces, not trusting the query param
+    alone).
+  - Row click (or its ✎ button), for a still-Performa row, now NAVIGATES to
+    `/repair-bill-new?editId={id}` instead of opening the edit form in place (there's no "in place"
+    anymore - it's a different page). A Billed/Cancelled row still opens the same read-only popup.
+  - New "+ New Repair Bill" button navigates to `/repair-bill-new` (blank form).
+  - Registered in web/src/App.tsx (new route `/repair-bill-list`, same role gate as
+    `/repair-bill-new`: ServiceAdvisor/WorkshopManager/DealerAdmin/CorporateAdmin/SystemAdmin) and
+    web/src/components/StaffLayout.tsx (new sidebar entry "Repair Bill List", positioned between
+    "Repair Bill" and "Repair Bill Report").
+
+Web (web/src/pages/staff/RepairBillCreatePage.tsx - now FORM ONLY):
+  - The entire old combined-list section (state: party/listBillNo/listJobNo/listChassisNo/
+    listLocation/listDateFrom/listDateTo/rows/dmsError/loading; functions: loadCombined/deleteBill/
+    saveAsInvoice; the filters card, the list table, the RecordDetailModal popup) is REMOVED from
+    this page - it now lives only on RepairBillListPage.tsx above.
+  - `startEditBill` simplified from taking a whole `CombinedRepairBillRow` to taking just the bill's
+    `id` (all it ever actually used) - and is now ALSO triggered by reading `?editId={id}` off the
+    URL on mount (`useSearchParams()`), which is how the new List page's row-click/✎-button open
+    this page in edit mode. Clicking the SAME page's own row used to do this in place; now the list
+    lives elsewhere, so it has to pass the id via the URL instead.
+  - Both `save()`'s success handler and `finalizeEditingBillAsInvoice()` no longer call
+    `loadCombined()` (that function no longer exists here) - the List page re-fetches on its own
+    mount instead.
+  - New "View Repair Bill List" button added next to the page's own `<h2>Repair Bill</h2>` heading,
+    navigating to `/repair-bill-list` - since there's no more list to fall through to on this same
+    page, this is the way back to it. Intro paragraph text updated to match (no longer describes a
+    list "below").
+  - `convertingId` state (used by this page's own "Save as Invoice" while editing, i.e.
+    `finalizeEditingBillAsInvoice`) is UNCHANGED/kept here - it's unrelated to the list, needed by
+    this page's own button.
+
+Android (NEW mobile/src/screens/RepairBillListScreen.tsx; route "RepairBillList"):
+  - Same idea as web's RepairBillListPage.tsx, adapted to this app's existing card-list/tap-to-
+    expand phone UI pattern (the same pattern the old embedded list in RepairBillCreateScreen.tsx
+    used) rather than a table: each row shows Bill No/Source/Status badges, Date/Location/Bill
+    Type/Job No, Party/Reg No/Chassis No, item count/total/Prepared by/Modified by - i.e. every
+    column from your list, just laid out for a phone screen instead of a table grid. Tapping a row
+    expands its item lines, same gesture as before.
+  - Filters: Bill No/Job No/Chassis No text fields, Service Location picker (with an explicit "All
+    locations" option so the filter can be cleared), Date From/To text fields (YYYY-MM-DD - this
+    app has no bare date-picker-only component reused elsewhere for a plain text field context, so
+    this matches the plain-text-date pattern already used for other filter-only date fields on
+    Android, unlike the header form's own Bill Date/Insurance Valid Till fields which use the native
+    date picker since those are real save-critical fields).
+  - Calls the same `GET /api/repair-bill-docs/combined?ownOnly=true`, same defensive
+    `source === 'JobCardScanner'` filter as web.
+  - A still-Performa row's expanded detail gets an "✎ Edit" button - navigates to
+    `RepairBillCreate` with `{ editBillId: r.id }` (a new optional nav param, see below) - PLUS a
+    "Save as Invoice" button right here (calling the same `PUT .../status` endpoint
+    RepairBillCreateScreen.tsx's own finalizeEditingBillAsInvoice uses), so that action isn't lost
+    by moving the list off the create screen - this is a small ADDITION beyond a literal 1:1 port
+    of the old embedded list (which only had Edit/Delete on a row, no direct Save as Invoice),
+    matching what web's RecordDetailModal popup already offered.
+  - canDelete-gated Delete button, same SystemAdmin-only rule as the old embedded list had.
+  - "+ New" button at the top navigates to a blank `RepairBillCreate` (no `editBillId`).
+
+Android (mobile/src/screens/RepairBillCreateScreen.tsx - now FORM ONLY):
+  - The entire old "Combined list" section (state: party/rows/dmsError/loading/expandedId;
+    functions: loadCombined/deleteBill; the filter field, the row-rendering JSX) is REMOVED - it now
+    lives only on RepairBillListScreen.tsx above. The screen's ScrollView no longer has a
+    `refreshControl` (there was nothing left on this screen to "pull to refresh").
+  - `startEditBill` simplified from taking a whole `CombinedRepairBillRow` to taking just the bill's
+    `id` (mirrors web's same change) - and is now ALSO triggered by a new optional route param,
+    `route.params?.editBillId`, read in a mount effect - the Android equivalent of web's `?editId=`
+    URL param, since Android has no query string to read instead.
+  - `finalizeEditingBillAsInvoice()` and `save()`'s success handler no longer call `loadCombined()`
+    (removed) - the List screen re-fetches on its own mount/pull-to-refresh instead.
+  - `canDelete`/`hasRole` removed from this screen entirely (only ever used by the now-removed
+    Delete button) - `profile` alone is still destructured from `useStaffAuth()`.
+  - New "View List" button added next to "New Repair Bill" when NOT currently editing (hidden while
+    editing, matching the "Cancel" button that takes its place in that state) - navigates to
+    `RepairBillList`.
+  - `RootStackParamList`'s `RepairBillCreate` entry changed from `undefined` to
+    `{ editBillId?: string } | undefined` (mobile/src/navigation/RootNavigator.tsx), and a new
+    `RepairBillList: undefined` entry/`<Stack.Screen>` added there too.
+  - DashboardScreen.tsx: new "Repair Bill List" action card added next to the existing "Repair
+    Bill" card (whose own subtitle was tightened from "Create & view repair bills" to "Create a
+    repair bill", since viewing moved to the new card).
+
+NOT CHANGED: RepairBillDoc/RepairBillDocItem types (web or mobile) - unaffected by this split, the
+same GET /api/repair-bill-docs/{id} shape is read by both the create/edit form (on open-for-edit)
+and, on web, the list's own RecordDetailModal popup. Material Transfer's own list/create pages -
+this round only touches Repair Bill, per your "add this only this page" wording from the round
+before.
+
+VERIFICATION:
+- Web: `cd web && npx tsc -p tsconfig.app.json --noEmit` -> exit 0 (checked after each of: the
+  Labour-row fix alone; the RepairBillCreatePage.tsx list-removal + RepairBillListPage.tsx
+  creation together; and again after the App.tsx/StaffLayout.tsx route+nav additions - so the
+  whole web project, not just the two Repair Bill files, compiles clean start to finish).
+  `npx oxlint src/App.tsx src/components/StaffLayout.tsx src/pages/staff/RepairBillCreatePage.tsx
+  src/pages/staff/RepairBillListPage.tsx` -> zero errors (two PRE-EXISTING warnings on
+  StaffLayout.tsx, both unrelated to this round's one-line nav-array addition: a "Fast refresh"
+  advisory on a constants export, and a "set-state-in-effect" advisory on unrelated code further
+  down that file - confirmed present before my edit by their line numbers).
+- Android: `cd mobile && npx tsc --noEmit -p tsconfig.json` -> exit 0, whole project (no separate
+  lint config exists on this mobile project - tsc is the only automated check available here, same
+  as every prior Android round in this changeset).
+- Backend: `python3 -c "s=open('Controllers/RepairBillDocsController.cs').read();
+  print(s.count('{'), s.count('}'))"` -> 58/58 balanced. No `dotnet build` available in this
+  sandbox (NuGet restore blocked by this sandbox's own egress proxy) - this file has NOT been
+  compiled, only hand-reviewed and brace-balance-checked; please build/test it on your end before
+  deploying.
+- Please confirm on your end: (1) both `/repair-bill-list` (web) and the new "Repair Bill List"
+  screen (Android) show only this dealer's own JobCardScanner-saved bills, with the DMSBAPLDATA-
+  synced rows correctly absent now (previously shown with a "DMSBAPLDATA" badge); (2) clicking/
+  tapping a Performa row's Edit affordance on the new list correctly reopens
+  RepairBillCreatePage.tsx / RepairBillCreateScreen.tsx pre-filled, and Update Proforma / Save as
+  Invoice both still work from there; (3) the Labour staging row on web now stays on one line at
+  your usual browser width; (4) Android's new "Save as Invoice" button directly on the list screen
+  (an addition beyond a literal port, disclosed above) is something you actually want kept there,
+  since it wasn't on the old embedded list at all.
+
+================================================================================================
+SECTION 84 - 2026-09-23 - "🔧Labour... still not are in 1 row not added grid button on this clcik
+open material transfered job cards history and when open this page when iclick on this jobcard
+this in that same we can add labour for save as proforma ..please give proper im asking again and
+again" (your screenshots)
+================================================================================================
+
+Two things in your message, addressed separately - please read the first one carefully, it likely
+explains most of what you're seeing:
+
+(A) FACT, not a new bug: your screenshots (localhost:5173/repair-bill-new) still show the OLD,
+pre-merge page - the intro text visible in your screenshot ("The list below shows bills created
+here together with the read-only repair bill data synced from DMSBAPLDATA, tagged by source.") is
+the EXACT old wording SECTION 83 (delivered just before this one) removed. That's why the Labour
+row still looks wrapped in your screenshot too - SECTION 82's row fix and SECTION 83's changes
+(including the "✎ Edit" grid button on the Repair Bill list, which SECTION 83 already added) are
+sitting in the zip files already sent, not yet merged into the project you're running. Please pull
+in the SECTION 83 zip (and this one) before re-checking - if the Labour row is STILL 2 lines after
+merging SECTION 83's RepairBillCreatePage.tsx, screenshot that and I'll look again, but the file in
+this bundle has the fix.
+    Also: the boxed hamburger-style icon (☰) in your second screenshot, top-right of the page near
+the browser's own scrollbar - that is NOT anything from this app. StaffLayout.tsx's own doc
+comment (2026-09-18) records that the topbar hamburger button was explicitly removed per your own
+earlier request, and there is no such element anywhere in this app's current topbar markup
+(confirmed by grep - only the BGauss logo, an optional "← Back" button, and the profile menu sit
+there). It's most likely a browser/OS element, unrelated to anything built here.
+
+(B) THE ACTUAL GAP - now fixed: re-reading your original ask a third time ("add grid button and in
+that that job card shown which will transfer from material transfer to save as proforma using
+adding labour details") together with this round's clarification ("click open material transfered
+job cards history ... click on this jobcard ... in that same we can add labour for save as
+proforma"), the grid button was never meant to be the small "✎ Edit" icon on the Repair Bill LIST
+(what SECTION 82/83 built) - it's a SEPARATE button on the CREATE page itself, next to the existing
+"Search Job" button, that opens a picker GRID scoped to job cards that ALREADY HAVE a Material
+Transfer saved (a "material transfer job card history"), so you can browse/pick one without typing
+a Job No - not a generic search. This was NOT built before now; built this round on both web and
+Android.
+
+Backend (backend/JobCardScanner.Api/Controllers/JobCardsController.cs):
+  - `Search()` (GET /api/jobcards/search) gets one new optional param: `onlyWithMaterialTransfer`
+    (bool, default false). When true, an EXISTS check (`_db.MaterialTransferDocs.Any(m =>
+    m.JobCardId == j.Id)`) restricts results to job cards that have at least one Material Transfer
+    document saved - not a join, so a job with multiple Material Transfer docs still returns once.
+    Default false means every existing caller (the plain Search Job/Search buttons on both Repair
+    Bill and Material Transfer Bill, both platforms) is completely unaffected.
+  - FACT, found while doing this: the Android Job Search picker's own search box
+    (mobile/src/components/JobSearchModal.tsx) has been silently broken since it was built -
+    it calls this endpoint with a `q` param, but `Search()` has NEVER accepted a `q` param (only
+    dateFrom/dateTo/jobNo/regNo/chassisNo, now plus onlyWithMaterialTransfer) - ASP.NET Core
+    silently ignores an unrecognized query param rather than erroring, so typing in that search box
+    has never actually filtered anything; every open just returns the same up-to-100 most recent
+    job cards regardless of what you type. Left AS-IS this round (out of scope for the grid-button
+    ask, and worth its own decision - wire the existing box to jobNo/regNo/chassisNo like web's own
+    filters, or add a real `q` param server-side) - flagged here rather than silently fixed.
+
+Web (web/src/components/JobSearchModal.tsx - shared by Repair Bill AND Material Transfer Bill):
+  - New optional prop `onlyWithMaterialTransfer` (default false). When true: (1) the GET call adds
+    `onlyWithMaterialTransfer: true`; (2) the modal auto-runs the search the moment it opens
+    (Date From/To still default to "this month", same range as before) instead of waiting for you
+    to click Search - matching "click open ... history" i.e. a ready list, not an empty form;
+    (3) the header reads "Material Transfer Job Card History" instead of "Job Search"; (4) the
+    empty-results message is worded for this mode. Every other usage (this modal's default mode,
+    unchanged) is unaffected.
+  - web/src/pages/staff/RepairBillCreatePage.tsx: new 🔲 icon button next to "Search Job" in the
+    Job No field, opening this SAME modal with `onlyWithMaterialTransfer`. Picking a row calls the
+    exact same `selectJob()` the plain Search Job button already uses - once picked, this page's
+    EXISTING sync effect (unchanged, pre-dates this round) auto-loads that job's Material Transfer
+    Parts, same as linking a job any other way - so all that's left, as you described, is adding
+    Labour below and Save as Proforma.
+
+Android (mobile/src/components/JobSearchModal.tsx + mobile/src/screens/RepairBillCreateScreen.tsx):
+  - Same `onlyWithMaterialTransfer`/new `title` props added to the shared picker - adds the same
+    query param, and swaps the header text when set. (The search-as-you-type box inside it is
+    still subject to the pre-existing `q`-param bug noted above - opening the picker still shows
+    every matching job card, same as before, just now correctly scoped to ones with a Material
+    Transfer.)
+  - RepairBillCreateScreen.tsx: new "🔲 MT History" button next to the existing "Search" button on
+    the Job No row, opening this same picker in the new mode. Selecting a row calls the same
+    `selectJob()` as "Search" - same auto-load-Material-Transfer-Parts-then-add-Labour flow as web.
+
+VERIFICATION:
+- Web: `cd web && npx tsc -p tsconfig.app.json --noEmit` -> exit 0.
+  `npx oxlint src/pages/staff/RepairBillCreatePage.tsx src/components/JobSearchModal.tsx` -> one
+  warning, `react(set-state-in-effect)` on the new auto-search-on-open effect - NOT a new class of
+  issue, this exact warning already appears 10+ times elsewhere across this codebase's existing
+  "fetch on mount" effects (confirmed via a project-wide `npx oxlint` run) - it's this linter's
+  standing advisory style for that whole pattern, not something specific to this change.
+- Android: `cd mobile && npx tsc --noEmit -p tsconfig.json` -> exit 0, whole project.
+- Backend: NOT compiled (no `dotnet build` available in this sandbox - NuGet restore is blocked by
+  this sandbox's own egress proxy) - hand-reviewed only; brace count for JobCardsController.cs
+  confirmed balanced (194 open / 194 close) before and after this change. Please build/test on your
+  end before deploying, same caveat as every backend change in this whole project.
+- Please confirm on your end, after merging BOTH this zip and the SECTION 83 one: (1) the Labour
+  row is genuinely on one line now (not just in the file, but as rendered); (2) the new 🔲 button
+  next to Search Job/Search opens a grid/list showing ONLY job cards that already have a Material
+  Transfer, on both web and Android; (3) picking one from that grid correctly loads its Material
+  Transfer Parts and lets you add Labour + Save as Proforma, same as picking via the existing plain
+  Search; (4) whether you want the Android search-box `q`-param bug fixed now or separately - it
+  predates this round and wasn't something this ask touched.
+SECTION 85 - 2026-09-23 - "in repairbill which we added button like this add in material transfer
+for showing which we transferred material transferre" (WEB ONLY - see NOT CHANGED note below)
+================================================================================================
+
+Mirrors SECTION 83's Repair Bill list split onto Material Transfer Bill: the combined Material
+Transfer list (this app's own saved transfers, filters, pagination, Delete, read-only detail popup)
+moves OFF MaterialTransferCreatePage.tsx onto its own new page, reached via a header button styled
+exactly like the "☰ Repair Bill List" button you pasted back to me from your own merged
+RepairBillCreatePage.tsx (I updated my own copy of that file to match your polished version -
+inline-flex + gap:6 + the ☰ glyph in its own <span> - before starting this section, so both pages'
+header buttons are now visually identical).
+
+Backend (backend/JobCardScanner.Api/Controllers/MaterialTransferDocsController.cs):
+  - `Combined()` gets the same `ownOnly` param as RepairBillDocsController's own (SECTION 83): when
+    true, the DMSBAPLDATA fetch is skipped entirely. Default `false` - existing callers (there were
+    none besides this page's own old embedded list, which is why this method existed at all)
+    unaffected.
+  - UNLIKE Repair Bill's Combined(), the local (JobCardScanner) half of this endpoint had NO
+    filters at all before this round - it just returned every one of this dealer's transfers,
+    unfiltered, always. Four new optional params added so the new list page can actually filter:
+    `transferNo`, `jobNo` (matches against the linked JobCard's own JobCardNumber), `locationCode`,
+    `dateFrom`/`dateTo` (against TransferDate) - each applied only when provided, so calling this
+    endpoint with none of them (its old behavior) is unchanged.
+  - `locCode`'s existing dual purpose (gates the DMSBAPLDATA fetch AND filters it by workshop) is
+    completely unchanged for existing callers - `ownOnly=true` now additionally suppresses it, same
+    as Repair Bill's own pattern.
+
+Web (NEW web/src/pages/staff/MaterialTransferListPage.tsx; route `/material-transfer-list`):
+  - Direct port of the list section that used to render below MaterialTransferCreatePage.tsx's own
+    create/edit form - columns: Source, Transfer No, Date, Location, Type, Party, Job No, Status,
+    Items, Amount, Action. Filters: Date From/To, Location, Transfer No, Job No - the old "Filter
+    DMSBAPLDATA rows by Party Name" filter is DROPPED here, same reasoning as Repair Bill's own drop
+    (it only ever narrowed the DMSBAPLDATA half this page no longer fetches).
+  - Calls `GET /api/material-transfer-docs/combined?ownOnly=true` with the new filter params above,
+    then defensively filters to `source === 'JobCardScanner'` client-side too, same belt-and-braces
+    pattern as Repair Bill's list page.
+  - Row click (or ✎ Edit), for a still-Draft row, navigates to `/material-transfer-bill?editId={id}`
+    instead of opening the edit form in place. A Confirmed/Cancelled row opens the same read-only
+    RecordDetailModal popup as before (no "Confirm Transfer" action in the popup - matches the old
+    embedded list, since a Draft row never reached the popup to begin with, it went straight to the
+    edit form).
+  - FACT, carried over unchanged from the old embedded list (confirmed by re-reading it before
+    writing this page): its Delete button has NO `canDelete`/SystemAdmin gate, unlike Repair Bill's
+    own list (which IS SystemAdmin-gated). This is a pre-existing asymmetry between the two
+    features, not something this round introduced or silently tightened - flagging it here in case
+    you want it aligned to match Repair Bill's stricter rule in a future round.
+  - New "+ New Material Transfer" button navigates to `/material-transfer-bill` (blank form).
+  - Registered in web/src/App.tsx (new route `/material-transfer-list`, same role gate as
+    `/material-transfer-bill`: ServiceAdvisor/WorkshopManager/DealerAdmin/CorporateAdmin/
+    SystemAdmin) and web/src/components/StaffLayout.tsx (new sidebar entry "Material Transfer
+    List", positioned between "Material Transfer Bill" and "Material Transfer" report).
+
+Web (web/src/pages/staff/MaterialTransferCreatePage.tsx - now FORM ONLY):
+  - The entire old combined-list section (state: locCode/rows/dmsError/loading/viewingTransfer;
+    functions: loadCombined/deleteTransfer; the DMS-workshop filter card, the list table with its
+    Pagination, the RecordDetailModal popup) is REMOVED - it now lives only on
+    MaterialTransferListPage.tsx above.
+  - `startEditTransfer` simplified from taking a whole `CombinedMaterialTransferRow` to taking just
+    the transfer's `id` (all it ever actually used) - and is now ALSO triggered by reading
+    `?editId={id}` off the URL on mount (`useSearchParams()`), same mechanism as Repair Bill's own
+    `?editId=`.
+  - Both `save()`'s success handler and `finalizeEditingTransferAsConfirmed()` no longer call
+    `loadCombined()` (that function no longer exists here) - the List page re-fetches on its own
+    mount instead.
+  - New "☰ Material Transfer List" button added next to the page's own `<h2>Material Transfer
+    Bill</h2>` heading (same styling as Repair Bill's, per your pasted reference), navigating to
+    `/material-transfer-list`. Intro paragraph text updated to match (no longer describes a list
+    "below").
+  - `convertingId` state (used by this page's own "Confirm Transfer" while editing) is UNCHANGED/
+    kept here - it's unrelated to the list, needed by this page's own button. A duplicate
+    declaration was accidentally introduced mid-edit and caught/removed before this file reached
+    you - final file has exactly one.
+
+NOT CHANGED - Android (mobile/src/screens/MaterialTransferCreateScreen.tsx): this round's actual
+ask ("in repairbill which we added button like this add in material transfer... material
+transferre") was stated against, and demonstrated with, your own pasted WEB file - so only the web
+side was built this round, matching that scope. Two FACTS worth flagging before Android gets the
+same treatment: (1) unlike Repair Bill, Android's Material Transfer create screen currently has NO
+reopen-as-editable flow at all (no editingTransferId/startEditTransfer/route param anywhere in that
+file, confirmed by grep) - web's Material Transfer already had this from an earlier round, and
+Android's own Repair Bill screen got it in SECTION 80/83, but Android Material Transfer never has;
+(2) that means an Android list screen mirroring this round's web page 1:1 would need that missing
+edit flow built FIRST (a real, separate piece of work, not a small addition), or the Android list
+would have to ship Delete-only with no Edit, unlike every other list in this app. Recommend: tell me
+which you want - build the edit flow now so Android gets full parity, or ship Android's list
+Delete-only for now and revisit Edit later - rather than me guessing and building the wrong scope.
+
+VERIFICATION:
+- Web: `cd web && npx tsc -p tsconfig.app.json --noEmit` -> exit 0, whole project, checked after
+  the MaterialTransferCreatePage.tsx list-removal + MaterialTransferListPage.tsx creation +
+  App.tsx/StaffLayout.tsx route+nav additions + RepairBillCreatePage.tsx button-style touch-up,
+  all together.
+  `npx oxlint` (whole project) -> zero warnings/errors on any file this section touched
+  (MaterialTransferCreatePage.tsx, MaterialTransferListPage.tsx, App.tsx, StaffLayout.tsx,
+  RepairBillCreatePage.tsx); the pre-existing StaffLayout.tsx "Fast refresh" advisory (same one
+  noted in SECTION 83, unrelated to either round's nav-array edits) is still the only warning on
+  that file.
+- Backend: `python3 -c "s=open('Controllers/MaterialTransferDocsController.cs').read();
+  print(s.count('{'), s.count('}'))"` -> 72/72 balanced, both before and after. No `dotnet build`
+  available in this sandbox (NuGet restore blocked by this sandbox's own egress proxy) - hand-
+  reviewed and brace-balance-checked only; please build/test on your end before deploying, same
+  caveat as every backend change in this whole project.
+- Please confirm on your end: (1) `/material-transfer-list` shows only this dealer's own
+  JobCardScanner-saved transfers, with the new Date/Location/Transfer No/Job No filters actually
+  narrowing results; (2) clicking/✎-editing a Draft row correctly reopens
+  MaterialTransferCreatePage.tsx pre-filled via `?editId=`, and Update Draft / Confirm Transfer both
+  still work from there; (3) the new "☰ Material Transfer List" header button matches "☰ Repair
+  Bill List" visually, side by side; (4) whether Material Transfer's Delete-with-no-role-gate
+  (flagged above, pre-existing, unchanged) should be tightened to match Repair Bill's SystemAdmin-
+  only rule; (5) your decision on the Android Material Transfer edit-flow gap flagged above, before
+  I build that platform's list screen.
+
+================================================================================================

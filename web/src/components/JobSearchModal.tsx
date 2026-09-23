@@ -1,5 +1,4 @@
-// web\src\components\JobSearchModal.tsx
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { staffApi } from '../api/client'
 import type { JobSearchResult } from '../types'
 
@@ -14,10 +13,20 @@ import type { JobSearchResult } from '../types'
  * Built as this app's own React/global.css style (a plain fixed-overlay + `.card`), not a port of
  * the reference's Angular/Bootstrap modal markup - "ui ... according to our project" per your
  * instruction on the create pages themselves.
+ *
+ * 2026-09-23 ("not added grid button on this clcik open material transfered job cards history"):
+ * new optional `onlyWithMaterialTransfer` prop, passed by RepairBillCreatePage.tsx's new grid
+ * button (see that page's own doc comment) - when true, this reuses the SAME modal/search endpoint
+ * but with `onlyWithMaterialTransfer=true` added to the GET /api/jobcards/search call
+ * (JobCardsController.Search's own new param), so the results grid shows ONLY job cards that
+ * already have a Material Transfer saved against them - i.e. literally "material transferred job
+ * cards history" - instead of every job card. Every other caller (this page's plain "Search Job"
+ * button, and MaterialTransferCreatePage.tsx's own Job Search) omits the prop and is unaffected.
  */
 type Props = {
   onSelect: (job: JobSearchResult) => void
   onClose: () => void
+  onlyWithMaterialTransfer?: boolean
 }
 
 const defaultDateRange = () => {
@@ -27,7 +36,7 @@ const defaultDateRange = () => {
   return { from: fmt(firstOfMonth), to: fmt(today) }
 }
 
-export function JobSearchModal({ onSelect, onClose }: Props) {
+export function JobSearchModal({ onSelect, onClose, onlyWithMaterialTransfer = false }: Props) {
   const initial = defaultDateRange()
   const [dateFrom, setDateFrom] = useState(initial.from)
   const [dateTo, setDateTo] = useState(initial.to)
@@ -50,12 +59,18 @@ export function JobSearchModal({ onSelect, onClose }: Props) {
           jobNo: jobNo || undefined,
           regNo: regNo || undefined,
           chassisNo: chassisNo || undefined,
+          onlyWithMaterialTransfer: onlyWithMaterialTransfer || undefined,
         },
       })
       .then(({ data }) => { setRows(data); setSearched(true) })
       .catch(() => setError('Could not search job cards.'))
       .finally(() => setLoading(false))
   }
+  // 2026-09-23 - grid-button mode auto-runs the search on open (Date From/To already default to
+  // "this month", same as before) so the grid shows results immediately rather than an empty
+  // "Set your filters and click Search" state - matching "click open material transfered job
+  // cards history" (i.e. a ready history list, not another empty search form to fill in first).
+  useEffect(() => { if (onlyWithMaterialTransfer) search() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div
@@ -67,7 +82,7 @@ export function JobSearchModal({ onSelect, onClose }: Props) {
     >
       <div className="card" style={{ width: '100%', maxWidth: 960, boxShadow: 'var(--shadow-lg)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3 style={{ margin: 0 }}>Job Search</h3>
+          <h3 style={{ margin: 0 }}>{onlyWithMaterialTransfer ? 'Material Transfer Job Card History' : 'Job Search'}</h3>
           <button className="btn btn-icon" onClick={onClose} title="Close">✕</button>
         </div>
 
@@ -110,7 +125,8 @@ export function JobSearchModal({ onSelect, onClose }: Props) {
                 <th>Party Name</th>
                 <th>Regn. / Chassis No.</th>
                 <th>Vehicle Type</th>
-                
+                <th>Job Source</th>
+                <th>DMS</th>
                 <th></th>
               </tr>
             </thead>
@@ -124,14 +140,25 @@ export function JobSearchModal({ onSelect, onClose }: Props) {
                   <td>{j.partyName ?? '—'}</td>
                   <td>{j.regNo ?? '—'}{j.chassisNo ? ` / ${j.chassisNo}` : ''}</td>
                   <td>{j.vehicleType ?? '—'}</td>
-                  
+                  <td>{j.jobSource ?? '—'}</td>
+                  <td>
+                    {/* 2026-09-21: this picker now also returns job cards that never synced to
+                        BAPL DMS - tagged rather than hidden, see JobCardsController.Search. */}
+                    <span className={`badge ${j.isDmsLinked ? 'badge-success' : 'badge-muted'}`}>
+                      {j.isDmsLinked ? 'Synced' : 'Local only'}
+                    </span>
+                  </td>
                   <td><button className="btn btn-sm btn-primary" onClick={() => onSelect(j)}>Select</button></td>
                 </tr>
               ))}
               {rows.length === 0 && (
                 <tr>
                   <td colSpan={10} className="muted" style={{ textAlign: 'center', padding: 16 }}>
-                    {searched ? 'No job cards match this search.' : loading ? 'Searching…' : 'Set your filters and click Search.'}
+                    {loading
+                      ? 'Searching…'
+                      : searched
+                        ? (onlyWithMaterialTransfer ? 'No job cards with a Material Transfer match this search.' : 'No job cards match this search.')
+                        : 'Set your filters and click Search.'}
                   </td>
                 </tr>
               )}

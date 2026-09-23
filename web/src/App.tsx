@@ -22,7 +22,16 @@ import { RepairBillPage } from './pages/staff/RepairBillPage'
 // MaterialTransferPage above (the existing read-only DMSBAPLDATA report pages), which are
 // unchanged.
 import { RepairBillCreatePage } from './pages/staff/RepairBillCreatePage'
+// 2026-09-23 ("this main in 1 page not on same only which are save in jobcard db that in grid
+// button"): the combined Repair Bill list (own JobCardScanner rows only) split out of
+// RepairBillCreatePage onto its own page/route - see RepairBillListPage.tsx's own doc comment.
+import { RepairBillListPage } from './pages/staff/RepairBillListPage'
 import { MaterialTransferCreatePage } from './pages/staff/MaterialTransferCreatePage'
+// 2026-09-23 ("in repairbill which we added button like this add in material transfer for showing
+// which we transferred"): the combined Material Transfer list split out of
+// MaterialTransferCreatePage onto its own page/route - see MaterialTransferListPage.tsx's own doc
+// comment, mirroring RepairBillListPage.tsx's identical split above.
+import { MaterialTransferListPage } from './pages/staff/MaterialTransferListPage'
 // 2026-09-22 "needs to create warenty table in jobcardscanner db for this functionality and add
 // this in our function" - admin CRUD page for the new Extended Battery Warranty Scheme master.
 import { ExtendedBatteryWarrantySchemesPage } from './pages/staff/ExtendedBatteryWarrantySchemesPage'
@@ -119,12 +128,34 @@ export default function App() {
             </RequireRole>
           }
         />
+        {/* 2026-09-23 - new list page for JobCardScanner's own saved Material Transfers (Draft/
+            Confirmed/Cancelled), split out of MaterialTransferCreatePage above - same role gate,
+            since it's reached from that same create/edit flow. */}
+        <Route
+          path="/material-transfer-list"
+          element={
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
+              <MaterialTransferListPage />
+            </RequireRole>
+          }
+        />
         <Route path="/material-transfer" element={<MaterialTransferPage />} />
         <Route
           path="/repair-bill-new"
           element={
             <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
               <RepairBillCreatePage />
+            </RequireRole>
+          }
+        />
+        {/* 2026-09-23 - new list page for JobCardScanner's own saved Repair Bills (Performa/Billed),
+            split out of RepairBillCreatePage above - same role gate, since it's reached from that
+            same create/edit flow. */}
+        <Route
+          path="/repair-bill-list"
+          element={
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
+              <RepairBillListPage />
             </RequireRole>
           }
         />

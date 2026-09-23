@@ -101,7 +101,15 @@ public class RepairBillDocsController : ControllerBase
     public async Task<IActionResult> Combined(
         [FromQuery] string? party = "Zomato", [FromQuery] string? billNo = null, [FromQuery] string? jobNo = null,
         [FromQuery] string? chassisNo = null, [FromQuery] string? locationCode = null,
-        [FromQuery] DateOnly? dateFrom = null, [FromQuery] DateOnly? dateTo = null)
+        [FromQuery] DateOnly? dateFrom = null, [FromQuery] DateOnly? dateTo = null,
+        // 2026-09-23 ("only which are save in jobcard db"): the new RepairBillListPage.tsx/
+        // RepairBillListScreen.tsx (Web/Android) show ONLY this dealer's own JobCardScanner-saved
+        // bills, never the read-only DMSBAPLDATA-synced ones - passing ownOnly=true skips the
+        // DMSBAPLDATA call entirely instead of fetching it and then discarding it client-side, so
+        // that list also loads faster and can't be slowed/failed by a DMSBAPLDATA outage it never
+        // needed to begin with. Defaults to false so every existing caller (RepairBillCreatePage.tsx
+        // itself, which still blends both sources) is unaffected.
+        [FromQuery] bool ownOnly = false)
     {
         var dealerId = _currentUser.DealerId;
         if (dealerId is null) return Forbid();
@@ -126,6 +134,7 @@ public class RepairBillDocsController : ControllerBase
         var combined = new List<CombinedRepairBillRow>(localBills.Select(ToCombinedRow));
 
         string? dmsError = null;
+        if (!ownOnly)
         try
         {
             var dmsRows = await _dmsBaplData.GetRepairBillsAsync(party, HttpContext.RequestAborted);

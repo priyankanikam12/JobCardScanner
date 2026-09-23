@@ -1335,12 +1335,22 @@ export interface MaterialTransferDoc {
   id: string
   transferNumber: string
   transferDate: string
+  /** 2026-09-23 - only present on a single GET /api/material-transfer-docs/{id} response (added
+   * so the web page can reopen an existing Draft transfer for editing by re-linking the same Job -
+   * see MaterialTransferDocsController.Get's own doc comment). Null for a transfer raised with no
+   * Job linked. */
+  jobCardId?: string | null
+  jobCardNumber?: string | null
   location?: string | null
   transferType: MaterialTransferDocType
   issueType?: string | null
   partyName?: string | null
   /** Reference: MaterialTransfer.Technician, mapped onto this app's own User FK. */
   technicianId?: string | null
+  /** 2026-09-23 - now returned (was save-only before, silently dropped on read) so an edit form
+   * reopening this transfer doesn't wipe it out on save - see
+   * MaterialTransferDocsController.ToRow's own doc comment. */
+  remarks?: string | null
   status: MaterialTransferDocStatus
   totalAmount: number
   itemCount: number
@@ -1386,4 +1396,8 @@ export interface CombinedMaterialTransferRow {
   totalAmount: number
   itemCount: number
   items?: Record<string, unknown>[]
+  /** 2026-09-23 ("history maintain in which job card which item material transfered") - only ever
+   * set for a `source: 'JobCardScanner'` row - see
+   * MaterialTransferDocsController.ToCombinedRow's own doc comment. */
+  jobNo?: string | null
 }

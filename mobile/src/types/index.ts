@@ -246,6 +246,64 @@ export interface JobSearchResult {
 export type RepairBillDocItemType = 'Part' | 'Labour'
 export type RepairBillDocStatus = 'Performa' | 'Billed' | 'Cancelled'
 
+/** 2026-09-23 ("give me for android and web adding this button") - mirrors web/src/types/
+ * index.ts's own RepairBillDocItem/RepairBillDoc (full GET /api/repair-bill-docs/{id} response
+ * shape), added so RepairBillCreateScreen.tsx can reopen an existing Performa bill for editing
+ * the same way web's RepairBillCreatePage.tsx already does (see that screen's own doc comment). */
+export interface RepairBillDocItem {
+  id: string
+  itemType: RepairBillDocItemType
+  itemCode: string
+  itemDescription: string
+  hsnCode?: string | null
+  issueType?: string | null
+  qty: number
+  rate: number
+  discountType?: string | null
+  discountValue: number
+  cgstPct: number
+  sgstPct: number
+  igstPct: number
+  taxableAmount: number
+  cgstAmount: number
+  sgstAmount: number
+  igstAmount: number
+  totalAmount: number
+}
+
+export interface RepairBillDoc {
+  source: 'JobCardScanner'
+  id: string
+  billNumber: string
+  billDate: string
+  jobCardId?: string | null
+  jobCardNumber?: string | null
+  partyName: string
+  regNo?: string | null
+  chassisNo?: string | null
+  location?: string | null
+  billType?: string | null
+  issueType?: string | null
+  status: RepairBillDocStatus
+  remarks?: string | null
+  insuranceCompanyName?: string | null
+  insuranceDescription?: string | null
+  surveyorName?: string | null
+  surveyorContactNumber?: string | null
+  policyNo?: string | null
+  insuranceValidTill?: string | null
+  zeroDepreciation: boolean
+  totalDiscount: number
+  amountReceived: number
+  taxableAmount: number
+  cgstAmount: number
+  sgstAmount: number
+  igstAmount: number
+  totalAmount: number
+  itemCount: number
+  items: RepairBillDocItem[]
+}
+
 /** One row of GET /api/repair-bill-docs/combined - either this app's own bill or a read-only
  * DMSBAPLDATA-synced one (see `source`); DMSBAPLDATA rows have `status: null`. `items` is left
  * loosely typed (matches web) since a JobCardScanner row's items and a DMSBAPLDATA row's items are

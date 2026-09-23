@@ -1,12 +1,10 @@
 import { useEffect, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
-import type { BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaster, CombinedMaterialTransferRow, JobSearchResult, LabourMasterPartwise, MaterialTransferDocItemType, MaterialTransferDocType, PartUpload } from '../../types'
-import { Pagination } from '../../components/Pagination'
-import { usePagination } from '../../lib/usePagination'
+import type { BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaster, JobSearchResult, LabourMasterPartwise, MaterialTransferDoc, MaterialTransferDocItemType, MaterialTransferDocStatus, MaterialTransferDocType, PartUpload } from '../../types'
 import { JobSearchModal } from '../../components/JobSearchModal'
 import { PartSearchInput, isConfirmedOutOfStock } from '../../components/PartSearchInput'
-import { RecordDetailModal } from '../../components/RecordDetailModal'
 
 /**
  * "Material Transfer Bill" sidebar page (2026-09-19: "now i want Create Repair Bill and Material
@@ -176,6 +174,45 @@ import { RecordDetailModal } from '../../components/RecordDetailModal'
  * These Labour rows flow into Repair Bill exactly the way Material-Transfer Part rows already do
  * today - see RepairBillCreatePage.tsx's own materialTransferItems sync effect, extended the same
  * round to branch on itemType instead of assuming every synced row is a Part.
+ *
+ * 2026-09-23 ("this button not added why? please add and there history maintain in which job
+ * card which item material transfered and there we can add labour"): reopen-as-editable, the
+ * Material Transfer sibling of RepairBillCreatePage.tsx's own "click a saved bill, it reopens as
+ * this same editable form" flow built the same round (video-confirmed, see that page's own doc
+ * comment) - see startEditTransfer below for the full mechanics. "History ... which job card"
+ * is the new Job No column on the combined list table further down (CombinedMaterialTransferRow.
+ * jobNo, from MaterialTransferDocsController.ToCombinedRow's own JobCard include) - every row
+ * already tells you which Job Card it was transferred for/against. "we can add labour" is the
+ * existing per-Part-row "+ Add" button (2026-09-22/23, see above) - it needs no changes to work
+ * once a transfer is reopened, since it just operates on this same `items` state either way.
+ *
+ * IMPORTANT divergence from Repair Bill's own reopen flow, called out since blindly copying that
+ * page's pattern here would be WRONG: Repair Bill's Part lines re-derive FRESH from the job's
+ * current Material Transfer on reopen (only Labour is restored from the bill's own saved rows),
+ * because Material Transfer is a separate, still-live upstream source for Repair Bill to pull
+ * from. Material Transfer has no such separate upstream source for ITS OWN Part lines - a
+ * Material Transfer document IS the record being edited - so startEditTransfer restores EVERY
+ * saved line (Part and Labour alike) directly from the doc's own Items, not just Labour.
+ *
+ * GST%/CGST/SGST/IGST are never persisted on MaterialTransferDocItem (confirmed on that model's
+ * own doc comment - display-only, computed live from C_ItemMaster at pick time), so a restored
+ * line has nothing saved to read them back from - each one is reset to the same 9/9/18 fallback
+ * emptyItem() already uses. ASSUMPTION, disclosed rather than silently guessed: this only affects
+ * the CGST Amt/SGST Amt/IGST Amt DISPLAY columns and the (also unpersisted) discount-vs-GST split
+ * shown in this form - it does not change the saved Rate/Amount, which come from the doc as-is.
+ * Likewise, discountType/discountValue are reset to '%'/'0' on restore (no re-discount) since a
+ * saved line's own Rate already has any prior discount baked in - see lineCalc's own doc comment.
+ *
+ * sourcePartKey (which Part row a Labour row's "governed by" Issue Type comes from - see
+ * updatePartIssueType) is NOT a persisted relationship on MaterialTransferDocItem either. On
+ * restore it's rebuilt with a best-effort heuristic: items come back from the API in the same
+ * order they were saved in, and every row was always originally appended either as a fresh Part
+ * line or, for Labour, immediately after its parent Part row (via autoAddLabourForPart) - so each
+ * restored Labour row is linked to the nearest PRECEDING Part row in that same saved order. This
+ * is an ASSUMPTION (there's no reordering feature to break it today, but if one is ever added,
+ * this heuristic would need revisiting) - it only affects whether changing a Part row's Issue
+ * Type after reopening also cascades to its Labour rows and whether removing that Part row also
+ * removes them; it never changes what's saved.
  */
 type DiscountType = '%' | 'Value'
 
@@ -296,10 +333,22 @@ const lineTax = (it: DraftItem, isSameState: boolean) => {
 
 export function MaterialTransferCreatePage() {
   const { profile } = useStaffAuth()
+  const navigate = useNavigate()
 
-  // ---------------- Location dropdown - scoped to the signed-in user's own accessible workshops;
-  // drives both the create form's own Location field and the combined-list filter below. ----------------
+  // ---------------- Location dropdown - scoped to the signed-in user's own accessible workshops -
+  // drives the create form's own Location field. ----------------
   const [workshops, setWorkshops] = useState<BaplDmsWorkshop[]>([])
+  useEffect(() => {
+    if (!profile?.dealerId) return
+    staffApi.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: profile.dealerId } })
+      .then(({ data }) => {
+        const scoped = profile?.workLocationCodes?.length ? data.filter((w) => profile.workLocationCodes.includes(w.locCode)) : data
+        setWorkshops(scoped)
+        if (scoped.length > 0) setLocation((prev) => prev || scoped[0].locCode)
+      })
+      .catch(() => setWorkshops([]))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile?.dealerId, profile?.workLocationCodes])
 
   // ---------------- Create form ----------------
   const [jobCardId, setJobCardId] = useState<string | null>(null)
@@ -315,6 +364,15 @@ export function MaterialTransferCreatePage() {
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saveOk, setSaveOk] = useState<string | null>(null)
   const [partyState, setPartyState] = useState<string | null>(null)
+
+  // 2026-09-23 ("this button not added why? please add"): reopen-as-editable state - see
+  // startEditTransfer below and this module's own doc comment for the full mechanics. Mirrors
+  // RepairBillCreatePage.tsx's editingBillId/editingBillNumber/editingBillStatus/editLoadError.
+  const [editingTransferId, setEditingTransferId] = useState<string | null>(null)
+  const [editingTransferNumber, setEditingTransferNumber] = useState<string | null>(null)
+  const [editingTransferStatus, setEditingTransferStatus] = useState<MaterialTransferDocStatus | null>(null)
+  const [editLoadError, setEditLoadError] = useState<string | null>(null)
+  const [convertingId, setConvertingId] = useState<string | null>(null)
 
   // "according to state Intra state and inter state" - same Dealer.State vs Customer.State
   // compare as RepairBillCreatePage.tsx, see that page's doc comment.
@@ -705,6 +763,136 @@ export function MaterialTransferCreatePage() {
     setLocation(workshops.length > 0 ? workshops[0].locCode : '')
   }
 
+  // 2026-09-23 - factored out of save()'s old POST-success handler so cancelEdit can reuse the
+  // exact same "blank form" reset, mirroring RepairBillCreatePage.tsx's own resetFormToNew.
+  const resetFormToNew = () => {
+    clearJob()
+    setTransferType('Issue')
+    setTransferDate(new Date().toISOString().slice(0, 10))
+    setRemarks('')
+    setItems([emptyItem(1)])
+    setStockWarning(null)
+    setPriceWarning(null)
+    setLabourAddMessage(null)
+    setEditingTransferId(null)
+    setEditingTransferNumber(null)
+    setEditingTransferStatus(null)
+  }
+
+  // 2026-09-23 ("this button not added why? please add and there history maintain in which job
+  // card which item material transfered and there we can add labour"): reopens an existing
+  // JobCardScanner-own, still-Draft transfer as THIS SAME form, pre-filled, so it can be edited
+  // and re-saved (Update Draft) or finalized (Confirm Transfer) right here - see this module's
+  // own doc comment above for the full reasoning, especially why every item (Part AND Labour) is
+  // restored directly from the doc's own saved rows here, unlike Repair Bill's Parts-re-derive-
+  // fresh/Labour-only-restore split.
+  const startEditTransfer = (id: string) => {
+    setSaveError(null); setSaveOk(null); setEditLoadError(null)
+    staffApi.get<MaterialTransferDoc>(`/api/material-transfer-docs/${id}`)
+      .then(({ data: doc }) => {
+        setEditingTransferId(doc.id)
+        setEditingTransferNumber(doc.transferNumber)
+        setEditingTransferStatus(doc.status)
+
+        setTransferType(doc.transferType)
+        setPartyName(doc.partyName || '')
+        setRemarks(doc.remarks || '')
+        setTransferDate(doc.transferDate ? doc.transferDate.slice(0, 10) : new Date().toISOString().slice(0, 10))
+        setLocation(doc.location || '')
+
+        let nextKey = 1
+        let lastPartKey: number | null = null
+        const restoredItems: DraftItem[] = doc.items.map((it) => {
+          const key = nextKey++
+          if (it.itemType === 'Part') lastPartKey = key
+          return {
+            key,
+            itemCode: it.itemCode,
+            itemDescription: it.itemDescription,
+            hsnCode: it.hsnCode || '',
+            qty: String(it.qty),
+            rate: String(it.rate),
+            rackNo: it.rackNo || '',
+            bin: it.bin || '',
+            serialNo: it.serialNo || '',
+            mrp: it.mrp != null ? String(it.mrp) : '',
+            // Never persisted (display-only) - defaulted back to emptyItem()'s own fallback, see
+            // this module's own doc comment for why. Does not affect the saved Rate/Amount.
+            sgstPct: '9', cgstPct: '9', igstPct: '18',
+            // The saved Rate already has any prior discount baked in - see lineCalc's own doc
+            // comment - so a restored line starts with no further discount stacked on top.
+            discountType: '%', discountValue: '0',
+            validDays: it.validDays != null ? String(it.validDays) : '',
+            itemReceived: it.itemReceived || '',
+            issueType: it.issueType || '',
+            // No saved stock-at-pick-time figure to restore - the Qty cap only re-applies once
+            // the line's part is re-picked (or a new one added). Never sent to the backend anyway.
+            availableQty: null,
+            itemType: it.itemType,
+            // Best-effort heuristic (nearest preceding Part row in saved order) - see this
+            // module's own doc comment for why there's no persisted parent link to restore exactly.
+            sourcePartKey: it.itemType === 'Labour' ? lastPartKey : null,
+          }
+        })
+        // No separate "next key" ref exists on this page - addItem/autoAddLabourForPart both
+        // derive the next key from the current last item (prev.at(-1)?.key ?? 0) + 1, which
+        // naturally continues on from these restored keys with no extra bookkeeping needed.
+        setItems(restoredItems.length > 0 ? restoredItems : [emptyItem(1)])
+        setStockWarning(null); setPriceWarning(null); setLabourAddMessage(null)
+
+        if (doc.jobCardId) {
+          setJobCardId(doc.jobCardId)
+          setJobCardNumber(doc.jobCardNumber || '')
+          staffApi.get<JobSearchResult[]>('/api/jobcards/search', { params: { jobNo: doc.jobCardNumber || undefined } })
+            .then(({ data }) => {
+              const job = data.find((j) => j.id === doc.jobCardId) ?? data[0]
+              if (job) setPartyState(job.partyState ?? null)
+            })
+            .catch(() => { /* non-fatal - tax-mode detection just stays defaulted to Same State */ })
+        } else {
+          // A standalone (no-Job) transfer, saved before Parts required a linked Job - still
+          // opened here so its fields are visible/reviewable, but the Part grid stays disabled
+          // (same `disabled={!jobCardId}` gate a brand-new, not-yet-linked form already has).
+          setJobCardId(null); setJobCardNumber(''); setPartyState(null)
+        }
+
+        window.scrollTo({ top: 0, behavior: 'smooth' })
+      })
+      .catch((err) => setEditLoadError(err?.response?.data?.message ?? `Could not load Transfer ${id} for editing.`))
+  }
+
+  // 2026-09-23 ("in repairbill which we added button like this add in material transfer") - opens
+  // this page already in edit mode when arrived at via /material-transfer-bill?editId={id} (the
+  // new MaterialTransferListPage.tsx's own Edit navigation) - mirrors RepairBillCreatePage.tsx's
+  // own identical ?editId= effect.
+  const [searchParams] = useSearchParams()
+  useEffect(() => {
+    const editId = searchParams.get('editId')
+    if (editId) startEditTransfer(editId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
+
+  const cancelEdit = () => { resetFormToNew(); setEditLoadError(null) }
+
+  // 2026-09-23 - "Confirm Transfer" reachable directly from the reopened edit form, the Material
+  // Transfer sibling of RepairBillCreatePage.tsx's own finalizeEditingBillAsInvoice - reuses the
+  // existing PUT .../status endpoint (unchanged, already used for other status transitions).
+  const finalizeEditingTransferAsConfirmed = () => {
+    if (!editingTransferId || !editingTransferNumber) return
+    if (!window.confirm(`Confirm Transfer ${editingTransferNumber}? This finalizes it - line items can no longer be changed afterwards.`)) return
+    setConvertingId(editingTransferId)
+    staffApi
+      .put(`/api/material-transfer-docs/${editingTransferId}/status`, JSON.stringify('Confirmed'), { headers: { 'Content-Type': 'application/json' } })
+      .then(() => {
+        setEditingTransferStatus('Confirmed')
+        setSaveOk(`Transfer ${editingTransferNumber} confirmed.`)
+        // 2026-09-23 - loadCombined() removed: the list now lives on its own page
+        // (MaterialTransferListPage.tsx / /material-transfer-list), which re-fetches on its own mount.
+      })
+      .catch((err) => alert(err?.response?.data?.message ?? 'Could not confirm this transfer.'))
+      .finally(() => setConvertingId(null))
+  }
+
   const save = () => {
     setSaveError(null)
     setSaveOk(null)
@@ -712,16 +900,15 @@ export function MaterialTransferCreatePage() {
     if (validItems.length === 0) { setSaveError('Add at least one item line with a description and quantity.'); return }
 
     setSaving(true)
-    staffApi
-      .post('/api/material-transfer-docs', {
-        jobCardId: jobCardId || null,
-        location: location || null,
-        transferType,
-        issueType: null,
-        partyName: partyName || null,
-        remarks: remarks || null,
-        transferDate,
-        items: validItems.map((i) => ({
+    const body = {
+      jobCardId: jobCardId || null,
+      location: location || null,
+      transferType,
+      issueType: null,
+      partyName: partyName || null,
+      remarks: remarks || null,
+      transferDate,
+      items: validItems.map((i) => ({
           itemCode: i.itemCode || i.itemDescription.slice(0, 30),
           itemDescription: i.itemDescription,
           hsnCode: i.hsnCode || null,
@@ -750,90 +937,67 @@ export function MaterialTransferCreatePage() {
           validDays: i.validDays ? Number(i.validDays) : null,
           itemReceived: i.itemReceived || null,
         })),
-      })
+    }
+
+    // 2026-09-23 - editingTransferId set means startEditTransfer above loaded an existing Draft
+    // transfer: PUT updates it IN PLACE (same transfer, same Transfer No) instead of POSTing a
+    // new one - mirroring RepairBillCreatePage.tsx's own save()'s editingBillId branch. The form
+    // is deliberately NOT reset to blank on a successful update (unlike a fresh create, below) -
+    // staying on this same transfer is what lets "Confirm Transfer" immediately follow.
+    const request = editingTransferId
+      ? staffApi.put(`/api/material-transfer-docs/${editingTransferId}`, body)
+      : staffApi.post('/api/material-transfer-docs', body)
+
+    request
       .then((r) => {
-        setSaveOk(`Saved as ${r.data.transferNumber}.`)
-        clearJob()
-        setPartyName(''); setRemarks('')
-        setItems([emptyItem(1)])
-        setStockWarning(null)
-        loadCombined()
+        if (editingTransferId) {
+          setSaveOk(`Updated ${r.data.transferNumber}.`)
+        } else {
+          setSaveOk(`Saved as ${r.data.transferNumber}.`)
+          resetFormToNew()
+        }
+        // 2026-09-23 - loadCombined() removed: see note on finalizeEditingTransferAsConfirmed above.
       })
-      .catch((err) => setSaveError(err?.response?.data?.message ?? 'Could not save the material transfer.'))
+      .catch((err) => setSaveError(err?.response?.data?.message ?? `Could not ${editingTransferId ? 'update' : 'save'} the material transfer.`))
       .finally(() => setSaving(false))
   }
 
-  // ---------------- Combined list (this app's own transfers + DMSBAPLDATA-synced transfers) ----------------
-  const [locCode, setLocCode] = useState('')
-  const [rows, setRows] = useState<CombinedMaterialTransferRow[]>([])
-  const [dmsError, setDmsError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
-
-  useEffect(() => {
-    if (!profile?.dealerId) return
-    staffApi.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: profile.dealerId } })
-      .then(({ data }) => {
-        const scoped = profile?.workLocationCodes?.length ? data.filter((w) => profile.workLocationCodes.includes(w.locCode)) : data
-        setWorkshops(scoped)
-        if (scoped.length > 0) {
-          setLocCode((prev) => prev || scoped[0].locCode)
-          setLocation((prev) => prev || scoped[0].locCode)
-        }
-      })
-      .catch(() => setWorkshops([]))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile?.dealerId, profile?.workLocationCodes])
-
-  const loadCombined = () => {
-    setLoading(true)
-    staffApi
-      .get<{ rows: CombinedMaterialTransferRow[]; dmsBaplDataError: string | null }>('/api/material-transfer-docs/combined', { params: { locCode: locCode || undefined } })
-      .then((r) => { setRows(r.data.rows); setDmsError(r.data.dmsBaplDataError) })
-      .catch(() => { setRows([]); setDmsError('Could not load the combined list.') })
-      .finally(() => setLoading(false))
-  }
-
-  useEffect(() => { loadCombined() }, [locCode]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const deleteTransfer = (id: string) => {
-    if (!window.confirm('Delete this material transfer? This cannot be undone.')) return
-    staffApi.delete(`/api/material-transfer-docs/${id}`)
-      .then(() => loadCombined())
-      .catch((err) => alert(err?.response?.data?.message ?? 'Could not delete the material transfer.'))
-  }
-
-  const { page, setPage, pageSize, setPageSize, pageCount, pageRows, total } = usePagination(rows)
-
-  // ---------------- Detail view (2026-09-21 "all upload data and exist data are clickable on
-  // any record we click this all details can openable") - opens every field a combined-list row
-  // carries, including its line items (both JobCardScanner's own and DMSBAPLDATA-synced rows
-  // already come back with Items from /combined - no extra round trip needed). Item column shape
-  // differs by source since the two carry different real fields. ----------------
-  const [viewingTransfer, setViewingTransfer] = useState<CombinedMaterialTransferRow | null>(null)
-  const transferItemColumns = viewingTransfer?.source === 'DMSBAPLDATA'
-    ? ['Item Code/Id', 'Description', 'Type', 'Qty', 'Rate', 'CGST %', 'CGST Amt', 'SGST %', 'SGST Amt', 'IGST %', 'IGST Amt', 'Discount', 'MRP']
-    : ['Item Code', 'Description', 'HSN', 'Issue Type', 'Qty', 'Rate', 'Amount', 'Rack', 'Bin', 'Serial No', 'MRP', 'Valid Days', 'Received']
-  const fmtCell = (v: unknown) => (v == null || v === '' ? '—' : typeof v === 'number' ? v.toLocaleString('en-IN', { maximumFractionDigits: 2 }) : String(v))
-  const transferItemRows = (viewingTransfer?.items ?? []).map((it) =>
-    viewingTransfer?.source === 'DMSBAPLDATA'
-      ? [fmtCell(it.itemIdno ?? it.itemName), fmtCell(it.itemDescription), fmtCell(it.itemType), fmtCell(it.qty), fmtCell(it.rate),
-         fmtCell(it.cgstPer), fmtCell(it.cgstAmount), fmtCell(it.sgstPer), fmtCell(it.sgstAmount), fmtCell(it.igstPer), fmtCell(it.igstAmount),
-         fmtCell(it.discount), fmtCell(it.mrp)]
-      : [fmtCell(it.itemCode), fmtCell(it.itemDescription), fmtCell(it.hsnCode), fmtCell(it.issueType), fmtCell(it.qty), fmtCell(it.rate),
-         fmtCell(it.amount), fmtCell(it.rackNo), fmtCell(it.bin), fmtCell(it.serialNo), fmtCell(it.mrp), fmtCell(it.validDays), fmtCell(it.itemReceived)]
-  )
+  // 2026-09-23 ("in repairbill which we added button like this add in material transfer for
+  // showing which we transferred"): the combined list (this app's own transfers + DMSBAPLDATA-
+  // synced ones), its filters, pagination, Delete, and the read-only detail popup all moved OUT of
+  // this page onto their own separate page - see MaterialTransferListPage.tsx (route
+  // /material-transfer-list), mirroring RepairBillListPage.tsx's own identical split. This page is
+  // now the create/edit FORM only. `convertingId` (declared earlier, above, with the rest of the
+  // reopen-as-editable state) stays here since finalizeEditingTransferAsConfirmed (this page's own
+  // "Confirm Transfer" button while editing) still needs it - it's unrelated to the list.
 
   return (
     <div>
-      <h2>Material Transfer Bill</h2>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <h2 style={{ margin: 0 }}>Material Transfer Bill</h2>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={() => navigate('/material-transfer-list')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span aria-hidden="true">☰</span>Material Transfer List
+        </button>
+      </div>
       <p className="muted">
-        Create a material transfer document - saved into JobCardScanner's own database. The list
-        below shows transfers created here together with the read-only material transfer data
-        synced from DMSBAPLDATA, tagged by source.
+        Create a material transfer document - saved into JobCardScanner's own database. To see
+        transfers already saved here (with Edit / Confirm Transfer), use "Material Transfer List" above.
       </p>
 
       <div className="card">
-        <h3>New Material Transfer</h3>
+        {/* 2026-09-23 ("this button not added why? please add"): this same card/form now doubles
+            as the edit view for an existing Draft transfer - see startEditTransfer's own doc
+            comment above. editLoadError surfaces if that fetch itself fails (e.g. the transfer
+            was deleted by someone else a moment before the click landed). */}
+        {editingTransferId ? (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+            <h3 style={{ margin: 0 }}>Editing Transfer {editingTransferNumber} <span className="badge badge-muted" style={{ marginLeft: 6 }}>{editingTransferStatus}</span></h3>
+            <button className="btn btn-sm" type="button" onClick={cancelEdit}>✕ Cancel edit / start a new transfer</button>
+          </div>
+        ) : (
+          <h3>New Material Transfer</h3>
+        )}
+        {editLoadError && <p className="muted" style={{ color: '#b91c1c' }}>{editLoadError}</p>}
         {/* 2026-09-23 ("fix ui like repair bill and without Job No Job Search all feilds show
             disable"): matches RepairBillCreatePage.tsx's own bordered/accented "Job & Bill Details"
             panel (same --primary/--border/--radius-sm tokens, no new styling invented - see that
@@ -1049,99 +1213,36 @@ export function MaterialTransferCreatePage() {
           </span>
         </div>
 
-        <div style={{ marginTop: 14 }}>
-          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save Material Transfer'}</button>
-          {saveError && <p className="muted" style={{ color: '#b91c1c' }}>{saveError}</p>}
-          {saveOk && <p className="muted" style={{ color: '#15803d' }}>{saveOk}</p>}
+        {/* 2026-09-23 - while editing an existing transfer (editingTransferId set), the Save
+            button becomes "Update Draft" and is disabled once the transfer is no longer Draft
+            (Confirmed/Cancelled has no "undo" here - see startEditTransfer's own doc comment) -
+            "Confirm Transfer" now also appears right here, matching RepairBillCreatePage.tsx's
+            own Save-as-Proforma/Save-as-Invoice pairing on its own reopened edit form. */}
+        <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <button
+            className="btn btn-primary"
+            onClick={save}
+            disabled={saving || editingTransferStatus === 'Confirmed' || editingTransferStatus === 'Cancelled'}
+          >
+            {saving ? 'Saving…' : editingTransferId ? 'Update Draft' : 'Save Material Transfer'}
+          </button>
+          {editingTransferId && editingTransferStatus === 'Draft' && (
+            <button className="btn btn-sm" type="button" disabled={convertingId === editingTransferId} onClick={finalizeEditingTransferAsConfirmed}>
+              {convertingId === editingTransferId ? 'Saving…' : 'Confirm Transfer'}
+            </button>
+          )}
+          {editingTransferId && editingTransferStatus !== 'Draft' && (
+            <span className="muted" style={{ fontSize: 13 }}>This transfer is already {editingTransferStatus} - it can no longer be edited.</span>
+          )}
         </div>
+        {saveError && <p className="muted" style={{ color: '#b91c1c' }}>{saveError}</p>}
+        {saveOk && <p className="muted" style={{ color: '#15803d' }}>{saveOk}</p>}
       </div>
 
-      <div className="card">
-        <div className="form-row">
-          <div className="field">
-            <label>DMS workshop location (for the DMSBAPLDATA rows below)</label>
-            {workshops.length > 0 ? (
-              <select value={locCode} onChange={(e) => setLocCode(e.target.value)}>
-                <option value="">— none —</option>
-                {workshops.map((w) => (
-                  <option key={w.locCode} value={w.locCode}>{w.locCode} — {w.locName}</option>
-                ))}
-              </select>
-            ) : (
-              <input value={locCode} onChange={(e) => setLocCode(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && loadCombined()} placeholder="e.g. CUS0288W5" />
-            )}
-          </div>
-        </div>
-        <button className="btn" onClick={loadCombined} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
-        {dmsError && <p className="muted" style={{ color: '#b91c1c' }}>DMSBAPLDATA rows unavailable: {dmsError}</p>}
-      </div>
-
-      <div className="card" style={{ padding: 0 }}>
-        <table>
-          <thead>
-            <tr>
-              <th>Source</th>
-              <th>Transfer No</th>
-              <th>Date</th>
-              <th>Location</th>
-              <th>Type</th>
-              <th>Party</th>
-              <th>Status</th>
-              <th className="text-end">Items</th>
-              <th className="text-end">Amount</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {pageRows.map((r) => (
-              <tr key={r.id} onClick={() => setViewingTransfer(r)} style={{ cursor: 'pointer' }} title="Click to view full details">
-                <td><span className={`badge ${r.source === 'JobCardScanner' ? 'badge-success' : 'badge-muted'}`}>{r.source}</span></td>
-                <td>{r.transferNumber}</td>
-                <td>{r.sortDate ? new Date(r.sortDate).toLocaleDateString('en-IN') : '—'}</td>
-                <td>{r.location ?? '—'}</td>
-                <td>{r.transferType ?? '—'}</td>
-                <td>{r.partyName ?? '—'}</td>
-                <td>{r.status ?? '—'}</td>
-                <td className="text-end">{r.itemCount}</td>
-                <td className="text-end">₹{r.totalAmount.toFixed(2)}</td>
-                <td onClick={(e) => e.stopPropagation()}>
-                  {r.source === 'JobCardScanner' && (
-                    <button className="btn btn-icon btn-danger" onClick={() => deleteTransfer(r.id)} title="Delete">✕</button>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {rows.length === 0 && !loading && (
-              <tr><td colSpan={10} className="muted" style={{ textAlign: 'center', padding: 16 }}>No material transfers yet.</td></tr>
-            )}
-          </tbody>
-        </table>
-        <Pagination page={page} pageCount={pageCount} total={total} onPageChange={setPage} pageSize={pageSize} onPageSizeChange={setPageSize} />
-      </div>
-
+      {/* 2026-09-23 - the combined list (filters, table, read-only detail popup) moved to its own
+          page: see the "Material Transfer List" button in the header above, and
+          MaterialTransferListPage.tsx / route /material-transfer-list. */}
       {showJobSearch && <JobSearchModal onSelect={selectJob} onClose={() => setShowJobSearch(false)} />}
-
-      {viewingTransfer && (
-        <RecordDetailModal
-          title={`Transfer ${viewingTransfer.transferNumber}`}
-          subtitle={`${viewingTransfer.source}${viewingTransfer.location ? ` · ${viewingTransfer.location}` : ''}`}
-          onClose={() => setViewingTransfer(null)}
-          fields={[
-            { label: 'Source', value: viewingTransfer.source },
-            { label: 'Transfer No', value: viewingTransfer.transferNumber },
-            { label: 'Date', value: viewingTransfer.sortDate ? new Date(viewingTransfer.sortDate).toLocaleDateString('en-IN') : null },
-            { label: 'Location', value: viewingTransfer.location },
-            { label: 'Type', value: viewingTransfer.transferType },
-            { label: 'Party', value: viewingTransfer.partyName },
-            { label: 'Status', value: viewingTransfer.status },
-            { label: 'Item Count', value: viewingTransfer.itemCount },
-            { label: 'Total Amount', value: `₹${viewingTransfer.totalAmount.toFixed(2)}` },
-          ]}
-          itemsTitle="Items"
-          itemColumns={transferItemColumns}
-          itemRows={transferItemRows}
-        />
-      )}
     </div>
   )
 }

@@ -10,8 +10,31 @@ import type { JobSearchResult } from '../types'
  * search-as-you-type against GET /api/jobcards/search?q=... (this app's OWN JobCards only, not a
  * blended DMS view - JobCardId on both doc types is a local FK, same as web). Picking a row calls
  * onSelect and closes.
+ *
+ * FACT, discovered while adding onlyWithMaterialTransfer below: JobCardsController.Search does NOT
+ * accept a `q` param at all (only dateFrom/dateTo/jobNo/regNo/chassisNo/onlyWithMaterialTransfer) -
+ * ASP.NET Core silently ignores an unbound query param rather than erroring, so typing in the
+ * search box above has never actually filtered results on Android; every open just returns the
+ * same up-to-100 most-recent job cards regardless of what's typed. Left AS-IS here (out of scope
+ * for this round's "grid button" ask) but flagged - worth a separate fix (either wiring this box to
+ * jobNo/regNo/chassisNo like web's own filters, or adding a real `q` param server-side).
+ *
+ * 2026-09-23 ("not added grid button on this clcik open material transfered job cards history"):
+ * new optional `onlyWithMaterialTransfer`/`title` props, used by RepairBillCreateScreen.tsx's new
+ * grid button - when true, adds `onlyWithMaterialTransfer=true` to the same GET call
+ * (JobCardsController.Search's own new param) so this picker only lists job cards that already
+ * have a Material Transfer saved. Every other caller (this screen's own plain "Search" button, and
+ * MaterialTransferCreateScreen.tsx's) omits it and is unaffected.
  */
-export function JobSearchModal({ visible, onSelect, onClose }: { visible: boolean; onSelect: (job: JobSearchResult) => void; onClose: () => void }) {
+export function JobSearchModal({
+  visible, onSelect, onClose, onlyWithMaterialTransfer = false, title,
+}: {
+  visible: boolean
+  onSelect: (job: JobSearchResult) => void
+  onClose: () => void
+  onlyWithMaterialTransfer?: boolean
+  title?: string
+}) {
   const [q, setQ] = useState('')
   const [results, setResults] = useState<JobSearchResult[]>([])
   const [loading, setLoading] = useState(false)
@@ -21,20 +44,20 @@ export function JobSearchModal({ visible, onSelect, onClose }: { visible: boolea
     const handle = setTimeout(() => {
       setLoading(true)
       apiClient
-        .get<JobSearchResult[]>('/api/jobcards/search', { params: { q: q || undefined } })
+        .get<JobSearchResult[]>('/api/jobcards/search', { params: { q: q || undefined, onlyWithMaterialTransfer: onlyWithMaterialTransfer || undefined } })
         .then(({ data }) => setResults(data))
         .catch(() => setResults([]))
         .finally(() => setLoading(false))
     }, 300)
     return () => clearTimeout(handle)
-  }, [q, visible])
+  }, [q, visible, onlyWithMaterialTransfer])
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose}>
         <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
           <View style={styles.header}>
-            <Text style={styles.title}>Search Job</Text>
+            <Text style={styles.title}>{title ?? 'Search Job'}</Text>
             <TouchableOpacity onPress={onClose}><Text style={styles.close}>Close</Text></TouchableOpacity>
           </View>
           <TextInput
@@ -50,7 +73,17 @@ export function JobSearchModal({ visible, onSelect, onClose }: { visible: boolea
             keyExtractor={(j) => j.id}
             style={{ maxHeight: 420 }}
             keyboardShouldPersistTaps="handled"
-            ListEmptyComponent={!loading ? <Text style={styles.empty}>{q.trim() ? 'No matching job cards.' : 'Start typing to search.'}</Text> : null}
+            ListEmptyComponent={
+              !loading ? (
+                <Text style={styles.empty}>
+                  {q.trim()
+                    ? 'No matching job cards.'
+                    : onlyWithMaterialTransfer
+                      ? 'No job cards with a Material Transfer found.'
+                      : 'Start typing to search.'}
+                </Text>
+              ) : null
+            }
             renderItem={({ item }) => (
               <TouchableOpacity style={styles.row} onPress={() => onSelect(item)}>
                 <Text style={styles.rowTitle}>{item.jobCardNumber}{item.isDmsLinked === false ? ' (not DMS-synced)' : ''}</Text>

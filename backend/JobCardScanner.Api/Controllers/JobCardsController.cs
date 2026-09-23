@@ -230,11 +230,21 @@ public class JobCardsController : ControllerBase
     /// will, e.g. DMS is unreachable) - it only needs a local JobCard row to link
     /// RepairBillDoc.JobCardId/MaterialTransferDoc.JobCardId to. IsDmsLinked in the response tags
     /// which is which, so the Job Search modal can label them rather than hiding the difference.
+    ///
+    /// 2026-09-23 ("not added grid button on this clcik open material transfered job cards history"
+    /// - the THIRD restatement of the original "add grid button ... job card shown which will
+    /// transfer from material transfer to save as proforma" ask, after two rounds that missed the
+    /// mark): new optional `onlyWithMaterialTransfer` param. When true, this only returns job cards
+    /// that already have at least one MaterialTransferDoc saved against them - i.e. exactly
+    /// "material transferred job cards history" - via an EXISTS check, not a join (avoids returning
+    /// duplicate rows for a job with more than one Material Transfer doc). Default false leaves
+    /// every existing caller (the plain "Search Job" modal on this page and on Material Transfer
+    /// Bill) returning every job card, unchanged.
     /// </summary>
     [HttpGet("search")]
     public async Task<IActionResult> Search(
         [FromQuery] DateOnly? dateFrom, [FromQuery] DateOnly? dateTo, [FromQuery] string? jobNo,
-        [FromQuery] string? regNo, [FromQuery] string? chassisNo)
+        [FromQuery] string? regNo, [FromQuery] string? chassisNo, [FromQuery] bool onlyWithMaterialTransfer = false)
     {
         var isOrgWideRole = _currentUser.Role is StaffRole.CorporateAdmin or StaffRole.SystemAdmin;
         var query = _db.JobCards.AsNoTracking()
@@ -255,6 +265,7 @@ public class JobCardsController : ControllerBase
         if (!string.IsNullOrWhiteSpace(jobNo)) query = query.Where(j => j.JobCardNumber.Contains(jobNo));
         if (!string.IsNullOrWhiteSpace(regNo)) query = query.Where(j => j.Vehicle!.RegNo != null && j.Vehicle.RegNo.Contains(regNo));
         if (!string.IsNullOrWhiteSpace(chassisNo)) query = query.Where(j => j.Vehicle!.Vin != null && j.Vehicle.Vin.Contains(chassisNo));
+        if (onlyWithMaterialTransfer) query = query.Where(j => _db.MaterialTransferDocs.Any(m => m.JobCardId == j.Id));
 
         var rows = await query.OrderByDescending(j => j.CreatedAt).Take(100).ToListAsync();
 

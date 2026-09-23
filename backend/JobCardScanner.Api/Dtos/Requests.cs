@@ -331,11 +331,16 @@ public record CombinedRepairBillRow(
     IReadOnlyList<object>? Items = null, string? JobNo = null, string? PreparedBy = null, string? ModifiedBy = null);
 
 /// <summary>Shared row shape for GET /api/material-transfer-docs/combined - see
-/// CombinedRepairBillRow's doc comment for the same Source/Id/SortDate/Items reasoning.</summary>
+/// CombinedRepairBillRow's doc comment for the same Source/Id/SortDate/Items reasoning.
+/// 2026-09-23 ("history maintain in which job card which item material transfered") - JobNo added,
+/// same treatment as CombinedRepairBillRow.JobNo above: only ever set for a
+/// `source: 'JobCardScanner'` row (see MaterialTransferDocsController.ToCombinedRow), null for a
+/// DMSBAPLDATA row (that side's own MaterialTransfer table has no Job Card link this app can
+/// read).</summary>
 public record CombinedMaterialTransferRow(
     string Source, string Id, string TransferNumber, DateTime SortDate, string? Location,
     string? TransferType, string? PartyName, string? Status, decimal TotalAmount, int ItemCount,
-    IReadOnlyList<object>? Items = null);
+    IReadOnlyList<object>? Items = null, string? JobNo = null);
 
 // 2026-09-22 "create warenty table in jobcardscanner db" - see
 // Models/ExtendedBatteryWarrantySchemes.cs's own doc comment for every field's meaning and the

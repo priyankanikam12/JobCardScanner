@@ -471,6 +471,38 @@ td { padding: 12px; border-bottom: 1px solid var(--border); vertical-align: top;
 tr:last-child td { border-bottom: none; }
 tr:hover td { background: #f8fafc; }
 
+/* 2026-09-23 ("in my table have 100 records but when i scroll then with header that will scroll
+   so for all pages that fix and me all"): GLOBAL frozen/sticky table header - the column-label
+   row (<thead>) of every table on every page now stays pinned to the top of the scrolling view
+   while the data rows underneath it scroll past, instead of scrolling away with the rest of the
+   page (today's reported bug, on a long list like a 100-row grid). One rule here, applied via a
+   plain element selector rather than a class - takes effect on every existing table (Job Cards
+   list, Parts, Repair Bill, Material Transfer, Item Master, Labour Master, and every other grid
+   across the app - see the `<table` grep this round turned up across 26 page/component files) and
+   every future one too, with no per-page markup change needed anywhere.
+   - `top: 0` (not a topbar-height offset) is correct: .topbar above is NOT position:fixed, so it
+     scrolls away with the rest of the page content too - by the time a sticky header needs to
+     "stick" it's already clear of the topbar. A table opened inside a modal (e.g.
+     RecordDetailModal, which scrolls its own fixed overlay) still works the same way, since the
+     header just sticks to the top of whichever box is actually doing the scrolling.
+   - An explicit solid background (var(--surface), matching the surrounding .card) stops table
+     body rows from visibly showing/bleeding through behind the header as they scroll underneath
+     it - browsers don't give <th> an opaque background by default.
+   - z-index kept low (5), well under the sidebar (110) and the profile dropdown (40), so a sticky
+     header can never float above an open dropdown/modal that happens to overlap it.
+   - Disabled for print (@media print below) - sticky positioning has no meaning on a printed page
+     and browsers can lay it out oddly; jobCardPrintHtml.ts's own generated markup is unaffected
+     either way since it's a separate, standalone HTML document with no link to this stylesheet. */
+thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  z-index: 5;
+}
+@media print {
+  thead th { position: static; }
+}
+
 /* Narrow viewports (tablet/phone-width browser windows): the sidebar drawer itself already works
    the same as desktop (see .sidebar/.sidebar.open above) - these are just the remaining
    size-specific tweaks: a tighter drawer padding, content/grids dropping to one column, and the
@@ -596,3 +628,13 @@ label { display: block; font-size: 11.5px; font-weight: 700; letter-spacing: 0.0
 
 .error-text { color: var(--danger); font-size: 13px; margin-top: 6px; }
 .muted { color: var(--text-muted); font-size: 13px; }
+
+/* 2026-09-18 "login page in middle that css also add in global.css" - mirrors the centering rule
+   added to .jcs-hero-logo in src/pages/staff/LoginPage.css (the login screen's own stylesheet,
+   loaded via LoginPage.tsx's `import './LoginPage.css'`), added here too as requested. NOTE: the
+   LoginPage.css copy is the one that actually takes effect for the login screen - LoginPage.css
+   loads after this file (global.css is imported once in main.tsx; LoginPage.css loads with the
+   LoginPage component), so it wins on equal specificity. This copy is kept here as an explicit,
+   easy-to-find reference alongside the sidebar/topbar logo rules above; if it's ever removed from
+   LoginPage.css, this one would take over automatically, keeping the logo centered either way. */
+.jcs-hero-logo { align-self: center; }

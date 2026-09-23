@@ -1,12 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
-import type { BaplDmsLabourRow, BaplDmsWorkshop, BaplItemMaster, CombinedRepairBillRow, JobSearchResult, LabourMasterPartwise, MaterialTransferItemForJob, RepairBillDoc, RepairBillDocItemType, RepairBillDocStatus } from '../../types'
-import { Pagination } from '../../components/Pagination'
-import { usePagination } from '../../lib/usePagination'
+import type { BaplDmsLabourRow, BaplDmsWorkshop, BaplItemMaster, JobSearchResult, LabourMasterPartwise, MaterialTransferItemForJob, RepairBillDoc, RepairBillDocItemType, RepairBillDocStatus } from '../../types'
 import { JobSearchModal } from '../../components/JobSearchModal'
 import { LabourSearchInput } from '../../components/LabourSearchInput'
-import { RecordDetailModal } from '../../components/RecordDetailModal'
 
 /**
  * "Repair Bill" sidebar page (2026-09-19: "now i want Create Repair Bill and Material Transfer
@@ -258,8 +256,8 @@ const splitGst = (gstPct: number, taxMode: TaxMode) =>
     : { cgstPct: gstPct / 2, sgstPct: gstPct / 2, igstPct: 0 }
 
 export function RepairBillCreatePage() {
-  const { profile, hasRole } = useStaffAuth()
-  const canDelete = hasRole('SystemAdmin')
+  const { profile } = useStaffAuth()
+  const navigate = useNavigate()
 
   // ---------------- Location dropdown - scoped to the signed-in user's own accessible workshops ----------------
   const [workshops, setWorkshops] = useState<BaplDmsWorkshop[]>([])
@@ -304,6 +302,16 @@ export function RepairBillCreatePage() {
   // panel already carries but never filtered on client-side until now.
   const [vehicleModel, setVehicleModel] = useState<string | null>(null)
   const [showJobSearch, setShowJobSearch] = useState(false)
+  // 2026-09-23 ("not added grid button on this clcik open material transfered job cards history" -
+  // the THIRD restatement of "add grid button ... job card shown which will transfer from material
+  // transfer to save as proforma using adding labour details", after two rounds that missed the
+  // mark): a SEPARATE picker from "Search Job" above - opens the same JobSearchModal but with
+  // onlyWithMaterialTransfer set, so the grid it shows is scoped to job cards that already have a
+  // Material Transfer saved. Selecting a row calls the SAME selectJob() as "Search Job" - once
+  // picked, this page's own existing sync effect auto-loads that job's Material Transfer Parts (as
+  // it already does for any linked job), so all that's left is adding Labour below and Save as
+  // Proforma - exactly the flow described.
+  const [showMtJobGrid, setShowMtJobGrid] = useState(false)
   const [partyName, setPartyName] = useState('')
   const [regNo, setRegNo] = useState('')
   const [chassisNo, setChassisNo] = useState('')
@@ -726,9 +734,15 @@ export function RepairBillCreatePage() {
   // A Part/Labour line's own saved Discount/Issue Type is best-effort restored via
   // editSnapshotByCodeRef (matched by item code) once Parts re-derive - see that ref's own doc
   // comment for why this is best-effort, not guaranteed.
-  const startEditBill = (row: CombinedRepairBillRow) => {
+  // 2026-09-23 ("this main in 1 page not on same"): the combined list this used to be called from
+  // directly (row click / ✎ button, passing a whole CombinedRepairBillRow) moved out to its own
+  // page (RepairBillListPage.tsx, route /repair-bill-list) - it now navigates here instead, to
+  // `/repair-bill-new?editId={id}`, and THIS page reads that query param on mount (see the
+  // useEffect right after this function) and calls startEditBill(id) itself. Signature narrowed
+  // from a full CombinedRepairBillRow down to just the id it always actually used.
+  const startEditBill = (id: string) => {
     setSaveError(null); setSaveOk(null); setEditLoadError(null)
-    staffApi.get<RepairBillDoc>(`/api/repair-bill-docs/${row.id}`)
+    staffApi.get<RepairBillDoc>(`/api/repair-bill-docs/${id}`)
       .then(({ data: bill }) => {
         setEditingBillId(bill.id)
         setEditingBillNumber(bill.billNumber)
@@ -812,11 +826,19 @@ export function RepairBillCreatePage() {
           setItems(restoredLabour)
         }
 
-        setViewingBill(null)
         window.scrollTo({ top: 0, behavior: 'smooth' })
       })
-      .catch((err) => setEditLoadError(err?.response?.data?.message ?? `Could not load Bill ${row.billNumber} for editing.`))
+      .catch((err) => setEditLoadError(err?.response?.data?.message ?? `Could not load Bill ${id} for editing.`))
   }
+
+  // 2026-09-23 ("this main in 1 page not on same") - opens this page already in edit mode when
+  // arrived at via /repair-bill-new?editId={id} (the List page's own Edit navigation, above).
+  const [searchParams] = useSearchParams()
+  useEffect(() => {
+    const editId = searchParams.get('editId')
+    if (editId) startEditBill(editId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
 
   const cancelEdit = () => { resetFormToNew(); setEditLoadError(null) }
 
@@ -881,7 +903,8 @@ export function RepairBillCreatePage() {
           setSaveOk(`Saved as ${r.data.billNumber}.`)
           resetFormToNew()
         }
-        loadCombined()
+        // 2026-09-23 - loadCombined() removed: the list now lives on its own page
+        // (RepairBillListPage.tsx / /repair-bill-list), which re-fetches on its own mount.
       })
       .catch((err) => setSaveError(err?.response?.data?.message ?? `Could not ${editingBillId ? 'update' : 'save'} the repair bill.`))
       .finally(() => setSaving(false))
@@ -902,106 +925,33 @@ export function RepairBillCreatePage() {
       .then(() => {
         setEditingBillStatus('Billed')
         setSaveOk(`Bill ${editingBillNumber} saved as Invoice.`)
-        loadCombined()
+        // 2026-09-23 - loadCombined() removed: see note on the save() handler above.
       })
       .catch((err) => alert(err?.response?.data?.message ?? 'Could not save this bill as an Invoice.'))
       .finally(() => setConvertingId(null))
   }
 
-  // ---------------- Combined list (this app's own bills + DMSBAPLDATA-synced bills) ----------------
-  // 2026-09-21 ("according /repair-bill-list do in our repair bill"): filter set widened to match
-  // the reference repair-bill-list.ts's own repairbillsearchModel (Date From/To, Service Location,
-  // Bill No, Job No, Chassis No) - see RepairBillDocsController.Combined's doc comment for which of
-  // these narrow which data source (only this app's own JobCardScannerDb rows; DMSBAPLDATA keeps
-  // its existing party-only filter, unchanged).
-  const [party, setParty] = useState('Zomato')
-  const [listBillNo, setListBillNo] = useState('')
-  const [listJobNo, setListJobNo] = useState('')
-  const [listChassisNo, setListChassisNo] = useState('')
-  const [listLocation, setListLocation] = useState('')
-  const [listDateFrom, setListDateFrom] = useState('')
-  const [listDateTo, setListDateTo] = useState('')
-  const [rows, setRows] = useState<CombinedRepairBillRow[]>([])
-  const [dmsError, setDmsError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
-
-  const loadCombined = () => {
-    setLoading(true)
-    staffApi
-      .get<{ rows: CombinedRepairBillRow[]; dmsBaplDataError: string | null }>('/api/repair-bill-docs/combined', {
-        params: {
-          party: party || undefined,
-          billNo: listBillNo || undefined,
-          jobNo: listJobNo || undefined,
-          chassisNo: listChassisNo || undefined,
-          locationCode: listLocation || undefined,
-          dateFrom: listDateFrom || undefined,
-          dateTo: listDateTo || undefined,
-        },
-      })
-      .then((r) => { setRows(r.data.rows); setDmsError(r.data.dmsBaplDataError) })
-      .catch(() => { setRows([]); setDmsError('Could not load the combined list.') })
-      .finally(() => setLoading(false))
-  }
-
-  useEffect(() => { loadCombined() }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const deleteBill = (id: string) => {
-    if (!window.confirm('Delete this repair bill? This cannot be undone.')) return
-    staffApi.delete(`/api/repair-bill-docs/${id}`)
-      .then(() => loadCombined())
-      .catch((err) => alert(err?.response?.data?.message ?? 'Could not delete the repair bill.'))
-  }
-
-  // 2026-09-22 "save as proforma and after save as proforma then save as invoice" - see this
-  // file's own doc comment above for the full lifecycle. PUT .../status expects the raw enum
-  // VALUE as the JSON body (RepairBillDocsController.UpdateStatus takes `[FromBody]
-  // RepairBillDocStatus status`, no wrapper object) - Program.cs registers a global
-  // JsonStringEnumConverter, so the body must be the JSON STRING "Billed", not the bare word
-  // Billed or a {status:...} object. Explicit JSON.stringify + Content-Type below rather than
-  // relying on axios's default string handling, which does NOT auto-quote/auto-JSON a plain
-  // string payload the way it does for an object.
+  // 2026-09-23 ("this main in 1 page not on same only which are save in jobcard db that in grid
+  // button and which material transfer that jobcard"): the combined list (this app's own bills +
+  // DMSBAPLDATA-synced ones), its filters, pagination, Delete, and the read-only detail popup all
+  // moved OUT of this page onto their own separate page - see RepairBillListPage.tsx (route
+  // /repair-bill-list) for all of that, confirmed via AskUserQuestion ("Android + Web: both get a
+  // separate list screen/page" + "JobCardScanner rows only"). This page is now the create/edit
+  // FORM only. `convertingId` stays here (below) since finalizeEditingBillAsInvoice (this page's
+  // own "Save as Invoice" button while editing) still needs it - it's unrelated to the list.
   const [convertingId, setConvertingId] = useState<string | null>(null)
-  const saveAsInvoice = (bill: CombinedRepairBillRow) => {
-    if (!window.confirm(`Save Bill ${bill.billNumber} as Invoice? This finalizes it - line items can no longer be changed afterwards.`)) return
-    setConvertingId(bill.id)
-    staffApi
-      .put(`/api/repair-bill-docs/${bill.id}/status`, JSON.stringify('Billed'), { headers: { 'Content-Type': 'application/json' } })
-      .then(() => {
-        setViewingBill((v) => (v && v.id === bill.id ? { ...v, status: 'Billed' } : v))
-        loadCombined()
-      })
-      .catch((err) => alert(err?.response?.data?.message ?? 'Could not save this bill as an Invoice.'))
-      .finally(() => setConvertingId(null))
-  }
-
-  const { page, setPage, pageSize, setPageSize, pageCount, pageRows, total } = usePagination(rows)
-
-  // ---------------- Detail view (2026-09-21 "all upload data and exist data are clickable on
-  // any record we click this all details can openable") - see MaterialTransferCreatePage.tsx's
-  // own copy of this pattern for the shared reasoning (both this app's own bills and DMSBAPLDATA-
-  // synced ones already come back with Items from /combined). ----------------
-  const [viewingBill, setViewingBill] = useState<CombinedRepairBillRow | null>(null)
-  const billItemColumns = viewingBill?.source === 'DMSBAPLDATA'
-    ? ['Item Code/Id', 'Description', 'Type', 'Issue Type', 'Qty', 'Rate', 'CGST %', 'CGST Amt', 'SGST %', 'SGST Amt', 'IGST %', 'IGST Amt', 'Wav Rate', 'Total Amt', 'Material Issue']
-    : ['Item Type', 'Item Code', 'Description', 'HSN', 'Issue Type', 'Qty', 'Rate', 'Discount', 'CGST %', 'SGST %', 'IGST %', 'Taxable Amt', 'Total Amt']
-  const fmtBillCell = (v: unknown) => (v == null || v === '' ? '—' : typeof v === 'number' ? v.toLocaleString('en-IN', { maximumFractionDigits: 2 }) : String(v))
-  const billItemRows = (viewingBill?.items ?? []).map((it) =>
-    viewingBill?.source === 'DMSBAPLDATA'
-      ? [fmtBillCell(it.itemIdno ?? it.itemCode), fmtBillCell(it.itemDesc), fmtBillCell(it.itemType), fmtBillCell(it.issueType), fmtBillCell(it.qty), fmtBillCell(it.rate),
-         fmtBillCell(it.cgstPer), fmtBillCell(it.cgstAmount), fmtBillCell(it.sgstPer), fmtBillCell(it.sgstAmount), fmtBillCell(it.igstPer), fmtBillCell(it.igstAmount),
-         fmtBillCell(it.wavRate), fmtBillCell(it.totAmnt), fmtBillCell(it.mtrlIssue)]
-      : [fmtBillCell(it.itemType), fmtBillCell(it.itemCode), fmtBillCell(it.itemDescription), fmtBillCell(it.hsnCode), fmtBillCell(it.issueType), fmtBillCell(it.qty), fmtBillCell(it.rate),
-         fmtBillCell(it.discountValue), fmtBillCell(it.cgstPct), fmtBillCell(it.sgstPct), fmtBillCell(it.igstPct), fmtBillCell(it.taxableAmount), fmtBillCell(it.totalAmount)]
-  )
 
   return (
     <div>
-      <h2>Repair Bill</h2>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <h2 style={{ margin: 0 }}>Repair Bill</h2>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={() => navigate('/repair-bill-list')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span aria-hidden="true">☰</span>Repair Bill List
+        </button>
+      </div>
       <p className="muted">
-        Create a repair bill - saved into JobCardScanner's own database. The list below shows bills
-        created here together with the read-only repair bill data synced from DMSBAPLDATA, tagged
-        by source.
+        Create a repair bill - saved into JobCardScanner's own database. To see bills already saved
+        here (with Edit / Save as Invoice), use "View Repair Bill List" above.
       </p>
 
       <div className="card">
@@ -1035,6 +985,9 @@ export function RepairBillCreatePage() {
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
               <input value={jobCardNumber} readOnly placeholder="No job linked" style={{ flex: 1 }} />
               <button className="btn btn-sm" onClick={() => setShowJobSearch(true)} type="button">Search Job</button>
+              {/* 2026-09-23 - the "grid button": opens a picker scoped to job cards that already
+                  have a Material Transfer saved (see showMtJobGrid's own doc comment above). */}
+              <button className="btn btn-sm btn-icon" onClick={() => setShowMtJobGrid(true)} type="button" title="Browse job cards with a Material Transfer">🔲</button>
               {jobCardId && <button className="btn btn-sm" onClick={clearJob} type="button" title="Unlink job">✕</button>}
             </div>
           </div>
@@ -1216,8 +1169,21 @@ export function RepairBillCreatePage() {
             plus the button - reads as one line. `.suggest-row`/`.field-grow`/`.field-compact`
             themselves are untouched in global.css, so JobCardDetailPage.tsx's own "Suggest a
             part"/"Suggest labour" rows (which still want their one search field to grow) are
-            unaffected. */}
-        <div className="suggest-row" style={{ background: 'var(--surface-muted, #f8f9fa)', borderRadius: 8, padding: '10px 12px' }}>
+            unaffected.
+            2026-09-23 SECOND correction ("in 1 line row this Labour...Issue Type and button add in
+            1 line") - the field-compact change above still wasn't enough at a realistic browser
+            width (7 fields + a button, each already sized to its own content, simply add up to
+            more than a typical laptop screen's card width) - .suggest-row's shared `flex-wrap:
+            wrap` (global.css, used elsewhere too - see the paragraph above for why it's left
+            untouched) was still free to drop Issue Type/+Add onto a second row whenever that
+            happened. Forced to a genuine single line here with two LOCAL, inline overrides (not
+            touching the shared class, so other .suggest-row users are unaffected): `flexWrap:
+            'nowrap'` on this row, inside a new `overflowX: 'auto'` wrapper - same pattern this
+            page's own Part Details List / Material Transfer's grid already use for a row that's
+            wider than its card, so at a narrower width the row now scrolls horizontally instead of
+            wrapping, and Issue Type + Add always stay on the same line as everything else. */}
+        <div style={{ overflowX: 'auto' }}>
+        <div className="suggest-row" style={{ background: 'var(--surface-muted, #f8f9fa)', borderRadius: 8, padding: '10px 12px', flexWrap: 'nowrap' }}>
           <div className="field field-compact">
             <label>Labour</label>
             <LabourSearchInput
@@ -1286,6 +1252,7 @@ export function RepairBillCreatePage() {
               <button className="btn btn-sm" type="button" onClick={resetDraftLabour} style={{ marginLeft: 6 }}>Cancel</button>
             )}
           </div>
+        </div>
         </div>
         {!jobCardId && (
           <p className="muted" style={{ fontSize: 13, margin: '8px 0 0' }}>
@@ -1563,165 +1530,11 @@ export function RepairBillCreatePage() {
         {saveOk && <p className="muted" style={{ color: '#15803d' }}>{saveOk}</p>}
       </div>
 
-      {/* 2026-09-21 ("according /repair-bill-list do in our repair bill"): filter row matches the
-          reference repair-bill-list.ts's own repairbillsearchModel (Date From/To, Service
-          Location, Bill No, Job No, Chassis No) - see loadCombined's own doc comment for which
-          data source each filter narrows. The Party Name filter (DMSBAPLDATA-only, pre-existing)
-          stays, unrelated to the reference's own fields. */}
-      <div className="card">
-        <div className="form-row">
-          <div className="field">
-            <label>Date From</label>
-            <input type="date" value={listDateFrom} onChange={(e) => setListDateFrom(e.target.value)} />
-          </div>
-          <div className="field">
-            <label>Date To</label>
-            <input type="date" value={listDateTo} onChange={(e) => setListDateTo(e.target.value)} />
-          </div>
-          <div className="field">
-            <label>Service Location</label>
-            {workshops.length > 0 ? (
-              <select value={listLocation} onChange={(e) => setListLocation(e.target.value)}>
-                <option value="">All locations</option>
-                {workshops.map((w) => (
-                  <option key={w.locCode} value={w.locCode}>{w.locCode} — {w.locName}</option>
-                ))}
-              </select>
-            ) : (
-              <input value={listLocation} onChange={(e) => setListLocation(e.target.value)} placeholder="Workshop location" />
-            )}
-          </div>
-          <div className="field">
-            <label>Bill No.</label>
-            <input value={listBillNo} onChange={(e) => setListBillNo(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && loadCombined()} placeholder="Enter Bill No." />
-          </div>
-          <div className="field">
-            <label>Job No.</label>
-            <input value={listJobNo} onChange={(e) => setListJobNo(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && loadCombined()} placeholder="Enter Job No." />
-          </div>
-          <div className="field">
-            <label>Chassis No.</label>
-            <input value={listChassisNo} onChange={(e) => setListChassisNo(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && loadCombined()} placeholder="Enter Chassis No." />
-          </div>
-          <div className="field">
-            <label>Filter DMSBAPLDATA rows by Party Name</label>
-            <input value={party} onChange={(e) => setParty(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && loadCombined()} placeholder="e.g. Zomato" />
-          </div>
-        </div>
-        <button className="btn btn-primary btn-sm" onClick={loadCombined} disabled={loading}>{loading ? 'Loading…' : 'Search'}</button>
-        {dmsError && <p className="muted" style={{ color: '#b91c1c' }}>DMSBAPLDATA rows unavailable: {dmsError}</p>}
-      </div>
-
-      {/* Column set matches the reference repair-bill-list.html: SR.No/Bill No/Date/Party Name/
-          Reg No/ChassisNo/Location/Bill Type/Job No/Bill Amount/Status/Prepared by/Modified by,
-          Action column first. One difference from the reference, disclosed rather than silently
-          copied: this list blends TWO data sources (Source badge, since the reference's own list
-          only ever shows BAPL DMS's own bills).
-          2026-09-23: a row now opens two different ways depending what it is - see startEditBill's
-          own doc comment above. A JobCardScanner-own bill that's still Performa reopens the SAME
-          editable create form above (matching the reference's own repair-bill/{id} edit page,
-          video-confirmed); a DMSBAPLDATA-synced row, or a JobCardScanner bill that's already
-          Billed/Cancelled, still opens the read-only detail popup (RecordDetailModal below) as
-          before - there is nothing left to edit on either of those. */}
-      <div className="card" style={{ padding: 0 }}>
-        <table>
-          <thead>
-            <tr>
-              <th>Source</th>
-              <th>SR.No</th>
-              <th>Bill No</th>
-              <th>Date</th>
-              <th>Party Name</th>
-              <th>Reg No</th>
-              <th>Chassis No</th>
-              <th>Location</th>
-              <th>Bill Type</th>
-              <th>Job No</th>
-              <th className="text-end">Bill Amount</th>
-              <th>Status</th>
-              <th>Prepared by</th>
-              <th>Modified by</th>
-              {canDelete && <th></th>}
-            </tr>
-          </thead>
-          <tbody>
-            {pageRows.map((r, i) => (
-              <tr
-                key={r.id}
-                onClick={() => (r.source === 'JobCardScanner' && r.status === 'Performa' ? startEditBill(r) : setViewingBill(r))}
-                style={{ cursor: 'pointer' }}
-                title={r.source === 'JobCardScanner' && r.status === 'Performa' ? 'Click to open and edit this Proforma bill' : 'Click to view full details'}
-              >
-                <td><span className={`badge ${r.source === 'JobCardScanner' ? 'badge-success' : 'badge-muted'}`}>{r.source}</span></td>
-                <td>{((page - 1) * pageSize) + i + 1}</td>
-                <td>{r.billNumber}</td>
-                <td>{r.sortDate ? new Date(r.sortDate).toLocaleDateString('en-IN') : '—'}</td>
-                <td>{r.partyName ?? '—'}</td>
-                <td>{r.regNo ?? '—'}</td>
-                <td>{r.chassisNo ?? '—'}</td>
-                <td>{r.location ?? '—'}</td>
-                <td>{r.billType ?? '—'}</td>
-                <td>{r.jobNo ?? '—'}</td>
-                <td className="text-end">₹{r.totalAmount.toFixed(2)}</td>
-                <td>{r.status ?? '—'}</td>
-                <td>{r.preparedBy ?? '—'}</td>
-                <td>{r.modifiedBy ?? '—'}</td>
-                {canDelete && (
-                  <td onClick={(e) => e.stopPropagation()}>
-                    {r.source === 'JobCardScanner' && (
-                      <button className="btn btn-icon btn-danger" onClick={() => deleteBill(r.id)} title="Delete (SystemAdmin only)">✕</button>
-                    )}
-                  </td>
-                )}
-              </tr>
-            ))}
-            {rows.length === 0 && !loading && (
-              <tr><td colSpan={canDelete ? 14 : 13} className="muted" style={{ textAlign: 'center', padding: 16 }}>No repair bills yet.</td></tr>
-            )}
-          </tbody>
-        </table>
-        <Pagination page={page} pageCount={pageCount} total={total} onPageChange={setPage} pageSize={pageSize} onPageSizeChange={setPageSize} />
-      </div>
-
+      {/* 2026-09-23 - the combined list (filters, table, read-only detail popup) moved to its own
+          page: see the "View Repair Bill List" button in the header above, and
+          RepairBillListPage.tsx / route /repair-bill-list. */}
       {showJobSearch && <JobSearchModal onSelect={selectJob} onClose={() => setShowJobSearch(false)} />}
-
-      {viewingBill && (
-        <RecordDetailModal
-          title={`Bill ${viewingBill.billNumber}`}
-          subtitle={`${viewingBill.source}${viewingBill.location ? ` · ${viewingBill.location}` : ''}`}
-          onClose={() => setViewingBill(null)}
-          fields={[
-            { label: 'Source', value: viewingBill.source },
-            { label: 'Bill No', value: viewingBill.billNumber },
-            { label: 'Date', value: viewingBill.sortDate ? new Date(viewingBill.sortDate).toLocaleDateString('en-IN') : null },
-            { label: 'Party Name', value: viewingBill.partyName },
-            { label: 'Reg No', value: viewingBill.regNo },
-            { label: 'Chassis No', value: viewingBill.chassisNo },
-            { label: 'Location', value: viewingBill.location },
-            { label: 'Bill Type', value: viewingBill.billType },
-            { label: 'Job No', value: viewingBill.jobNo },
-            { label: 'Status', value: viewingBill.status },
-            { label: 'Item Count', value: viewingBill.itemCount },
-            { label: 'Total Amount', value: `₹${viewingBill.totalAmount.toFixed(2)}` },
-            { label: 'Prepared By', value: viewingBill.preparedBy },
-            { label: 'Modified By', value: viewingBill.modifiedBy },
-          ]}
-          itemsTitle="Items"
-          itemColumns={billItemColumns}
-          itemRows={billItemRows}
-          actions={
-            viewingBill.source === 'JobCardScanner' && viewingBill.status === 'Performa' ? (
-              <button
-                className="btn btn-primary btn-sm"
-                disabled={convertingId === viewingBill.id}
-                onClick={() => saveAsInvoice(viewingBill)}
-              >
-                {convertingId === viewingBill.id ? 'Saving…' : 'Save as Invoice'}
-              </button>
-            ) : undefined
-          }
-        />
-      )}
+      {showMtJobGrid && <JobSearchModal onSelect={(j) => { selectJob(j); setShowMtJobGrid(false) }} onClose={() => setShowMtJobGrid(false)} onlyWithMaterialTransfer />}
     </div>
   )
 }

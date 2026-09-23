@@ -116,7 +116,7 @@ public class MaterialTransferDocsController : ControllerBase
         if (dateFrom is not null) query = query.Where(m => m.TransferDate >= dateFrom);
         if (dateTo is not null) query = query.Where(m => m.TransferDate <= dateTo);
 
-        var docs = await query.Include(m => m.Items).OrderByDescending(m => m.CreatedAt).ToListAsync();
+        var docs = await query.Include(m => m.Items).Include(m => m.JobCard).OrderByDescending(m => m.CreatedAt).ToListAsync();
 
         return Ok(docs.Select(ToRow));
     }
@@ -131,23 +131,47 @@ public class MaterialTransferDocsController : ControllerBase
     /// carry a LocCode at all - see MaterialTransferDoc's doc comment). DMSBAPLDATA connectivity
     /// problems don't fail the whole request - dmsBaplDataError is set instead so the page can say
     /// so without hiding this app's own rows.
+    ///
+    /// 2026-09-23 ("in repairbill which we added button like this add in material transfer for
+    /// showing which we transferred" - the new MaterialTransferListPage.tsx/
+    /// MaterialTransferListScreen.tsx mirror RepairBillListPage.tsx/RepairBillListScreen.tsx's own
+    /// split exactly): transferNo/jobNo/locationCode/dateFrom/dateTo filters and an `ownOnly` flag
+    /// added, matching RepairBillDocsController.Combined's own identical addition - applied only to
+    /// this dealer's own JobCardScannerDb rows (`localQuery` below); `locCode`'s existing behaviour
+    /// (which ALSO gates whether DMSBAPLDATA is queried at all, not just how it's filtered) is
+    /// completely unchanged for every existing caller. `ownOnly=true` skips the DMSBAPLDATA call
+    /// entirely (same reasoning as Repair Bill's own ownOnly) - the new list pages/screens use it so
+    /// they never even attempt that round trip. Defaults (ownOnly=false, filters null) leave
+    /// MaterialTransferCreatePage.tsx/MaterialTransferCreateScreen.tsx (which still call this with
+    /// only `locCode`, unchanged) completely unaffected.
     /// </summary>
     [HttpGet("combined")]
-    public async Task<IActionResult> Combined([FromQuery] string? locCode)
+    public async Task<IActionResult> Combined(
+        [FromQuery] string? locCode, [FromQuery] bool ownOnly = false,
+        [FromQuery] string? transferNo = null, [FromQuery] string? jobNo = null,
+        [FromQuery] string? locationCode = null,
+        [FromQuery] DateOnly? dateFrom = null, [FromQuery] DateOnly? dateTo = null)
     {
         var dealerId = _currentUser.DealerId;
         if (dealerId is null) return Forbid();
 
-        var localDocs = await _db.MaterialTransferDocs.AsNoTracking()
-            .Where(m => m.DealerId == dealerId)
+        var localQuery = _db.MaterialTransferDocs.AsNoTracking().Where(m => m.DealerId == dealerId);
+        if (!string.IsNullOrWhiteSpace(transferNo)) localQuery = localQuery.Where(m => m.TransferNumber.Contains(transferNo));
+        if (!string.IsNullOrWhiteSpace(jobNo)) localQuery = localQuery.Where(m => m.JobCard != null && m.JobCard.JobCardNumber.Contains(jobNo));
+        if (!string.IsNullOrWhiteSpace(locationCode)) localQuery = localQuery.Where(m => m.Location == locationCode);
+        if (dateFrom is not null) localQuery = localQuery.Where(m => m.TransferDate >= dateFrom);
+        if (dateTo is not null) localQuery = localQuery.Where(m => m.TransferDate <= dateTo);
+
+        var localDocs = await localQuery
             .Include(m => m.Items)
+            .Include(m => m.JobCard)
             .OrderByDescending(m => m.CreatedAt)
             .ToListAsync();
 
         var combined = new List<CombinedMaterialTransferRow>(localDocs.Select(ToCombinedRow));
 
         string? dmsError = null;
-        if (!string.IsNullOrWhiteSpace(locCode))
+        if (!ownOnly && !string.IsNullOrWhiteSpace(locCode))
         {
             try
             {
@@ -232,11 +256,17 @@ public class MaterialTransferDocsController : ControllerBase
         return Ok(rows);
     }
 
+    // 2026-09-23 ("history maintain in which job card which item material transfered ... please
+    // add [the reopen-for-edit button]" - see MaterialTransferCreatePage.tsx's own
+    // "startEditTransfer" doc comment, the Material Transfer sibling of
+    // RepairBillDocsController.Get's identical 2026-09-23 change): now also Includes JobCard so
+    // ToRow can return JobCardId/JobCardNumber - needed so the web page can re-link the same Job
+    // when an existing Draft transfer is reopened for editing.
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id)
     {
         var dealerId = _currentUser.DealerId;
-        var doc = await _db.MaterialTransferDocs.AsNoTracking().Include(m => m.Items)
+        var doc = await _db.MaterialTransferDocs.AsNoTracking().Include(m => m.Items).Include(m => m.JobCard)
             .FirstOrDefaultAsync(m => m.Id == id && m.DealerId == dealerId);
         return doc is null ? NotFound() : Ok(ToRow(doc));
     }
@@ -265,6 +295,121 @@ public class MaterialTransferDocsController : ControllerBase
         if (dealerId is null) return Forbid();
         if (req.Items is null || req.Items.Count == 0) return BadRequest(new { message = "Add at least one item line." });
 
+        var doc = new MaterialTransferDoc
+        {
+            DealerId = dealerId.Value,
+            TransferNumber = await _numbering.NextMaterialTransferNumberAsync(dealerId.Value),
+            JobCardId = req.JobCardId,
+            Location = req.Location,
+            TransferType = req.TransferType,
+            IssueType = req.IssueType,
+            PartyName = req.PartyName,
+            TechnicianId = req.TechnicianId,
+            Remarks = req.Remarks,
+            TransferDate = req.TransferDate ?? DateOnly.FromDateTime(DateTime.UtcNow),
+            CreatedById = _currentUser.UserId,
+            Status = MaterialTransferDocStatus.Draft,
+        };
+
+        var error = await ApplyStockAndBuildItemsAsync(doc, req, dealerId.Value);
+        if (error is not null) return BadRequest(new { message = error });
+
+        _db.MaterialTransferDocs.Add(doc);
+        await _db.SaveChangesAsync();
+        await _audit.LogAsync("MaterialTransferDoc.Create", "MaterialTransferDoc", doc.Id.ToString(), new { doc.TransferNumber, doc.TotalAmount });
+
+        return Ok(ToRow(doc));
+    }
+
+    /// <summary>
+    /// PUT /api/material-transfer-docs/{id} - 2026-09-23 ("this button not added why? please add
+    /// and there history maintain in which job card which item material transfered and there we
+    /// can add labour"): the Material Transfer sibling of RepairBillDocsController.Update (added
+    /// the same round for the Repair Bill page's own reopen-for-editing flow, confirmed via
+    /// video+AskUserQuestion) - reopens an existing, still-Draft transfer as the SAME "New
+    /// Material Transfer" form on the web page, editable, so a Part or Labour line can be added to
+    /// (or removed from) a transfer that was already saved, instead of only being able to view it
+    /// read-only. Reuses CreateMaterialTransferRequest as-is (a full replace of Items, not a
+    /// partial patch) and the same stock-decrement logic as Create (ApplyStockAndBuildItemsAsync,
+    /// shared below).
+    ///
+    /// Only ever allowed while Status is still Draft - Confirmed/Cancelled has no "undo" here
+    /// (same reasoning as RepairBillDocsController.Update's Performa-only gate). ALSO blocked, for
+    /// a non-SystemAdmin, once the same Job's own Repair Bill has already been Billed - identical
+    /// rule to this controller's own Delete above (editing what was transferred after the
+    /// resulting bill is finalized would silently make what's billed and what's on hand disagree),
+    /// re-using that exact check rather than inventing a looser one for Update alone.
+    ///
+    /// Part Upload stock (PartUploads.BalQty - see Create's own doc comment): the OLD items' stock
+    /// impact is restored first (the same restore Delete already performs), then the NEW items are
+    /// decremented against that restored baseline via ApplyStockAndBuildItemsAsync - so editing a
+    /// Part line's Qty (or adding/removing one) nets out correctly instead of double-counting.
+    /// </summary>
+    [HttpPut("{id:guid}")]
+    public async Task<IActionResult> Update(Guid id, CreateMaterialTransferRequest req)
+    {
+        var dealerId = _currentUser.DealerId;
+        if (dealerId is null) return Forbid();
+        if (req.Items is null || req.Items.Count == 0) return BadRequest(new { message = "Add at least one item line." });
+
+        var doc = await _db.MaterialTransferDocs.Include(m => m.Items)
+            .FirstOrDefaultAsync(m => m.Id == id && m.DealerId == dealerId);
+        if (doc is null) return NotFound();
+        if (doc.Status != MaterialTransferDocStatus.Draft)
+            return BadRequest(new { message = $"Transfer {doc.TransferNumber} is already {doc.Status} - only a Draft transfer can be edited." });
+
+        var isSystemAdmin = _currentUser.Role == StaffRole.SystemAdmin;
+        if (!isSystemAdmin && doc.JobCardId is not null)
+        {
+            var jobBilled = await _db.RepairBillDocs.AsNoTracking()
+                .AnyAsync(r => r.JobCardId == doc.JobCardId && r.DealerId == dealerId
+                    && !r.IsDeleted && r.Status == RepairBillDocStatus.Billed);
+            if (jobBilled)
+                return BadRequest(new { message = "This job card has already been billed and its material transfer can no longer be edited." });
+        }
+
+        // Restore PartUploads stock committed by the OLD items (see Delete's own identical
+        // restore) BEFORE ApplyStockAndBuildItemsAsync decrements stock again for the new items -
+        // keyed off the doc's Location as it was before this update.
+        if (!string.IsNullOrWhiteSpace(doc.Location))
+        {
+            foreach (var oldIt in doc.Items)
+            {
+                if (string.IsNullOrWhiteSpace(oldIt.ItemCode)) continue;
+                var pu = await _db.PartUploads.FirstOrDefaultAsync(
+                    p => p.DealerId == dealerId && p.LocationCode == doc.Location && p.PartNo == oldIt.ItemCode, HttpContext.RequestAborted);
+                if (pu is not null) pu.BalQty = (pu.BalQty ?? 0) + (decimal)oldIt.Qty;
+            }
+        }
+
+        doc.JobCardId = req.JobCardId;
+        doc.Location = req.Location;
+        doc.TransferType = req.TransferType;
+        doc.IssueType = req.IssueType;
+        doc.PartyName = req.PartyName;
+        doc.TechnicianId = req.TechnicianId;
+        doc.Remarks = req.Remarks;
+        if (req.TransferDate is not null) doc.TransferDate = req.TransferDate.Value;
+
+        _db.MaterialTransferDocItems.RemoveRange(doc.Items);
+        doc.Items.Clear();
+
+        var error = await ApplyStockAndBuildItemsAsync(doc, req, dealerId.Value);
+        if (error is not null) return BadRequest(new { message = error });
+
+        await _db.SaveChangesAsync();
+        await _audit.LogAsync("MaterialTransferDoc.Update", "MaterialTransferDoc", doc.Id.ToString(), new { doc.TransferNumber, doc.TotalAmount });
+
+        return Ok(ToRow(doc));
+    }
+
+    /// <summary>Shared by Create and Update above - decrements/validates PartUploads.BalQty for
+    /// every Part line (see Create's original doc comment, now here, for the full reasoning) and
+    /// builds MaterialTransferDocItem rows onto `doc.Items`, then sets doc.TotalAmount from them.
+    /// Returns an insufficient-stock error message for the caller to return as 400, or null on
+    /// success.</summary>
+    private async Task<string?> ApplyStockAndBuildItemsAsync(MaterialTransferDoc doc, CreateMaterialTransferRequest req, Guid dealerId)
+    {
         var partUploadCache = new Dictionary<string, PartUpload>(StringComparer.OrdinalIgnoreCase);
         if (!string.IsNullOrWhiteSpace(req.Location))
         {
@@ -287,26 +432,10 @@ public class MaterialTransferDocsController : ControllerBase
                 var requestedQty = (decimal)it.Qty;
                 var available = pu.BalQty ?? 0;
                 if (requestedQty > available)
-                    return BadRequest(new { message = $"Insufficient Part Upload stock for '{it.ItemCode}' at this location: available {available}, requested {requestedQty}." });
+                    return $"Insufficient Part Upload stock for '{it.ItemCode}' at this location: available {available}, requested {requestedQty}.";
                 pu.BalQty = available - requestedQty;
             }
         }
-
-        var doc = new MaterialTransferDoc
-        {
-            DealerId = dealerId.Value,
-            TransferNumber = await _numbering.NextMaterialTransferNumberAsync(dealerId.Value),
-            JobCardId = req.JobCardId,
-            Location = req.Location,
-            TransferType = req.TransferType,
-            IssueType = req.IssueType,
-            PartyName = req.PartyName,
-            TechnicianId = req.TechnicianId,
-            Remarks = req.Remarks,
-            TransferDate = req.TransferDate ?? DateOnly.FromDateTime(DateTime.UtcNow),
-            CreatedById = _currentUser.UserId,
-            Status = MaterialTransferDocStatus.Draft,
-        };
 
         foreach (var it in req.Items)
         {
@@ -333,11 +462,7 @@ public class MaterialTransferDocsController : ControllerBase
         }
         doc.TotalAmount = doc.Items.Sum(i => i.Amount);
 
-        _db.MaterialTransferDocs.Add(doc);
-        await _db.SaveChangesAsync();
-        await _audit.LogAsync("MaterialTransferDoc.Create", "MaterialTransferDoc", doc.Id.ToString(), new { doc.TransferNumber, doc.TotalAmount });
-
-        return Ok(ToRow(doc));
+        return null;
     }
 
     /// <summary>
@@ -413,11 +538,17 @@ public class MaterialTransferDocsController : ControllerBase
         m.Id,
         m.TransferNumber,
         TransferDate = m.TransferDate,
+        // 2026-09-23 - see Get's own doc comment just above for why these two are now returned
+        // (needed so the web page can re-link the same Job when reopening a Draft transfer for
+        // editing).
+        m.JobCardId,
+        JobCardNumber = m.JobCard?.JobCardNumber,
         m.Location,
         TransferType = m.TransferType.ToString(),
         m.IssueType,
         m.PartyName,
         m.TechnicianId,
+        m.Remarks,
         Status = m.Status.ToString(),
         m.TotalAmount,
         ItemCount = m.Items.Count,
@@ -445,5 +576,8 @@ public class MaterialTransferDocsController : ControllerBase
             i.Id, i.ItemCode, i.ItemDescription, i.HsnCode, i.IssueType, i.Qty, i.Rate, i.Amount,
             i.RackNo, i.Bin, i.SerialNo, i.Mrp, i.ValidDays, i.ItemReceived,
             ItemType = i.ItemType.ToString(),
-        }).ToList());
+        }).ToList(),
+        // 2026-09-23 ("history maintain in which job card which item material transfered") - see
+        // CombinedMaterialTransferRow.JobNo's own doc comment.
+        JobNo: m.JobCard?.JobCardNumber);
 }
