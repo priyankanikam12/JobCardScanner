@@ -98,4 +98,26 @@ public class PartUpload
     [MaxLength(120)] public string? UploadedBy { get; set; }
     public DateTime UploadedAt { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAt { get; set; }
+
+    // =====================================================================================
+    // 2026-09-22 ("in parts-upload page after Bal Qty column add MT Transfer Qty column for
+    // maintaining how much qty was transfered"): NOT a stored column - computed on every GET by
+    // PartUploadService.GetAsync as SUM(MaterialTransferDocItem.Qty) for this dealer, matched by
+    // (ItemCode == PartNo, MaterialTransferDoc.Location == LocationCode) - the exact same match
+    // MaterialTransferDocsController.Create already uses to decrement BalQty when a transfer is
+    // saved (see MaterialTransferDocsController.Create's own partUploadCache lookup), so this
+    // number is guaranteed to reconcile with what actually moved BalQty.
+    //
+    // INTERPRETATION (flagging, not asserting as fact): the sum includes items from Cancelled
+    // Material Transfer docs, not just Draft/Confirmed ones. This is deliberate, not an oversight -
+    // MaterialTransferDocsController.Delete restores the matching PartUploads.BalQty on a hard
+    // delete, but UpdateStatus's Draft->Cancelled transition does NOT touch BalQty (see that
+    // controller's own doc comment: "Scoped to Delete only ... not the UpdateStatus 'Cancelled'
+    // transition"). So a Cancelled doc's quantity is still sitting in the reduced BalQty today -
+    // excluding Cancelled rows here would make MtTransferQty understate what's actually been
+    // deducted from BalQty. If a future change makes Cancel also restore BalQty, this sum should
+    // be narrowed to exclude Cancelled at the same time so the two stay consistent.
+    // =====================================================================================
+    [NotMapped]
+    public decimal MtTransferQty { get; set; }
 }

@@ -286,10 +286,13 @@ public record CreateRepairBillRequest(
 // RackNo/Bin/SerialNo/Mrp/ValidDays/ItemReceived: reference MaterialTransfer's real per-line
 // columns, missing from the first version, added back - see MaterialTransferDocItem's doc comment.
 // IssueType: per-line "Paid"/"U/W", see MaterialTransferDocItem.IssueType's doc comment.
+// ItemType: defaults to Part when omitted, matching MaterialTransferDocItem.ItemType's own
+// default - every caller before 2026-09-22 (this field's own addition) keeps working unchanged.
 public record CreateMaterialTransferItemRequest(
     Guid? PartId, string ItemCode, string ItemDescription, double Qty, decimal Rate,
     string? RackNo = null, string? Bin = null, string? SerialNo = null, decimal? Mrp = null,
-    int? ValidDays = null, string? ItemReceived = null, string? IssueType = null, string? HsnCode = null);
+    int? ValidDays = null, string? ItemReceived = null, string? IssueType = null, string? HsnCode = null,
+    MaterialTransferDocItemType ItemType = MaterialTransferDocItemType.Part, Guid? TechnicianId = null);
 
 // TechnicianId: reference MaterialTransfer.Technician, mapped onto this app's own User FK instead
 // of a meaningless raw DMS employee int - see MaterialTransferDoc.TechnicianId's doc comment.

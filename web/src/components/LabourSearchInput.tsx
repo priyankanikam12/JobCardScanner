@@ -24,9 +24,13 @@ type Props = {
   onPick: (labour: BaplDmsLabourRow) => void
   placeholder?: string
   width?: number
+  /** 2026-09-23 ("also block all withour job search"): RepairBillCreatePage.tsx's own Labour
+   * staging row is now blocked until a Job is linked - same optional/defaults-to-false shape as
+   * PartSearchInput.tsx's own `disabled` prop, added the same round for Material Transfer Bill. */
+  disabled?: boolean
 }
 
-export function LabourSearchInput({ labours, locationSelected, value, onChangeText, onPick, placeholder, width }: Props) {
+export function LabourSearchInput({ labours, locationSelected, value, onChangeText, onPick, placeholder, width, disabled }: Props) {
   const [open, setOpen] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null)
@@ -68,7 +72,7 @@ export function LabourSearchInput({ labours, locationSelected, value, onChangeTe
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
-  const showDropdown = open && locationSelected && q.length > 0 && pos !== null
+  const showDropdown = !disabled && open && locationSelected && q.length > 0 && pos !== null
 
   return (
     <div style={{ position: 'relative', width: width ?? '100%' }}>
@@ -76,7 +80,7 @@ export function LabourSearchInput({ labours, locationSelected, value, onChangeTe
         ref={inputRef}
         value={value}
         placeholder={placeholder ?? (locationSelected ? 'Search labour code or description…' : 'Select a Location first')}
-        disabled={!locationSelected}
+        disabled={disabled || !locationSelected}
         onChange={(e) => { onChangeText(e.target.value); setOpen(true) }}
         onFocus={() => setOpen(true)}
         onBlur={() => setTimeout(() => setOpen(false), 150)}

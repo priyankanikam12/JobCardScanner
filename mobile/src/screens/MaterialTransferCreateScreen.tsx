@@ -4,9 +4,10 @@ import { ActivityIndicator, Alert, RefreshControl, ScrollView, StyleSheet, Text,
 import { apiClient } from '../api/client'
 import { useStaffAuth } from '../auth/StaffAuthContext'
 import { JobSearchModal } from '../components/JobSearchModal'
+import { PartwiseLabourModal, type PartwiseLabourPick } from '../components/PartwiseLabourModal'
 import { PickerField } from '../components/PickerField'
 import { colors } from '../theme/colors'
-import type { BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaster, CombinedMaterialTransferRow, JobSearchResult, MaterialTransferDocType } from '../types'
+import type { BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaster, CombinedMaterialTransferRow, JobSearchResult, MaterialTransferDocItemType, MaterialTransferDocType } from '../types'
 
 /**
  * "Material Transfer Bill" screen (2026-09-21, "add changes in android also") - the Android
@@ -29,6 +30,17 @@ import type { BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaster, CombinedMateria
  * collected here either (web already hides these from its own grid too, per your own request -
  * see that page's doc comment - they are simply sent as null, same as a web line that never used
  * them).
+ *
+ * 2026-09-22 ("then from /labour-master ... add Labour Code also that was wants to integrate in
+ * material transfer which in video ... give proper code like vide functionality in mobile and for
+ * web both give proper"): once a Part line has been added (+ Add Line), its card in the "Lines"
+ * list gets its own "+ Labour" button - opens PartwiseLabourModal scoped to that line's Item Code
+ * (Part Code only match, per the AskUserQuestion answer), and any picks become new Labour-type
+ * lines appended right after it, carrying that Part line's own Issue Type (governs, captured at
+ * add-time - mobile's existing "Lines" list has never allowed editing an added line in place, only
+ * Remove, so there is no later divergence to cascade-guard against, unlike web's editable grid).
+ * Removing a Part line cascades to remove its Labour children too (see removeLine below) - a
+ * Labour line has no meaning once its governing Part line is gone.
  */
 type DiscountType = '%' | 'Value'
 
@@ -46,6 +58,13 @@ type DraftItem = {
   discountType: DiscountType
   discountValue: string
   issueType: string
+  /** 2026-09-22: 'Part' for every line this screen has always added via the search/draft flow;
+   * 'Labour' for a line staged via the new "+ Labour" button/PartwiseLabourModal. Mirrors
+   * MaterialTransferDocItemType on the backend. */
+  itemType: MaterialTransferDocItemType
+  /** Set only on a 'Labour' line - the key of the Part line it was added from (see module doc
+   * comment). Null for every 'Part' line. */
+  sourcePartKey: number | null
 }
 
 /** "Rate = Dlr_Price - GST%" - reverse-calculates the GST-exclusive per-unit Rate out of
@@ -93,6 +112,7 @@ const lineTax = (it: DraftItem, isSameState: boolean) => {
 const emptyDraft: Omit<DraftItem, 'key'> = {
   itemCode: '', itemDescription: '', hsnCode: '', qty: '1', rate: '0', mrp: '',
   sgstPct: '9', cgstPct: '9', igstPct: '18', discountType: '%', discountValue: '0', issueType: '',
+  itemType: 'Part', sourcePartKey: null,
 }
 
 export function MaterialTransferCreateScreen() {
@@ -197,7 +217,55 @@ export function MaterialTransferCreateScreen() {
     setDraft(emptyDraft)
     setSearch('')
   }
-  const removeLine = (key: number) => setItems((prev) => prev.filter((i) => i.key !== key))
+  // 2026-09-22: cascade-removes any Labour lines added FROM this line (sourcePartKey === key) -
+  // see module doc comment. A Labour line by itself is also just removed directly (it has no
+  // children of its own).
+  const removeLine = (key: number) => setItems((prev) => prev.filter((i) => i.key !== key && i.sourcePartKey !== key))
+
+  // ---------------- Labour picker ("+ Labour" on an already-added Part line) ----------------
+  const [labourModalFor, setLabourModalFor] = useState<DraftItem | null>(null)
+  const handleLabourProceed = (picks: PartwiseLabourPick[]) => {
+    if (!labourModalFor) return
+    const parentKey = labourModalFor.key
+    const parentIssueType = labourModalFor.issueType
+    let key = nextKey
+    const newLines: DraftItem[] = picks.map((p) => {
+      // LabourMasterPartwise stores IGST/CGST/SGST as a plain decimal fraction (0.18 = 18%) -
+      // converted to the same percentage-string shape this screen's own sgstPct/cgstPct/igstPct
+      // already use for a Part line's GST, same convention the web component uses.
+      const sgstPct = p.sgst != null ? p.sgst * 100 : 9
+      const cgstPct = p.cgst != null ? p.cgst * 100 : 9
+      const igstPct = p.igst != null ? p.igst * 100 : 18
+      const totalGstPct = sgstPct + cgstPct > 0 ? sgstPct + cgstPct : igstPct
+      const rate = p.labourRate ?? 0
+      const line: DraftItem = {
+        ...emptyDraft,
+        key,
+        itemType: 'Labour',
+        sourcePartKey: parentKey,
+        itemCode: p.labourCode,
+        itemDescription: p.jobDescription || p.labourCode,
+        rate: String(rate),
+        mrp: (rate * (1 + totalGstPct / 100)).toFixed(2),
+        sgstPct: String(sgstPct),
+        cgstPct: String(cgstPct),
+        igstPct: String(igstPct),
+        issueType: parentIssueType,
+      }
+      key += 1
+      return line
+    })
+    setItems((prev) => {
+      // Insert right after the parent Part line, matching the module doc comment ("appended right
+      // after it") - a plain append to the end would separate a Labour line from the Part line it
+      // belongs to once several Part lines exist.
+      const idx = prev.findIndex((i) => i.key === parentKey)
+      if (idx < 0) return [...prev, ...newLines]
+      return [...prev.slice(0, idx + 1), ...newLines, ...prev.slice(idx + 1)]
+    })
+    setNextKey(key)
+    setLabourModalFor(null)
+  }
 
   const selectJob = (job: JobSearchResult) => {
     setJobCardId(job.id)
@@ -226,6 +294,11 @@ export function MaterialTransferCreateScreen() {
           itemDescription: i.itemDescription,
           hsnCode: i.hsnCode || null,
           issueType: i.issueType || null,
+          // 2026-09-22 (Labour-in-Material-Transfer integration) - see MaterialTransferDocItemType's
+          // own doc comment on the backend for why a Labour line never touches PartUploads stock.
+          // technicianId stays null - same disclosed gap as the web page's own header Technician field.
+          itemType: i.itemType,
+          technicianId: null,
           qty: Number(i.qty) || 0,
           rate: Number(lineCalc(i).discountedRate.toFixed(2)),
           rackNo: null, bin: null, serialNo: null,
@@ -402,12 +475,17 @@ export function MaterialTransferCreateScreen() {
         return (
           <View key={it.key} style={styles.row}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.rowTitle}>{it.itemCode} — {it.itemDescription}</Text>
+              <Text style={styles.rowTitle}>[{it.itemType}] {it.itemCode} — {it.itemDescription}</Text>
               <Text style={styles.muted}>Qty {it.qty} × ₹{it.rate} · {it.issueType || 'no issue type'}</Text>
               <Text style={styles.muted}>CGST ₹{tax.cgstAmt.toFixed(2)} · SGST ₹{tax.sgstAmt.toFixed(2)} · IGST ₹{tax.igstAmt.toFixed(2)}</Text>
               <Text style={styles.muted}>Amount ₹{calc.amount.toFixed(2)} · MRP ₹{calc.mrp.toFixed(2)}</Text>
             </View>
-            <TouchableOpacity style={styles.removeBtn} onPress={() => removeLine(it.key)}><Text style={styles.removeBtnText}>Remove</Text></TouchableOpacity>
+            <View style={{ gap: 6 }}>
+              {it.itemType === 'Part' && !!it.itemCode.trim() && (
+                <TouchableOpacity style={styles.smallBtn} onPress={() => setLabourModalFor(it)}><Text style={styles.smallBtnText}>+ Labour</Text></TouchableOpacity>
+              )}
+              <TouchableOpacity style={styles.removeBtn} onPress={() => removeLine(it.key)}><Text style={styles.removeBtnText}>Remove</Text></TouchableOpacity>
+            </View>
           </View>
         )
       })}
@@ -452,6 +530,13 @@ export function MaterialTransferCreateScreen() {
       {rows.length === 0 && !loading && <Text style={styles.muted}>No material transfers yet.</Text>}
 
       <JobSearchModal visible={showJobSearch} onSelect={selectJob} onClose={() => setShowJobSearch(false)} />
+      <PartwiseLabourModal
+        visible={!!labourModalFor}
+        partCode={labourModalFor?.itemCode ?? ''}
+        partName={labourModalFor?.itemDescription ?? ''}
+        onClose={() => setLabourModalFor(null)}
+        onProceed={handleLabourProceed}
+      />
     </ScrollView>
   )
 }

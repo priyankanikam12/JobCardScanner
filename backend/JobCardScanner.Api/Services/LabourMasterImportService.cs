@@ -95,6 +95,24 @@ public interface ILabourMasterImportService
     Task<IReadOnlyList<LabourMasterWithoutPartwiseRow>> GetWithoutPartwiseAsync(string? search, CancellationToken ct = default);
     Task<IReadOnlyList<LabourMasterPartwiseRow>> GetPartwiseAsync(string? search, CancellationToken ct = default);
 
+    /// <summary>2026-09-22 ("which Rate Type * is Partwise from this we upload FOR Part Code add
+    /// Labour Code also that was wants to integrate in material transfer") - exact (not LIKE/
+    /// Contains) Part Code match, Active rows only, for MaterialTransferCreatePage.tsx's new
+    /// "Labour" picker. Deliberately exact, not the same broad multi-field LIKE search
+    /// GetPartwiseAsync's own `search` param does (used by the Labour Master admin grid) - the
+    /// AskUserQuestion answer for this feature was "Part Code only (Recommended - matches the
+    /// video exactly)", scoped narrow rather than also fuzzy-matching Vehicle Model text.</summary>
+    Task<IReadOnlyList<LabourMasterPartwiseRow>> GetPartwiseByPartCodeAsync(string partCode, CancellationToken ct = default);
+
+    /// <summary>2026-09-22 ("that also going in repair bill"): batch, exact-match lookup by Labour
+    /// Code (not Part Code) - Active rows only. RepairBillCreatePage.tsx's materialTransferItems
+    /// sync effect uses this to recover a synced Labour row's real IGST/CGST/SGST for its own
+    /// CGST Amt/SGST Amt/IGST Amt columns, the same reason its Part rows already do an equivalent
+    /// by-code C_ItemMaster lookup - MaterialTransferDocItem itself stores no tax columns (see that
+    /// model's own doc comment), so this is always a fresh read, never a persisted value. Mirrors
+    /// ItemMasterController's own GET /api/item-master/by-codes batch-lookup shape/convention.</summary>
+    Task<IReadOnlyList<LabourMasterPartwiseRow>> GetPartwiseByLabourCodesAsync(IReadOnlyCollection<string> labourCodes, CancellationToken ct = default);
+
     Task<LabourMasterImportResult> ImportWithoutPartwiseAsync(Stream excelStream, DateOnly effectiveDate, string? actor, CancellationToken ct = default);
     Task<LabourMasterImportResult> ImportPartwiseAsync(Stream excelStream, DateOnly effectiveDate, string? actor, CancellationToken ct = default);
 
@@ -168,6 +186,64 @@ public class LabourMasterImportService : ILabourMasterImportService
                 ORDER BY Model, PartCode, LabourCode";
             await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
             cmd.Parameters.AddWithValue("@search", string.IsNullOrWhiteSpace(search) ? DBNull.Value : $"%{search.Trim()}%");
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            while (await rdr.ReadAsync(ct)) rows.Add(ReadPartwiseRow(rdr));
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Could not read DMSBAPLDATA's LabourMasterPartwise table: {ex.Message}", ex);
+        }
+        return rows;
+    }
+
+    public async Task<IReadOnlyList<LabourMasterPartwiseRow>> GetPartwiseByPartCodeAsync(string partCode, CancellationToken ct = default)
+    {
+        var rows = new List<LabourMasterPartwiseRow>();
+        try
+        {
+            await using var conn = new SqlConnection(ConnStr);
+            await conn.OpenAsync(ct);
+            const string sql = @"
+                SELECT Id, PartCode, PartName, LabourCode, JobDescription, Model, LabourRate, Igst,
+                       Cgst, Sgst, Tier, Category, EffectiveDate, IsActive, CreatedBy, CreatedDate,
+                       UpdatedBy, UpdatedDate
+                FROM [dbo].[LabourMasterPartwise]
+                WHERE PartCode = @partCode AND IsActive = 1
+                ORDER BY JobDescription, LabourCode";
+            await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+            cmd.Parameters.AddWithValue("@partCode", partCode.Trim());
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            while (await rdr.ReadAsync(ct)) rows.Add(ReadPartwiseRow(rdr));
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Could not read DMSBAPLDATA's LabourMasterPartwise table: {ex.Message}", ex);
+        }
+        return rows;
+    }
+
+    public async Task<IReadOnlyList<LabourMasterPartwiseRow>> GetPartwiseByLabourCodesAsync(IReadOnlyCollection<string> labourCodes, CancellationToken ct = default)
+    {
+        var rows = new List<LabourMasterPartwiseRow>();
+        var codes = labourCodes.Where(c => !string.IsNullOrWhiteSpace(c)).Select(c => c.Trim()).Distinct().ToList();
+        if (codes.Count == 0) return rows;
+
+        try
+        {
+            await using var conn = new SqlConnection(ConnStr);
+            await conn.OpenAsync(ct);
+            // Parameterized IN (...) - one @p0, @p1, ... per code, same guard against SQL injection
+            // every other raw-ADO.NET query in this file already uses via AddWithValue.
+            var paramNames = codes.Select((_, i) => $"@p{i}").ToList();
+            var sql = $@"
+                SELECT Id, PartCode, PartName, LabourCode, JobDescription, Model, LabourRate, Igst,
+                       Cgst, Sgst, Tier, Category, EffectiveDate, IsActive, CreatedBy, CreatedDate,
+                       UpdatedBy, UpdatedDate
+                FROM [dbo].[LabourMasterPartwise]
+                WHERE LabourCode IN ({string.Join(",", paramNames)}) AND IsActive = 1
+                ORDER BY LabourCode";
+            await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+            for (var i = 0; i < codes.Count; i++) cmd.Parameters.AddWithValue(paramNames[i], codes[i]);
             await using var rdr = await cmd.ExecuteReaderAsync(ct);
             while (await rdr.ReadAsync(ct)) rows.Add(ReadPartwiseRow(rdr));
         }

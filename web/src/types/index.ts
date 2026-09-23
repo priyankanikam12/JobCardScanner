@@ -1127,6 +1127,10 @@ export interface PartUpload {
   saleReturn: number | null
   saleChln: number | null
   balQty: number | null
+  /** 2026-09-22: computed on every GET, not stored - total Qty transferred out via Material
+   * Transfer for this Part No + Location (see PartUpload.MtTransferQty's own doc comment on the
+   * backend for the exact match key and the Cancelled-docs inclusion note). */
+  mtTransferQty: number | null
   balAmnt: number | null
   qtyReqd: number | null
   minOrder: number | null
@@ -1231,6 +1235,11 @@ export interface RepairBillDoc {
   id: string
   billNumber: string
   billDate: string
+  /** 2026-09-23 - only present on a single GET /api/repair-bill-docs/{id} response (added so the
+   * web page can reopen an existing Performa bill for editing by re-linking the same Job - see
+   * RepairBillDocsController.Get's own doc comment). Null for a bill raised with no Job linked. */
+  jobCardId?: string | null
+  jobCardNumber?: string | null
   partyName: string
   regNo?: string | null
   chassisNo?: string | null
@@ -1238,6 +1247,10 @@ export interface RepairBillDoc {
   billType?: string | null
   issueType?: string | null
   status: RepairBillDocStatus
+  /** 2026-09-23 - now returned (was save-only before, silently dropped on read) so an edit form
+   * reopening this bill doesn't wipe it out on save - see RepairBillDocsController.ToRow's own
+   * doc comment. */
+  remarks?: string | null
   // ---- Insurance claim fields - reference RepairBillHeader.InsuranceId(->name)/InsDecription/
   // SurveyorName/ContactNumber/PolicyNo/InsValidTill/ZeroDepo. ----
   insuranceCompanyName?: string | null
@@ -1289,11 +1302,16 @@ export interface CombinedRepairBillRow {
 
 export type MaterialTransferDocType = 'Issue' | 'Return'
 export type MaterialTransferDocStatus = 'Draft' | 'Confirmed' | 'Cancelled'
+/** 2026-09-22 - see MaterialTransferDocItem.ItemType's backend doc comment. Part is every line
+ * that existed before this round; Labour is a Labour Master Partwise code added via the new
+ * "Labour" picker against a Part line already on the same document. */
+export type MaterialTransferDocItemType = 'Part' | 'Labour'
 
 export interface MaterialTransferDocItem {
   id: string
   itemCode: string
   itemDescription: string
+  itemType: MaterialTransferDocItemType
   /** Auto-filled from the picked part (BaplDmsPartStock.hsnCode) - see MaterialTransferDocItem's
    * backend doc comment (added 2026-09-21, third correction). */
   hsnCode?: string | null
@@ -1348,6 +1366,10 @@ export interface MaterialTransferItemForJob {
   rate: number
   amount: number
   mrp?: number | null
+  /** 2026-09-22 - see MaterialTransferDocItemType's own doc comment. RepairBillCreatePage.tsx's
+   * materialTransferItems sync effect now routes this into a Labour or Part row in `items`
+   * accordingly, instead of assuming every row here is a Part. */
+  itemType: MaterialTransferDocItemType
 }
 
 /** One row of GET /api/material-transfer-docs/combined - see CombinedRepairBillRow's doc comment

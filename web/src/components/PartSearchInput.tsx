@@ -47,15 +47,37 @@ type Props = {
   onPick: (part: BaplDmsPartStock) => void
   placeholder?: string
   width?: number
+  /** 2026-09-23 ("without Job Search we cant add ... Part Details List that also show block
+   * sytematic"): Material Transfer Bill's own Part Details List grid is now blocked (every input,
+   * this one included) until a Job is linked - matching the header fields' own disable gate added
+   * the previous round. Optional/defaults to false so RepairBillCreatePage.tsx's own two calls to
+   * this component (which don't gate on a Job the same way) are unaffected. */
+  disabled?: boolean
 }
 
-export function PartSearchInput({ parts, value, onChangeText, onPick, placeholder, width }: Props) {
+// 2026-09-23 ("which have 0 qty for Item Code that dont allow to add"): a "confirmed" zero balance
+// - deliberately excludes source: 'itemMaster' rows, whose availableQty is a 0 PLACEHOLDER (no
+// live stock/Part Upload row loaded for this Item Code at the current Location yet, not a
+// confirmed-empty balance - see BaplDmsPartStock's own doc comment). Blocking those too would undo
+// the earlier "take Item Code from /item-master ... we cant select" fix, which deliberately made
+// every catalog item pickable even with no stock data loaded yet. Exported so
+// MaterialTransferCreatePage.tsx's own pickPartForLine can apply the exact same rule as a second,
+// authoritative check (this dropdown is the first line of defense, not the only one).
+export const isConfirmedOutOfStock = (p: BaplDmsPartStock) => p.source !== 'itemMaster' && p.availableQty <= 0
+
+export function PartSearchInput({ parts, value, onChangeText, onPick, placeholder, width, disabled }: Props) {
   const [open, setOpen] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null)
   const q = value.trim().toLowerCase()
   const matches = q.length === 0 ? [] : parts
     .filter((p) => p.itemCode.toLowerCase().includes(q) || (p.description ?? '').toLowerCase().includes(q))
+    // 2026-09-23 ("in dropdown show order which have qty this order show in dropdown"): items with
+    // a confirmed real balance float to the top (highest quantity first) instead of the previous
+    // unordered (catalog-preload-then-overlay) order - out-of-stock/unknown-stock rows (both read
+    // 0 here) sink to the bottom, in their original relative order (Array.prototype.sort has been a
+    // guaranteed-stable sort since ES2019, so this doesn't need its own tie-break).
+    .sort((a, b) => b.availableQty - a.availableQty)
     .slice(0, 20)
 
   const reposition = () => {
@@ -77,7 +99,7 @@ export function PartSearchInput({ parts, value, onChangeText, onPick, placeholde
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
-  const showDropdown = open && q.length > 0 && pos !== null
+  const showDropdown = !disabled && open && q.length > 0 && pos !== null
 
   return (
     <div style={{ position: 'relative', width: width ?? '100%' }}>
@@ -89,6 +111,7 @@ export function PartSearchInput({ parts, value, onChangeText, onPick, placeholde
         onFocus={() => setOpen(true)}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
         autoComplete="off"
+        disabled={disabled}
         style={{ width: '100%' }}
       />
       {showDropdown && createPortal(
@@ -98,17 +121,30 @@ export function PartSearchInput({ parts, value, onChangeText, onPick, placeholde
             background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8,
             maxHeight: 220, overflowY: 'auto', listStyle: 'none', padding: 4, boxShadow: 'var(--shadow-lg)', margin: 0,
           }}>
-            {matches.map((p) => (
+            {matches.map((p) => {
+              // 2026-09-23 ("which have 0 qty for Item Code that dont allow to add"): a row with a
+              // CONFIRMED zero balance (see isConfirmedOutOfStock above) is shown - so it's still
+              // findable/visible in search - but greyed out and unclickable, rather than silently
+              // removed from the list entirely.
+              const outOfStock = isConfirmedOutOfStock(p)
+              return (
               <li key={p.itemCode}>
                 <button
                   type="button"
                   className="btn btn-sm"
-                  style={{ width: '100%', textAlign: 'left', border: 'none', background: 'transparent', padding: '6px 8px' }}
-                  onMouseDown={(e) => { e.preventDefault(); onPick(p); setOpen(false) }}
+                  disabled={outOfStock}
+                  title={outOfStock ? `${p.itemCode} has 0 balance at this location - cannot add.` : undefined}
+                  style={{
+                    width: '100%', textAlign: 'left', border: 'none', background: 'transparent', padding: '6px 8px',
+                    opacity: outOfStock ? 0.55 : 1, cursor: outOfStock ? 'not-allowed' : 'pointer',
+                  }}
+                  onMouseDown={(e) => { e.preventDefault(); if (outOfStock) return; onPick(p); setOpen(false) }}
                 >
                   <strong>{p.itemCode}</strong>{p.description ? ` — ${p.description}` : ''}{' '}
                   {p.source === 'itemMaster' ? (
                     <span className="muted">(no stock loaded at this location)</span>
+                  ) : outOfStock ? (
+                    <span className="muted">(out of stock)</span>
                   ) : (
                     <span className="muted">(stock: {p.availableQty})</span>
                   )}
@@ -120,7 +156,8 @@ export function PartSearchInput({ parts, value, onChangeText, onPick, placeholde
                   )}
                 </button>
               </li>
-            ))}
+              )
+            })}
           </ul>
         ) : (
           <div style={{

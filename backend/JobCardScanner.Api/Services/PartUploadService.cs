@@ -52,7 +52,33 @@ public class PartUploadService : IPartUploadService
             var s = search.Trim();
             query = query.Where(p => p.PartNo.Contains(s) || (p.Description != null && p.Description.Contains(s)) || (p.HsnSacCode != null && p.HsnSacCode.Contains(s)));
         }
-        return await query.OrderBy(p => p.PartNo).Take(2000).ToListAsync(ct);
+        var rows = await query.OrderBy(p => p.PartNo).Take(2000).ToListAsync(ct);
+        if (rows.Count > 0) await AttachMtTransferQtyAsync(rows, dealerId, ct);
+        return rows;
+    }
+
+    /// <summary>2026-09-22 ("after Bal Qty column add MT Transfer Qty column for maintaining how
+    /// much qty was transfered"): populates PartUpload.MtTransferQty (a computed, [NotMapped]
+    /// field - see its own doc comment in Models/PartUploads.cs for the exact match key and why
+    /// Cancelled transfer docs are deliberately included in the sum) for a page of already-loaded
+    /// rows. Grouped in one query rather than per-row to avoid an N+1 for a 2000-row page.</summary>
+    private async Task AttachMtTransferQtyAsync(IReadOnlyList<PartUpload> rows, Guid dealerId, CancellationToken ct)
+    {
+        var partNos = rows.Select(r => r.PartNo).Distinct().ToList();
+        var items = await _db.MaterialTransferDocItems.AsNoTracking()
+            .Where(i => i.MaterialTransferDoc!.DealerId == dealerId && partNos.Contains(i.ItemCode))
+            .Select(i => new { i.ItemCode, i.MaterialTransferDoc!.Location, i.Qty })
+            .ToListAsync(ct);
+
+        // Same match key as MaterialTransferDocsController.Create's own partUploadCache lookup
+        // (ItemCode == PartNo, doc.Location == LocationCode, raw string equality - no
+        // trim/case-fold, matching that existing lookup exactly so the two stay consistent).
+        var totals = items
+            .GroupBy(i => (i.ItemCode, Location: i.Location ?? string.Empty))
+            .ToDictionary(g => g.Key, g => (decimal)g.Sum(i => i.Qty));
+
+        foreach (var row in rows)
+            row.MtTransferQty = totals.TryGetValue((row.PartNo, row.LocationCode), out var qty) ? qty : 0m;
     }
 
     public async Task<PartUpload?> UpdateAsync(Guid id, Guid dealerId, PartUploadUpdate u, CancellationToken ct = default)

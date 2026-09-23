@@ -28,10 +28,12 @@ public class MaterialTransferDocsController : ControllerBase
     private readonly IDmsBaplDataService _dmsBaplData;
     private readonly IAuditLogService _audit;
     private readonly ILogger<MaterialTransferDocsController> _logger;
+    private readonly ILabourMasterImportService _labourMaster;
 
     public MaterialTransferDocsController(
         JobCardScannerDbContext db, ICurrentUserService currentUser, IJobCardNumberingService numbering,
-        IDmsBaplDataService dmsBaplData, IAuditLogService audit, ILogger<MaterialTransferDocsController> logger)
+        IDmsBaplDataService dmsBaplData, IAuditLogService audit, ILogger<MaterialTransferDocsController> logger,
+        ILabourMasterImportService labourMaster)
     {
         _db = db;
         _currentUser = currentUser;
@@ -39,6 +41,58 @@ public class MaterialTransferDocsController : ControllerBase
         _dmsBaplData = dmsBaplData;
         _audit = audit;
         _logger = logger;
+        _labourMaster = labourMaster;
+    }
+
+    /// <summary>GET /api/material-transfer-docs/labour-by-part-code/{partCode} - 2026-09-22
+    /// ("which Rate Type * is Partwise from this we upload FOR Part Code add Labour Code also
+    /// that was wants to integrate in material transfer"): backs the new "Labour" picker on
+    /// MaterialTransferCreatePage.tsx (and the mobile equivalent) - confirmed against the
+    /// mt-labour_add.mp4 recording of the real BGauss DMS, whose own Material Transfer screen has
+    /// a "Labour" button next to a picked Part that opens a "Part wise Labour Detail" popup scoped
+    /// to that exact Part Code. Lives here (not on LabourMasterController, which is
+    /// WorkshopManagerUp) so a plain ServiceAdvisor - who can already use Material Transfer itself
+    /// - can call it too; see LabourMasterController's own doc comment for why stacking
+    /// [Authorize] there wouldn't have worked. Calls ILabourMasterImportService directly, exactly
+    /// the same service LabourMasterController itself uses - no logic duplicated, just a second,
+    /// more narrowly-scoped entry point into it.</summary>
+    [HttpGet("labour-by-part-code/{partCode}")]
+    public async Task<IActionResult> LabourByPartCode(string partCode)
+    {
+        if (string.IsNullOrWhiteSpace(partCode)) return BadRequest(new { message = "Part Code is required." });
+        try
+        {
+            return Ok(await _labourMaster.GetPartwiseByPartCodeAsync(partCode, HttpContext.RequestAborted));
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "LabourByPartCode failed for {PartCode}", partCode);
+            return StatusCode(502, new { message = ex.Message });
+        }
+    }
+
+    /// <summary>GET /api/material-transfer-docs/labour-by-codes?codes=A,B,C - 2026-09-22 ("that
+    /// also going in repair bill"): batch by-Labour-Code lookup, used by
+    /// RepairBillCreatePage.tsx's materialTransferItems sync effect to recover a synced Labour
+    /// row's real IGST/CGST/SGST for its own CGST Amt/SGST Amt/IGST Amt columns - mirrors
+    /// ItemMasterController's own GET /api/item-master/by-codes shape (comma-separated codes query
+    /// param, one round trip). See GetPartwiseByLabourCodesAsync's own doc comment on the service
+    /// interface for why this is always a fresh read (MaterialTransferDocItem stores no tax
+    /// columns), never a persisted value.</summary>
+    [HttpGet("labour-by-codes")]
+    public async Task<IActionResult> LabourByCodes([FromQuery] string? codes)
+    {
+        var list = (codes ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (list.Length == 0) return Ok(Array.Empty<object>());
+        try
+        {
+            return Ok(await _labourMaster.GetPartwiseByLabourCodesAsync(list, HttpContext.RequestAborted));
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "LabourByCodes failed for {Codes}", codes);
+            return StatusCode(502, new { message = ex.Message });
+        }
     }
 
     /// <summary>GET /api/material-transfer-docs - this dealer's own JobCardScannerDb-native
@@ -169,6 +223,10 @@ public class MaterialTransferDocsController : ControllerBase
             i.Rate,
             i.Amount,
             i.Mrp,
+            // 2026-09-22 - see this controller's own doc comment update above: RepairBillCreatePage.tsx
+            // now needs to tell a Labour line (added via MaterialTransferCreatePage.tsx's new
+            // "Labour" picker) apart from a Part line, instead of assuming every row here is a Part.
+            ItemType = i.ItemType.ToString(),
         }));
 
         return Ok(rows);
@@ -210,8 +268,13 @@ public class MaterialTransferDocsController : ControllerBase
         var partUploadCache = new Dictionary<string, PartUpload>(StringComparer.OrdinalIgnoreCase);
         if (!string.IsNullOrWhiteSpace(req.Location))
         {
+            // 2026-09-22 - only Part lines ever touch PartUploads stock (see
+            // MaterialTransferDocItem.ItemType's own doc comment); a Labour Code is never a real
+            // PartUploads.PartNo, but this guard makes that explicit rather than relying on the
+            // two ID spaces simply never colliding in practice.
             foreach (var it in req.Items)
             {
+                if (it.ItemType != MaterialTransferDocItemType.Part) continue;
                 if (string.IsNullOrWhiteSpace(it.ItemCode) || partUploadCache.ContainsKey(it.ItemCode)) continue;
                 var pu = await _db.PartUploads.FirstOrDefaultAsync(
                     p => p.DealerId == dealerId && p.LocationCode == req.Location && p.PartNo == it.ItemCode, HttpContext.RequestAborted);
@@ -219,6 +282,7 @@ public class MaterialTransferDocsController : ControllerBase
             }
             foreach (var it in req.Items)
             {
+                if (it.ItemType != MaterialTransferDocItemType.Part) continue;
                 if (!partUploadCache.TryGetValue(it.ItemCode, out var pu)) continue;
                 var requestedQty = (decimal)it.Qty;
                 var available = pu.BalQty ?? 0;
@@ -263,6 +327,8 @@ public class MaterialTransferDocsController : ControllerBase
                 Mrp = it.Mrp,
                 ValidDays = it.ValidDays,
                 ItemReceived = it.ItemReceived,
+                ItemType = it.ItemType,
+                TechnicianId = it.TechnicianId,
             });
         }
         doc.TotalAmount = doc.Items.Sum(i => i.Amount);
@@ -359,6 +425,7 @@ public class MaterialTransferDocsController : ControllerBase
         {
             i.Id, i.ItemCode, i.ItemDescription, i.HsnCode, i.IssueType, i.Qty, i.Rate, i.Amount,
             i.RackNo, i.Bin, i.SerialNo, i.Mrp, i.ValidDays, i.ItemReceived,
+            ItemType = i.ItemType.ToString(),
         }),
     };
 
@@ -377,5 +444,6 @@ public class MaterialTransferDocsController : ControllerBase
         {
             i.Id, i.ItemCode, i.ItemDescription, i.HsnCode, i.IssueType, i.Qty, i.Rate, i.Amount,
             i.RackNo, i.Bin, i.SerialNo, i.Mrp, i.ValidDays, i.ItemReceived,
+            ItemType = i.ItemType.ToString(),
         }).ToList());
 }

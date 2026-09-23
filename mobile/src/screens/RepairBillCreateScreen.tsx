@@ -6,7 +6,7 @@ import { useStaffAuth } from '../auth/StaffAuthContext'
 import { JobSearchModal } from '../components/JobSearchModal'
 import { PickerField } from '../components/PickerField'
 import { colors } from '../theme/colors'
-import type { BaplDmsLabourRow, BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaster, CombinedRepairBillRow, JobSearchResult, RepairBillDocItemType } from '../types'
+import type { BaplDmsLabourRow, BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaster, CombinedRepairBillRow, JobSearchResult, LabourMasterPartwise, MaterialTransferItemForJob, RepairBillDocItemType } from '../types'
 
 /**
  * "Repair Bill" screen (2026-09-21, "add changes in android also") - the Android counterpart to
@@ -19,12 +19,30 @@ import type { BaplDmsLabourRow, BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaste
  * the Parts list - the same fix web's RepairBillCreatePage.tsx got this round
  * (LabourSearchInput.tsx there / pickLabourForLine here), so this screen never had the old
  * Parts-only-search gap to begin with.
+ *
+ * 2026-09-22 ("which labour we added from amterial transfer for Issue Type - Paid that will goin
+ * for paid type and which are in U/w that was going in U/w that also going in repair bill ...give
+ * proper code like vide functionality in mobile and for web both give proper"): this screen never
+ * had ANY Material Transfer sync at all before this round (unlike web's RepairBillCreatePage.tsx,
+ * which has always auto-loaded its Part Details List from GET .../for-job/{jobCardId} - see that
+ * page's own doc comment) - every line here, Part or Labour, was always manually searched/added.
+ * Bringing Material-Transfer-sourced Labour into Repair Bill without also bringing its Part rows
+ * would leave this screen showing Labour lines with no matching Part lines for the same
+ * transfer - an inconsistent half-mirror of web's own behaviour - so this round ports web's FULL
+ * materialTransferItems sync effect (both Part AND Labour rows), not only the new Labour half.
+ * See the sync effect's own doc comment further down for the mechanics; `key` changes from a
+ * locally-minted number to a string so a synced row can be keyed by its own real
+ * MaterialTransferDocItem.Id (a GUID) without colliding with a manually-added "manual-N" line,
+ * the same collision-avoidance web's own DraftItem.key already uses.
  */
 type TaxMode = 'Same State (CGST+SGST)' | 'Different State (IGST)'
 type DiscountType = 'None' | 'Percentage' | 'Amount'
 
 type DraftItem = {
-  key: number
+  /** A manually-added line gets a locally-minted "manual-N" string; a line synced in from
+   * Material Transfer uses its own MaterialTransferDocItem.Id (a real GUID) directly - see this
+   * module's 2026-09-22 doc comment. */
+  key: string
   itemType: RepairBillDocItemType
   itemCode: string
   itemDescription: string
@@ -36,6 +54,11 @@ type DraftItem = {
   discountType: DiscountType
   discountValue: string
   issueType: string
+  /** 2026-09-22: true for a Part/Labour line auto-loaded from Material Transfer - read-only here
+   * (no per-field edit UI on this screen for ANY line, manual or synced, so this only changes how
+   * Remove behaves - see removeMtLine below, mirroring web's excludedPartKeys). False (default)
+   * for every manually-added line. */
+  fromMaterialTransfer: boolean
 }
 
 const rateFromMrp = (mrp: number, gstPct: number) => mrp / (1 + gstPct / 100)
@@ -73,7 +96,7 @@ const splitGst = (gstPct: number, taxMode: TaxMode) =>
 
 const emptyDraft: Omit<DraftItem, 'key'> = {
   itemType: 'Part', itemCode: '', itemDescription: '', hsnCode: '', qty: '1', rate: '0', mrp: '',
-  gstPct: '18', discountType: 'None', discountValue: '0', issueType: '',
+  gstPct: '18', discountType: 'None', discountValue: '0', issueType: '', fromMaterialTransfer: false,
 }
 
 export function RepairBillCreateScreen() {
@@ -181,6 +204,110 @@ export function RepairBillCreateScreen() {
     ? labours.filter((l) => l.labourCode.toLowerCase().includes(q) || (l.labourDescription ?? '').toLowerCase().includes(q)).slice(0, 20)
     : []
 
+  // 2026-09-22 ("now i saved from material transfer bill now this will shown in repair bill"):
+  // every Material Transfer item already saved against the linked Job - see this module's own doc
+  // comment for why this ports web's full sync (Part AND Labour), not just the new Labour half.
+  const [materialTransferItems, setMaterialTransferItems] = useState<MaterialTransferItemForJob[]>([])
+  const [mtFetchDone, setMtFetchDone] = useState(false)
+  const [excludedMtKeys, setExcludedMtKeys] = useState<Set<string>>(new Set())
+  useEffect(() => {
+    setMtFetchDone(false)
+    setExcludedMtKeys(new Set())
+    if (!jobCardId) { setMaterialTransferItems([]); return }
+    apiClient.get<MaterialTransferItemForJob[]>(`/api/material-transfer-docs/for-job/${jobCardId}`)
+      .then(({ data }) => setMaterialTransferItems(data))
+      .catch(() => setMaterialTransferItems([]))
+      .finally(() => setMtFetchDone(true))
+  }, [jobCardId])
+
+  // Rate/Mrp/Qty/HSN already come straight off the Material Transfer item - but SGST/CGST/IGST %
+  // were never stored on MaterialTransferDocItem, so a fresh, precise-by-code C_ItemMaster lookup
+  // (Part rows) is needed, same as web's own mtItemMasterByCode.
+  const [mtItemMasterByCode, setMtItemMasterByCode] = useState<Record<string, BaplItemMaster>>({})
+  useEffect(() => {
+    const codes = Array.from(new Set(materialTransferItems.filter((m) => m.itemType !== 'Labour').map((m) => m.itemCode.trim().toUpperCase()).filter(Boolean)))
+    if (codes.length === 0) { setMtItemMasterByCode({}); return }
+    apiClient.get<BaplItemMaster[]>('/api/item-master/by-codes', { params: { codes: codes.join(',') } })
+      .then(({ data }) => {
+        const byCode: Record<string, BaplItemMaster> = {}
+        data.forEach((im) => { byCode[im.itemCode.trim().toUpperCase()] = im })
+        setMtItemMasterByCode(byCode)
+      })
+      .catch(() => setMtItemMasterByCode({}))
+  }, [materialTransferItems])
+
+  // Same idea as above but for a synced LABOUR row - C_ItemMaster (a Part catalog) has no row for
+  // a Labour Code, so a separate fresh-by-code lookup against Labour Master Partwise itself is
+  // needed to recover its real IGST/CGST/SGST, same as web's own mtLabourGstByCode.
+  const [mtLabourGstByCode, setMtLabourGstByCode] = useState<Record<string, LabourMasterPartwise>>({})
+  useEffect(() => {
+    const codes = Array.from(new Set(materialTransferItems.filter((m) => m.itemType === 'Labour').map((m) => m.itemCode.trim().toUpperCase()).filter(Boolean)))
+    if (codes.length === 0) { setMtLabourGstByCode({}); return }
+    apiClient.get<LabourMasterPartwise[]>('/api/material-transfer-docs/labour-by-codes', { params: { codes: codes.join(',') } })
+      .then(({ data }) => {
+        const byCode: Record<string, LabourMasterPartwise> = {}
+        data.forEach((l) => { byCode[l.labourCode.trim().toUpperCase()] = l })
+        setMtLabourGstByCode(byCode)
+      })
+      .catch(() => setMtLabourGstByCode({}))
+  }, [materialTransferItems])
+
+  // Turns the loaded Material Transfer items into read-only Part/Labour lines in `items`,
+  // replacing whatever synced lines were there before while leaving every manually-added line
+  // untouched - direct port of web's own materialTransferItems sync effect (see
+  // RepairBillCreatePage.tsx for the original, this is the same logic/shape).
+  useEffect(() => {
+    setItems((prev) => {
+      const manual = prev.filter((i) => !i.fromMaterialTransfer)
+      const mtLines: DraftItem[] = materialTransferItems.filter((m) => !excludedMtKeys.has(m.id)).map((m) => {
+        const isLabour = m.itemType === 'Labour'
+        let sgstPct: number, cgstPct: number, igstPct: number
+        if (isLabour) {
+          const lm = mtLabourGstByCode[m.itemCode.trim().toUpperCase()]
+          sgstPct = lm?.sgst != null ? lm.sgst * 100 : 9
+          cgstPct = lm?.cgst != null ? lm.cgst * 100 : 9
+          igstPct = lm?.igst != null ? lm.igst * 100 : 18
+        } else {
+          const im = mtItemMasterByCode[m.itemCode.trim().toUpperCase()]
+          sgstPct = im?.sgst ?? 9
+          cgstPct = im?.cgst ?? 9
+          igstPct = im?.igst ?? 18
+        }
+        const totalGst = sgstPct + cgstPct > 0 ? sgstPct + cgstPct : igstPct
+        return {
+          key: m.id,
+          itemType: isLabour ? 'Labour' : 'Part',
+          itemCode: m.itemCode,
+          itemDescription: m.itemDescription,
+          hsnCode: m.hsnCode || '',
+          qty: String(m.qty),
+          rate: String(m.rate),
+          mrp: !isLabour && m.mrp != null ? String(m.mrp) : '',
+          gstPct: String(totalGst),
+          discountType: 'None' as DiscountType,
+          discountValue: '0',
+          issueType: m.issueType || '',
+          fromMaterialTransfer: true,
+        }
+      })
+      return [...mtLines, ...manual]
+    })
+  }, [materialTransferItems, mtItemMasterByCode, mtLabourGstByCode, excludedMtKeys])
+
+  // 2026-09-22: mirrors web's removePart/removeMtLabour - excludes a synced line from THIS bill
+  // only (the Material Transfer record itself is unaffected) via excludedMtKeys, so the sync
+  // effect above doesn't silently bring it back. Plain removeLine (below) stays for manual lines.
+  const removeMtLine = (it: DraftItem) => {
+    Alert.alert(
+      `Remove ${it.itemType} "${it.itemDescription}"?`,
+      'The Material Transfer record itself is unaffected - this only excludes it from this Repair Bill.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Remove', style: 'destructive', onPress: () => setExcludedMtKeys((prev) => new Set(prev).add(it.key)) },
+      ],
+    )
+  }
+
   const pickPart = (p: BaplDmsPartStock) => {
     const im = itemMasterByCode[p.itemCode.trim().toUpperCase()]
     const sgstPct = im?.sgst ?? 9
@@ -221,12 +348,12 @@ export function RepairBillCreateScreen() {
       Alert.alert('Pick a part/labour and enter a quantity first.')
       return
     }
-    setItems((prev) => [...prev, { key: nextKey, ...draft, issueType: draft.issueType || issueType }])
+    setItems((prev) => [...prev, { key: `manual-${nextKey}`, ...draft, issueType: draft.issueType || issueType }])
     setNextKey((k) => k + 1)
     setDraft(emptyDraft)
     setSearch('')
   }
-  const removeLine = (key: number) => setItems((prev) => prev.filter((i) => i.key !== key))
+  const removeLine = (key: string) => setItems((prev) => prev.filter((i) => i.key !== key))
 
   const selectJob = (job: JobSearchResult) => {
     setJobCardId(job.id)
@@ -505,16 +632,25 @@ export function RepairBillCreateScreen() {
       )}
 
       {items.length > 0 && <Text style={styles.subheading}>Lines ({items.length})</Text>}
+      {/* 2026-09-22: mirrors web's own onSelect() warning - see this module's doc comment on why
+          this screen now syncs from Material Transfer at all. */}
+      {jobCardId && mtFetchDone && materialTransferItems.length === 0 && (
+        <Text style={styles.muted}>
+          No Material Transfer found yet for this Job Card. Parts/Labour issued via Material
+          Transfer will appear here automatically once saved - you can still add lines manually above.
+        </Text>
+      )}
       {items.map((it) => {
         const est = lineEstimate(it, taxMode, issueType)
         return (
           <View key={it.key} style={styles.row}>
             <View style={{ flex: 1 }}>
               <Text style={styles.rowTitle}>[{it.itemType}] {it.itemCode} — {it.itemDescription}</Text>
+              {it.fromMaterialTransfer && <Text style={styles.muted}>via Material Transfer</Text>}
               <Text style={styles.muted}>Qty {it.qty} × ₹{it.rate} · {it.issueType || 'default'}{it.discountType !== 'None' ? ` · Disc ${it.discountValue}${it.discountType === 'Percentage' ? '%' : '₹'}` : ''}</Text>
               <Text style={styles.muted}>Taxable ₹{est.taxable.toFixed(2)} · CGST ₹{est.cgstAmt.toFixed(2)} · SGST ₹{est.sgstAmt.toFixed(2)} · IGST ₹{est.igstAmt.toFixed(2)} · Total ₹{est.total.toFixed(2)}</Text>
             </View>
-            <TouchableOpacity style={styles.removeBtn} onPress={() => removeLine(it.key)}><Text style={styles.removeBtnText}>Remove</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.removeBtn} onPress={() => (it.fromMaterialTransfer ? removeMtLine(it) : removeLine(it.key))}><Text style={styles.removeBtnText}>Remove</Text></TouchableOpacity>
           </View>
         )
       })}

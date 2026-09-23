@@ -1,4 +1,3 @@
-// web\src\pages\staff\PartUploadPage.tsx
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
@@ -159,6 +158,7 @@ export function PartUploadPage() {
     { header: 'Group', value: (r) => r.groupName ?? '' },
     { header: 'Item Type', value: (r) => r.itemType ?? '' },
     { header: 'Bal Qty', value: (r) => r.balQty ?? '' },
+    { header: 'MT Transfer Qty', value: (r) => r.mtTransferQty ?? '' },
     { header: 'Bal Amount', value: (r) => r.balAmnt ?? '' },
     { header: 'Bill Price', value: (r) => r.billPrice ?? '' },
     { header: 'Location', value: (r) => locName(r.locationCode) },
@@ -169,12 +169,12 @@ export function PartUploadPage() {
   return (
     <div>
       <h2>Part Upload</h2>
-      {/* <p className="muted">
+      <p className="muted">
         Upload a Stock Summary Detail Report (.xlsx) to build a searchable parts stock table here -
         saved into JobCardScanner's own database, scoped to your dealer. Re-uploading a newer report
         for the same Location updates each part's stock figures in place by Part No rather than
         adding duplicates.
-      </p> */}
+      </p>
 
       <div className="card">
         <h3>Upload Excel</h3>
@@ -212,7 +212,7 @@ export function PartUploadPage() {
             />
           </div>
         </div>
-        {!canUpload && <p className="muted" style={{ marginTop: 4 }}></p>}
+        {!canUpload && <p className="muted" style={{ marginTop: 4 }}>Select Date and Location above to enable the file upload.</p>}
         {importing && <p className="muted">Importing…</p>}
         {importError && <p className="error-text">{importError}</p>}
         {importResult && (
@@ -289,6 +289,7 @@ export function PartUploadPage() {
                 <th style={stickyTh}>Group</th>
                 <th style={stickyTh}>Item Type</th>
                 <th className="text-end" style={stickyTh}>Bal Qty</th>
+                <th className="text-end" style={stickyTh} title="Quantity of this part already issued out via Material Transfer">MT Transfer Qty</th>
                 <th className="text-end" style={stickyTh}>Bal Amount</th>
                 <th className="text-end" style={stickyTh}>Bill Price</th>
                 <th style={stickyTh}>Location</th>
@@ -304,6 +305,7 @@ export function PartUploadPage() {
                   <td>{r.groupName ?? '—'}</td>
                   <td>{r.itemType ?? '—'}</td>
                   <td className="text-end">{fmtNum(r.balQty)}</td>
+                  <td className="text-end">{fmtNum(r.mtTransferQty)}</td>
                   <td className="text-end">₹{fmtNum(r.balAmnt)}</td>
                   <td className="text-end">₹{fmtNum(r.billPrice)}</td>
                   <td>{locName(r.locationCode)}</td>
@@ -314,7 +316,7 @@ export function PartUploadPage() {
                 </tr>
               ))}
               {rows.length === 0 && !loading && !error && (
-                <tr><td colSpan={10} className="muted" style={{ textAlign: 'center', padding: 16 }}>
+                <tr><td colSpan={11} className="muted" style={{ textAlign: 'center', padding: 16 }}>
                   No uploaded parts yet - upload a Stock Summary Detail Report above to get started.
                 </td></tr>
               )}
@@ -338,6 +340,7 @@ export function PartUploadPage() {
             { label: 'Group', value: viewing.groupName },
             { label: 'Item Type', value: viewing.itemType },
             { label: 'Bal Qty', value: fmtNum(viewing.balQty) },
+            { label: 'MT Transfer Qty', value: fmtNum(viewing.mtTransferQty) },
             { label: 'Bal Amount', value: `₹${fmtNum(viewing.balAmnt)}` },
             { label: 'Bill Price', value: `₹${fmtNum(viewing.billPrice)}` },
             { label: 'Qty Reqd', value: fmtNum(viewing.qtyReqd) },

@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
-import type { BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaster, CombinedMaterialTransferRow, JobSearchResult, MaterialTransferDocType, PartUpload } from '../../types'
+import type { BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaster, CombinedMaterialTransferRow, JobSearchResult, LabourMasterPartwise, MaterialTransferDocItemType, MaterialTransferDocType, PartUpload } from '../../types'
 import { Pagination } from '../../components/Pagination'
 import { usePagination } from '../../lib/usePagination'
 import { JobSearchModal } from '../../components/JobSearchModal'
-import { PartSearchInput } from '../../components/PartSearchInput'
+import { PartSearchInput, isConfirmedOutOfStock } from '../../components/PartSearchInput'
 import { RecordDetailModal } from '../../components/RecordDetailModal'
 
 /**
@@ -135,6 +135,47 @@ import { RecordDetailModal } from '../../components/RecordDetailModal'
  * Qty/Rate/MRP/Issue Type especially) so each value fits inside its own input/select instead of
  * being visually clipped - the horizontal scroll wrapper (already present) handles anything still
  * wider than the card.
+ *
+ * 2026-09-22 ninth correction ("then from /labour-master from this page which Rate Type * is
+ * Partwise from this we upload FOR Part Code add Labour Code also that was wants to integrate in
+ * material transfer which in video ... which labour we added from amterial transfer for Issue
+ * Type - Paid that will goin for paid type and which are in U/w that was going in U/w that also
+ * going in repair bill"): each Part row now has a "Labour" button (enabled once an Item Code is
+ * picked) that opens PartwiseLabourModal - a "Labour List" popup scoped to that Part Code,
+ * modelled directly on the mt-labour_add.mp4 recording of the real BGauss DMS
+ * (mydmsconnect.com/MtrlTranN.aspx) - see that component's own doc comment for the full
+ * video-vs-implementation mapping. Confirmed via AskUserQuestion: web and mobile ship together in
+ * one delivery, and the Part Code -> Labour Code match is exact/Part-Code-only (no Model filter).
+ * SUPERSEDED ON WEB 2026-09-23 ("dont open pop up tab direct that item code and Issue Type
+ * regarding which labour linked that link with that item code"): the popup described in this
+ * paragraph is GONE on this page - see autoAddLabourForPart's own doc comment further down for
+ * what replaced it (a silent, no-dialog "+ Add" that stages every matching Labour Master Partwise
+ * row in one click). PartwiseLabourModal.tsx (the component this paragraph describes) is now
+ * unused by this file - it's still imported/used by mobile's own MaterialTransferCreateScreen.tsx,
+ * untouched by this web-only round, and left in the web tree rather than deleted in case this
+ * needs reverting. This paragraph is kept for history, not as current behaviour.
+ *
+ * Picked Labour Codes are staged as their own DraftItem rows with itemType: 'Labour' (new field,
+ * defaults to 'Part' - see MaterialTransferDocItemType on the backend), rendered in a separate
+ * read-only-Item-Code sub-table below the main Part grid rather than mixed into it, since a
+ * Labour row has no Item Code search/HSN/Rack/Bin/stock-cap concept - it only reuses the same
+ * Qty/Rate/GST/Issue-Type/save-payload shape DraftItem already has for a Part row. Each Labour
+ * row remembers its parent Part row via sourcePartKey (new field): "Issue Type ... that will goin
+ * for paid type ... also going in U/w" is implemented as GOVERNANCE, not a one-time copy - the
+ * Part row's own Issue Type select (via the new updatePartIssueType) cascades to every Labour row
+ * sourced from it, and the Labour sub-table shows Issue Type read-only (not independently
+ * editable) so it can't silently drift from the Part line that governs it, matching your wording
+ * literally. Removing a Part row also removes its Labour rows (cascade delete), since a Labour
+ * line has no meaning once its governing Part line is gone.
+ *
+ * NOT implemented, disclosed rather than silently dropped: the video's own popup also has a
+ * "Labour Technician" dropdown - see PartwiseLabourModal.tsx's own doc comment for why (same
+ * pre-existing, already-disclosed "no technician-catalog endpoint for ServiceAdvisorUp" gap this
+ * page's own header Technician field already lives with). TechnicianId is always sent as null.
+ *
+ * These Labour rows flow into Repair Bill exactly the way Material-Transfer Part rows already do
+ * today - see RepairBillCreatePage.tsx's own materialTransferItems sync effect, extended the same
+ * round to branch on itemType instead of assuming every synced row is a Part.
  */
 type DiscountType = '%' | 'Value'
 
@@ -181,12 +222,20 @@ type DraftItem = {
    * picked via search - used only to cap/warn on Qty (see updateQty below), never sent to the
    * backend. Null for a hand-typed Item Code with no picked stock row. */
   availableQty: number | null
+  /** 2026-09-22 (Labour-in-Material-Transfer integration, see module doc comment): 'Part' for
+   * every row this page has always had; 'Labour' for a row staged via the new "Labour" button/
+   * PartwiseLabourModal. Mirrors MaterialTransferDocItemType on the backend. */
+  itemType: MaterialTransferDocItemType
+  /** Set only on a 'Labour' row - the key of the Part row it was added from, so that Part row's
+   * own Issue Type can govern (cascade to) this row (see updatePartIssueType) and removing that
+   * Part row cascades to remove this one too. Null for every 'Part' row. */
+  sourcePartKey: number | null
 }
 const emptyItem = (key: number): DraftItem => ({
   key, itemCode: '', itemDescription: '', hsnCode: '', qty: '1', rate: '0',
   rackNo: '', bin: '', serialNo: '', mrp: '', sgstPct: '9', cgstPct: '9', igstPct: '18',
   discountType: '%', discountValue: '0', validDays: '', itemReceived: '',
-  issueType: '', availableQty: null,
+  issueType: '', availableQty: null, itemType: 'Part', sourcePartKey: null,
 })
 
 /** "Rate = Dlr_Price - GST%" (2026-09-21, your own wording) - reverse-calculates the GST-exclusive
@@ -287,9 +336,111 @@ export function MaterialTransferCreatePage() {
     : true
 
   const addItem = () => setItems((prev) => [...prev, emptyItem((prev.at(-1)?.key ?? 0) + 1)])
-  const removeItem = (key: number) => setItems((prev) => (prev.length > 1 ? prev.filter((i) => i.key !== key) : prev))
+  // 2026-09-22: a Part row's Labour children (sourcePartKey === key) are cascade-removed with it -
+  // a Labour row has no meaning once its governing Part line is gone. Still guarantees at least
+  // one Part row remains (the "never end up with zero lines" guard the original logic already had).
+  const removeItem = (key: number) => setItems((prev) => {
+    const filtered = prev.filter((i) => i.key !== key && i.sourcePartKey !== key)
+    return filtered.some((i) => i.itemType === 'Part') ? filtered : prev
+  })
   const updateItem = (key: number, patch: Partial<DraftItem>) =>
     setItems((prev) => prev.map((i) => (i.key === key ? { ...i, ...patch } : i)))
+  // 2026-09-22 ("which labour we added from amterial transfer for Issue Type - Paid that will goin
+  // for paid type and which are in U/w that was going in U/w"): the Part row's own Issue Type
+  // GOVERNS its Labour children - changing it here cascades to every Labour row sourced from this
+  // Part row, rather than just setting the Part row's own value.
+  const updatePartIssueType = (key: number, issueType: string) =>
+    setItems((prev) => prev.map((i) => (i.key === key || i.sourcePartKey === key ? { ...i, issueType } : i)))
+
+  // 2026-09-23 ("i chnaged my mind to change Item Code then still shown labour"): same cascade
+  // Labour-clear as pickPartForLine's own codeChanged check below, but for the Item Code cell's
+  // free-typed edits (PartSearchInput's onChangeText, which fires on every keystroke while
+  // searching) rather than an actual dropdown pick. Only clears once - after the first keystroke
+  // that actually differs from the row's current itemCode, there are no more sourcePartKey rows
+  // left to remove, so further keystrokes are no-ops here.
+  const changeItemCode = (key: number, newCode: string) =>
+    setItems((prev) => {
+      const current = prev.find((i) => i.key === key)
+      const codeChanged = !!current && current.itemCode.trim().toUpperCase() !== newCode.trim().toUpperCase()
+      const next = prev.map((i) => (i.key === key ? { ...i, itemCode: newCode } : i))
+      return codeChanged ? next.filter((i) => i.sourcePartKey !== key) : next
+    })
+
+  // ---------------- Labour, auto-linked per Part row (Material Transfer's own "+ Add" button) ----------------
+  // 2026-09-23 ("Labour ... that hide in page that only save in backend when i repair bill open in
+  // that tht will shown" + "Labour button have on the place ADd button add and dont open pop up
+  // tab direct that item code and Issue Type regarding which labour linked that link with that
+  // item code dont show on ui hide this"): this REPLACES the old "Labour" button/PartwiseLabourModal
+  // popup flow entirely - INTERPRETATION, flagged since the wording is broken English/Hinglish and
+  // this is a real behaviour change, not just a relabel:
+  //  - The popup (pick one or more Labour Codes, stage, Proceed) is gone. The button (renamed
+  //    "+ Add") now fetches every Labour Master Partwise row for this Part Code
+  //    (GET /api/material-transfer-docs/labour-by-part-code/{itemCode} - the SAME endpoint the
+  //    popup used to call) and stages ALL of them in one click, silently - no dialog, no per-row
+  //    choice. If your dealer's Labour Master Partwise genuinely has more than one Labour Code per
+  //    Part Code that should NOT all be added together, this will over-add - say so and I'll bring
+  //    back a choice, just not the modal-popup version.
+  //  - The staged Labour rows are no longer shown in a visible table on THIS page at all (see the
+  //    removed "Labour" panel further down) - they still save to the backend exactly as before
+  //    (items already flowed into the same POST payload regardless of what was rendered), and still
+  //    surface on Repair Bill once opened against the same Job (RepairBillCreatePage.tsx's own
+  //    materialTransferItems sync effect, unchanged - that's where they become visible again).
+  //  - Each Labour row's Issue Type still comes from its parent Part row (it.issueType at the
+  //    moment of adding) and is still governed/cascaded by updatePartIssueType if the Part row's
+  //    Issue Type changes later - unchanged from before.
+  const [labourAddMessage, setLabourAddMessage] = useState<string | null>(null)
+  const autoAddLabourForPart = async (it: DraftItem) => {
+    setLabourAddMessage(null)
+    let rows: LabourMasterPartwise[] = []
+    try {
+      const { data } = await staffApi.get<LabourMasterPartwise[]>(`/api/material-transfer-docs/labour-by-part-code/${encodeURIComponent(it.itemCode)}`)
+      rows = data
+    } catch {
+      setLabourAddMessage(`Could not load Labour Master Partwise rates for ${it.itemCode}.`)
+      return
+    }
+    const alreadyStaged = new Set(items.filter((i) => i.sourcePartKey === it.key).map((i) => i.itemCode))
+    const toAdd = rows.filter((p) => p.labourCode && !alreadyStaged.has(p.labourCode))
+    if (toAdd.length === 0) {
+      setLabourAddMessage(rows.length === 0
+        ? `No Labour Master Partwise rows found for ${it.itemCode}.`
+        : `Every Labour code for ${it.itemCode} is already added.`)
+      return
+    }
+    setItems((prev) => {
+      let nextKey = (prev.at(-1)?.key ?? 0) + 1
+      const newRows: DraftItem[] = toAdd.map((p) => {
+        // LabourMasterPartwise stores IGST/CGST/SGST as plain decimal fractions (0.18 = 18%, per
+        // this session's own confirmed convention) - converted to the same percentage-string shape
+        // DraftItem's sgstPct/cgstPct/igstPct already use for a Part row's GST.
+        const sgstPct = p.sgst != null ? p.sgst * 100 : 9
+        const cgstPct = p.cgst != null ? p.cgst * 100 : 9
+        const igstPct = p.igst != null ? p.igst * 100 : 18
+        const totalGstPct = sgstPct + cgstPct > 0 ? sgstPct + cgstPct : igstPct
+        const rate = p.labourRate ?? 0
+        const row: DraftItem = {
+          ...emptyItem(nextKey),
+          itemType: 'Labour',
+          sourcePartKey: it.key,
+          itemCode: p.labourCode ?? '',
+          itemDescription: p.jobDescription || p.labourCode || '',
+          rate: String(rate),
+          // Labour Master Partwise's own rate is GST-EXCLUSIVE (same convention
+          // RepairBillCreatePage.tsx's own pickLabourForDraft uses) - MRP here is only the
+          // display-only rate+GST figure lineCalc already computes for a Part row's MRP column.
+          mrp: (rate * (1 + totalGstPct / 100)).toFixed(2),
+          sgstPct: String(sgstPct),
+          cgstPct: String(cgstPct),
+          igstPct: String(igstPct),
+          issueType: it.issueType,
+        }
+        nextKey += 1
+        return row
+      })
+      return [...prev, ...newRows]
+    })
+    setLabourAddMessage(`✓ Added ${toAdd.length} Labour code${toAdd.length > 1 ? 's' : ''} for ${it.itemCode}.`)
+  }
 
   const estimatedTotal = items.reduce((sum, it) => sum + lineCalc(it).amount, 0)
 
@@ -426,9 +577,28 @@ export function MaterialTransferCreatePage() {
   // If C_ItemMaster genuinely has no row for this code (a real gap, not a stale-cache miss), Rate/
   // MRP are left as-is for manual entry, with priceWarning below telling you why instead of
   // silently guessing from Part Upload's Bill Price.
+  // 2026-09-23 ("which have 0 qty for Item Code that dont allow to add"): a picked part with a
+  // CONFIRMED zero balance (isConfirmedOutOfStock, imported from PartSearchInput.tsx - same one
+  // rule used to grey out/disable a dropdown row there, so the two never drift apart) is refused
+  // outright here too, since this is the one place every pick from either PartSearchInput instance
+  // (Item Code column AND Description column both call this) funnels through - a defence-in-depth
+  // check, not the only one.
   const pickPartForLine = async (key: number, p: BaplDmsPartStock) => {
+    if (isConfirmedOutOfStock(p)) {
+      setStockWarning(`${p.itemCode} has 0 balance at this location - cannot add.`)
+      return
+    }
     const current = items.find((i) => i.key === key)
     setPriceWarning(null)
+    // 2026-09-23 ("i chnaged my mind to change Item Code then still shown labour ... clear labour
+    // also cause for another Item Code have another labour"): Labour rows staged against this Part
+    // row (sourcePartKey === key) were added against its OLD Item Code's own Labour Master Partwise
+    // catalog - a different Item Code has a different (or no) set of applicable Labour Codes, so
+    // they no longer belong once the Item Code actually changes. Cascade-clear them the same way
+    // removeItem already cascades on delete, but only when the code is ACTUALLY changing (re-picking
+    // the same item, e.g. just to refresh its price, must not wipe Labour that still applies).
+    const codeChanged = !!current && current.itemCode.trim().toUpperCase() !== p.itemCode.trim().toUpperCase()
+    if (codeChanged) setItems((prev) => prev.filter((i) => i.sourcePartKey !== key))
     updateItem(key, {
       itemCode: p.itemCode,
       itemDescription: p.description || p.itemCode,
@@ -464,6 +634,32 @@ export function MaterialTransferCreatePage() {
     } else {
       setPriceWarning(`No Item Master (C_ItemMaster) price found for ${p.itemCode} - Rate/MRP left for manual entry.`)
     }
+
+    // 2026-09-23 ("when i search Item Code and select then auto fetch all details in that also add
+    // dependency with item code which i select Issue Type then automatically Paid that Part
+    // Code(Item Code) regarding Category match Paid or U/W"): INTERPRETATION, flagged - Labour
+    // Master Partwise's own Category column (confirmed real field, see the Labour Master page's own
+    // screenshot showing "Paid" in a CATEGORY column) drives this Part row's Issue Type
+    // automatically, the same lookup (labour-by-part-code) the old "Labour" popup used to call.
+    // ASSUMPTION: a given Part Code's Labour Master Partwise rows all carry the SAME Category (the
+    // row you showed had one Category per Part Code, not one per Labour Code within it) - the
+    // FIRST matching row's Category is used as authoritative rather than requiring every row to
+    // agree, since disagreement was never observed and blocking on it would silently skip this
+    // auto-fill for no clear reason. Only overwrites when a category is actually found and maps
+    // cleanly to "Paid" or "U/W" - never clears an existing Issue Type back to blank on a miss.
+    try {
+      const { data: labourRows } = await staffApi.get<LabourMasterPartwise[]>(`/api/material-transfer-docs/labour-by-part-code/${encodeURIComponent(p.itemCode)}`)
+      const category = labourRows.find((l) => l.category)?.category?.trim().toLowerCase()
+      const mappedIssueType = category?.includes('u/w') || category?.includes('uw') || category?.includes('warranty')
+        ? 'U/W'
+        : category?.includes('paid')
+          ? 'Paid'
+          : null
+      if (mappedIssueType) updatePartIssueType(key, mappedIssueType)
+    } catch {
+      // Silent - this is a convenience auto-fill on top of the part pick, not something that
+      // should surface its own error banner and compete with priceWarning/stockWarning above.
+    }
   }
 
   // "and if stock add available then that will add" - caps Qty to the picked stock row's
@@ -494,7 +690,20 @@ export function MaterialTransferCreatePage() {
     setShowJobSearch(false)
   }
 
-  const clearJob = () => { setJobCardId(null); setJobCardNumber(''); setPartyState(null) }
+  // 2026-09-23 ("without Job No Job Search all feilds show disable ... To / From (Party) that
+  // show disablw we cant edit this only this code"): Location/Transfer Type/Transfer Date/Remarks
+  // now unlock once a Job is linked (see the header fields' new `disabled={!jobCardId}` below), but
+  // Party is ALWAYS disabled - it is only ever auto-filled from the linked job (see selectJob
+  // above), never a hand-typed field. Unlinking a job (this handler) therefore also resets
+  // partyName (there is no other way to clear an always-disabled field) and Location back to the
+  // user's default workshop, so unlinking never leaves a stale, now-unclearable value on screen.
+  const clearJob = () => {
+    setJobCardId(null)
+    setJobCardNumber('')
+    setPartyState(null)
+    setPartyName('')
+    setLocation(workshops.length > 0 ? workshops[0].locCode : '')
+  }
 
   const save = () => {
     setSaveError(null)
@@ -517,6 +726,13 @@ export function MaterialTransferCreatePage() {
           itemDescription: i.itemDescription,
           hsnCode: i.hsnCode || null,
           issueType: i.issueType || null,
+          // 2026-09-22 (Labour-in-Material-Transfer integration): itemType tells the backend which
+          // rows are Labour (added via the "Labour" button/PartwiseLabourModal) vs the page's own
+          // original Part rows - see MaterialTransferDocItemType's doc comment on the backend for
+          // why a Labour row never touches PartUploads stock. technicianId stays null - same
+          // disclosed gap as the page's own header Technician field (see module doc comment).
+          itemType: i.itemType,
+          technicianId: null,
           qty: Number(i.qty) || 0,
           // 2026-09-21 (Discount type/value added this round): the PERSISTED Rate is the
           // post-discount rate (lineCalc's discountedRate) - MaterialTransferDocItem has no
@@ -610,14 +826,28 @@ export function MaterialTransferCreatePage() {
   return (
     <div>
       <h2>Material Transfer Bill</h2>
-      {/* <p className="muted">
+      <p className="muted">
         Create a material transfer document - saved into JobCardScanner's own database. The list
         below shows transfers created here together with the read-only material transfer data
         synced from DMSBAPLDATA, tagged by source.
-      </p> */}
+      </p>
 
       <div className="card">
         <h3>New Material Transfer</h3>
+        {/* 2026-09-23 ("fix ui like repair bill and without Job No Job Search all feilds show
+            disable"): matches RepairBillCreatePage.tsx's own bordered/accented "Job & Bill Details"
+            panel (same --primary/--border/--radius-sm tokens, no new styling invented - see that
+            page's own "attractive page" doc comment). Functionally: every field below Job No is
+            now disabled until a Job is linked (`disabled={!jobCardId}`), since Location/Transfer
+            Type/Transfer Date/Remarks only make sense once a job's own data is in context - Job No
+            itself is always the one live entry point. To/From (Party) is a stricter case: it is
+            ALWAYS disabled, Job-linked or not (see below) - it is only ever auto-filled from the
+            linked job's own PartyName (selectJob above), never a field a user is meant to type
+            into by hand. */}
+        <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', borderLeft: '4px solid var(--primary)', padding: '14px 16px', marginBottom: 18, background: 'var(--surface)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, color: 'var(--primary-dark)', fontWeight: 600 }}>
+            <span>🧾</span><span>Job &amp; Bill Details</span>
+          </div>
         <div className="form-row">
           <div className="field">
             <label>Job No</label>
@@ -632,37 +862,44 @@ export function MaterialTransferCreatePage() {
           <div className="field">
             <label>Location</label>
             {workshops.length > 0 ? (
-              <select value={location} onChange={(e) => setLocation(e.target.value)}>
+              <select value={location} onChange={(e) => setLocation(e.target.value)} disabled={!jobCardId}>
                 <option value="">— select —</option>
                 {workshops.map((w) => (
                   <option key={w.locCode} value={w.locCode}>{w.locCode} — {w.locName}</option>
                 ))}
               </select>
             ) : (
-              <input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Workshop location" />
+              <input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Workshop location" disabled={!jobCardId} />
             )}
           </div>
           <div className="field">
             <label>Transfer Type</label>
-            <select value={transferType} onChange={(e) => setTransferType(e.target.value as MaterialTransferDocType)}>
+            <select value={transferType} onChange={(e) => setTransferType(e.target.value as MaterialTransferDocType)} disabled={!jobCardId}>
               <option value="Issue">Issue</option>
               <option value="Return">Return</option>
             </select>
           </div>
           <div className="field">
             <label>To / From (Party)</label>
-            <input value={partyName} onChange={(e) => setPartyName(e.target.value)} placeholder="Technician or source location" />
+            <input
+              value={partyName}
+              readOnly
+              disabled
+              placeholder="Auto-filled from the linked job"
+              title="Auto-filled from the linked job's Party Name - not hand-editable."
+            />
           </div>
         </div>
         <div className="form-row">
           <div className="field">
             <label>Transfer Date</label>
-            <input type="date" value={transferDate} onChange={(e) => setTransferDate(e.target.value)} />
+            <input type="date" value={transferDate} onChange={(e) => setTransferDate(e.target.value)} disabled={!jobCardId} />
           </div>
           <div className="field">
             <label>Remarks</label>
-            <input value={remarks} onChange={(e) => setRemarks(e.target.value)} />
+            <input value={remarks} onChange={(e) => setRemarks(e.target.value)} disabled={!jobCardId} />
           </div>
+        </div>
         </div>
 
         {/* 2026-09-21 ("that calculation also and auto fetch with proper calculation... change
@@ -676,6 +913,26 @@ export function MaterialTransferCreatePage() {
             grid, since you asked to remove them from view here specifically. Serial No wasn't in
             either your new column list or your removal list, so it stays available via the
             existing RecordDetailModal detail view instead of cluttering this already-wide grid. */}
+        {/* 2026-09-23 ("fix ui like repair bill"): own bordered/accented panel matching
+            RepairBillCreatePage.tsx's own "Part Details List" panel (--accent-3/--warning/📦 -
+            same tokens, nothing new invented). Purely visual - no column, data, or save behaviour
+            changed here. */}
+        {/* 2026-09-23 ("without Job Search we cant add Part Details List tha also show block
+            sytematic wants"): extends the previous round's Job-linked gate (which so far only
+            covered the header fields) to this whole grid - every input/button in a Part row, plus
+            the "+ Add Line" button below the table, is now ALSO disabled until a Job is linked
+            (`disabled={!jobCardId}`, same flag/pattern as the header fields), not just Location/
+            Party/etc. A one-line hint replaces nothing that was there before - it's shown only in
+            the no-job state so it's obvious WHY the grid looks blocked. */}
+        <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', borderLeft: '4px solid var(--accent-3)', padding: '14px 16px', marginBottom: 18, background: 'var(--surface)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, color: 'var(--warning)', fontWeight: 600 }}>
+            <span>📦</span><span>Part Details List</span>
+          </div>
+          {!jobCardId && (
+            <p className="muted" style={{ margin: '0 0 10px', fontSize: 13 }}>
+              Search and link a Job above to add parts.
+            </p>
+          )}
         <div style={{ overflowX: 'auto' }}>
           <table>
             <thead>
@@ -697,7 +954,7 @@ export function MaterialTransferCreatePage() {
               </tr>
             </thead>
             <tbody>
-              {items.map((it) => {
+              {items.filter((i) => i.itemType === 'Part').map((it) => {
                 const tax = lineTax(it, isSameState)
                 const calc = lineCalc(it)
                 return (
@@ -706,10 +963,11 @@ export function MaterialTransferCreatePage() {
                     <PartSearchInput
                       parts={parts}
                       value={it.itemCode}
-                      onChangeText={(text) => updateItem(it.key, { itemCode: text })}
+                      onChangeText={(text) => changeItemCode(it.key, text)}
                       onPick={(p) => pickPartForLine(it.key, p)}
                       placeholder="Item code…"
                       width={130}
+                      disabled={!jobCardId}
                     />
                   </td>
                   <td>
@@ -719,45 +977,74 @@ export function MaterialTransferCreatePage() {
                       onChangeText={(text) => updateItem(it.key, { itemDescription: text })}
                       onPick={(p) => pickPartForLine(it.key, p)}
                       width={210}
+                      disabled={!jobCardId}
                     />
                   </td>
                   <td><input value={it.hsnCode} readOnly placeholder="—" title="Auto-filled from the picked part." style={{ width: 100 }} /></td>
                   <td>
-                    <select value={it.issueType} onChange={(e) => updateItem(it.key, { issueType: e.target.value })} style={{ minWidth: 130 }}>
+                    <select value={it.issueType} onChange={(e) => updatePartIssueType(it.key, e.target.value)} style={{ minWidth: 130 }} disabled={!jobCardId}>
                       <option value="">— select —</option>
                       <option value="Paid">Paid</option>
                       <option value="U/W">U/W</option>
                     </select>
                   </td>
-                  <td><input type="number" value={it.qty} onChange={(e) => updateQty(it.key, e.target.value)} style={{ width: 70, textAlign: 'right' }} /></td>
-                  <td><input type="number" value={it.rate} onChange={(e) => updateItem(it.key, { rate: e.target.value })} title={it.mrp ? `Reverse-calculated from Dealer Price ₹${it.mrp} at ${calc.sgstPct + calc.cgstPct || calc.igstPct}% GST - edit to override.` : undefined} style={{ width: 90, textAlign: 'right' }} /></td>
+                  <td><input type="number" value={it.qty} onChange={(e) => updateQty(it.key, e.target.value)} style={{ width: 70, textAlign: 'right' }} disabled={!jobCardId} /></td>
+                  <td><input type="number" value={it.rate} onChange={(e) => updateItem(it.key, { rate: e.target.value })} title={it.mrp ? `Reverse-calculated from Dealer Price ₹${it.mrp} at ${calc.sgstPct + calc.cgstPct || calc.igstPct}% GST - edit to override.` : undefined} style={{ width: 90, textAlign: 'right' }} disabled={!jobCardId} /></td>
                   <td className="text-end">₹{tax.cgstAmt.toFixed(2)}{tax.cgstPct > 0 && <><br /><span className="muted" style={{ fontSize: 11 }}>@{tax.cgstPct}%</span></>}</td>
                   <td className="text-end">₹{tax.sgstAmt.toFixed(2)}{tax.sgstPct > 0 && <><br /><span className="muted" style={{ fontSize: 11 }}>@{tax.sgstPct}%</span></>}</td>
                   <td className="text-end">₹{tax.igstAmt.toFixed(2)}{tax.igstPct > 0 && <><br /><span className="muted" style={{ fontSize: 11 }}>@{tax.igstPct}%</span></>}</td>
                   <td>
-                    <select value={it.discountType} onChange={(e) => updateItem(it.key, { discountType: e.target.value as DiscountType })} style={{ minWidth: 80 }}>
+                    <select value={it.discountType} onChange={(e) => updateItem(it.key, { discountType: e.target.value as DiscountType })} style={{ minWidth: 80 }} disabled={!jobCardId}>
                       <option value="%">%</option>
                       <option value="Value">₹</option>
                     </select>
                   </td>
-                  <td><input type="number" value={it.discountValue} onChange={(e) => updateItem(it.key, { discountValue: e.target.value })} style={{ width: 90, textAlign: 'right' }} /></td>
+                  <td><input type="number" value={it.discountValue} onChange={(e) => updateItem(it.key, { discountValue: e.target.value })} style={{ width: 90, textAlign: 'right' }} disabled={!jobCardId} /></td>
                   <td className="text-end">₹{calc.amount.toFixed(2)}</td>
                   <td className="text-end">₹{calc.mrp.toFixed(2)}</td>
-                  <td><button className="btn btn-icon btn-danger" onClick={() => removeItem(it.key)} title="Remove line">✕</button></td>
+                  <td>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                      <button
+                        className="btn btn-sm"
+                        type="button"
+                        onClick={() => autoAddLabourForPart(it)}
+                        disabled={!jobCardId || !it.itemCode.trim()}
+                        title={!jobCardId ? 'Link a Job first' : it.itemCode.trim() ? 'Auto-add every Labour Master Partwise code for this part' : 'Pick an Item Code first'}
+                      >
+                        + Add
+                      </button>
+                      <button className="btn btn-icon btn-danger" onClick={() => removeItem(it.key)} title="Remove line" disabled={!jobCardId}>✕</button>
+                    </div>
+                  </td>
                 </tr>
                 )
               })}
             </tbody>
           </table>
         </div>
+        </div>
+
+        {/* 2026-09-23 ("Labour ... that hide in page that only save in backend when i repair bill
+            open in that tht will shown" + "dont show on ui hide this"): the Labour Details List
+            table that used to render here (one row per Labour Master Partwise code staged via a
+            Part row's own button) is REMOVED from this page's UI - staged Labour rows still exist
+            in `items` and still save to the backend exactly as before (see save() below, unchanged
+            - it already iterated over the full `items` array regardless of what was rendered here),
+            they're just no longer shown on THIS screen. They become visible again once you open
+            Repair Bill for the same Job (RepairBillCreatePage.tsx's own materialTransferItems sync
+            effect already pulls them in, unchanged by this round). autoAddLabourForPart's own
+            success/error message (below) is the only on-screen feedback left for the "+ Add" click
+            itself - a transient confirmation line, not a persistent table, so it doesn't reintroduce
+            the thing you asked to hide. */}
+        {labourAddMessage && <p className="muted" style={{ marginTop: 10 }}>{labourAddMessage}</p>}
         {stockWarning && <p className="muted" style={{ color: '#b45309', marginTop: 10 }}>⚠ {stockWarning}</p>}
         {priceWarning && <p className="muted" style={{ color: '#b45309', marginTop: 10 }}>⚠ {priceWarning}</p>}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
-          <button className="btn btn-sm" onClick={addItem}>+ Add Line</button>
+          <button className="btn btn-sm" onClick={addItem} disabled={!jobCardId} title={!jobCardId ? 'Link a Job first' : undefined}>+ Add Line</button>
           <span className="muted">
             {partyState
               ? `Tax: ${isSameState ? 'Same State (CGST+SGST)' : 'Different State (IGST)'}, auto-detected from the linked job's customer state - `
-              : `Tax: Same State (CGST+SGST) `}
+              : `Tax: Same State (CGST+SGST), defaulted (no job linked - this dealer's own stock moving internally) - `}
             Total (excl. GST, not persisted): <strong>₹{estimatedTotal.toFixed(2)}</strong>
           </span>
         </div>

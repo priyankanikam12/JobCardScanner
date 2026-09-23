@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
-import type { BaplDmsLabourRow, BaplDmsWorkshop, BaplItemMaster, CombinedRepairBillRow, JobSearchResult, MaterialTransferItemForJob, RepairBillDocItemType } from '../../types'
+import type { BaplDmsLabourRow, BaplDmsWorkshop, BaplItemMaster, CombinedRepairBillRow, JobSearchResult, LabourMasterPartwise, MaterialTransferItemForJob, RepairBillDoc, RepairBillDocItemType, RepairBillDocStatus } from '../../types'
 import { Pagination } from '../../components/Pagination'
 import { usePagination } from '../../lib/usePagination'
 import { JobSearchModal } from '../../components/JobSearchModal'
@@ -9,43 +9,184 @@ import { LabourSearchInput } from '../../components/LabourSearchInput'
 import { RecordDetailModal } from '../../components/RecordDetailModal'
 
 /**
- * "Repair Bill" sidebar page - see this file's many earlier doc-comment rounds (Proforma/Invoice
- * lifecycle, per-job Material Transfer Part auto-load, Labour staging row, model-based labour
- * filtering, colour-accented section panels, Part Details List Edit/Delete, etc.) for the full
- * history - all unchanged in this round.
+ * "Repair Bill" sidebar page (2026-09-19: "now i want Create Repair Bill and Material Transfer
+ * Bill ... i want to now this both pages data i want save in JobCardScannerDb ... fetched data
+ * both from DMSBAPLDATAConnection from this db repair bill and material transfer this both data
+ * wants to show in 1 place"; corrected 2026-09-21, "backend logic which u gave u and ui same make
+ * only according to our project dont chnage Repair Bill and Material tranfer logic"). Two parts:
+ *  1. A create form that POSTs to /api/repair-bill-docs - saved into JobCardScanner's OWN
+ *     database (RepairBillDocs/RepairBillDocItems), never into BAPL DMS or DMSBAPLDATA.
+ *  2. A combined list below (GET /api/repair-bill-docs/combined) showing bills created here
+ *     side-by-side with the existing read-only DMSBAPLDATA-synced repair bills - each row tagged
+ *     with its Source so the two are never presented as if they were the same record.
  *
- * 2026-09-22 ("only this div fix according to fetched data range that text box fix dont add extra
- * space and after filled labour code which data fetch that will block its not editable") - the
- * Labour staging row's fields (below) are resized to fit the data they actually hold instead of
- * generic/stretched widths, and Description locks once a Labour code is picked:
- *   - Every field's width is sized to its real content: a Labour code is ~12 chars, Qty/Rate/
- *     Discount are short numbers, the two selects are boxed to their own content (their OPEN
- *     dropdown list still shows full option text - only the CLOSED box is narrower, since a plain
- *     `<select>` otherwise sizes its closed box to its WIDEST option in most browsers).
- *   - Description no longer has a fixed pixel width while searching - it flex-grows
- *     (`flex: '1 1 160px'`) to fill whatever space is left in the row.
- *   - `labourFetched` (new state, alongside draftLabour/labourEditingKey) tracks whether the
- *     current Description value came from an actual Labour-code pick. Once true, Description
- *     swaps to a plain, disabled, grey "locked" input (`lockedFieldStyle`, new here) instead of
- *     staying a second searchable box for data that's already fetched - typing a new search in
- *     the Labour code field (onChangeText) resets it back to false so the search box reopens.
- *     Rate now locks the same way once fetched (this round's follow-up ask) - a plain, disabled,
- *     grey input, not editable-with-override.
- *   - Every field's wrapping `<div>` also gets `minWidth: 0` - the standard fix that lets a flex
- *     child actually shrink below its own content's intrinsic width, which the flex default of
- *     `min-width: auto` otherwise blocks.
+ * This is a NEW page/route, distinct from the existing read-only RepairBillPage.tsx ("Repair Bill
+ * Report" in the sidebar) - that page and its route are unchanged.
+ *
+ * 2026-09-22 "in repiar bill save as proforma and after save as proforma then save as invoice that
+ * same functionality we need to create in our jc" - the reference DMS app's own two-step bill
+ * lifecycle. The create form's button below (now labelled "Save as Proforma") is unchanged
+ * behaviour - it always creates the bill with Status=Performa server-side
+ * (RepairBillDocsController.Create hard-codes this, ignoring any status the caller might send),
+ * matching the reference's own "Save as Proforma" action. "Save as Invoice" is a SEPARATE, later
+ * step against an EXISTING Proforma bill (not a second create-time button) - it lives in the
+ * record-detail popup you get from clicking a row in the list below, calls the already-existing
+ * `PUT /api/repair-bill-docs/{id}/status` endpoint (RepairBillDocsController.UpdateStatus - this
+ * endpoint already existed in the backend but had no frontend caller anywhere in the app until
+ * now) to move Status from Performa to Billed, and only appears for this app's own
+ * (`source: 'JobCardScanner'`) bills that are still Performa - a DMSBAPLDATA-synced row or an
+ * already-Billed/Cancelled bill shows no such button. This app still has no line-item EDIT screen
+ * (see the "Column set" comment further down) - "Save as Invoice" finalizes the STATUS only, it
+ * does not let you change Rate/Qty/GST/discount before finalizing; if the bill's own line items
+ * were wrong, the only options today are re-entering a fresh bill or (SystemAdmin) deleting this
+ * one - flagging this rather than silently building a fuller edit flow you didn't ask for.
+ *
+ * Corrected 2026-09-21: the backend no longer infers CGST+SGST-vs-IGST from Customer/Dealer State
+ * (that guess never existed in the reference RepairBillRepo - it only persists whatever
+ * Cgst/Sgst/Igst the CALLER already resolved). The "Tax Type" selector below is the same kind of
+ * caller-side convenience the reference's own Angular UI had (resolving LabourMaster/
+ * PartWiseLabour's stored rate into one pair before saving) - it runs here in the browser instead,
+ * and the three independent CgstPct/SgstPct/IgstPct are sent explicitly per line, matching what
+ * RepairBillDocItem now stores.
+ *
+ * Location is a dropdown scoped to the signed-in user's own accessible workshop location(s)
+ * (profile.workLocationCodes via GET /api/bapl-dms/workshops?dealerId=...) - same scoped-picker
+ * pattern already used on MaterialTransferCreatePage.tsx, not a free-text field.
+ *
+ * 2026-09-21 ("give me this and proper flow of this", modelled on the reference DMS app's own Job
+ * Search modal + Part Name combo): "Job No" opens a Job Search picker (JobSearchModal, GET
+ * /api/jobcards/search over this app's OWN JobCards - JobCardId is a local FK, not a raw DMS id)
+ * - picking a job auto-fills Party Name/Reg No/Chassis No/Location and links JobCardId onto the
+ * bill. Once Location is set (from the picked job, or chosen directly), each line's Item Code
+ * AND Description are both a search-select against GET /api/bapl-dms/parts?locationCode=... (same
+ * PartSearchInput component as MaterialTransferCreatePage.tsx, wired to both cells - "Item Code
+ * not search when i type anything in textbox" 2026-09-21) instead of free-text fields.
+ *
+ * 2026-09-21 ("Labour - Rate + GST%(CGST,IGST,SGST) according to state Intra state and inter
+ * state ... with discount" / "Part - Rate = MRP - GST%(CGST,IGST,SGST) .. BILL Creating (without
+ * discount) - use all calculation part from dms"): re-verified against the actual pasted
+ * repair-bill.ts (addLabour()/calculatePart()/calculateTotals()) and material-transfer.ts
+ * (calculateGST()), not re-derived from paraphrase. What the reference actually does, confirmed:
+ *  - EVERY line (Part or Labour) in the Repair Bill itself is taxed the SAME way: gross = qty x
+ *    rate (rate already GST-exclusive, i.e. "taxable"), an optional discount (% or flat, defaults
+ *    to none) reduces gross to a taxable amount, then CGST+SGST (same state) or IGST (different
+ *    state) is added ON TOP of the taxable amount - never reverse-calculated out of it at this
+ *    stage. This is what RepairBillDocsController.Create already does server-side; nothing about
+ *    that arithmetic changes here. The "Part ... without discount" phrase does NOT mean the
+ *    reference blocks discount on Part lines in the Repair Bill (calculatePart() takes the same
+ *    optional item.discount/discountType as addLabour() does) - discount simply defaults to none
+ *    on both line types unless entered, same as before.
+ *  - Where Part and Labour genuinely differ is EARLIER, at Material Transfer time: a Part's Rate
+ *    is derived ONCE, when the part is picked from stock, by reverse-calculating GST OUT of its
+ *    GST-inclusive MRP (material-transfer.ts calculateGST: basePrice = mrp / (1 + gst% / 100)) -
+ *    this is literally "Rate = MRP - GST%". That derived, GST-exclusive Rate is what then flows
+ *    into the Repair Bill and gets taxed forward like any other line. Picking a part here via
+ *    PartSearchInput reproduces that same reverse calc (see pickPartForLine below) using the
+ *    line's own GST % (no confirmed per-part tax-rate source exists in this app - see
+ *    PartSearchInput.tsx's doc comment - so GST % stays a manual/estimated per-line input,
+ *    defaulted to 18% same as before).
+ *  - "according to state Intra state and inter state": the reference determines this with a
+ *    straight Dealer.State == Customer.State compare (repair-bill.ts's own isSameState), not
+ *    anything more elaborate - now auto-detected below from GET /api/auth/me's DealerState vs the
+ *    picked job's Customer.State (JobSearchResult.partyState), with the existing Tax Type
+ *    dropdown left in place as a manual override for a standalone bill with no job/customer
+ *    linked (where neither state is known).
+ * 2026-09-21 second correction ("Issue Type - U/W and Paid ... give proper flow"): Issue Type is
+ * now genuinely per LINE, not per bill - re-reading the reference confirmed RepairBillDetail.
+ * IssutypeId is a detail-row column (RepairBillHeader has no IssueType column at all). The
+ * bill-level Issue Type field is now only a default that prefills each new line (still editable
+ * per line afterwards) - RepairBillDocItem/CreateRepairBillItemRequest both carry their own
+ * IssueType now, and it (falling back to the bill-level value if a line's own is unset) is what
+ * decides that line's own zero-tax treatment, matching the reference's own per-line behaviour.
+ *
+ * 2026-09-21 ("and if stock add available then that will add"): picking a part now records its
+ * AvailableQty (from GET /api/bapl-dms/parts) on the line, and Qty is capped to it with an inline
+ * warning if exceeded - same stock-limit guard as the reference's own onBlurQuantity ("Stock limit
+ * exceeded. Please reduce the quantity."). Only enforced for a line whose Item Code came from a
+ * picked stock row (a hand-typed Part not in PartsInventory, or a Labour line, has no stock figure
+ * to check against).
+ *
+ * 2026-09-21 third correction ("GST % remove that was shown in IGST, CGST, SGST in this row
+ * automatic fetch according this item code ... already linked with state so IGST, CGST, SGST
+ * according that shown in repair bill also"): the GST % column is no longer a visible/editable
+ * input - same removal as MaterialTransferCreatePage.tsx's own third 2026-09-21 correction, now
+ * applied here too since CGST Amt/SGST Amt/IGST Amt already show the equivalent information per
+ * line. The underlying gstPct STAYS on each line's state ("already linked with state") - it still
+ * drives splitGst()/lineEstimate() exactly as before, defaulting to 18% (see PartSearchInput.tsx's
+ * doc comment on why no confirmed per-part GST% source exists) - it just isn't a typed field
+ * anymore, so it can't be hand-edited away from that default or the value derived when a Part-
+ * Upload row is picked.
+ *
+ * 2026-09-21 fourth correction ("stock also shown from partuploads and in repair bill"): parts
+ * uploaded via the "Part Upload" tab now merge into this page's own Item Code/Description search
+ * too, alongside the live DMS PartsInventory list - same treatment as
+ * MaterialTransferCreatePage.tsx's own fifth 2026-09-21 correction (BalQty as AvailableQty,
+ * BillPrice as Rate directly, tagged "Uploaded" in the dropdown - see pickPartForLine below).
+ *
+ * 2026-09-22 REPLACED BY THE CORRECTION BELOW - kept only for history: everything above about a
+ * manual Item Code/Description PART search (PartSearchInput, dmsParts/uploadedParts/
+ * itemMasterByCode/itemMasterCatalog/pickPartForLine) was REMOVED this round. Labour is still a
+ * manual search-and-add (unchanged, see pickLabourForLine below).
+ *
+ * 2026-09-22 ("now i saved from material transfer bill now this will shown in repair bill with
+ * which i material transfer and from repair bill we can add only labour from labour master in
+ * dropdown and that will add save as proforma" + you pasted the REAL BAPL DMS reference source -
+ * RepairBillController.cs/RepairBillRepo.cs, repair-bill.ts/.html, repair-bill-list.ts/.html,
+ * repair-bill-invoice.ts/.html): this is a confirmed architecture correction, not an
+ * interpretation - the pasted repair-bill.html's own Part search UI is commented out entirely
+ * (`<!-- <ul *ngIf="showPartDropdown" ...> -->`), and repair-bill.ts's loadMaterialedJobCardList()
+ * (called from onSelect() the moment a Job is picked) is what actually populates the reference's
+ * Part Details List - straight from whatever Material Transfer already saved against that job
+ * (jobCardService.getMaterialedJobCardList(jobId, dealerCode)), never from a live parts search
+ * inside Repair Bill itself. Only Labour has a real search-and-add flow there (addLabour()).
+ *
+ * This page now mirrors that: once a Job is linked (jobCardId set, via Search Job same as before),
+ * a new effect fetches GET /api/material-transfer-docs/for-job/{jobCardId} (every non-Cancelled
+ * Material Transfer item already saved against this job - see MaterialTransferDocsController.
+ * ForJob's doc comment) and turns each into a read-only Part row in the grid below: Item Code/
+ * Description/HSN/Qty/Rate come straight from that Material Transfer line (Rate already reflects
+ * SECTION 64's C_ItemMaster-driven calculation from when it was transferred - not recomputed here),
+ * while Discount Type/Discount Value/Issue Type stay editable per line, matching the reference's
+ * own editPart()/updatePart() (edit only, no delete - Part rows have no ✕ here either, since they
+ * represent parts that were physically transferred, not something this bill invents). GST% for the
+ * CGST/SGST/IGST split still comes from a fresh C_ItemMaster by-codes lookup (SGST/CGST/IGST aren't
+ * stored on MaterialTransferDocItem - see that model's doc comment), same source Material Transfer
+ * itself used, just fetched again since the split isn't persisted there.
+ *
+ * The "+ Add Line" button (and the whole itemType Part/Labour picker) is GONE - every manually
+ * added line is now always Labour (addLabour()'s reference equivalent), searched via
+ * LabourSearchInput exactly as before. A standalone bill with no Job linked simply has no Part rows
+ * at all (nothing to auto-load), matching the reference (Part Details List only ever renders after
+ * onSelect() runs loadMaterialedJobCardList()).
+ *
+ * 2026-09-22 ("in labour after jobcard serach this automatically details fetch then we adding
+ * labour details see screenshot that type add ui and all", two screenshots of the real reference
+ * /repair-bill page pasted alongside - Date/Location/Prefix/Bill No/Bill Type/Cash Account/Party
+ * Name/Mobile Number/Party State/Job Search header, a "Selected Job Details" panel, a Labour
+ * staging row + Labour Details List table, and a separate Part Details List table): the single
+ * inline-edit grid this page had before (every line, including a not-yet-added one, edited
+ * in-place in one table) is REPLACED by the reference's own two-part pattern, confirmed via
+ * AskUserQuestion ("Redesign both Labour and Part display" - the alternative of leaving Part
+ * display untouched was offered and NOT chosen):
+ *  - Labour: a dedicated staging row (draftLabour state) mirrors the reference's addLabour()/
+ *    editLabour() - Labour search, Description, Qty, Rate, Disc. Type, Discount, Issue Type, then
+ *    +Add (or Update, once a row's own pencil icon is clicked - labourEditingKey tracks which).
+ *    Committing pushes/updates one entry in `items` (still the same array shape saved to the
+ *    backend - see save() below, unchanged) and resets the staging row. The Labour Details List
+ *    table below it is now purely READ-ONLY display + Edit/Delete icons, not editable cells.
+ *  - Part: still auto-loaded read-only from Material Transfer (unchanged data/effect above - the
+ *    reference's own Part-adding row never applied here, since this app's Parts always come from a
+ *    saved Material Transfer, never a live search inside Repair Bill itself). Only its TABLE was
+ *    restyled into its own separate "Part Details List", matching the reference's column set
+ *    (Action/Sr.No/Part No./Description/Qty/Rate/HSN Code/MRP/Discount/Discount Type/CGST Amt./
+ *    SGST Amt./IGST Amt./Amount/Issue Type/GST %) - minus "FOC Rate", which the reference shows but
+ *    this app's data model has no equivalent column for (RepairBillDocItem has no FOC concept) -
+ *    omitted rather than faked. Its Edit icon toggles just Discount/Issue Type into inline inputs
+ *    on that one row (the only fields ever editable on a Part line); there is still no Delete icon
+ *    for a Part row, matching the reference exactly.
  */
 type TaxMode = 'Same State (CGST+SGST)' | 'Different State (IGST)'
 type DiscountType = 'None' | 'Percentage' | 'Amount'
-
-/** Visually "locked" look for a field whose value came from a fetch rather than direct typing -
- * distinct grey background/text/cursor so it reads as non-interactive at a glance. */
-const lockedFieldStyle: CSSProperties = {
-  background: '#eef0f3',
-  color: '#6b7280',
-  cursor: 'not-allowed',
-  borderColor: '#d7dbe0',
-}
 
 type DraftItem = {
   /** A manually-added Labour line gets a locally-minted "manual-N" string; an auto-loaded Part
@@ -215,6 +356,33 @@ export function RepairBillCreatePage() {
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saveOk, setSaveOk] = useState<string | null>(null)
 
+  // 2026-09-23 ("this grid button click from db which material transfer that will shown for Save
+  // as proforma and save as invoice" - confirmed via video against the reference DMS app's own
+  // repair-bill/{id} page, chosen via AskUserQuestion over leaving the read-only popup as-is):
+  // clicking a JobCardScanner-own bill that's still Performa in the list below now reopens THIS
+  // SAME create form, pre-filled, instead of only a read-only popup - see startEditBill below.
+  // null means "creating a brand-new bill" (this form's original, unchanged behaviour); set means
+  // "editing an existing Performa bill" - save() branches to PUT instead of POST accordingly.
+  const [editingBillId, setEditingBillId] = useState<string | null>(null)
+  const [editingBillNumber, setEditingBillNumber] = useState<string | null>(null)
+  const [editingBillStatus, setEditingBillStatus] = useState<RepairBillDocStatus | null>(null)
+  const [editLoadError, setEditLoadError] = useState<string | null>(null)
+  // 2026-09-23 - populated once by startEditBill below (matched by itemType+itemCode, since a
+  // saved RepairBillDocItem has no MaterialTransferDocItem.Id of its own to match on) so the
+  // materialTransferItems sync effect further down can best-effort restore a Part/Labour line's
+  // Discount/Issue Type after Parts re-derive fresh from the job's CURRENT Material Transfer -
+  // see that effect's own doc comment for the full reasoning. A plain {} outside of editing, so
+  // this has zero effect on the normal create-a-new-bill flow. Cleared whenever a fresh/different
+  // bill starts being edited (or editing is cancelled / a new bill starts), so a stale snapshot
+  // never leaks one bill's Discount/Issue Type onto a different job's Parts that happen to share
+  // an item code.
+  const editSnapshotByCodeRef = useRef<Record<string, { discountType: DiscountType; discountValue: string; issueType: string }>>({})
+  // 2026-09-23 - true right after startEditBill restores a bill's saved Labour lines as manual
+  // rows; the dedupe effect further down (after materialTransferItems/mtFetchDone) flips it back
+  // to false once it's run, so it only ever fires once per edit, not on every future change to
+  // this job's Material Transfer during normal use.
+  const dedupeLabourAfterEditRef = useRef(false)
+
   const removeItem = (key: string) => setItems((prev) => prev.filter((i) => i.key !== key))
   const updateItem = (key: string, patch: Partial<DraftItem>) =>
     setItems((prev) => prev.map((i) => (i.key === key ? { ...i, ...patch } : i)))
@@ -237,6 +405,19 @@ export function RepairBillCreatePage() {
     removeItem(it.key)
     if (editingPartKey === it.key) setEditingPartKey(null)
   }
+  // 2026-09-22 ("which labour we added from amterial transfer ... that also going in repair
+  // bill"): same exclusion mechanism as removePart above, for a Labour row synced in from
+  // Material Transfer (see the materialTransferItems sync effect below) - reuses the SAME
+  // excludedPartKeys set (both Part and Labour synced rows are keyed by their own
+  // MaterialTransferDocItem.Id, so there's no collision) rather than a second Set, since the
+  // reason for excluding is identical: without it, the next sync effect run would silently bring
+  // a removed row back.
+  const removeMtLabour = (it: DraftItem) => {
+    if (!window.confirm(`Remove Labour "${it.itemDescription}" from this bill? The Material Transfer record itself is unaffected - this only excludes it from this Repair Bill.`)) return
+    setExcludedPartKeys((prev) => new Set(prev).add(it.key))
+    removeItem(it.key)
+    if (editingPartKey === it.key) setEditingPartKey(null)
+  }
 
   // 2026-09-22 ("in labour...we adding labour details see screenshot that type add ui"): a
   // dedicated staging row for adding/editing ONE Labour line at a time, matching the reference's
@@ -247,13 +428,8 @@ export function RepairBillCreatePage() {
   // appends a new one, matching editLabour()/updateLabour() vs addLabour().
   const [draftLabour, setDraftLabour] = useState<DraftItem>(() => emptyItem('draft', issueType))
   const [labourEditingKey, setLabourEditingKey] = useState<string | null>(null)
-  // 2026-09-22 ("after filled labour code which data fetch that will block its not editable"):
-  // true once the current draftLabour.itemDescription actually came from a Labour-code pick (see
-  // pickLabourForDraft below) rather than free typing - drives whether Description renders as a
-  // searchable box or a locked, disabled recap (see the Labour section JSX further down).
-  const [labourFetched, setLabourFetched] = useState(false)
-  const resetDraftLabour = () => { setDraftLabour(emptyItem('draft', issueType)); setLabourEditingKey(null); setLabourFetched(false) }
-  const startEditLabour = (it: DraftItem) => { setDraftLabour({ ...it }); setLabourEditingKey(it.key); setLabourFetched(!!it.itemCode) }
+  const resetDraftLabour = () => { setDraftLabour(emptyItem('draft', issueType)); setLabourEditingKey(null) }
+  const startEditLabour = (it: DraftItem) => { setDraftLabour({ ...it }); setLabourEditingKey(it.key) }
   const commitLabourDraft = () => {
     if (!draftLabour.itemCode.trim() || !draftLabour.itemDescription.trim()) return
     if (labourEditingKey) {
@@ -312,7 +488,7 @@ export function RepairBillCreatePage() {
   // needed to compute this bill's own CGST/SGST/IGST split.
   const [mtItemMasterByCode, setMtItemMasterByCode] = useState<Record<string, BaplItemMaster>>({})
   useEffect(() => {
-    const codes = Array.from(new Set(materialTransferItems.map((m) => m.itemCode.trim().toUpperCase()).filter(Boolean)))
+    const codes = Array.from(new Set(materialTransferItems.filter((m) => m.itemType !== 'Labour').map((m) => m.itemCode.trim().toUpperCase()).filter(Boolean)))
     if (codes.length === 0) { setMtItemMasterByCode({}); return }
     staffApi.get<BaplItemMaster[]>('/api/item-master/by-codes', { params: { codes: codes.join(',') } })
       .then(({ data }) => {
@@ -323,40 +499,107 @@ export function RepairBillCreatePage() {
       .catch(() => setMtItemMasterByCode({}))
   }, [materialTransferItems])
 
-  // Turns the loaded Material Transfer items into read-only Part rows in `items`, replacing
-  // whatever Part rows were there before (there can only ever be one set, always sourced from this
-  // same job) while leaving every manually-added Labour row untouched. Keyed by each row's own
-  // MaterialTransferDocItem.Id, so a Discount/Issue Type the user already edited on a still-present
-  // row survives a re-fetch (e.g. after adding another Material Transfer for the same job).
+  // 2026-09-22 ("that also going in repair bill"): the SAME "no tax columns stored on
+  // MaterialTransferDocItem" gap as above, but for a synced LABOUR row - C_ItemMaster (a Part
+  // catalog) has no row for a Labour Code, so a separate fresh-by-code lookup against Labour
+  // Master Partwise itself (GET /api/material-transfer-docs/labour-by-codes) is needed to recover
+  // its real IGST/CGST/SGST, instead of always falling back to the generic 9/9/18 default.
+  const [mtLabourGstByCode, setMtLabourGstByCode] = useState<Record<string, LabourMasterPartwise>>({})
+  useEffect(() => {
+    const codes = Array.from(new Set(materialTransferItems.filter((m) => m.itemType === 'Labour').map((m) => m.itemCode.trim().toUpperCase()).filter(Boolean)))
+    if (codes.length === 0) { setMtLabourGstByCode({}); return }
+    staffApi.get<LabourMasterPartwise[]>('/api/material-transfer-docs/labour-by-codes', { params: { codes: codes.join(',') } })
+      .then(({ data }) => {
+        const byCode: Record<string, LabourMasterPartwise> = {}
+        data.forEach((l) => { byCode[l.labourCode.trim().toUpperCase()] = l })
+        setMtLabourGstByCode(byCode)
+      })
+      .catch(() => setMtLabourGstByCode({}))
+  }, [materialTransferItems])
+
+  // Turns the loaded Material Transfer items into read-only Part/Labour rows in `items`, replacing
+  // whatever synced rows were there before (there can only ever be one set, always sourced from
+  // this same job) while leaving every manually-added Labour row untouched. Keyed by each row's
+  // own MaterialTransferDocItem.Id, so a Discount/Issue Type the user already edited on a
+  // still-present row survives a re-fetch (e.g. after adding another Material Transfer for the
+  // same job).
+  //
+  // 2026-09-22 ("which labour we added from amterial transfer for Issue Type - Paid that will
+  // goin for paid type and which are in U/w that was going in U/w that also going in repair
+  // bill"): now branches on m.itemType instead of assuming every synced row is a Part - a Labour
+  // row from Material Transfer's own new "Labour" picker becomes a Labour-type DraftItem here
+  // (fromMaterialTransfer: true, same as a Part), landing in labourRows below alongside any
+  // manually-added Labour lines. Its Issue Type is whatever Material Transfer's own per-line
+  // Issue Type resolved to (m.issueType) - MaterialTransferCreatePage.tsx's own
+  // updatePartIssueType already makes that value follow the governing Part row there, so no
+  // separate propagation logic is needed on this side; this effect only reads what Material
+  // Transfer already decided.
   useEffect(() => {
     setItems((prev) => {
       const manual = prev.filter((i) => !i.fromMaterialTransfer)
-      const partRows: DraftItem[] = materialTransferItems.filter((m) => !excludedPartKeys.has(m.id)).map((m) => {
-        const im = mtItemMasterByCode[m.itemCode.trim().toUpperCase()]
-        const sgstPct = im?.sgst ?? 9
-        const cgstPct = im?.cgst ?? 9
-        const igstPct = im?.igst ?? 18
+      const mtRows: DraftItem[] = materialTransferItems.filter((m) => !excludedPartKeys.has(m.id)).map((m) => {
+        const isLabour = m.itemType === 'Labour'
+        let sgstPct: number, cgstPct: number, igstPct: number
+        if (isLabour) {
+          const lm = mtLabourGstByCode[m.itemCode.trim().toUpperCase()]
+          sgstPct = lm?.sgst != null ? lm.sgst * 100 : 9
+          cgstPct = lm?.cgst != null ? lm.cgst * 100 : 9
+          igstPct = lm?.igst != null ? lm.igst * 100 : 18
+        } else {
+          const im = mtItemMasterByCode[m.itemCode.trim().toUpperCase()]
+          sgstPct = im?.sgst ?? 9
+          cgstPct = im?.cgst ?? 9
+          igstPct = im?.igst ?? 18
+        }
         const totalGst = sgstPct + cgstPct > 0 ? sgstPct + cgstPct : igstPct
         const existing = prev.find((i) => i.key === m.id)
+        // 2026-09-23 (reopening an existing Performa bill for editing - see startEditBill's own
+        // doc comment): `existing` is only ever set from THIS SAME session's own prior state, so
+        // it's always empty the first time this effect runs right after a bill is loaded for
+        // editing - Discount/Issue Type customizations that bill had saved would otherwise be
+        // silently lost (reset to None/0/default) the moment its Parts re-derive from Material
+        // Transfer. editSnapshotByCodeRef (populated once by startEditBill, matched by
+        // itemType+itemCode since a saved RepairBillDocItem has no MaterialTransferDocItem.Id of
+        // its own to match on) is a best-effort fallback for exactly that gap - a plain {} outside
+        // of editing, so this has zero effect on the normal create-a-new-bill flow.
+        const snap = editSnapshotByCodeRef.current[`${isLabour ? 'Labour' : 'Part'}:${m.itemCode.trim().toUpperCase()}`]
         return {
           key: m.id,
-          itemType: 'Part',
+          itemType: isLabour ? 'Labour' : 'Part',
           itemCode: m.itemCode,
           itemDescription: m.itemDescription,
           hsnCode: m.hsnCode || '',
           qty: String(m.qty),
           rate: String(m.rate),
-          mrp: m.mrp != null ? String(m.mrp) : '',
+          mrp: !isLabour && m.mrp != null ? String(m.mrp) : '',
           gstPct: String(totalGst),
-          discountType: existing?.discountType ?? 'None',
-          discountValue: existing?.discountValue ?? '0',
-          issueType: existing?.issueType ?? (m.issueType || ''),
+          discountType: existing?.discountType ?? snap?.discountType ?? 'None',
+          discountValue: existing?.discountValue ?? snap?.discountValue ?? '0',
+          issueType: existing?.issueType ?? snap?.issueType ?? (m.issueType || ''),
           fromMaterialTransfer: true,
         }
       })
-      return [...partRows, ...manual]
+      return [...mtRows, ...manual]
     })
-  }, [materialTransferItems, mtItemMasterByCode, excludedPartKeys])
+  }, [materialTransferItems, mtItemMasterByCode, mtLabourGstByCode, excludedPartKeys])
+
+  // 2026-09-23 - runs once right after startEditBill re-links a bill's Job (dedupeLabourAfterEditRef
+  // flips true there). startEditBill restores every Labour line the bill had saved as a manual
+  // row (see its own doc comment for why Part lines are handled differently) without knowing yet
+  // which of those originally came from THIS job's Material Transfer - so once the fresh
+  // Material Transfer fetch for that job actually settles (mtFetchDone), any restored manual
+  // Labour row whose code matches a Labour line Material Transfer is ALSO currently supplying is
+  // dropped, leaving the fresh Material-Transfer-sourced row (which the sync effect above already
+  // added) as the only copy instead of showing both.
+  useEffect(() => {
+    if (!dedupeLabourAfterEditRef.current || !mtFetchDone) return
+    dedupeLabourAfterEditRef.current = false
+    const mtLabourCodes = new Set(
+      materialTransferItems.filter((m) => m.itemType === 'Labour').map((m) => m.itemCode.trim().toUpperCase()),
+    )
+    if (mtLabourCodes.size === 0) return
+    setItems((prev) => prev.filter((it) => !(it.itemType === 'Labour' && !it.fromMaterialTransfer && mtLabourCodes.has(it.itemCode.trim().toUpperCase()))))
+  }, [mtFetchDone, materialTransferItems])
 
   // 2026-09-21 ("Labour - when labor type select then Labour Code suggestion shown"): sourced from
   // DMS's own Labour Master (GET /api/bapl-dms/labour, the SAME endpoint/data
@@ -393,8 +636,7 @@ export function RepairBillCreatePage() {
    * its OWN Sgst/Cgst/Igst percentages (already confirmed real columns - see BaplDmsLabourRow's
    * doc comment in BaplDmsService.cs) as this line's gstPct total, which then flows through the
    * SAME taxMode/splitGst() pipeline every other line already uses (see lineEstimate/splitGst
-   * below) - no separate tax model needed for Labour vs Part lines. Also marks the Description
-   * field as "fetched" (see labourFetched's own doc comment above) so it locks. */
+   * below) - no separate tax model needed for Labour vs Part lines. */
   const pickLabourForDraft = (l: BaplDmsLabourRow) => {
     const totalGst = (l.cgst ?? 0) + (l.sgst ?? 0) > 0 ? (l.cgst ?? 0) + (l.sgst ?? 0) : (l.igst ?? 18)
     setDraftLabour((prev) => ({
@@ -406,7 +648,6 @@ export function RepairBillCreatePage() {
       rate: l.labourRate != null ? String(l.labourRate) : '0',
       gstPct: String(totalGst),
     }))
-    setLabourFetched(true)
   }
 
   const selectJob = (job: JobSearchResult) => {
@@ -424,10 +665,160 @@ export function RepairBillCreatePage() {
     setShowJobSearch(false)
   }
 
+  // 2026-09-23 ("also block all withour job search"): Party Name/Reg No/Chassis No/Location are no
+  // longer hand-editable in EITHER state (see the JSX further down) - auto-filled and read-only
+  // once a Job is linked (unchanged), and now BLOCKED (disabled, not just "editable again") once
+  // it's unlinked too, rather than handing manual entry back the way this page used to support a
+  // standalone/walk-in bill. Since there is no other way left to clear them, unlinking the Job now
+  // also resets these four back to blank/default here, the same fix MaterialTransferCreatePage.tsx
+  // already needed for its own Party field once IT became always-disabled.
   const clearJob = () => {
     setJobCardId(null); setJobCardNumber(''); setPartyState(null); setVehicleModel(null)
     setJobDate(null); setOdometer(null); setTechnician(null)
+    setPartyName(''); setRegNo(''); setChassisNo('')
+    setLocation(workshops.length > 0 ? workshops[0].locCode : '')
+    // 2026-09-23 - unlinking the Job while editing an existing bill leaves nothing left to save
+    // against (this page has required a Job for every bill since the earlier "also block all
+    // withour job search" change), so it also cancels the edit rather than leaving editingBillId
+    // pointed at a bill whose form no longer matches it.
+    setEditingBillId(null); setEditingBillNumber(null); setEditingBillStatus(null); setEditLoadError(null)
+    editSnapshotByCodeRef.current = {}
   }
+
+  // 2026-09-23 - shared by a fresh save() success and cancelEdit() below: resets every field back
+  // to this form's own empty/default state, exactly what save() already did on success before
+  // editing existed. Kept separate from clearJob() (which stays scoped to just "unlink the Job")
+  // so a plain unlink doesn't also blank Bill Type/Remarks/insurance fields.
+  const resetFormToNew = () => {
+    clearJob()
+    setBillType('Cash'); setIssueType(''); setRemarks('')
+    setInsuranceCompanyName(''); setInsuranceDescription(''); setSurveyorName(''); setSurveyorContactNumber('')
+    setPolicyNo(''); setInsuranceValidTill(''); setZeroDepreciation(false); setTotalDiscount('0'); setAmountReceived('0')
+    setBillDate(new Date().toISOString().slice(0, 10))
+    nextManualKeyRef.current = 2
+    setItems([])
+    resetDraftLabour()
+    setEditingPartKey(null)
+  }
+
+  // 2026-09-23 ("this grid button click from db which material transfer that will shown for Save
+  // as proforma and save as invoice" - see this page's own doc comment above for the full video-
+  // confirmed reasoning): reopens an existing JobCardScanner-own, still-Performa bill as THIS SAME
+  // form, pre-filled, so it can be edited and re-saved (Update Proforma) or finalized (Save as
+  // Invoice) right here - instead of only the read-only popup a click used to always open.
+  //
+  // Party Name/Reg No/Chassis No/Location are restored straight from the bill (they're `readOnly`
+  // regardless of source, see the JSX further down) rather than needing the Job re-fetch below.
+  // The "Selected Job Details" panel's own extra fields (Job Date/Model/KMs/Technician) and
+  // Party State (for taxMode) genuinely only live on the Job itself, not on the saved bill, so
+  // they're re-fetched via the same GET /api/jobcards/search this page's own Job Search modal
+  // already uses, filtered to this bill's own JobCardNumber.
+  //
+  // Part lines are DELIBERATELY NOT restored from the bill's own saved items - they re-derive
+  // fresh from the job's CURRENT Material Transfer via the existing sync effect above, exactly
+  // like a brand-new bill would (this is the literal "pull from Material Transfer in the DB"
+  // behaviour the video showed, not a replay of what this bill happened to save previously, which
+  // may be stale if more was transferred since). Only Labour lines are restored from the bill's
+  // own saved items (a Labour line can also be added by hand here, independent of Material
+  // Transfer, and that would otherwise be lost) - restored as manual/editable rows, then
+  // deduplicated against whatever the fresh Material Transfer fetch actually returns (see the
+  // dedupe effect above) so a Labour line that WAS Material-Transfer-sourced doesn't show twice.
+  // A Part/Labour line's own saved Discount/Issue Type is best-effort restored via
+  // editSnapshotByCodeRef (matched by item code) once Parts re-derive - see that ref's own doc
+  // comment for why this is best-effort, not guaranteed.
+  const startEditBill = (row: CombinedRepairBillRow) => {
+    setSaveError(null); setSaveOk(null); setEditLoadError(null)
+    staffApi.get<RepairBillDoc>(`/api/repair-bill-docs/${row.id}`)
+      .then(({ data: bill }) => {
+        setEditingBillId(bill.id)
+        setEditingBillNumber(bill.billNumber)
+        setEditingBillStatus(bill.status)
+
+        setBillType(bill.billType || 'Cash')
+        setIssueType(bill.issueType || '')
+        setBillDate(bill.billDate ? bill.billDate.slice(0, 10) : new Date().toISOString().slice(0, 10))
+        setRemarks(bill.remarks || '')
+        setPartyName(bill.partyName)
+        setRegNo(bill.regNo || '')
+        setChassisNo(bill.chassisNo || '')
+        setLocation(bill.location || '')
+        setInsuranceCompanyName(bill.insuranceCompanyName || '')
+        setInsuranceDescription(bill.insuranceDescription || '')
+        setSurveyorName(bill.surveyorName || '')
+        setSurveyorContactNumber(bill.surveyorContactNumber || '')
+        setPolicyNo(bill.policyNo || '')
+        setInsuranceValidTill(bill.insuranceValidTill ? bill.insuranceValidTill.slice(0, 10) : '')
+        setZeroDepreciation(bill.zeroDepreciation)
+        setTotalDiscount(String(bill.totalDiscount))
+        setAmountReceived(String(bill.amountReceived))
+        setShowInsurance(!!(bill.insuranceCompanyName || bill.policyNo || bill.surveyorName))
+
+        const snapshot: Record<string, { discountType: DiscountType; discountValue: string; issueType: string }> = {}
+        bill.items.forEach((it) => {
+          snapshot[`${it.itemType}:${it.itemCode.trim().toUpperCase()}`] = {
+            discountType: (it.discountType as DiscountType) || 'None',
+            discountValue: String(it.discountValue),
+            issueType: it.issueType || '',
+          }
+        })
+        editSnapshotByCodeRef.current = snapshot
+
+        const restoredLabour: DraftItem[] = bill.items
+          .filter((it) => it.itemType === 'Labour')
+          .map((it, idx) => ({
+            key: `edit-${idx}`,
+            itemType: 'Labour',
+            itemCode: it.itemCode,
+            itemDescription: it.itemDescription,
+            hsnCode: it.hsnCode || '',
+            qty: String(it.qty),
+            rate: String(it.rate),
+            mrp: '',
+            gstPct: String((it.cgstPct || 0) + (it.sgstPct || 0) > 0 ? (it.cgstPct || 0) + (it.sgstPct || 0) : (it.igstPct || 0)),
+            discountType: (it.discountType as DiscountType) || 'None',
+            discountValue: String(it.discountValue),
+            issueType: it.issueType || '',
+            fromMaterialTransfer: false,
+          }))
+        nextManualKeyRef.current = restoredLabour.length + 2
+        setExcludedPartKeys(new Set())
+        setEditingPartKey(null)
+        resetDraftLabour()
+
+        if (bill.jobCardId) {
+          dedupeLabourAfterEditRef.current = restoredLabour.length > 0
+          setItems(restoredLabour)
+          setJobCardId(bill.jobCardId)
+          setJobCardNumber(bill.jobCardNumber || '')
+          staffApi.get<JobSearchResult[]>('/api/jobcards/search', { params: { jobNo: bill.jobCardNumber || undefined } })
+            .then(({ data }) => {
+              const job = data.find((j) => j.id === bill.jobCardId) ?? data[0]
+              if (!job) return
+              setPartyState(job.partyState ?? null)
+              setVehicleModel(job.vehicleType || null)
+              setJobDate(job.jobDate || null)
+              setOdometer(job.odometer ?? null)
+              setTechnician(job.technician || null)
+            })
+            .catch(() => { /* non-fatal - the "Selected Job Details" panel just stays partly blank */ })
+        } else {
+          // Pre-2026-09-23 bills could be saved with no Job linked at all - this page can no
+          // longer SAVE further changes to one (the Save button stays disabled without a Job,
+          // same as for a brand-new bill), but it's still opened here read-into-the-form so its
+          // fields are at least visible/reviewable rather than refusing to open it.
+          dedupeLabourAfterEditRef.current = false
+          setJobCardId(null); setJobCardNumber(''); setPartyState(null); setVehicleModel(null)
+          setJobDate(null); setOdometer(null); setTechnician(null)
+          setItems(restoredLabour)
+        }
+
+        setViewingBill(null)
+        window.scrollTo({ top: 0, behavior: 'smooth' })
+      })
+      .catch((err) => setEditLoadError(err?.response?.data?.message ?? `Could not load Bill ${row.billNumber} for editing.`))
+  }
+
+  const cancelEdit = () => { resetFormToNew(); setEditLoadError(null) }
 
   const save = () => {
     setSaveError(null)
@@ -436,57 +827,85 @@ export function RepairBillCreatePage() {
     const validItems = items.filter((i) => i.itemDescription.trim() && Number(i.qty) > 0)
     if (validItems.length === 0) { setSaveError('Add at least one item/labour line with a description and quantity.'); return }
 
+    const body = {
+      jobCardId: jobCardId || null,
+      partyName: partyName.trim(),
+      regNo: regNo || null,
+      chassisNo: chassisNo || null,
+      location: location || null,
+      billType: billType || null,
+      issueType: issueType || null,
+      remarks: remarks || null,
+      billDate,
+      insuranceCompanyName: insuranceCompanyName || null,
+      insuranceDescription: insuranceDescription || null,
+      surveyorName: surveyorName || null,
+      surveyorContactNumber: surveyorContactNumber || null,
+      policyNo: policyNo || null,
+      insuranceValidTill: insuranceValidTill || null,
+      zeroDepreciation,
+      totalDiscount: Number(totalDiscount) || 0,
+      amountReceived: Number(amountReceived) || 0,
+      items: validItems.map((i) => {
+        const { cgstPct, sgstPct, igstPct } = splitGst(Number(i.gstPct) || 0, taxMode)
+        return {
+          itemType: i.itemType,
+          itemCode: i.itemCode || i.itemDescription.slice(0, 30),
+          itemDescription: i.itemDescription,
+          hsnCode: i.hsnCode || null,
+          issueType: i.issueType || null,
+          qty: Number(i.qty) || 0,
+          rate: Number(i.rate) || 0,
+          cgstPct, sgstPct, igstPct,
+          discountType: i.discountType === 'None' ? null : i.discountType,
+          discountValue: Number(i.discountValue) || 0,
+        }
+      }),
+    }
+
     setSaving(true)
-    staffApi
-      .post('/api/repair-bill-docs', {
-        jobCardId: jobCardId || null,
-        partyName: partyName.trim(),
-        regNo: regNo || null,
-        chassisNo: chassisNo || null,
-        location: location || null,
-        billType: billType || null,
-        issueType: issueType || null,
-        remarks: remarks || null,
-        billDate,
-        insuranceCompanyName: insuranceCompanyName || null,
-        insuranceDescription: insuranceDescription || null,
-        surveyorName: surveyorName || null,
-        surveyorContactNumber: surveyorContactNumber || null,
-        policyNo: policyNo || null,
-        insuranceValidTill: insuranceValidTill || null,
-        zeroDepreciation,
-        totalDiscount: Number(totalDiscount) || 0,
-        amountReceived: Number(amountReceived) || 0,
-        items: validItems.map((i) => {
-          const { cgstPct, sgstPct, igstPct } = splitGst(Number(i.gstPct) || 0, taxMode)
-          return {
-            itemType: i.itemType,
-            itemCode: i.itemCode || i.itemDescription.slice(0, 30),
-            itemDescription: i.itemDescription,
-            hsnCode: i.hsnCode || null,
-            issueType: i.issueType || null,
-            qty: Number(i.qty) || 0,
-            rate: Number(i.rate) || 0,
-            cgstPct, sgstPct, igstPct,
-            discountType: i.discountType === 'None' ? null : i.discountType,
-            discountValue: Number(i.discountValue) || 0,
-          }
-        }),
-      })
+    // 2026-09-23 - editingBillId set means startEditBill above loaded an existing Performa bill:
+    // PUT updates it IN PLACE (same bill, same Bill No) instead of POSTing a new one. The form is
+    // deliberately NOT reset to blank on a successful update (unlike a fresh create, right below) -
+    // staying on this same bill is what lets "Save as Invoice" immediately follow without having
+    // to re-open it.
+    const request = editingBillId
+      ? staffApi.put(`/api/repair-bill-docs/${editingBillId}`, body)
+      : staffApi.post('/api/repair-bill-docs', body)
+
+    request
       .then((r) => {
-        setSaveOk(`Saved as ${r.data.billNumber}.`)
-        clearJob()
-        setPartyName(''); setRegNo(''); setChassisNo(''); setBillType('Cash'); setIssueType(''); setRemarks('')
-        setInsuranceCompanyName(''); setInsuranceDescription(''); setSurveyorName(''); setSurveyorContactNumber('')
-        setPolicyNo(''); setInsuranceValidTill(''); setZeroDepreciation(false); setTotalDiscount('0'); setAmountReceived('0')
-        nextManualKeyRef.current = 2
-        setItems([])
-        resetDraftLabour()
-        setEditingPartKey(null)
+        if (editingBillId) {
+          setSaveOk(`Updated ${r.data.billNumber}.`)
+        } else {
+          setSaveOk(`Saved as ${r.data.billNumber}.`)
+          resetFormToNew()
+        }
         loadCombined()
       })
-      .catch((err) => setSaveError(err?.response?.data?.message ?? 'Could not save the repair bill.'))
+      .catch((err) => setSaveError(err?.response?.data?.message ?? `Could not ${editingBillId ? 'update' : 'save'} the repair bill.`))
       .finally(() => setSaving(false))
+  }
+
+  // 2026-09-23 - "Save as Invoice" reachable directly from the reopened edit form (matching the
+  // reference DMS app's own repair-bill/{id} page, which has both actions on the same screen),
+  // alongside the existing read-only-popup version of this same action (saveAsInvoice below,
+  // unchanged, still used for a bill opened via the list's read-only view). Deliberately a
+  // separate small function rather than reusing saveAsInvoice as-is - that one is keyed to
+  // `viewingBill` (the read-only popup's own state), which is null while editing here.
+  const finalizeEditingBillAsInvoice = () => {
+    if (!editingBillId || !editingBillNumber) return
+    if (!window.confirm(`Save Bill ${editingBillNumber} as Invoice? This finalizes it - line items can no longer be changed afterwards.`)) return
+    setConvertingId(editingBillId)
+    staffApi
+      .put(`/api/repair-bill-docs/${editingBillId}/status`, JSON.stringify('Billed'), { headers: { 'Content-Type': 'application/json' } })
+      .then(() => {
+        setEditingBillStatus('Billed')
+        setSaveOk(`Bill ${editingBillNumber} saved as Invoice.`)
+        loadCombined()
+      })
+      .catch((err) => alert(err?.response?.data?.message ?? 'Could not save this bill as an Invoice.'))
+      .finally(() => setConvertingId(null))
   }
 
   // ---------------- Combined list (this app's own bills + DMSBAPLDATA-synced bills) ----------------
@@ -586,7 +1005,20 @@ export function RepairBillCreatePage() {
       </p>
 
       <div className="card">
-        <h3>New Repair Bill</h3>
+        {/* 2026-09-23 ("this grid button click from db which material transfer that will shown
+            for Save as proforma and save as invoice"): this same card/form now doubles as the
+            edit view for an existing Performa bill - see startEditBill's own doc comment above.
+            editLoadError surfaces if that fetch itself fails (e.g. the bill was deleted by
+            someone else a moment before the click landed). */}
+        {editingBillId ? (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+            <h3 style={{ margin: 0 }}>Editing Bill {editingBillNumber} <span className="badge badge-muted" style={{ marginLeft: 6 }}>{editingBillStatus}</span></h3>
+            <button className="btn btn-sm" type="button" onClick={cancelEdit}>✕ Cancel edit / start a new bill</button>
+          </div>
+        ) : (
+          <h3>New Repair Bill</h3>
+        )}
+        {editLoadError && <p className="muted" style={{ color: '#b91c1c' }}>{editLoadError}</p>}
         {/* 2026-09-22 ("proper give me this page attractive page"): the page's fields were a flat
             run of .form-rows with no visual grouping - each of the three logical sections (job/
             bill header fields, Labour, Part Details List) now gets its own bordered, colour-
@@ -651,12 +1083,17 @@ export function RepairBillCreatePage() {
         {/* 2026-09-22 ("Party Name, Reg No, Chassis No, Location that also auto fetched feild that
             also dont show editable"): these four are auto-filled from selectJob() the moment a Job
             is linked (same as the read-only "Selected Job Details" panel above, which is a separate
-            recap - these are the actual fields saved on the bill). Once a Job IS linked
-            (jobCardId set) they become read-only here too, since editing them by hand would just
-            silently drift from the linked Job's own real data - autoFilledFromJob (below) makes
-            that explicit rather than leaving them editable right next to a job that just filled
-            them in. Unlinking the Job (the ✕ button above) hands editing back for a standalone
-            bill, exactly as before this change. */}
+            recap - these are the actual fields saved on the bill).
+            2026-09-23 ("also block all withour job search") SUPERSEDES this field's own "Unlinking
+            the Job hands editing back for a standalone bill" behaviour: these four no longer
+            become editable again once the Job is unlinked either - they're locked in BOTH states
+            now (autoFilledFromJob === !!jobCardId, so `true` below covers "read-only, auto-filled"
+            when linked and "blocked, not yet fillable" when not), matching the same all-fields-
+            need-a-Job-first gate now applied throughout this page. A standalone/no-job Repair Bill
+            can therefore no longer be created - flagged here as a real, deliberate behaviour change
+            from what this page supported before, not a silent side effect. clearJob() (above) now
+            resets these four to blank/default on unlink, since there's no other way left to clear
+            them. */}
         <div className="form-row">
           <div className="field">
             <label>Party Name *</label>
@@ -664,8 +1101,8 @@ export function RepairBillCreatePage() {
               value={partyName}
               onChange={(e) => setPartyName(e.target.value)}
               placeholder="Customer or fleet party name"
-              readOnly={autoFilledFromJob}
-              title={autoFilledFromJob ? 'Auto-filled from the linked Job - unlink the Job to edit.' : undefined}
+              readOnly
+              title={autoFilledFromJob ? 'Auto-filled from the linked Job.' : 'Search and link a Job above to fill this in.'}
             />
           </div>
           <div className="field">
@@ -673,8 +1110,8 @@ export function RepairBillCreatePage() {
             <input
               value={regNo}
               onChange={(e) => setRegNo(e.target.value)}
-              readOnly={autoFilledFromJob}
-              title={autoFilledFromJob ? 'Auto-filled from the linked Job - unlink the Job to edit.' : undefined}
+              readOnly
+              title={autoFilledFromJob ? 'Auto-filled from the linked Job.' : 'Search and link a Job above to fill this in.'}
             />
           </div>
           <div className="field">
@@ -682,8 +1119,8 @@ export function RepairBillCreatePage() {
             <input
               value={chassisNo}
               onChange={(e) => setChassisNo(e.target.value)}
-              readOnly={autoFilledFromJob}
-              title={autoFilledFromJob ? 'Auto-filled from the linked Job - unlink the Job to edit.' : undefined}
+              readOnly
+              title={autoFilledFromJob ? 'Auto-filled from the linked Job.' : 'Search and link a Job above to fill this in.'}
             />
           </div>
           <div className="field">
@@ -692,8 +1129,8 @@ export function RepairBillCreatePage() {
               <select
                 value={location}
                 onChange={(e) => setLocation(e.target.value)}
-                disabled={autoFilledFromJob}
-                title={autoFilledFromJob ? 'Auto-filled from the linked Job - unlink the Job to edit.' : undefined}
+                disabled
+                title={autoFilledFromJob ? 'Auto-filled from the linked Job.' : 'Search and link a Job above to fill this in.'}
               >
                 <option value="">— select —</option>
                 {workshops.map((w) => (
@@ -705,16 +1142,20 @@ export function RepairBillCreatePage() {
                 value={location}
                 onChange={(e) => setLocation(e.target.value)}
                 placeholder="Workshop location"
-                readOnly={autoFilledFromJob}
-                title={autoFilledFromJob ? 'Auto-filled from the linked Job - unlink the Job to edit.' : undefined}
+                readOnly
+                title={autoFilledFromJob ? 'Auto-filled from the linked Job.' : 'Search and link a Job above to fill this in.'}
               />
             )}
           </div>
         </div>
+        {/* 2026-09-23 ("also block all withour job search"): Bill Type/Bill Date/Remarks join the
+            same Job-linked gate as Party Name/Reg No/Chassis No/Location above - disabled until a
+            Job is linked, same `disabled={!jobCardId}` flag/pattern as
+            MaterialTransferCreatePage.tsx's own header fields. */}
         <div className="form-row">
           <div className="field">
             <label>Bill Type</label>
-            <select value={billType} onChange={(e) => setBillType(e.target.value)}>
+            <select value={billType} onChange={(e) => setBillType(e.target.value)} disabled={!jobCardId}>
               <option value="Cash">Cash</option>
               <option value="Credit">Credit</option>
               <option value="Warranty">Warranty</option>
@@ -730,13 +1171,18 @@ export function RepairBillCreatePage() {
               DEFAULT picker is hidden. */}
           <div className="field">
             <label>Bill Date</label>
-            <input type="date" value={billDate} onChange={(e) => setBillDate(e.target.value)} />
+            <input type="date" value={billDate} onChange={(e) => setBillDate(e.target.value)} disabled={!jobCardId} />
           </div>
           <div className="field">
             <label>Remarks</label>
-            <input value={remarks} onChange={(e) => setRemarks(e.target.value)} />
+            <input value={remarks} onChange={(e) => setRemarks(e.target.value)} disabled={!jobCardId} />
           </div>
         </div>
+        {!jobCardId && (
+          <p className="muted" style={{ margin: '10px 0 0', fontSize: 13 }}>
+            Search and link a Job above to fill in the rest of this bill.
+          </p>
+        )}
         </div>
 
         {/* 2026-09-22 ("in labour...we adding labour details see screenshot that type add ui and
@@ -753,98 +1199,86 @@ export function RepairBillCreatePage() {
             <span>🔧</span><span>Labour</span>
             {labourRows.length > 0 && <span className="badge badge-success">{labourRows.length}</span>}
           </div>
-        {/* 2026-09-22 ("only this div fix according to fetched data range that text box fix dont
-            add extra space and after filled labour code which data fetch that will block its not
-            editable" - see this module's own doc comment at the top of the file for the full
-            reasoning): every field below is now sized to the data it actually holds, every
-            wrapping div gets minWidth: 0, and Description locks (locked/disabled, grey) once a
-            Labour code has actually been picked - typing a new search in the Labour field reopens
-            it. */}
-      <div style={{ overflowX: 'auto' }}>
-        <div className="suggest-row" style={{ background: 'var(--surface-muted, #f8f9fa)', borderRadius: 8, padding: '10px 12px', flexWrap: 'nowrap' }}>
-          <div className="field field-compact" style={{ minWidth: 0 }}>
+        {/* 2026-09-22 ("after Qty feild have much space that all feilds fix in 1 link with Add
+            button"): this staging row used .form-row, whose equal-width grid
+            (repeat(auto-fit, minmax(200px,1fr))) stretched every field - including small ones like
+            Qty/Rate/Disc.Type - out to at least 200px each, wrapping unevenly and leaving a lot of
+            empty space around them. Switched to .suggest-row.
+            2026-09-23 ("Labour,Description,Qty,Rate,Disc. Type,Discount,Issue Type, Add button in
+            1 line"): that fix wasn't actually enough on its own - .suggest-row's own .field-grow
+            class (`flex: 1 1 260px`) was STILL claiming far more width than the Labour/Description
+            boxes actually need (they already carry their own fixed pixel width via
+            LabourSearchInput's `width` prop), leaving too little room for Qty/Rate/Disc. Type/
+            Discount/Issue Type/+Add to fit on the same line, so they wrapped onto a second row.
+            Switched Labour/Description to `field-compact` too (same class already used for every
+            other field here) - every field now sizes to its own content instead of Labour/
+            Description competing to fill the leftover space, so the whole row - all seven fields
+            plus the button - reads as one line. `.suggest-row`/`.field-grow`/`.field-compact`
+            themselves are untouched in global.css, so JobCardDetailPage.tsx's own "Suggest a
+            part"/"Suggest labour" rows (which still want their one search field to grow) are
+            unaffected. */}
+        <div className="suggest-row" style={{ background: 'var(--surface-muted, #f8f9fa)', borderRadius: 8, padding: '10px 12px' }}>
+          <div className="field field-compact">
             <label>Labour</label>
             <LabourSearchInput
               labours={labourOptionsForModel}
               locationSelected={!!location}
               value={draftLabour.itemCode}
-              onChangeText={(text) => { setLabourFetched(false); setDraftLabour((p) => ({ ...p, itemCode: text })) }}
+              onChangeText={(text) => setDraftLabour((p) => ({ ...p, itemCode: text }))}
               onPick={pickLabourForDraft}
               placeholder="Labour code…"
-              width={120}
+              width={140}
+              disabled={!jobCardId}
             />
           </div>
-          <div className="field field-grow" style={{ minWidth: 0, flex: '1 1 160px' }}>
+          <div className="field field-compact">
             <label>Description</label>
-            {labourFetched ? (
-              <input
-                value={draftLabour.itemDescription}
-                readOnly
-                disabled
-                style={{ ...lockedFieldStyle, width: '100%' }}
-                title="Fetched from the picked Labour code - not directly editable. Search a different Labour code to change it."
-              />
-            ) : (
-              <LabourSearchInput
-                labours={labourOptionsForModel}
-                locationSelected={!!location}
-                value={draftLabour.itemDescription}
-                onChangeText={(text) => setDraftLabour((p) => ({ ...p, itemDescription: text }))}
-                onPick={pickLabourForDraft}
-                width={220}
-              />
-            )}
+            <LabourSearchInput
+              labours={labourOptionsForModel}
+              locationSelected={!!location}
+              value={draftLabour.itemDescription}
+              onChangeText={(text) => setDraftLabour((p) => ({ ...p, itemDescription: text }))}
+              onPick={pickLabourForDraft}
+              width={220}
+              disabled={!jobCardId}
+            />
           </div>
-          <div className="field field-compact" style={{ minWidth: 0 }}>
+          <div className="field field-compact">
             <label>Qty</label>
-            <input type="number" value={draftLabour.qty} onChange={(e) => setDraftLabour((p) => ({ ...p, qty: e.target.value }))} style={{ width: 48, textAlign: 'right' }} />
+            <input type="number" value={draftLabour.qty} onChange={(e) => setDraftLabour((p) => ({ ...p, qty: e.target.value }))} style={{ width: 70, textAlign: 'right' }} disabled={!jobCardId} />
           </div>
-          <div className="field field-compact" style={{ minWidth: 0 }}>
+          <div className="field field-compact">
             <label>Rate</label>
-            {labourFetched ? (
-              <input
-                value={draftLabour.rate}
-                readOnly
-                disabled
-                style={{ ...lockedFieldStyle, width: 68, textAlign: 'right' }}
-                title="Fetched from the picked Labour code - not editable. Search a different Labour code to change it."
-              />
-            ) : (
-              <input
-                type="number" value={draftLabour.rate}
-                onChange={(e) => setDraftLabour((p) => ({ ...p, rate: e.target.value }))}
-                style={{ width: 68, textAlign: 'right' }}
-              />
-            )}
+            <input type="number" value={draftLabour.rate} onChange={(e) => setDraftLabour((p) => ({ ...p, rate: e.target.value }))} style={{ width: 90, textAlign: 'right' }} disabled={!jobCardId} />
           </div>
-          <div className="field field-compact" style={{ minWidth: 0 }}>
+          <div className="field field-compact">
             <label>Disc. Type</label>
-            <select value={draftLabour.discountType} onChange={(e) => setDraftLabour((p) => ({ ...p, discountType: e.target.value as DiscountType }))} style={{ width: 64 }}>
+            <select value={draftLabour.discountType} onChange={(e) => setDraftLabour((p) => ({ ...p, discountType: e.target.value as DiscountType }))} disabled={!jobCardId}>
               <option value="None">None</option>
               <option value="Percentage">%</option>
               <option value="Amount">₹</option>
             </select>
           </div>
-          <div className="field field-compact" style={{ minWidth: 0 }}>
+          <div className="field field-compact">
             <label>Discount</label>
-            <input type="number" value={draftLabour.discountValue} onChange={(e) => setDraftLabour((p) => ({ ...p, discountValue: e.target.value }))} disabled={draftLabour.discountType === 'None'} style={{ width: 60, textAlign: 'right' }} />
+            <input type="number" value={draftLabour.discountValue} onChange={(e) => setDraftLabour((p) => ({ ...p, discountValue: e.target.value }))} disabled={!jobCardId || draftLabour.discountType === 'None'} style={{ width: 90, textAlign: 'right' }} />
           </div>
-          <div className="field field-compact" style={{ minWidth: 0 }}>
+          <div className="field field-compact">
             <label>Issue Type</label>
-            <select value={draftLabour.issueType} onChange={(e) => setDraftLabour((p) => ({ ...p, issueType: e.target.value }))} style={{ width: 110 }} title={draftLabour.issueType || '— default —'}>
+            <select value={draftLabour.issueType} onChange={(e) => setDraftLabour((p) => ({ ...p, issueType: e.target.value }))} disabled={!jobCardId}>
               <option value="">— default —</option>
-              <option value="Paid">Paid</option>
-              <option value="U/W">U/W</option>
-              {/* <option value="FSC">FSC - Free Service Coupon (zero tax)</option> */}
+              <option value="Paid">Paid (taxed)</option>
+              <option value="U/W">U/W - Under Warranty (zero tax)</option>
+              <option value="FSC">FSC - Free Service Coupon (zero tax)</option>
             </select>
           </div>
-          <div className="field field-compact" style={{ minWidth: 0, whiteSpace: 'nowrap' }}>
+          <div className="field field-compact">
             <button
               className="btn btn-primary btn-sm"
               type="button"
               onClick={commitLabourDraft}
-              disabled={!draftLabour.itemCode.trim() || !draftLabour.itemDescription.trim()}
-              title={!draftLabour.itemCode.trim() ? 'Pick a Labour code first.' : undefined}
+              disabled={!jobCardId || !draftLabour.itemCode.trim() || !draftLabour.itemDescription.trim()}
+              title={!jobCardId ? 'Link a Job first' : !draftLabour.itemCode.trim() ? 'Pick a Labour code first.' : undefined}
             >
               {labourEditingKey ? 'Update' : '+ Add'}
             </button>
@@ -853,7 +1287,11 @@ export function RepairBillCreatePage() {
             )}
           </div>
         </div>
-      </div>
+        {!jobCardId && (
+          <p className="muted" style={{ fontSize: 13, margin: '8px 0 0' }}>
+            Search and link a Job above to add Labour.
+          </p>
+        )}
         {vehicleModel && (
           <p className="muted" style={{ fontSize: 12, margin: '6px 0 0' }} title="Labour codes tagged for a different model are hidden - a code with no model tag on file still shows up regardless.">
             Labour codes filtered to {vehicleModel}
@@ -885,11 +1323,27 @@ export function RepairBillCreatePage() {
                 return (
                   <tr key={it.key} style={labourEditingKey === it.key ? { background: 'var(--surface-muted, #f8f9fa)' } : undefined}>
                     <td style={{ whiteSpace: 'nowrap' }}>
-                      <button className="btn btn-icon" type="button" onClick={() => startEditLabour(it)} title="Edit">✎</button>{' '}
-                      <button className="btn btn-icon btn-danger" type="button" onClick={() => removeLabour(it.key)} title="Delete">✕</button>
+                      {/* 2026-09-22 (Labour-in-Material-Transfer integration): a Labour row synced
+                          in from Material Transfer (see this module's own sync-effect doc comment)
+                          has no Edit here - its Item Code/Description/Rate/Issue Type come straight
+                          from the Material Transfer line and its own "Labour" picker, same read-
+                          only treatment Part rows already get - only Remove is offered, and it goes
+                          through removeMtLabour (excludedPartKeys) so it isn't silently reintroduced
+                          on the next sync, exactly like removePart. */}
+                      {it.fromMaterialTransfer ? (
+                        <button className="btn btn-icon btn-danger" type="button" onClick={() => removeMtLabour(it)} title="Remove from this bill" disabled={!jobCardId}>✕</button>
+                      ) : (
+                        <>
+                          <button className="btn btn-icon" type="button" onClick={() => startEditLabour(it)} title="Edit" disabled={!jobCardId}>✎</button>{' '}
+                          <button className="btn btn-icon btn-danger" type="button" onClick={() => removeLabour(it.key)} title="Delete" disabled={!jobCardId}>✕</button>
+                        </>
+                      )}
                     </td>
                     <td>{i + 1}</td>
-                    <td>{it.itemCode}</td>
+                    <td>
+                      {it.itemCode}
+                      {it.fromMaterialTransfer && <><br /><span className="muted" style={{ fontSize: 10 }}>via Material Transfer{it.issueType ? ` · ${it.issueType}` : ''}</span></>}
+                    </td>
                     <td>{it.itemDescription}</td>
                     <td className="text-end">{it.qty}</td>
                     <td className="text-end">₹{Number(it.rate || 0).toFixed(2)}</td>
@@ -1085,15 +1539,28 @@ export function RepairBillCreatePage() {
           </>
         )}
 
-        <div style={{ marginTop: 14 }}>
-          {/* 2026-09-22: relabelled from "Save Repair Bill" - this button always creates the bill
-              as Performa (unchanged behaviour, see this file's own doc comment above for the full
-              Proforma -> Invoice lifecycle); "Save as Invoice" is a separate later step from the
-              list below, not a second button here. */}
-          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save as Proforma'}</button>
-          {saveError && <p className="muted" style={{ color: '#b91c1c' }}>{saveError}</p>}
-          {saveOk && <p className="muted" style={{ color: '#15803d' }}>{saveOk}</p>}
+        <div style={{ marginTop: 14, display: 'flex', gap: 8, alignItems: 'center' }}>
+          {/* 2026-09-22: relabelled from "Save Repair Bill" - creating a NEW bill always saves it
+              as Performa (unchanged). 2026-09-23: while editing an existing bill (editingBillId
+              set), this same button instead re-saves it IN PLACE via save()'s own PUT branch - see
+              save()'s doc comment - and "Save as Invoice" now also appears right here, matching
+              the reference DMS app's own repair-bill/{id} page having both actions on one screen
+              (video-confirmed - see this file's own top-of-file doc comment) instead of only being
+              reachable from the read-only popup. */}
+          <button className="btn btn-primary" onClick={save} disabled={saving || !jobCardId || editingBillStatus === 'Billed' || editingBillStatus === 'Cancelled'} title={!jobCardId ? 'Link a Job first' : undefined}>
+            {saving ? 'Saving…' : editingBillId ? 'Update Proforma' : 'Save as Proforma'}
+          </button>
+          {editingBillId && editingBillStatus === 'Performa' && (
+            <button className="btn btn-sm" type="button" disabled={convertingId === editingBillId} onClick={finalizeEditingBillAsInvoice}>
+              {convertingId === editingBillId ? 'Saving…' : 'Save as Invoice'}
+            </button>
+          )}
+          {editingBillId && editingBillStatus !== 'Performa' && (
+            <span className="muted" style={{ fontSize: 13 }}>This bill is already {editingBillStatus} - it can no longer be edited.</span>
+          )}
         </div>
+        {saveError && <p className="muted" style={{ color: '#b91c1c' }}>{saveError}</p>}
+        {saveOk && <p className="muted" style={{ color: '#15803d' }}>{saveOk}</p>}
       </div>
 
       {/* 2026-09-21 ("according /repair-bill-list do in our repair bill"): filter row matches the
@@ -1147,12 +1614,15 @@ export function RepairBillCreatePage() {
 
       {/* Column set matches the reference repair-bill-list.html: SR.No/Bill No/Date/Party Name/
           Reg No/ChassisNo/Location/Bill Type/Job No/Bill Amount/Status/Prepared by/Modified by,
-          Action column first. Two differences from the reference, both disclosed rather than
-          silently copied: this list blends TWO data sources (Source badge, since the reference's
-          own list only ever shows BAPL DMS's own bills), and a row opens a read-only detail popup
-          on click (see RecordDetailModal below) rather than navigating to an edit page - this app
-          has no repair-bill edit screen, only status/delete actions, so "double-click to edit"
-          from the reference has no equivalent here. */}
+          Action column first. One difference from the reference, disclosed rather than silently
+          copied: this list blends TWO data sources (Source badge, since the reference's own list
+          only ever shows BAPL DMS's own bills).
+          2026-09-23: a row now opens two different ways depending what it is - see startEditBill's
+          own doc comment above. A JobCardScanner-own bill that's still Performa reopens the SAME
+          editable create form above (matching the reference's own repair-bill/{id} edit page,
+          video-confirmed); a DMSBAPLDATA-synced row, or a JobCardScanner bill that's already
+          Billed/Cancelled, still opens the read-only detail popup (RecordDetailModal below) as
+          before - there is nothing left to edit on either of those. */}
       <div className="card" style={{ padding: 0 }}>
         <table>
           <thead>
@@ -1176,7 +1646,12 @@ export function RepairBillCreatePage() {
           </thead>
           <tbody>
             {pageRows.map((r, i) => (
-              <tr key={r.id} onClick={() => setViewingBill(r)} style={{ cursor: 'pointer' }} title="Click to view full details">
+              <tr
+                key={r.id}
+                onClick={() => (r.source === 'JobCardScanner' && r.status === 'Performa' ? startEditBill(r) : setViewingBill(r))}
+                style={{ cursor: 'pointer' }}
+                title={r.source === 'JobCardScanner' && r.status === 'Performa' ? 'Click to open and edit this Proforma bill' : 'Click to view full details'}
+              >
                 <td><span className={`badge ${r.source === 'JobCardScanner' ? 'badge-success' : 'badge-muted'}`}>{r.source}</span></td>
                 <td>{((page - 1) * pageSize) + i + 1}</td>
                 <td>{r.billNumber}</td>

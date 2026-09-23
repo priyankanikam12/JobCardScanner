@@ -833,6 +833,46 @@ if (app.Environment.IsDevelopment())
     }
 }
 
+// ---------------------------------------------------------------------
+// MATERIAL TRANSFER LABOUR (2026-09-22) - "which Rate Type * is Partwise from this we upload FOR
+// Part Code add Labour Code also that was wants to integrate in material transfer which in video
+// ... give proper code like vide functionality in mobile and for web both" - confirmed against the
+// mt-labour_add.mp4 recording of the real BGauss DMS (mydmsconnect.com/MtrlTranN.aspx): a "Labour"
+// button on the Material Transfer entry, scoped to the currently-picked Part Code, opens a "Part
+// wise Labour Detail" popup backed by Labour Master Partwise (DMSBAPLDATA's own
+// LabourMasterPartwise table - see LabourMasterController.cs's new by-part-code endpoint). Own
+// try/catch block for the same isolation reason as every other block in this file. See
+// MaterialTransferDocItem.ItemType/TechnicianId's own doc comments in Models/MaterialTransferDocs.cs.
+// ---------------------------------------------------------------------
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
+    try
+    {
+        await db.Database.ExecuteSqlRawAsync(@"
+            IF COL_LENGTH('dbo.MaterialTransferDocItems', 'ItemType') IS NULL
+                ALTER TABLE [dbo].[MaterialTransferDocItems] ADD [ItemType] NVARCHAR(20) NOT NULL DEFAULT ('Part');
+            IF COL_LENGTH('dbo.MaterialTransferDocItems', 'TechnicianId') IS NULL
+                ALTER TABLE [dbo].[MaterialTransferDocItems] ADD [TechnicianId] UNIQUEIDENTIFIER NULL;
+            IF COL_LENGTH('dbo.MaterialTransferDocItems', 'TechnicianId') IS NOT NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM sys.foreign_keys
+                   WHERE name = 'FK_MaterialTransferDocItems_Technician' AND parent_object_id = OBJECT_ID('dbo.MaterialTransferDocItems')
+               )
+            BEGIN
+                ALTER TABLE [dbo].[MaterialTransferDocItems]
+                    ADD CONSTRAINT [FK_MaterialTransferDocItems_Technician]
+                    FOREIGN KEY ([TechnicianId]) REFERENCES [dbo].[Users]([Id]);
+            END
+        ");
+        Console.WriteLine("[Startup] Self-healing schema catch-up (MaterialTransferDocItems.ItemType/TechnicianId columns) checked/applied.");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Startup] WARNING: MaterialTransferDocItems ItemType/TechnicianId schema catch-up failed - {ex.Message}");
+    }
+}
+
 // Opens Swagger in the default browser automatically once Kestrel has actually started
 // listening. launchSettings.json's "launchBrowser"/"launchUrl": "swagger" ONLY takes effect when
 // launched from Visual Studio or `dotnet watch run` - plain `dotnet run` (what you get typing it

@@ -1184,3 +1184,662 @@ VERIFICATION:
   the SAME Job, brings that part back (exclusion is per-Job-selection, not permanent); (5) the
   three new bordered panels (Job & Bill Details / Labour / Part Details List) render with visible
   left-border color accents and don't break on a narrow/mobile-width screen.
+
+
+================================================================================================
+SECTION 74 - Part Upload "MT Transfer Qty" column + Labour Master Partwise integrated into
+Material Transfer, flowing into Repair Bill (web AND mobile)
+================================================================================================
+
+Your requests (verbatim):
+1. "in parts-upload page after Bal Qty column add MT Transfer Qty column for maintaining how much
+   qty was transfered.."
+2. "then from /labour-master from this page which Rate Type * is Partwise from this we upload FOR
+   Part Code add Labour Code also that was wants to integrate in material transfer which in video
+   and which labour we added from amterial transfer for Issue Type - Paid that will goin for paid
+   type and which are in U/w that was going in U/w that also going in repair bill ..give proper
+   code like vide functionality in mobile and for web both give proper"
+
+Before implementing request 2, two clarifying questions were asked (large/architecturally-
+ambiguous requests are scoped up front on this project, per your own earlier feedback) and you
+answered:
+  - Build sequencing: "Web and mobile together, one delivery" (not web first).
+  - Part Code -> Labour Code match scope: "Part Code only (Recommended - matches the video
+    exactly)" - not also filtered by Vehicle Model.
+
+You also attached a screen recording (mt-labour_add.mp4) of the real BGauss DMS reference app
+(mydmsconnect.com/MtrlTranN.aspx) - watched via extracted frames (no video-playback tool exists
+in this sandbox) to confirm the exact reference workflow before writing any code, rather than
+guessing at it. FACT, confirmed from those frames: on Material Transfer, after picking a Part and
+setting its Issue Type, a "Labour" button opens a "Labour List" popup titled "Part wise Labour
+Detail (@Item Name <PartCode> - <PartName>)" with a Labour Name/Description/Rate/Technician
+picker and an Add-then-stage flow, committed via "Proceed".
+
+------------------------------------------------------------------------------------------------
+PART 1 - Part Upload "MT Transfer Qty" column (web only - no mobile Part Upload screen exists)
+------------------------------------------------------------------------------------------------
+
+New read-only column added right after "Bal Qty" in the Part Upload results grid, export, and
+detail modal, showing the total quantity of that uploaded part already transferred out via
+Material Transfer at the same Location.
+
+WHAT CHANGED:
+- backend/JobCardScanner.Api/Models/PartUploads.cs - new `[NotMapped] MtTransferQty` property on
+  PartUpload. NOT a stored column - computed fresh on every GET.
+- backend/JobCardScanner.Api/Services/PartUploadService.cs - `GetAsync` now calls a new
+  `AttachMtTransferQtyAsync` after loading each page of rows, which sums
+  `MaterialTransferDocItems.Qty` grouped by (ItemCode, Location), matched against each row's
+  (PartNo, LocationCode) - the SAME match key `MaterialTransferDocsController.Create`'s own
+  `partUploadCache` lookup already uses to decrement `PartUploads.BalQty`, so this column's number
+  is consistent with what actually drove that decrement.
+- web/src/types/index.ts - `mtTransferQty: number | null` added to the `PartUpload` interface.
+- web/src/pages/staff/PartUploadPage.tsx - column added to the grid header/body (right after Bal
+  Qty), the CSV/Excel export columns, and RecordDetailModal's field list; empty-state colSpan
+  bumped 10 -> 11.
+
+INTERPRETATION flagged explicitly: the sum deliberately INCLUDES items from Cancelled Material
+Transfer docs, not just Draft/Confirmed ones. Reason: `MaterialTransferDocsController.Delete`
+restores `PartUploads.BalQty` when a transfer is deleted, but the Cancel status transition
+(`UpdateStatus`) does not restore it - so if Cancelled rows were excluded from this column's sum,
+the number shown would understate what has actually been deducted from Bal Qty on a Cancelled
+transfer. This is a disclosed judgment call, not a confirmed business rule from you - flag it if
+Cancelled transfers should be excluded from this figure instead.
+
+------------------------------------------------------------------------------------------------
+PART 2 - Labour Master Partwise integrated into Material Transfer's "Labour" picker (web + mobile)
+------------------------------------------------------------------------------------------------
+
+BACKEND (shared by both web and mobile - one API, two clients):
+- backend/JobCardScanner.Api/Models/MaterialTransferDocs.cs - new
+  `enum MaterialTransferDocItemType { Part, Labour }` (defaults to Part - every existing row/
+  caller keeps working unchanged) plus, on MaterialTransferDocItem: `ItemType` and a schema-only
+  `TechnicianId`/`Technician` nav property (see Technician gap note below - never wired to a
+  picker, always sent null).
+- backend/JobCardScanner.Api/Data/JobCardScannerDbContext.cs - entity config extended:
+  `ItemType` stored as a string (HasConversion<string>), `Technician` FK mapped.
+- backend/JobCardScanner.Api/Program.cs - new self-healing schema block (this project has no EF
+  migrations - see every earlier section) adding `ItemType NVARCHAR(20) NOT NULL DEFAULT ('Part')`
+  and `TechnicianId UNIQUEIDENTIFIER NULL` + its FK to `dbo.MaterialTransferDocItems`, in its own
+  try/catch so a fresh vs. already-deployed database both come up correctly.
+- backend/JobCardScanner.Api/Dtos/Requests.cs - `CreateMaterialTransferItemRequest` gets two new
+  optional trailing fields, `ItemType` (defaults to Part) and `TechnicianId` - old callers/payloads
+  keep working unchanged.
+- backend/JobCardScanner.Api/Controllers/MaterialTransferDocsController.cs:
+    - `Create`: the PartUploads.BalQty decrement logic now skips any line whose ItemType is
+      Labour (a Labour line never touches Part stock - see the model's own doc comment) and the
+      new MaterialTransferDocItem row persists ItemType/TechnicianId.
+    - `ForJob`/`ToRow`/`ToCombinedRow`: all three Items projections now include ItemType so the
+      frontend (web's RepairBillCreatePage.tsx, and now mobile's RepairBillCreateScreen.tsx) can
+      tell a synced Part line from a synced Labour line.
+    - NEW `GET labour-by-part-code/{partCode}` - exact Part Code match against Labour Master
+      Partwise (Active rows only), backs the "Labour" picker on both platforms.
+    - NEW `GET labour-by-codes?codes=A,B,C` - batch, exact Labour Code match, added THIS round
+      specifically so Repair Bill (web and mobile) can recover a synced Labour line's real
+      IGST/CGST/SGST for its own CGST Amt/SGST Amt/IGST Amt columns, the same reason Part lines
+      already do an equivalent by-code C_ItemMaster lookup (MaterialTransferDocItem itself stores
+      NO tax columns at all - unchanged from every earlier section's own doc comment on that).
+- backend/JobCardScanner.Api/Services/LabourMasterImportService.cs - two new read methods on
+  ILabourMasterImportService: `GetPartwiseByPartCodeAsync` (already added earlier this round) and
+  NEW `GetPartwiseByLabourCodesAsync` (batch, parameterized `IN (...)`, Active rows only) backing
+  the two controller endpoints above.
+- backend/JobCardScanner.Api/Controllers/LabourMasterController.cs - doc-comment-only change,
+  recording WHY the new by-Part-Code lookup does NOT live on this controller (see Authorization
+  finding below) - no behavior change to this file's existing actions.
+
+IMPORTANT AUTHORIZATION FINDING (worth your attention even though it changed nothing you can see):
+ASP.NET Core's `[Authorize]` attribute, when stacked at BOTH the controller class level and a
+specific method, combines the two with AND semantics, not "the method-level one overrides the
+class-level one." An initial draft of this feature put the new by-Part-Code Labour lookup on
+LabourMasterController (class-level: WorkshopManagerUp) with a method-level
+`[Authorize(ServiceAdvisorUp)]`, intending to widen access for a plain ServiceAdvisor doing
+Material Transfer - that would NOT have worked; a ServiceAdvisor who isn't also WorkshopManagerUp
+would still get a 403. Caught and corrected before shipping: the new endpoints instead live on
+MaterialTransferDocsController, whose class-level policy is already ServiceAdvisorUp, so no
+stacking is needed. Flagging separately: an EXISTING, pre-existing doc comment on
+`PartUploadController.Get` makes a similar "method-level override" claim about itself - that
+claim was NOT touched or verified (this app's `dotnet build` doesn't work in this sandbox, so it
+was never runtime-testable), but it's very likely describing the same latent issue. Worth a real
+look when you next have a build environment available, since it could mean that endpoint isn't
+actually reachable by the role it's meant for.
+
+WEB (web/src/pages/staff/MaterialTransferCreatePage.tsx, web/src/components/
+PartwiseLabourModal.tsx - new file, web/src/pages/staff/RepairBillCreatePage.tsx,
+web/src/types/index.ts):
+- Each Part row in Material Transfer's own grid gets a new "Labour" button (enabled once an Item
+  Code is picked) that opens PartwiseLabourModal - a popup scoped to that Part Code, modelled
+  directly on the mt-labour_add.mp4 recording: search/pick a Labour Code, stage as many as needed,
+  "Proceed" commits them.
+- Picked Labour Codes land in a NEW, separate read-only-Item-Code sub-table below the main Part
+  grid (Labour rows have no Item Code search/HSN/Rack/Bin/stock-cap concept of their own).
+- "Issue Type ... that will goin for paid type ... also going in U/w" implemented as GOVERNANCE:
+  changing a Part row's own Issue Type cascades to every Labour row added from it
+  (updatePartIssueType) - the Labour sub-table shows Issue Type read-only so it can't silently
+  drift from the Part line that governs it. Removing a Part row cascades to remove its Labour
+  children too.
+- These Labour rows flow into Repair Bill exactly the way Material-Transfer Part rows already did
+  before this round: RepairBillCreatePage.tsx's existing materialTransferItems sync effect (which
+  auto-loads its Part Details List from GET .../for-job/{jobCardId}) now branches on each synced
+  row's ItemType instead of assuming every row is a Part - a synced Labour row lands in the
+  existing Labour Details List table, read-only (no Edit, only Remove - Remove excludes it from
+  THIS bill only, same "doesn't touch the underlying Material Transfer" semantics the existing
+  Part-row Delete already has), tagged "via Material Transfer" so it's visually distinct from a
+  manually-added Labour line.
+
+MOBILE (mobile/src/screens/MaterialTransferCreateScreen.tsx,
+mobile/src/components/PartwiseLabourModal.tsx - new file,
+mobile/src/screens/RepairBillCreateScreen.tsx, mobile/src/types/index.ts):
+- Material Transfer: mirrors web's flow adapted to this screen's own "add one line at a time,
+  each line becomes a card" phone layout (not a grid) - once a Part line has been added, its card
+  in the "Lines" list gets a "+ Labour" button opening the same PartwiseLabourModal (a bottom-
+  sheet Modal here, mirroring this app's existing JobSearchModal pattern); picks are inserted as
+  new Labour-type cards directly after their parent Part card, carrying that Part's Issue Type.
+  Removing a Part card cascades to remove its Labour children.
+- Repair Bill: IMPORTANT scope note - this screen had NO Material Transfer sync of ANY kind before
+  this round (unlike web, which has always auto-loaded its Part Details List from Material
+  Transfer). Bringing only Labour into Repair Bill on mobile, without also bringing the matching
+  Part rows, would have left the screen showing Labour lines from a transfer whose own Part lines
+  the user would still have to type in by hand - an inconsistent, confusing half-mirror of web's
+  behaviour. So this round ports web's FULL sync effect to mobile (both Part AND Labour rows from
+  Material Transfer, read-only, Remove-only exclusion, "via Material Transfer" tag) rather than
+  only the new Labour half - this is a larger change on the mobile side than the web side for
+  that reason, disclosed here rather than silently expanding scope without saying so.
+
+NOT IMPLEMENTED, disclosed rather than silently dropped: the reference popup's own "Labour
+Technician" dropdown (defaulting to the document's header Technician, independently changeable
+per row). This is the SAME pre-existing, already-disclosed gap MaterialTransferCreatePage.tsx's
+own doc comment already lives with - a ServiceAdvisor-level login has no accessible technician-
+catalog endpoint to pick from (GET /api/users needs DealerAdminUp). The backend column
+(MaterialTransferDocItem.TechnicianId) exists and is always sent as null on both platforms until
+that gap gets its own real fix (a technician-lookup endpoint scoped to ServiceAdvisorUp).
+
+VERIFICATION:
+- Backend: hand-reviewed only - `dotnet build` still fails in this sandbox (NuGet restore to
+  api.nuget.org gets a 403 from the sandbox's own egress proxy, unchanged from every earlier
+  section). Please build/run this yourself before deploying.
+- Web: `cd web && npx tsc -p tsconfig.app.json --noEmit` -> exit 0, no errors, for every touched
+  file (PartUploadPage.tsx, MaterialTransferCreatePage.tsx, RepairBillCreatePage.tsx,
+  PartwiseLabourModal.tsx, types/index.ts). `npx oxlint` on the same files -> zero errors; one
+  pre-existing warning class (react/set-state-in-effect) appears on PartwiseLabourModal.tsx's own
+  fetch-on-mount effect, confirmed to be the SAME warning already present elsewhere in this
+  codebase for the identical fetch-on-mount pattern (e.g. JobCardDetailPage.tsx) - not a defect
+  introduced this round.
+- Mobile: `cd mobile && npx tsc --noEmit -p tsconfig.json` -> exit 0, no errors, for every touched
+  file (MaterialTransferCreateScreen.tsx, RepairBillCreateScreen.tsx, PartwiseLabourModal.tsx,
+  types/index.ts). `npx oxlint` on the same files -> one PRE-EXISTING warning at
+  RepairBillCreateScreen.tsx (an unused `d` parameter in an Insurance-panel date-picker callback
+  several sections old, not part of this round's edits) - no new warnings introduced.
+- Please confirm on your end, on both web and Android: (1) after picking a Part in Material
+  Transfer, "Labour" opens the popup scoped to that Part Code and shows the same Labour Codes
+  Labour Master Partwise has for it; (2) picking one or more and Proceeding adds them as their own
+  Labour line(s), tagged to that Part; (3) changing the Part's Issue Type (web) updates its Labour
+  children's Issue Type too; (4) saving the Material Transfer, then opening/creating a Repair Bill
+  for the SAME Job, shows both the Part AND the Labour lines auto-loaded, with correct CGST/SGST/
+  IGST amounts; (5) a Paid-issue-type Part's Labour ends up taxed normally on the Repair Bill,
+  while a U/W one shows zero tax, matching the Issue Type it carried from Material Transfer.
+
+
+================================================================================================
+SECTION 75 - Material Transfer Bill: page restyled like Repair Bill, Job-linked field gating,
+Labour Code search box, sidebar icon-click now expands the collapsed rail (WEB only)
+================================================================================================
+
+Your request (verbatim):
+"in this page fix ui like repair bill and without Job No Job Search all feilds show disable and
+which feilds are automatic fetch after job serach and select.. To / From (Party) that show
+disablw we cant edit this only this code proper labour serach opended tab Add button fix"
+...followed, mid-turn, by: "and also in sidebar menu when close and any icon click then this will
+open that also add"
+
+Scope note: both requests were about the WEB app only - you showed web screenshots, pasted web
+source, and said "in this page" (no mobile screenshots or mention this round, unlike the earlier
+Labour-in-Material-Transfer request which explicitly asked for "mobile and web both"). Nothing on
+Android was touched this round.
+
+INTERPRETATION flagged up front (Fact/Assumption/Interpretation discipline, since your instruction
+was in broken English/Hinglish and admits more than one reading):
+- "proper labour serach opended tab Add button fix" is read here as: replace the plain <select>
+  Labour Code dropdown in the "Labour List" popup with a type-ahead SEARCH input (type a code or
+  description, pick from a live-filtered dropdown), keeping the existing "+Add" (stage) button -
+  modelled on this app's own established PartSearchInput.tsx combobox pattern, not invented fresh.
+  This is an INTERPRETATION, not a confirmed instruction - the alternative reading ("Add button is
+  functionally broken, fix that specific bug") was considered and set aside because nothing in the
+  screenshots or your own testing note suggested the button wasn't working; the plain <select> was
+  simply not a "search" as literally requested. Please flag it back if this isn't what you meant.
+
+1. UI restyle to match Repair Bill (web/src/pages/staff/MaterialTransferCreatePage.tsx):
+   The three logical sections of the create form now get the SAME bordered, colour-accented panel
+   treatment RepairBillCreatePage.tsx already has (its own "attractive page" round) - reusing that
+   page's own --primary/--accent-2/--accent-3/--warning/--border/--radius-sm design tokens from
+   styles/global.css, nothing new invented:
+   - "Job & Bill Details" (Job No/Location/Transfer Type/Party/Transfer Date/Remarks): --primary
+     left border, 🧾 icon.
+   - "Part Details List" (the main Item Code grid): --accent-3/--warning left border, 📦 icon.
+   - "Labour" (the Labour Master Partwise sub-table): --accent-2 left border, 🔧 icon.
+   Purely visual - no field, column, calculation, or save behaviour changed by this part.
+
+2. Job-linked field gating ("without Job No Job Search all feilds show disable and which feilds
+   are automatic fetch after job serach and select"):
+   - Location, Transfer Type, Transfer Date, and Remarks are now `disabled` until a Job is linked
+     (`disabled={!jobCardId}`) - Job No/Search Job itself is unaffected, it's the one live entry
+     point. Once a Job is picked (selectJob, unchanged), these fields unlock; Location and Party
+     continue to auto-fill from the job exactly as before.
+   - To / From (Party) is a STRICTER case, per your explicit "that show disablw we cant edit this
+     only this code": it is now ALWAYS disabled/read-only, Job-linked or not - it was never meant
+     to be hand-typed, only auto-filled from the linked job's own Party Name.
+   - Consequence handled: since Party can no longer be cleared by hand, unlinking a Job (the ✕ next
+     to Job No) now also resets Party Name (to blank) and Location (back to the user's default/
+     first workshop) - clearJob() was extended for this; previously it only reset the job link
+     itself. Without this, unlinking a job would have left a permanently-stuck, unclearable Party
+     value on screen once Party became always-disabled.
+
+3. Labour Code search box (web/src/components/PartwiseLabourModal.tsx):
+   The "Labour List" popup's Labour Code field is now a type-ahead search input instead of a plain
+   <select> - type a code or part of the job description, pick a match from the live-filtered
+   dropdown below the box, then "+Add" stages it exactly as before (unchanged staging/Proceed
+   flow, unchanged backend call). No portal was needed here (unlike PartSearchInput.tsx's own
+   dropdown, which sits inside the item grid's overflow-x-clipping scroll wrapper) - this modal's
+   own card has no clipping ancestor, so a plain absolutely-positioned dropdown inside the field
+   itself is enough.
+
+4. Sidebar: icon click on the collapsed rail now expands it first (web/src/components/
+   StaffLayout.tsx): previously, clicking a nav icon while the sidebar was collapsed (the 64px
+   icon-only rail) navigated straight to that page without ever showing the full labeled menu -
+   only clicking the sidebar's own background toggled it open. Now, the FIRST click on any nav
+   icon while collapsed expands the sidebar (shows icon + label for every item) instead of
+   navigating; a second click (now that it's expanded) navigates normally and the drawer
+   auto-collapses back to the icon rail afterwards, same as before this change. This only touches
+   the nav-link items in the `<nav>` list - the Logout link and the background-click toggle are
+   unchanged.
+
+NOT IMPLEMENTED / NOT CHANGED this round:
+- Mobile (MaterialTransferCreateScreen.tsx, its own PartwiseLabourModal.tsx) - out of scope per
+  your own wording this time ("in this page"), untouched.
+- No new backend endpoints or schema changes - this is a frontend-only round.
+
+VERIFICATION:
+- Web: `cd web && npx tsc -p tsconfig.app.json --noEmit` -> exit 0, no errors, across the whole
+  app (not just the touched files - a full project check). `npx oxlint` on the three touched
+  files (MaterialTransferCreatePage.tsx, PartwiseLabourModal.tsx, StaffLayout.tsx) -> zero new
+  warnings/errors; the two `react/set-state-in-effect` warnings and the one
+  `react/only-export-components` warning it reports are all on PRE-EXISTING code (the fetch-on-
+  mount effect in PartwiseLabourModal.tsx, the sidebar's own close-on-navigate effect, and the
+  already-exported NAV_ITEMS constant) - none introduced by this round's edits.
+- Backend: N/A, no backend files touched this round.
+- Please confirm on your end: (1) the Material Transfer Bill page now shows the three bordered/
+  accented panels matching Repair Bill's look; (2) with no Job linked, Location/Transfer Type/
+  Transfer Date/Remarks are all greyed out/disabled, and Party is disabled even WITH a Job linked;
+  (3) picking a Job via Search Job fills Location and Party and unlocks the other four fields;
+  (4) unlinking a Job (✕) clears Party back to blank and Location back to your default workshop;
+  (5) the Labour List popup's Labour Code box now searches as you type instead of a dropdown list,
+  and +Add still stages/removes/Proceeds correctly; (6) clicking any sidebar icon while the menu
+  is collapsed (icons only) expands it to show labels, and clicking an icon again (now expanded)
+  navigates to that page and the menu collapses back down.
+
+
+================================================================================================
+SECTION 76 - Material Transfer Bill: Part Details List grid also blocked until a Job is linked
+(WEB only)
+================================================================================================
+
+Your request (verbatim): "without Job Search we cant add Part Details List tha also show block
+sytematic wants"
+
+Read as: extend SECTION 75's Job-linked disable gate (so far only on the header fields - Location/
+Transfer Type/Transfer Date/Remarks/Party) to the Part Details List grid itself, the same
+systematic way, so nothing in that section can be touched before a Job is searched and linked.
+
+WEB (web/src/pages/staff/MaterialTransferCreatePage.tsx, web/src/components/PartSearchInput.tsx):
+- Every control in a Part row is now `disabled={!jobCardId}`: both PartSearchInput boxes (Item
+  Code, Description), Issue Type, Qty, Rate, Disc. Type, Discount Value, the row's own "Labour"
+  button (which already required an Item Code - now ALSO requires a linked Job), and its Remove
+  (✕) button.
+- The "+ Add Line" button below the grid is disabled the same way, so a new Part row can't even be
+  started before a Job is linked.
+- PartSearchInput.tsx gained a new optional `disabled` prop (defaults to false/unset) to support
+  this - it disables the underlying `<input>` and suppresses the dropdown while disabled.
+  RepairBillCreatePage.tsx doesn't actually call this component (only mentions it in a doc
+  comment), so it's unaffected either way.
+- A one-line hint ("Search and link a Job above to add parts.") now shows inside the Part Details
+  List panel header, but only while no Job is linked, so it's clear why the grid looks blocked.
+- HSN Code stays as it always was (read-only/auto-filled regardless) - it was never an editable
+  field to begin with, so it needed no change.
+
+VERIFICATION:
+- Web: `cd web && npx tsc -p tsconfig.app.json --noEmit` -> exit 0. `npx oxlint` on
+  MaterialTransferCreatePage.tsx, PartSearchInput.tsx, and RepairBillCreatePage.tsx (checked as
+  the other file that references PartSearchInput, to confirm the new optional prop didn't regress
+  it) -> zero errors or warnings on all three.
+- Please confirm on your end: with no Job linked, every field/button in the Part Details List
+  (Item Code, Description, Issue Type, Qty, Rate, Disc. Type, Discount, Labour, ✕, + Add Line) is
+  greyed out and unclickable; picking a Job via Search Job unlocks all of them immediately.
+
+
+================================================================================================
+SECTION 77 - Material Transfer Bill bug fixes: stale Labour cleared on Item Code change, 0-qty
+parts blocked from being added, dropdown ordered by stock (WEB only)
+================================================================================================
+
+Your request (verbatim): "now also 1 bug from Part Details List previously i added item code
+which have labour link and i add labour but i chnaged my mind to change Item Code then still
+shown labour when i change Item Code with that clear labour also cause for another Item Code have
+another labour so fix this and which have 0 qty for Item Code that dont allow to add and in
+dropdown show order which have qty this order show in dropdown this order show in dropdown ..fix
+this and give me proper code"
+
+Three fixes, all in the Part Details List grid:
+
+1. BUG FIX - stale Labour not cleared on Item Code change (web/src/pages/staff/
+   MaterialTransferCreatePage.tsx): a Part row's staged Labour rows (added via its "Labour"
+   button, tracked by sourcePartKey) stayed attached even after the Item Code was changed to a
+   completely different part - wrong, since Labour Master Partwise codes are looked up BY Part
+   Code (see PartwiseLabourModal.tsx's own doc comment) and a different Item Code has a different
+   (or no) matching set. Fixed at both places an Item Code can actually change:
+   - Picking a new part from the dropdown (pickPartForLine): now cascade-clears any Labour rows
+     with sourcePartKey === this row's key, but ONLY when the Item Code is actually different from
+     what it was (re-picking the same part again, e.g. just to refresh its price, does NOT wipe
+     Labour that still correctly applies) - new codeChanged check.
+   - Typing directly into the Item Code box without picking from the dropdown (new
+     changeItemCode() function, replacing the old plain `updateItem(key, { itemCode: text })` call
+     on that one field): same cascade-clear, same "only when it actually changed" guard.
+   - The "Labour" button on a Part row was already `disabled={!it.itemCode.trim()}` from an
+     earlier round - untouched.
+
+2. FIX - 0-quantity parts can no longer be added (web/src/components/PartSearchInput.tsx,
+   web/src/pages/staff/MaterialTransferCreatePage.tsx): a new shared rule, isConfirmedOutOfStock
+   (exported from PartSearchInput.tsx, imported into MaterialTransferCreatePage.tsx so the two
+   never drift apart), blocks picking any Item Code with a CONFIRMED zero balance. "Confirmed"
+   deliberately EXCLUDES source: 'itemMaster' rows - those carry a placeholder availableQty of 0
+   only because no live DMS stock/Part Upload row has been loaded for that Item Code at the
+   current Location yet (see BaplDmsPartStock's own doc comment: "not necessarily '0 in stock'") -
+   blocking those too would have undone the earlier "take Item Code from /item-master ... we cant
+   select" fix, which deliberately made every catalog item findable/pickable even with no stock
+   data loaded. So a genuinely-zero live-DMS or Part-Upload row is blocked; an itemMaster-catalog-
+   only row (unknown stock) is not. Enforced in TWO places: the dropdown row itself is greyed out,
+   labelled "(out of stock)", and unclickable; and pickPartForLine (the function BOTH the Item
+   Code and Description search boxes funnel through) refuses it a second time and shows a stock
+   warning, in case anything ever calls it another way.
+3. FIX - dropdown ordered by quantity (web/src/components/PartSearchInput.tsx): search results
+   are now sorted with the highest available quantity first (`.sort((a, b) => b.availableQty -
+   a.availableQty)`, a stable sort per the ES2019 spec, so same-quantity rows keep their prior
+   relative order) instead of the previous unsorted (catalog-preload-then-stock-overlay) order -
+   parts you can actually issue now surface at the top of the list; 0-balance/unknown-stock rows
+   (both blocked or uncertain) sink to the bottom.
+
+VERIFICATION:
+- Web: `cd web && npx tsc -p tsconfig.app.json --noEmit` -> exit 0. `npx oxlint` on
+  MaterialTransferCreatePage.tsx and PartSearchInput.tsx -> ONE warning
+  (react/only-export-components on PartSearchInput.tsx's new isConfirmedOutOfStock export) - the
+  SAME warning class this codebase already has and tolerates for StaffLayout.tsx's own exported
+  NAV_ITEMS constant (a component file sharing one non-component value with another page, so the
+  single source of truth doesn't drift into two copies of the same rule) - not a defect, and no
+  other warnings/errors.
+- Please confirm on your end: (1) add a Part, pick Labour for it, then change that row's Item Code
+  to a DIFFERENT part - its Labour rows disappear; (2) re-pick the SAME Item Code again (e.g. to
+  refresh its price) - any Labour already staged for it stays; (3) searching an Item Code that has
+  a real, confirmed 0 balance shows it greyed out/"(out of stock)" in the dropdown and clicking it
+  does nothing, while an Item Master catalog-only entry (no stock data loaded) still picks
+  normally; (4) the dropdown lists in-stock items before out-of-stock/unknown-stock ones.
+
+
+================================================================================================
+SECTION 78 - Repair Bill: Labour staging row fits on one line, page blocked without a Job (WEB
+only)
+================================================================================================
+
+Your request (verbatim): "in repair bill Labour part line fix this in 1 line
+Labour,Description,Qty,Rate,Disc. Type,Discount,Issue Type, Add button in 1 line and in this
+repair bill also block all withour job search"
+
+Two fixes, both in web/src/pages/staff/RepairBillCreatePage.tsx (plus the two search-input
+components it uses):
+
+1. Labour staging row now actually fits on one line (web/src/pages/staff/
+   RepairBillCreatePage.tsx): an EARLIER round already tried to fix this same "fields wrapping
+   onto two rows" problem by switching the row to `.suggest-row`/`.field-grow`/`.field-compact`,
+   but it wasn't enough on its own - `.field-grow` (`flex: 1 1 260px`) was still applied to the
+   Labour and Description fields, and kept claiming far more width than their own boxes actually
+   need (they already carry a fixed pixel width via LabourSearchInput's own `width` prop), leaving
+   too little room for Qty/Rate/Disc. Type/Discount/Issue Type/+Add to stay on the same line -
+   exactly the two-row wrap you saw in your screenshot. Fixed by switching Labour/Description to
+   `field-compact` too (the same class every other field in this row already used), so all seven
+   fields plus the Add/Update button now size to their own content and read as one line.
+   `.suggest-row`/`.field-grow`/`.field-compact` themselves were NOT touched in styles/global.css,
+   so JobCardDetailPage.tsx's own "Suggest a part"/"Suggest labour" rows (which still want their
+   one search field to grow) are unaffected.
+
+2. Everything blocked until a Job is linked ("also block all withour job search") - same
+   Job-linked gate as Material Transfer Bill's own SECTION 75/76, extended here:
+   - Bill Type, Bill Date, and Remarks are now `disabled={!jobCardId}`.
+   - The whole Labour staging row (Labour search, Description search, Qty, Rate, Disc. Type,
+     Discount, Issue Type, +Add/Update) is disabled the same way - LabourSearchInput.tsx gained a
+     new optional `disabled` prop for this (same shape as PartSearchInput.tsx's own, added last
+     round for Material Transfer Bill).
+   - Edit/Delete/Remove on an existing Labour Details List row are also disabled without a linked
+     Job (Part Details List rows needed no separate change - they only ever exist once a Job is
+     linked in the first place, since they auto-load from that Job's own Material Transfer data).
+   - The "Save as Proforma" button is disabled without a linked Job too.
+   - Two hint lines were added ("Search and link a Job above to fill in the rest of this bill." /
+     "...to add Labour.") so it's clear why the page looks blocked.
+
+   IMPORTANT CONSEQUENCE - please read before merging: Party Name, Reg No, Chassis No, and
+   Location had a DELIBERATE, pre-existing rule on this page (added 2026-09-22, "Party Name, Reg
+   No, Chassis No, Location that also auto fetched feild that also dont show editable"): they were
+   editable BY HAND specifically when NO Job was linked (a standalone/walk-in bill), and became
+   read-only only once a Job auto-filled them. Literally applying "block all without job search"
+   to this page REVERSES that - these four fields are now locked in BOTH states (auto-filled and
+   read-only when a Job is linked, same as before; simply BLOCKED, not handed back for manual
+   entry, once it's unlinked). The practical effect: a Repair Bill can no longer be created without
+   first linking a Job Card - the standalone/walk-in bill path this page used to support is gone.
+   This is a genuine business-rule change, not just a UI tweak, and it was applied because your
+   instruction read as wanting full parity with Material Transfer Bill's own all-fields-need-a-Job
+   gate - please confirm this is actually what you want; if a walk-in/no-job Repair Bill still
+   needs to exist, tell me and I'll narrow this back down to just the Labour row + Bill Type/Date/
+   Remarks/Save button, leaving Party Name/Reg No/Chassis No/Location's original "editable only
+   when no Job" rule alone. clearJob() was extended to reset these four fields to blank/default on
+   unlink, since there's no other way left to clear them now that they can't be hand-edited.
+
+VERIFICATION:
+- Web: `cd web && npx tsc -p tsconfig.app.json --noEmit` -> exit 0. `npx oxlint` on
+  RepairBillCreatePage.tsx and LabourSearchInput.tsx -> zero errors or warnings.
+- Please confirm on your end: (1) the Labour staging row (Labour/Description/Qty/Rate/Disc.
+  Type/Discount/Issue Type/+Add) now sits on a single line without wrapping; (2) with no Job
+  linked, every field on the page (Party Name, Reg No, Chassis No, Location, Bill Type, Bill Date,
+  Remarks, the whole Labour row, Save as Proforma) is disabled/blocked, and existing Labour rows'
+  Edit/Delete/Remove icons are disabled too; (3) linking a Job via Search Job unlocks Bill Type/
+  Bill Date/Remarks/the Labour row/Save, and fills Party Name/Reg No/Chassis No/Location (still
+  read-only); (4) unlinking a Job clears Party Name/Reg No/Chassis No back to blank and Location
+  back to your default workshop, and re-locks everything; (5) re-read the IMPORTANT CONSEQUENCE
+  note above and tell me if the no-job/walk-in bill path needs to come back.
+
+
+================================================================================================
+SECTION 79 - Material Transfer Bill: Labour hidden from this page (still saves + still flows into
+Repair Bill), auto-linked via Category with no popup, Issue Type auto-fills from Category (WEB
+only)
+================================================================================================
+
+Your request (verbatim): "in material transfer in that which we added Labour (Labour Master
+Partwise, added via each Part row's "Labour" button) that hide in page that only save in backend
+when i repair bill open in that tht will shown and ui wants to change
+
+1. when i search Item Code and select then auto fetch all details in that also add dependency
+with item code which i select Issue Type then automatically Paid that Part Code(Item Code)
+regarding Category match Paid or U/W and in row of Part Details List Labour button have on the
+place ADd button add and dont open pop up tab direct that item code and Issue Type regarding
+which labour linked that link with that item code dont show on ui hide this and + Add Line this
+button also add in each details which fill when we click on + Add Line button then this button
+shifted on next line which we + Add Line and cancle then shift on previous that proper code give
+me and which labour added in material transfer page that show when im going in repair bill page
+with this job card ..and repair bill which i attached screenshot that will add and this grid
+button click from db which material transfer that will shown for Save as proporma and save as
+invoice"
+
+This was several requests bundled into one message, in broken English/Hinglish - broken out below
+item by item, with what was actually implemented vs. what's flagged as unclear rather than
+guessed at (Fact/Interpretation discipline, per org policy on not inventing business rules).
+
+IMPLEMENTED (web/src/pages/staff/MaterialTransferCreatePage.tsx only):
+
+1. The "Labour (Labour Master Partwise, added via each Part row's 'Labour' button)" table is
+   REMOVED from this page's own UI. Staged Labour rows still exist in this page's own `items`
+   state and still save to the backend exactly as before (the save() payload already iterated
+   over the full `items` array regardless of what was rendered - nothing there changed) - they're
+   simply no longer shown on THIS screen. They still surface once you open Repair Bill for the
+   same Job (RepairBillCreatePage.tsx's own materialTransferItems sync effect - unchanged, not
+   touched this round, see FACT note below).
+
+2. NEW dependency: picking an Item Code now ALSO fetches that Part Code's Labour Master Partwise
+   rows (GET /api/material-transfer-docs/labour-by-part-code/{itemCode}, the same endpoint the old
+   popup used) and auto-sets the Part row's Issue Type from their Category field - "paid" maps to
+   Issue Type "Paid", "u/w"/"uw"/"warranty" maps to "U/W". INTERPRETATION/ASSUMPTION, flagged: a
+   Part Code's Labour Master Partwise rows are assumed to all share one Category (the screenshot
+   you showed had one Category per Part Code) - the FIRST matching row's Category is used as
+   authoritative. Only overwrites Issue Type when a Category is actually found and maps cleanly -
+   never clears an existing value back to blank on a miss, so a hand-picked Issue Type on a part
+   with no Labour Master Partwise match is left alone.
+
+3. The "Labour" button on a Part row is now "+ Add" and no longer opens a popup - INTERPRETATION,
+   flagged, a real behaviour change: one click fetches every Labour Master Partwise row for that
+   Part Code and stages ALL of them silently (skipping any already staged for that row) - there is
+   no more per-row pick/stage/Proceed dialog. A one-line confirmation ("✓ Added N Labour code(s)
+   for <code>.") or a "none found"/"already added" message shows briefly below the grid - this is
+   the only on-screen feedback left for the click, not a persistent table (kept deliberately
+   minimal so it doesn't reintroduce what item 1 asked to hide). If a Part Code genuinely has more
+   than one Labour Code that should NOT always be added together, this over-adds - tell me and I'll
+   bring back a choice (not the old popup, something lighter).
+
+   PartwiseLabourModal.tsx (web) is now UNUSED by this page as a result - not deleted (kept in case
+   this needs reverting), and still used as-is by mobile's own MaterialTransferCreateScreen.tsx
+   (mobile untouched this round, per your own "in this page" scoping on earlier rounds - no mobile
+   changes were made here either).
+
+CONFIRMED AS ALREADY WORKING, NOT NEW - FACT, not something built this round: "which labour added
+in material transfer page that show when im going in repair bill page with this job card" -
+RepairBillCreatePage.tsx's own materialTransferItems sync effect (added in an earlier round, not
+touched this round) already pulls in BOTH Part and Labour rows from GET
+/api/material-transfer-docs/for-job/{jobCardId} and branches on itemType - a Labour row saved via
+Material Transfer already appears in Repair Bill's own Labour Details List for the same Job,
+tagged "via Material Transfer". If you're seeing this NOT happen in practice, that's a bug report,
+not a feature request - please say so specifically (with a screenshot of the Repair Bill page for
+that same Job) and I'll dig into it directly rather than re-describing already-existing code.
+
+NOT IMPLEMENTED - genuinely unclear, flagged rather than guessed at:
+
+- "+ Add Line this button also add in each details which fill when we click on + Add Line button
+  then this button shifted on next line which we + Add Line and cancle then shift on previous" -
+  I could not confidently work out what change (if any) is being asked for here. My best reading
+  is that this may already be the existing behaviour: the single "+ Add Line" button already sits
+  directly below the last row and naturally moves down/up as rows are added/removed (it's a plain
+  block-flow element after the table, not fixed-positioned) - if that's what you meant, nothing
+  needs to change. If you're seeing an actual glitch (the button jumping somewhere unexpected, not
+  repositioning, etc.), a screenshot or short screen recording of the specific behaviour would let
+  me fix the right thing instead of guessing at a UI restructuring (e.g. a separate Add button per
+  row) that may not be wanted.
+- "repair bill which i attached screenshot that will add and this grid button click from db which
+  material transfer that will shown for Save as proporma and save as invoice" - also unclear what
+  specific action or bug this refers to. If this is about the Save as Proforma / Save as Invoice
+  buttons not correctly showing Material-Transfer-sourced Part/Labour data in some case, please
+  describe the exact steps (or point to which button in the screenshot) and I'll look at it
+  directly.
+
+VERIFICATION:
+- Web: `cd web && npx tsc -p tsconfig.app.json --noEmit` -> exit 0. `npx oxlint` on
+  MaterialTransferCreatePage.tsx -> zero errors or warnings.
+- Please confirm on your end: (1) picking an Item Code with a Labour Master Partwise match now
+  auto-sets that row's Issue Type; (2) the "+ Add" button on a Part row adds Labour silently (no
+  popup) and shows a one-line confirmation, without any Labour table appearing on this page; (3)
+  the Material Transfer still saves correctly (check the saved record's detail view, or open
+  Repair Bill for the same Job, to confirm the Labour rows really did save even though they're not
+  shown here); (4) clarify the two NOT IMPLEMENTED items above so I can act on them precisely.
+
+================================================================================
+SECTION 80 (2026-09-23)
+================================================================================
+USER REQUEST (video attached, "RB-Grid button.mp4"): follow-up to SECTION 79's item 6, which had
+been left unimplemented as "too unclear". Verbatim: "Repair bill which i attached screenshot that
+will add and this grid button click from db which material transfer that will shown for Save as
+proporma and save as invoice ... i will showing u video this button clcik shown all details which
+material transfer for which job card that button add"
+
+WHAT THE VIDEO SHOWED: screen recording of the REFERENCE BAPL DMS web app (bapldmssite-...
+.azurewebsites.net/repair-bill-list and /repair-bill/85) - not JobCardScanner. It shows: opening
+the Repair Bill List, clicking an existing bill row (Bill No 22), which reopens as the SAME
+editable Repair Bill form used to create a bill - Date/Location/Bill No/Party Name/Job Search
+header, a "Selected Job Details" panel (Job Date/Job No/Reg No/Model/KMs/Chassis/Technician),
+Labour/Part staging rows, a Labour Details List/Part Details List, and "Save As Invoice"/"Close"
+buttons right there on that same page - not a separate read-only view.
+
+CLARIFYING QUESTION (asked via the app's built-in question tool, since this was a real fork
+affecting how much to build, not something to guess at): confirmed that JobCardScanner's Repair
+Bill page ALREADY auto-loads Material Transfer Parts/Labour into the grid the moment a Job is
+linked (this is SECTION 78/79-era existing behaviour, unchanged) and ALREADY has the same
+Proforma -> Invoice two-step lifecycle (Save as Proforma on create; Save as Invoice as a later
+step). The one real gap: clicking an existing bill in JobCardScanner's own list opened only a
+READ-ONLY popup, with no way to reopen it as an editable grid the way the reference video shows.
+You confirmed: build the reopen-as-editable-form flow.
+
+IMPLEMENTED (Repair Bill page only - web; no change to Material Transfer or mobile):
+
+1. Backend (Controllers/RepairBillDocsController.cs):
+   - New `PUT /api/repair-bill-docs/{id}` - updates an EXISTING bill's header fields and fully
+     replaces its Items, using the exact same tax/discount/Extended-Battery-Warranty/Part-Upload-
+     stock calculation Create already used (extracted into a new shared private method,
+     BuildAndAttachItemsAsync, so Create and this new Update call identical logic - nothing about
+     how tax or stock is computed changed). Only allowed while the bill's Status is still
+     "Performa" - a Billed or Cancelled bill returns 400 rather than silently letting a finalized
+     bill's totals change. Part Upload stock (PartUploads.BalQty) is restored for the bill's OLD
+     items first, then decremented again for the NEW items, so editing a Part's Qty (or
+     adding/removing a Part line) nets out correctly instead of double-counting.
+   - `GET /api/repair-bill-docs/{id}` now also returns JobCardId and JobCardNumber (via a new
+     Include(r => r.JobCard)) and Remarks (previously saved but never actually returned by this
+     endpoint - a pre-existing small gap, now fixed so reopening a bill for editing doesn't
+     silently wipe out its Remarks on save).
+
+2. Web (RepairBillCreatePage.tsx):
+   - Clicking a JobCardScanner-own bill row that's still "Performa" in the list now reopens the
+     SAME "New Repair Bill" form, pre-filled (startEditBill) - Job re-linked (so the "Selected Job
+     Details" panel and Labour search still work), Bill Type/Bill Date/Remarks/insurance
+     fields/Total Discount/Amount Received restored from the bill, and the card's own heading
+     changes to "Editing Bill <No> [status]" with a "Cancel edit / start a new bill" button. A
+     DMSBAPLDATA-synced row, or a JobCardScanner bill that's already Billed/Cancelled, still opens
+     the old read-only popup (nothing to edit on either of those).
+   - Part lines are DELIBERATELY re-derived FRESH from the Job's CURRENT Material Transfer (same
+     as a brand-new bill) rather than replayed from what the bill happened to save previously -
+     this is the literal "pull from Material Transfer in the DB" behaviour the video showed, and
+     avoids showing stale data if more was transferred since the bill was first saved. Only Labour
+     lines are restored from the bill's own saved items (a Labour line can also be hand-added,
+     independent of Material Transfer) - restored as editable rows, then deduplicated once the
+     fresh Material Transfer data loads, so a Labour line that WAS Material-Transfer-sourced
+     doesn't show twice.
+   - ASSUMPTION, disclosed in code comments: a Part/Labour line's own saved Discount/Issue Type is
+     only a BEST-EFFORT restoration (matched by item code, since a saved line has no direct link
+     back to the Material Transfer row it came from) - if two different lines on the same bill
+     ever shared an item code with different discounts, only one would be recovered correctly.
+     Flagging this rather than promising a guarantee I can't back.
+   - The Save button becomes "Update Proforma" while editing (calls the new PUT instead of POST,
+     and does NOT clear the form afterwards - unlike a fresh save, so you can immediately follow
+     up with Save as Invoice). A "Save as Invoice" button now also sits right next to it whenever
+     the bill being edited is still Performa - same finalization endpoint the read-only popup's
+     own button already called, just also reachable from here now.
+   - Pre-2026-09-23 bills saved with no Job linked at all still open (fields visible/reviewable),
+     but can no longer be saved further (Save stays disabled without a Job, same restriction every
+     bill on this page has had since the earlier "block all without job search" change).
+
+NOT RE-TOUCHED: Material Transfer Bill page, mobile app, and everything else covered by SECTIONS
+1-79 stay exactly as they were.
+
+VERIFICATION:
+- Web: `cd web && npx tsc -p tsconfig.app.json --noEmit` -> exit 0 (twice, after each batch of
+  edits). `npx oxlint` on RepairBillCreatePage.tsx and types/index.ts -> zero errors or warnings.
+- Backend: hand-reviewed only (no dotnet build available in this sandbox - NuGet restore fails
+  with 403 through the sandbox's own egress proxy, unrelated to your network). Checked brace
+  balance and that every new/changed line references only fields and DbSets that already exist
+  elsewhere in this same file. Please build/run this controller on your end before relying on it.
+- Please confirm on your end: (1) creating a fresh bill still works exactly as before (Save as
+  Proforma, then Save as Invoice from the list); (2) clicking an existing Proforma bill reopens it
+  editable, with Job/Labour/Part data populated correctly; (3) editing and re-saving (Update
+  Proforma) doesn't lose the bill's Remarks/insurance fields; (4) Update Proforma correctly
+  rejects if you try it on a bill that's already Billed (shouldn't be possible via the UI now,
+  since editing only ever opens for a Performa bill, but worth confirming the backend guard too);
+  (5) Part Upload stock nets out correctly if you edit a bill's Part quantities (compare Parts
+  Inward/Part Upload balance before and after an edit).

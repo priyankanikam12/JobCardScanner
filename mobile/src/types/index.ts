@@ -287,6 +287,58 @@ export interface CombinedMaterialTransferRow {
   items?: Record<string, unknown>[]
 }
 
+// 2026-09-22 ("then from /labour-master ... add Labour Code also that was wants to integrate in
+// material transfer ... give proper code like vide functionality in mobile and for web both") -
+// mirrors web/src/types/index.ts's own MaterialTransferDocItemType/LabourMasterPartwise/
+// MaterialTransferItemForJob additions of the same date, so this feature can share the same
+// backend endpoints/shape on both platforms (see MaterialTransferCreatePage.tsx's own doc comment
+// on the web side for the full video-confirmed reference workflow this ports).
+export type MaterialTransferDocItemType = 'Part' | 'Labour'
+
+/** Mirrors LabourMasterPartwiseRow in backend/Services/LabourMasterImportService.cs - see
+ * web/src/types/index.ts's own copy of this interface for field provenance. */
+export interface LabourMasterPartwise {
+  id: number
+  partCode: string | null
+  partName: string | null
+  labourCode: string
+  jobDescription: string | null
+  model: string | null
+  labourRate: number | null
+  igst: number | null
+  cgst: number | null
+  sgst: number | null
+  tier: number | null
+  category: string | null
+  effectiveDate: string | null
+  isActive: boolean
+  createdBy: string | null
+  createdDate: string
+  updatedBy: string | null
+  updatedDate: string | null
+}
+
+/** One row of GET /api/material-transfer-docs/for-job/{jobCardId} - every Material Transfer item
+ * (Part OR Labour, see itemType) already saved against a job, that RepairBillCreateScreen.tsx's
+ * own sync effect turns into read-only lines here, the same way web's RepairBillCreatePage.tsx
+ * already does. MaterialTransferDocItem stores no tax columns (see that model's own doc comment
+ * on the backend) - CGST/SGST/IGST are always recovered fresh, by code, not carried on this row. */
+export interface MaterialTransferItemForJob {
+  materialTransferDocId: string
+  transferNumber: string
+  transferDate: string
+  id: string
+  itemCode: string
+  itemDescription: string
+  hsnCode?: string | null
+  issueType?: string | null
+  qty: number
+  rate: number
+  amount: number
+  mrp?: number | null
+  itemType: MaterialTransferDocItemType
+}
+
 /// A part suggested for this job card (POST .../part-suggestions) - itemCode + a Paid/U-W status
 /// tracked only in JobCardScannerDb, toggle-able afterwards (PUT .../part-suggestions/{id}).
 export interface JobCardPartSuggestion {

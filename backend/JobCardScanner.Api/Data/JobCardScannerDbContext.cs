@@ -275,6 +275,9 @@ public class JobCardScannerDbContext : DbContext
         {
             e.HasOne(x => x.MaterialTransferDoc).WithMany(m => m.Items).HasForeignKey(x => x.MaterialTransferDocId).OnDelete(DeleteBehavior.Cascade);
             e.HasOne(x => x.Part).WithMany().HasForeignKey(x => x.PartId);
+            // 2026-09-22 - see MaterialTransferDocItem.ItemType/TechnicianId's own doc comments.
+            e.Property(x => x.ItemType).HasConversion<string>().HasMaxLength(20);
+            e.HasOne(x => x.Technician).WithMany().HasForeignKey(x => x.TechnicianId);
         });
 
         // ----- PartUpload (2026-09-21, see Models/PartUploads.cs) -----

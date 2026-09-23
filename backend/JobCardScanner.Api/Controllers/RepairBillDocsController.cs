@@ -158,11 +158,18 @@ public class RepairBillDocsController : ControllerBase
         return Ok(new { rows = combined.OrderByDescending(r => r.SortDate), dmsBaplDataError = dmsError });
     }
 
+    // 2026-09-23 ("this grid button click from db which material transfer that will shown for
+    // Save as proforma and save as invoice" - see RepairBillCreatePage.tsx's own "startEditBill"
+    // doc comment): now also Includes JobCard, and ToRow below now returns JobCardId/JobCardNumber
+    // - needed so the web page can re-link the same Job (and, through that, re-fetch its current
+    // Material Transfer items) when a Performa bill is reopened for editing. Neither field was
+    // exposed here before since nothing previously needed to reconstruct a bill's Job link from
+    // this endpoint alone.
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id)
     {
         var dealerId = _currentUser.DealerId;
-        var bill = await _db.RepairBillDocs.AsNoTracking().Include(r => r.Items)
+        var bill = await _db.RepairBillDocs.AsNoTracking().Include(r => r.Items).Include(r => r.JobCard)
             .FirstOrDefaultAsync(r => r.Id == id && r.DealerId == dealerId && !r.IsDeleted);
         return bill is null ? NotFound() : Ok(ToRow(bill));
     }
@@ -205,10 +212,6 @@ public class RepairBillDocsController : ControllerBase
         var dealer = await _db.Dealers.AsNoTracking().FirstOrDefaultAsync(d => d.Id == dealerId);
         if (dealer is null) return BadRequest(new { message = "Dealer not found for the signed-in user." });
 
-        static bool IsZeroTax(string? issueType) =>
-            string.Equals(issueType, "U/W", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(issueType, "FSC", StringComparison.OrdinalIgnoreCase);
-
         var bill = new RepairBillDoc
         {
             DealerId = dealerId.Value,
@@ -237,9 +240,124 @@ public class RepairBillDocsController : ControllerBase
             Status = RepairBillDocStatus.Performa,
         };
 
-        // 2026-09-22 (Extended Battery Warranty Scheme, see this method's own doc comment above) -
-        // resolved once per save, not per line: candidate schemes only depend on the vehicle's
-        // Model/PurchaseDate/Odometer and the bill date, none of which vary line to line.
+        var error = await BuildAndAttachItemsAsync(bill, req, dealerId.Value);
+        if (error is not null) return BadRequest(new { message = error });
+
+        _db.RepairBillDocs.Add(bill);
+        await _db.SaveChangesAsync();
+        await _audit.LogAsync("RepairBillDoc.Create", "RepairBillDoc", bill.Id.ToString(), new { bill.BillNumber, bill.TotalAmount });
+
+        return Ok(ToRow(bill));
+    }
+
+    /// <summary>
+    /// PUT /api/repair-bill-docs/{id} - 2026-09-23 ("this grid button click from db which
+    /// material transfer that will shown for Save as proforma and save as invoice", confirmed via
+    /// video: the reference DMS app's own Repair Bill List lets you click a saved bill and it
+    /// reopens as the SAME editable create form - Job Details/Labour/Part Details List all
+    /// pre-filled - with Save As Proforma / Save As Invoice right there on that page, not a
+    /// read-only popup): lets the "New Repair Bill" form on the web page above re-save an
+    /// EXISTING bill's header + full Items list in place, instead of always creating a new one.
+    /// Reuses the same CreateRepairBillRequest shape as POST (this is a full replace of Items, not
+    /// a partial patch) and the same tax/EBW/stock calculation (BuildAndAttachItemsAsync, shared
+    /// with Create below) - nothing about how a line's tax or stock impact is computed differs
+    /// between creating and editing a bill.
+    ///
+    /// Only ever allowed while Status is still Performa - the reference's own lifecycle has no
+    /// "un-invoice" step, and neither does this app's (see UpdateStatus's own doc comment); a
+    /// Billed or Cancelled bill returns 400 rather than silently no-op'ing or letting an
+    /// already-finalized bill's totals change under it. Status itself is never touched by this
+    /// endpoint - moving Performa -> Billed still only ever happens via PUT .../status.
+    ///
+    /// Part Upload stock (PartUploads.BalQty - see Create's own doc comment): the OLD items' stock
+    /// impact is restored first (the exact same restore Delete already performs), then the NEW
+    /// items are decremented against that restored baseline via BuildAndAttachItemsAsync - so
+    /// editing a Part line's Qty (or removing/adding a Part line entirely) nets out correctly
+    /// instead of double-counting either the old or the new quantity.
+    /// </summary>
+    [HttpPut("{id:guid}")]
+    public async Task<IActionResult> Update(Guid id, CreateRepairBillRequest req)
+    {
+        var dealerId = _currentUser.DealerId;
+        if (dealerId is null) return Forbid();
+        if (string.IsNullOrWhiteSpace(req.PartyName)) return BadRequest(new { message = "Party Name is required." });
+        if (req.Items is null || req.Items.Count == 0) return BadRequest(new { message = "Add at least one item or labour line." });
+
+        var bill = await _db.RepairBillDocs.Include(r => r.Items)
+            .FirstOrDefaultAsync(r => r.Id == id && r.DealerId == dealerId && !r.IsDeleted);
+        if (bill is null) return NotFound();
+        if (bill.Status != RepairBillDocStatus.Performa)
+            return BadRequest(new { message = $"Bill {bill.BillNumber} is already {bill.Status} - only a Proforma bill can be edited." });
+
+        var dealer = await _db.Dealers.AsNoTracking().FirstOrDefaultAsync(d => d.Id == dealerId);
+        if (dealer is null) return BadRequest(new { message = "Dealer not found for the signed-in user." });
+
+        // Restore PartUploads stock committed by the OLD items (see Delete's own identical
+        // restore) BEFORE BuildAndAttachItemsAsync decrements stock again for the new items -
+        // keyed off the bill's Location as it was before this update, since that's what the old
+        // stock was actually committed against.
+        if (!string.IsNullOrWhiteSpace(bill.Location))
+        {
+            foreach (var oldIt in bill.Items.Where(i => i.ItemType == RepairBillDocItemType.Part))
+            {
+                if (string.IsNullOrWhiteSpace(oldIt.ItemCode)) continue;
+                var pu = await _db.PartUploads.FirstOrDefaultAsync(
+                    p => p.DealerId == dealerId && p.LocationCode == bill.Location && p.PartNo == oldIt.ItemCode, HttpContext.RequestAborted);
+                if (pu is not null) pu.BalQty = (pu.BalQty ?? 0) + (decimal)oldIt.Qty;
+            }
+        }
+
+        bill.JobCardId = req.JobCardId;
+        bill.CustomerId = req.CustomerId;
+        bill.VehicleId = req.VehicleId;
+        bill.PartyName = req.PartyName.Trim();
+        bill.RegNo = req.RegNo;
+        bill.ChassisNo = req.ChassisNo;
+        bill.Location = req.Location;
+        bill.BillType = req.BillType;
+        bill.IssueType = req.IssueType;
+        bill.Remarks = req.Remarks;
+        bill.InsuranceCompanyName = req.InsuranceCompanyName;
+        bill.InsuranceDescription = req.InsuranceDescription;
+        bill.SurveyorName = req.SurveyorName;
+        bill.SurveyorContactNumber = req.SurveyorContactNumber;
+        bill.PolicyNo = req.PolicyNo;
+        bill.InsuranceValidTill = req.InsuranceValidTill;
+        bill.ZeroDepreciation = req.ZeroDepreciation;
+        bill.TotalDiscount = req.TotalDiscount;
+        bill.AmountReceived = req.AmountReceived;
+        if (req.BillDate is not null) bill.BillDate = req.BillDate.Value;
+        bill.UpdatedById = _currentUser.UserId;
+        bill.UpdatedAt = DateTime.UtcNow;
+
+        _db.RepairBillDocItems.RemoveRange(bill.Items);
+        bill.Items.Clear();
+
+        var error = await BuildAndAttachItemsAsync(bill, req, dealerId.Value);
+        if (error is not null) return BadRequest(new { message = error });
+
+        await _db.SaveChangesAsync();
+        await _audit.LogAsync("RepairBillDoc.Update", "RepairBillDoc", bill.Id.ToString(), new { bill.BillNumber, bill.TotalAmount });
+
+        return Ok(ToRow(bill));
+    }
+
+    /// <summary>Shared by Create and Update above - builds RepairBillDocItem rows (per-line
+    /// discount/tax calc, Extended Battery Warranty Scheme match, PartUploads stock decrement +
+    /// validation) onto `bill.Items`, and sets the bill's own rollup Taxable/Cgst/Sgst/Igst/
+    /// TotalAmount from them. Returns an insufficient-stock error message for the caller to
+    /// return as 400, or null on success - see Create's original doc comment (now here) for the
+    /// full reasoning behind each piece of this calculation; nothing about the calculation itself
+    /// changed when this was extracted out of Create to also be reusable by Update.</summary>
+    private async Task<string?> BuildAndAttachItemsAsync(RepairBillDoc bill, CreateRepairBillRequest req, Guid dealerId)
+    {
+        static bool IsZeroTax(string? issueType) =>
+            string.Equals(issueType, "U/W", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(issueType, "FSC", StringComparison.OrdinalIgnoreCase);
+
+        // 2026-09-22 (Extended Battery Warranty Scheme) - resolved once per save, not per line:
+        // candidate schemes only depend on the vehicle's Model/PurchaseDate/Odometer and the bill
+        // date, none of which vary line to line.
         var ebwCandidates = new List<ExtendedBatteryWarrantyEligibilityResult>();
         if (req.VehicleId is not null)
         {
@@ -248,7 +366,7 @@ public class RepairBillDocsController : ControllerBase
             if (ebwVehicle?.PurchaseDate is not null)
             {
                 ebwCandidates = await _ebwEligibility.EvaluateAsync(
-                    dealerId.Value, ebwVehicle.Model, ebwVehicle.PurchaseDate.Value,
+                    dealerId, ebwVehicle.Model, ebwVehicle.PurchaseDate.Value,
                     (decimal)ebwVehicle.Odometer, bill.BillDate, HttpContext.RequestAborted);
             }
         }
@@ -276,7 +394,7 @@ public class RepairBillDocsController : ControllerBase
                 var requestedQty = (decimal)it.Qty;
                 var available = pu.BalQty ?? 0;
                 if (requestedQty > available)
-                    return BadRequest(new { message = $"Insufficient Part Upload stock for '{it.ItemCode}' at this location: available {available}, requested {requestedQty}." });
+                    return $"Insufficient Part Upload stock for '{it.ItemCode}' at this location: available {available}, requested {requestedQty}.";
                 pu.BalQty = available - requestedQty;
             }
         }
@@ -353,11 +471,7 @@ public class RepairBillDocsController : ControllerBase
         bill.IgstAmount = bill.Items.Sum(i => i.IgstAmount);
         bill.TotalAmount = bill.Items.Sum(i => i.TotalAmount);
 
-        _db.RepairBillDocs.Add(bill);
-        await _db.SaveChangesAsync();
-        await _audit.LogAsync("RepairBillDoc.Create", "RepairBillDoc", bill.Id.ToString(), new { bill.BillNumber, bill.TotalAmount });
-
-        return Ok(ToRow(bill));
+        return null;
     }
 
     /// <summary>
@@ -426,6 +540,9 @@ public class RepairBillDocsController : ControllerBase
         b.Id,
         b.BillNumber,
         BillDate = b.BillDate,
+        // 2026-09-23 - see Get's own doc comment just above for why these two are now returned.
+        b.JobCardId,
+        JobCardNumber = b.JobCard?.JobCardNumber,
         b.PartyName,
         b.RegNo,
         b.ChassisNo,
@@ -433,6 +550,11 @@ public class RepairBillDocsController : ControllerBase
         b.BillType,
         b.IssueType,
         Status = b.Status.ToString(),
+        // 2026-09-23 - Remarks was never returned here before (only ever saved). Now exposed too,
+        // so re-opening a bill for editing (see the JobCardId/JobCardNumber note above) round-trips
+        // it correctly instead of the edit form's Remarks field silently reverting to blank and
+        // wiping it out on save.
+        b.Remarks,
         b.InsuranceCompanyName,
         b.InsuranceDescription,
         b.SurveyorName,

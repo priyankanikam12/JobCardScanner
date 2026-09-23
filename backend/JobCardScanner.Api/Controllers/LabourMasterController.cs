@@ -19,6 +19,15 @@ namespace JobCardScanner.Api.Controllers;
 /// the same role floor, so a ServiceAdvisor/Technician/PartsUser/Cashier login never even sees
 /// the link. Not specified in your request - flagging this as a deliberate default, tell me if
 /// a wider (or narrower) audience should see this page.
+///
+/// 2026-09-22 note: the new by-Part-Code Partwise lookup for Material Transfer's "Labour" picker
+/// is deliberately NOT an action on this controller, even though it calls the same
+/// ILabourMasterImportService.GetPartwiseByPartCodeAsync - a ServiceAdvisor (who can use Material
+/// Transfer) is not WorkshopManagerUp, and a method-level [Authorize] stacked on top of this
+/// controller's class-level [Authorize(WorkshopManagerUp)] is ANDed by ASP.NET Core, not an
+/// override - it would still require WorkshopManagerUp too and 403 a plain ServiceAdvisor. See
+/// MaterialTransferDocsController.LabourByPartCode instead, which lives on the already-
+/// ServiceAdvisorUp controller and calls this same service method directly.
 /// </summary>
 [ApiController]
 [Route("api/labour-master")]

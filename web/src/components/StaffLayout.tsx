@@ -186,8 +186,29 @@ export function StaffLayout() {
         <img src={bgaussLogo} alt="BGauss" className="sidebar-logo" />
         <p className="sub">{profile?.dealerName ?? 'All Dealers'}</p>
         <nav>
+          {/* 2026-09-23 ("in sidebar menu when close and any icon click then this will open that
+              also add"): while the sidebar is collapsed (the 64px icon-only rail), clicking a nav
+              icon now OPENS the sidebar (expands to the full labeled panel) instead of navigating
+              straight away - the first click on any icon just reveals the menu so its label is
+              visible; navigation happens (and the drawer auto-collapses again, unchanged from
+              before) on a second click once it's already expanded. This is on top of the existing
+              click-the-sidebar's-own-background toggle above (handleSidebarClick) - that one is
+              unchanged. */}
           {NAV_ITEMS.filter((item) => !item.roles || hasRole(...item.roles)).map((item) => (
-            <NavLink key={item.to} to={item.to} className={({ isActive }) => (isActive ? 'active' : '')} onClick={closeSidebar} title={item.label}>
+            <NavLink
+              key={item.to}
+              to={item.to}
+              className={({ isActive }) => (isActive ? 'active' : '')}
+              title={item.label}
+              onClick={(e) => {
+                if (!sidebarOpen) {
+                  e.preventDefault()
+                  setSidebarOpen(true)
+                  return
+                }
+                closeSidebar()
+              }}
+            >
               <span className="nav-icon">{item.icon}</span>
               <span className="nav-label">{item.label}</span>
             </NavLink>
