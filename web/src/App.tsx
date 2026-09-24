@@ -41,6 +41,9 @@ import { OemModelsPage } from './pages/staff/OemModelsPage'
 import { OemModelWarrantiesPage } from './pages/staff/OemModelWarrantiesPage'
 import { AdminUsersPage } from './pages/staff/AdminUsersPage'
 import { EmployeesPage } from './pages/staff/EmployeesPage'
+// 2026-09-24 "that supervisor when login then he have access to create Tecnician that tab name
+// Technician Employee" - see TechnicianEmployeesPage.tsx's own doc comment.
+import { TechnicianEmployeesPage } from './pages/staff/TechnicianEmployeesPage'
 import { AdminWorkflowPage } from './pages/staff/AdminWorkflowPage'
 import { ReportsPage } from './pages/staff/ReportsPage'
 import { PortalLoginPage } from './pages/portal/PortalLoginPage'
@@ -87,7 +90,7 @@ export default function App() {
         <Route
           path="/labour-master"
           element={
-            <RequireRole roles={['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
+            <RequireRole roles={['WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
               <LabourMasterPage />
             </RequireRole>
           }
@@ -99,7 +102,7 @@ export default function App() {
         <Route
           path="/part-upload"
           element={
-            <RequireRole roles={['PartsUser', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
+            <RequireRole roles={['PartsUser', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
               <PartUploadPage />
             </RequireRole>
           }
@@ -110,7 +113,7 @@ export default function App() {
         <Route
           path="/item-master"
           element={
-            <RequireRole roles={['PartsUser', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
+            <RequireRole roles={['PartsUser', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
               <ItemMasterPage />
             </RequireRole>
           }
@@ -123,7 +126,7 @@ export default function App() {
         <Route
           path="/material-transfer-bill"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
               <MaterialTransferCreatePage />
             </RequireRole>
           }
@@ -134,7 +137,7 @@ export default function App() {
         <Route
           path="/material-transfer-list"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
               <MaterialTransferListPage />
             </RequireRole>
           }
@@ -143,7 +146,7 @@ export default function App() {
         <Route
           path="/repair-bill-new"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
               <RepairBillCreatePage />
             </RequireRole>
           }
@@ -154,7 +157,7 @@ export default function App() {
         <Route
           path="/repair-bill-list"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
               <RepairBillListPage />
             </RequireRole>
           }
@@ -166,7 +169,7 @@ export default function App() {
         <Route
           path="/battery-warranty-schemes"
           element={
-            <RequireRole roles={['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
+            <RequireRole roles={['WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
               <ExtendedBatteryWarrantySchemesPage />
             </RequireRole>
           }
@@ -180,7 +183,7 @@ export default function App() {
         <Route
           path="/oem-models"
           element={
-            <RequireRole roles={['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
+            <RequireRole roles={['WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
               <OemModelsPage />
             </RequireRole>
           }
@@ -188,7 +191,7 @@ export default function App() {
         <Route
           path="/oem-model-warranties"
           element={
-            <RequireRole roles={['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
+            <RequireRole roles={['WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
               <OemModelWarrantiesPage />
             </RequireRole>
           }
@@ -199,6 +202,19 @@ export default function App() {
           element={
             <RequireRole roles={['DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
               <EmployeesPage />
+            </RequireRole>
+          }
+        />
+        {/* 2026-09-24 - gated to Supervisor and up, matching the explicit request ("that
+            supervisor when login then he have access to create Tecnician that tab name
+            Technician Employee") - a plain WorkshopManager does NOT get this tab, even though it
+            shares Supervisor's other ServiceAdvisorUp/WorkshopManagerUp access (see
+            StaffRole.Supervisor's backend doc comment). */}
+        <Route
+          path="/technician-employees"
+          element={
+            <RequireRole roles={['Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
+              <TechnicianEmployeesPage />
             </RequireRole>
           }
         />

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'
 import { apiClient } from '../api/client'
-import type { BaplDmsLabourRow, JobCardDetail } from '../types'
+import type { JobCardsLabourCatalogRow, JobCardDetail } from '../types'
 
 // Issue Type is a fixed Paid / Under Warranty choice, not free text - matches
 // web/src/pages/staff/JobCardDetailPage.tsx's LABOUR_ISSUE_TYPES.
@@ -9,21 +9,27 @@ const ISSUE_TYPES = ['Paid', 'U/W'] as const
 
 /**
  * "Labour Suggestion" panel - mirrors web/src/pages/staff/JobCardDetailPage.tsx's
- * LabourSuggestionCard. Labour rows come live from DMS's own LabourMaster, scoped by this
- * job card's own Job Type/Service Head/Service Type cascade plus a free-text search (most real
- * LabourMaster rows have no cascade mapping yet, so cascade-only would hide them - see
- * BaplDmsLabourRow's doc comment on the backend). Description/HSN/GST/Rate are snapshotted from
- * whichever row is picked, not re-editable once added; Quantity and Issue Type can be edited
- * after the fact.
+ * LabourSuggestionCard.
  *
- * IMPORTANT: labourCode is NOT unique per LabourMaster row (the same code repeats across
- * different CityTier/oemmodelname combos - confirmed in real data, e.g. "SF0M001" appears 4
- * times). The picker below is keyed and selected by each row's own unique `id`, never by
+ * 2026-09-24 CHANGE ("Part Suggestion and Labour Suggestion that link with our labour-master"):
+ * now pulls from this app's OWN imported Labour Master rate card (GET
+ * /api/jobcards/labour-catalog?search=... - JobCardsController.LabourCatalog, unions
+ * LabourMasterWithoutPartwise + LabourMasterPartwise) instead of DMS's live LabourMaster (the old
+ * GET /api/bapl-dms/labour). The old Job Type/Service Head/Service Type cascade scoping is gone
+ * along with it - JobCardScanner's own imported Labour Master has no such cascade concept - so
+ * this is now a plain free-text search-as-you-type over labour code/description only. HSN is
+ * always null from this source (Labour Master doesn't carry a per-row HSN - see
+ * JobCardsLabourCatalogRow's doc comment on the backend). Description/GST/Rate are snapshotted
+ * from whichever row is picked, not re-editable once added; Quantity and Issue Type can be
+ * edited after the fact.
+ *
+ * IMPORTANT: labourCode is NOT unique per Labour Master row (the same code can repeat across
+ * different rows). The picker below is keyed and selected by each row's own unique `id`, never by
  * `labourCode` - selecting by code alone would silently resolve to the wrong row's rate/HSN/GST
  * (see the web fix this mirrors).
  */
 export function LabourSuggestionSection({ jc, onChanged, estimatesLocked, totalLockReached }: { jc: JobCardDetail; onChanged: () => void; estimatesLocked: boolean; totalLockReached: boolean }) {
-  const [rows, setRows] = useState<BaplDmsLabourRow[]>([])
+  const [rows, setRows] = useState<JobCardsLabourCatalogRow[]>([])
   const [q, setQ] = useState('')
   // 2026-09-05 fix ("without click search box that list open"): this dropdown used to render
   // whenever `rows` was non-empty, and `rows` is populated by the cascade search below on mount
@@ -37,37 +43,30 @@ export function LabourSuggestionSection({ jc, onChanged, estimatesLocked, totalL
   // Holds the actually-picked row's own data, set once at pick time - not re-derived from `rows`.
   // 2026-09-03 fix (mirrors web's LabourSuggestionCard fix): `rows` is refreshed by the debounced
   // search above every time `q` changes, including further typing after a pick. If a later search
-  // came back without a row matching the old `selectedId` (e.g. because the user kept typing, or
-  // the cascade filters changed), deriving `selected` as `rows.find(...)` would silently go back
-  // to undefined even though selectedId still looked picked, which either disabled "Add
-  // Suggestion" unexpectedly or (on web, which enabled the button off selectedId rather than
-  // selected) let it silently no-op on press. Storing the picked row directly means a later,
-  // unrelated re-search can no longer un-pick it.
-  const [selected, setSelected] = useState<BaplDmsLabourRow | null>(null)
+  // came back without a row matching the old `selectedId` (e.g. because the user kept typing),
+  // deriving `selected` as `rows.find(...)` would silently go back to undefined even though
+  // selectedId still looked picked, which either disabled "Add Suggestion" unexpectedly or (on
+  // web, which enabled the button off selectedId rather than selected) let it silently no-op on
+  // press. Storing the picked row directly means a later, unrelated re-search can no longer
+  // un-pick it.
+  const [selected, setSelected] = useState<JobCardsLabourCatalogRow | null>(null)
   const [qty, setQty] = useState('1')
   const [issueType, setIssueType] = useState<(typeof ISSUE_TYPES)[number] | ''>('')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    const params: Record<string, string | number> = {}
-    if (jc.baplJobTypeId) params.jobTypeId = jc.baplJobTypeId
-    if (jc.baplServiceHeadId) params.serviceHeadId = jc.baplServiceHeadId
-    if (jc.baplServiceTypeId) params.serviceTypeId = jc.baplServiceTypeId
-    // 2026-09-03: scopes the PartWiseLabourMaster union (see GetLabourAsync's doc comment, backend)
-    // to this job card's own dealer - without it PartWiseLabourMaster rows are skipped server-side
-    // entirely, so this list would silently stay LabourMaster-only.
-    if (jc.baplDealerCode) params.dealerCode = jc.baplDealerCode
-    if (q.trim()) params.q = q.trim()
-    // Debounced (300ms) same as every other search-as-you-type box in this app - mirrors web's
-    // same fix on LabourSuggestionCard.
+    // 2026-09-24: no more Job Type/Service Head/Service Type/dealerCode cascade params - this app's
+    // own imported Labour Master has no such cascade concept (see JobCardsController.LabourCatalog's
+    // signature, backend - it only accepts `search`). Plain free-text search-as-you-type, debounced
+    // 300ms same as every other search box in this app.
     const handle = setTimeout(() => {
       apiClient
-        .get<BaplDmsLabourRow[]>('/api/bapl-dms/labour', { params })
+        .get<JobCardsLabourCatalogRow[]>('/api/jobcards/labour-catalog', { params: q.trim() ? { search: q.trim() } : {} })
         .then(({ data }) => setRows(data))
         .catch(() => setRows([]))
     }, 300)
     return () => clearTimeout(handle)
-  }, [jc.baplJobTypeId, jc.baplServiceHeadId, jc.baplServiceTypeId, jc.baplDealerCode, q])
+  }, [q])
 
   const addSuggestion = async () => {
     if (!selected) return
@@ -138,7 +137,7 @@ export function LabourSuggestionSection({ jc, onChanged, estimatesLocked, totalL
         </Text>
       ) : (
       <>
-      <Text style={styles.subheading}>Suggest labour (from DMS LabourMaster)</Text>
+      <Text style={styles.subheading}>Suggest labour (from Labour Master)</Text>
       {/* No separate "Search" label - matches web's LabourSuggestionCard: this field IS the search
          box, not a distinct extra step. */}
       <Text style={styles.label}>Labour Code</Text>

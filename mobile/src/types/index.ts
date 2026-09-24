@@ -4,6 +4,7 @@
 export type StaffRole =
   | 'ServiceAdvisor'
   | 'WorkshopManager'
+  | 'Supervisor'
   | 'Technician'
   | 'PartsUser'
   | 'Cashier'
@@ -55,6 +56,66 @@ export interface Dealer {
   code: string
   city?: string | null
   baplDmsDealerCode?: string | null
+}
+
+// ==================== Technician Employee (2026-09-24) - mirrors web/src/types/index.ts ====================
+// A login-less roster of technicians, scoped by dealer + workshop location - see backend
+// Models/Technicians.cs's own doc comment for why this is not a User.
+export interface Technician {
+  id: string
+  dealerId: string
+  name: string
+  locationCode: string
+  locationName?: string | null
+  active: boolean
+  createdAt: string
+}
+
+export interface CreateTechnicianRequest {
+  name: string
+  locationCode: string
+  locationName?: string | null
+}
+
+export interface UpdateTechnicianRequest {
+  name?: string | null
+  locationCode?: string | null
+  locationName?: string | null
+  active?: boolean | null
+}
+
+/// One row of GET /api/technicians/supervisors - see TechniciansController.Supervisors' doc
+/// comment on the backend for why this reads Users directly instead of GET /api/users.
+export interface SupervisorOption {
+  id: string
+  name: string
+}
+
+// ==================== Local Parts/Labour Catalog (2026-09-24) - mirrors web/src/types/index.ts ====================
+// GET /api/jobcards/parts-catalog / /api/jobcards/labour-catalog - replaces DMS-live
+// /api/bapl-dms/parts / /api/bapl-dms/labour as Part Suggestion/Labour Suggestion's picker source.
+export interface JobCardsPartsCatalogRow {
+  itemCode: string
+  description?: string | null
+  hsnCode?: string | null
+  mrp?: number | null
+  sgst?: number | null
+  cgst?: number | null
+  igst?: number | null
+  availableQty?: number | null
+}
+
+export interface JobCardsLabourCatalogRow {
+  id: number
+  labourCode: string
+  labourDescription?: string | null
+  hsnCode?: string | null
+  labourRate?: number | null
+  sgst?: number | null
+  cgst?: number | null
+  igst?: number | null
+  partCode?: string | null
+  partDescription?: string | null
 }
 
 // ---------------- DMS integration (Job Card Wizard dealer/vehicle auto-fill - mirrors

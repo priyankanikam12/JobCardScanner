@@ -27,6 +27,10 @@ public record UpdateUserRequest(
     /// or null leaves the existing password untouched. Not required on every edit, unlike Create.</summary>
     string? Password = null);
 
+// ---------------- Technician Employee (2026-09-24, login-less - see Models/Technicians.cs) ----------------
+public record CreateTechnicianRequest(string Name, string LocationCode, string? LocationName = null);
+public record UpdateTechnicianRequest(string? Name, string? LocationCode, string? LocationName, bool? Active);
+
 // ---------------- Dealer / Workshop local login ----------------
 public record DealerLoginRequest(string Email, string Password);
 public record DealerForgotPasswordRequest(string Email);

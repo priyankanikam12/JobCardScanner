@@ -5,7 +5,7 @@ import { useStaffAuth } from '../../auth/StaffAuthContext'
 import type {
   BaplDealerResolveResult, BaplDmsComplaint, BaplDmsDealer, BaplDmsJobSource, BaplDmsJobType,
   BaplDmsServiceHead, BaplDmsServiceType, BaplDmsVehicleLookup, BaplDmsVehicleSuggestion, BaplDmsWorkshop,
-  Customer, Dealer, JobCardPriority, JobCardSource, PhotoStage, ServiceType, Vehicle,
+  Customer, Dealer, JobCardPriority, JobCardSource, PhotoStage, ServiceType, SupervisorOption, Technician, Vehicle,
 } from '../../types'
 import { VEHICLE_MODELS, variantsForModel } from '../../data/vehicleCatalog'
 import { buildJobCardPrintHtml } from '../../lib/jobCardPrintHtml'
@@ -404,6 +404,19 @@ export function JobCardWizardPage() {
   const [baplTechnicianName, setBaplTechnicianName] = useState('')
   const [baplManualJobNo, setBaplManualJobNo] = useState('')
 
+  // 2026-09-24 ("Supervisior that will link and like Dealer Employees ... this technician dont
+  // want to bid username and password ... wants to create technician"): Supervisor/Technician are
+  // now dropdowns fed from this dealer's own Employees (Users with Role=Supervisor - see
+  // TechniciansController.Supervisors) and the new login-less Technician Employee roster (see
+  // TechniciansController.List), both scoped to the Service Location picked below (selectedWorkshopLocCode)
+  // - not free text any more. Still stored as a plain name string (baplSupervisorName/
+  // baplTechnicianName) for JobCardsController.Create, same field the backend has always accepted;
+  // the dropdown just picks which value goes in rather than letting the user type anything. The
+  // fetch effect itself lives further down (after selectedWorkshopLocCode is declared) - see the
+  // comment there.
+  const [supervisorOptions, setSupervisorOptions] = useState<SupervisorOption[]>([])
+  const [technicianOptions, setTechnicianOptions] = useState<Technician[]>([])
+
   const [jobTypes, setJobTypes] = useState<BaplDmsJobType[]>([])
   const [serviceHeads, setServiceHeads] = useState<BaplDmsServiceHead[]>([])
   const [serviceTypes, setServiceTypes] = useState<BaplDmsServiceType[]>([])
@@ -414,6 +427,21 @@ export function JobCardWizardPage() {
 
   const [workshops, setWorkshops] = useState<BaplDmsWorkshop[]>([])
   const [selectedWorkshopLocCode, setSelectedWorkshopLocCode] = useState('')
+
+  // Re-fetched whenever the dealer or the selected workshop location changes; a location change
+  // also clears whichever Supervisor/Technician name was picked under the PREVIOUS location, since
+  // either one scoped to one workshop isn't necessarily valid staff at another.
+  useEffect(() => {
+    setBaplSupervisorName('')
+    setBaplTechnicianName('')
+    if (!effectiveDealerId || !selectedWorkshopLocCode) { setSupervisorOptions([]); setTechnicianOptions([]); return }
+    staffApi.get<SupervisorOption[]>('/api/technicians/supervisors', { params: { dealerId: effectiveDealerId, locationCode: selectedWorkshopLocCode } })
+      .then(({ data }) => setSupervisorOptions(data))
+      .catch(() => setSupervisorOptions([]))
+    staffApi.get<Technician[]>('/api/technicians', { params: { dealerId: effectiveDealerId, locationCode: selectedWorkshopLocCode } })
+      .then(({ data }) => setTechnicianOptions(data))
+      .catch(() => setTechnicianOptions([]))
+  }, [effectiveDealerId, selectedWorkshopLocCode])
 
   const [complaintOptions, setComplaintOptions] = useState<BaplDmsComplaint[]>([])
   const [selectedComplaintId, setSelectedComplaintId] = useState('')
@@ -1244,11 +1272,35 @@ export function JobCardWizardPage() {
               </div>
               <div className="field">
                 <label>Supervisor<Req /></label>
-                <input value={baplSupervisorName} onChange={(e) => setBaplSupervisorName(e.target.value)} placeholder="Supervisor name" />
+                <select
+                  value={baplSupervisorName}
+                  disabled={!selectedWorkshopLocCode}
+                  onChange={(e) => setBaplSupervisorName(e.target.value)}
+                >
+                  <option value="">{selectedWorkshopLocCode ? (supervisorOptions.length ? 'Select supervisor…' : 'No Supervisor set up for this location yet') : 'Select a Service Location first'}</option>
+                  {supervisorOptions.map((s) => <option key={s.id} value={s.name}>{s.name}</option>)}
+                </select>
+                {selectedWorkshopLocCode && supervisorOptions.length === 0 && (
+                  <p className="muted" style={{ margin: '4px 0 0', fontSize: 12 }}>
+                    Add a Supervisor for this location on Admin → Employees (Designation: Supervisor).
+                  </p>
+                )}
               </div>
               <div className="field">
                 <label>Technician<Req /></label>
-                <input value={baplTechnicianName} onChange={(e) => setBaplTechnicianName(e.target.value)} placeholder="Technician name" />
+                <select
+                  value={baplTechnicianName}
+                  disabled={!selectedWorkshopLocCode}
+                  onChange={(e) => setBaplTechnicianName(e.target.value)}
+                >
+                  <option value="">{selectedWorkshopLocCode ? (technicianOptions.length ? 'Select technician…' : 'No Technician set up for this location yet') : 'Select a Service Location first'}</option>
+                  {technicianOptions.map((t) => <option key={t.id} value={t.name}>{t.name}</option>)}
+                </select>
+                {selectedWorkshopLocCode && technicianOptions.length === 0 && (
+                  <p className="muted" style={{ margin: '4px 0 0', fontSize: 12 }}>
+                    Add a Technician for this location on the Technician Employee tab.
+                  </p>
+                )}
               </div>
               <div className="field">
                 <label>Manual Job No.</label>
@@ -1263,7 +1315,15 @@ export function JobCardWizardPage() {
               </div>
             </div>
             <p className="muted" style={{ margin: '8px 0 0', fontSize: 12 }}>
-              All fields above are required - they are what let this job card also be created directly inside DMS's own database.
+              {/* 2026-09-24 CHANGE ("dont save this jobcard in dms remove this all over flow that
+                 save in jobcard db only"): this job card is saved in JobCardScanner ONLY - it is no
+                 longer written into DMS's own database. Job Type/Service Head/Service Type/Source
+                 are still sourced from DMS's own master data (hence the "DMS" badge above) and are
+                 still required, since Job Type/Source drive this job card's own ServiceType/Source
+                 fields and Service Location scopes the Supervisor/Technician dropdowns below - not
+                 because they feed a DMS write-back any more. */}
+              All fields above are required for this job card's own records. Service Location also
+              determines which Supervisor/Technician are offered below.
             </p>
           </div>
 

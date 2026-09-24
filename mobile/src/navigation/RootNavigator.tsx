@@ -18,6 +18,9 @@ import { RepairBillCreateScreen } from '../screens/RepairBillCreateScreen'
 // button"): new list screen for JobCardScanner's own saved Repair Bills, split out of
 // RepairBillCreateScreen above - see that screen's own doc comment and RepairBillListScreen.tsx.
 import { RepairBillListScreen } from '../screens/RepairBillListScreen'
+// 2026-09-24 "that supervisor when login then he have access to create Tecnician that tab name
+// Technician Employee" - see TechnicianEmployeesScreen.tsx's own doc comment.
+import { TechnicianEmployeesScreen } from '../screens/TechnicianEmployeesScreen'
 import { colors } from '../theme/colors'
 
 /** Optional /jobcards-equivalent filters the Dashboard's KPI cards deep-link with - each name
@@ -47,6 +50,7 @@ export type RootStackParamList = {
   // in edit mode for a given bill, the Android equivalent of web's /repair-bill-new?editId={id}.
   RepairBillCreate: { editBillId?: string } | undefined
   RepairBillList: undefined
+  TechnicianEmployees: undefined
 }
 
 const Stack = createNativeStackNavigator<RootStackParamList>()
@@ -99,6 +103,7 @@ export function RootNavigator() {
           <Stack.Screen name="MaterialTransferCreate" component={MaterialTransferCreateScreen} options={{ title: 'Material Transfer Bill' }} />
           <Stack.Screen name="RepairBillList" component={RepairBillListScreen} options={{ title: 'Repair Bill List' }} />
           <Stack.Screen name="RepairBillCreate" component={RepairBillCreateScreen} options={{ title: 'Repair Bill' }} />
+          <Stack.Screen name="TechnicianEmployees" component={TechnicianEmployeesScreen} options={{ title: 'Technician Employee' }} />
         </Stack.Navigator>
       )}
     </NavigationContainer>

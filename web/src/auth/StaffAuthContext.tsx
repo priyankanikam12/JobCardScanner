@@ -1,4 +1,3 @@
-// web\src\auth\StaffAuthContext.tsx
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { useIsAuthenticated, useMsal } from '@azure/msal-react'
 import { staffApi } from '../api/client'
@@ -27,6 +26,12 @@ const ROLE_RANK: Record<StaffRole, number> = {
   PartsUser: 1,
   Cashier: 1,
   WorkshopManager: 2,
+  // 2026-09-24: Supervisor is a new, distinct StaffRole (see backend Models/MasterData.cs) that
+  // keeps the same ServiceAdvisorUp/WorkshopManagerUp floor WorkshopManager already had, PLUS
+  // exclusive access to the new Technician Employee tab that WorkshopManager does not get (gated
+  // separately - see TechniciansController's SupervisorUp-only write actions, not by ROLE_RANK
+  // here). Same rank as WorkshopManager for every "up" check below.
+  Supervisor: 2,
   DealerAdmin: 3,
   CorporateAdmin: 4,
   SystemAdmin: 5,

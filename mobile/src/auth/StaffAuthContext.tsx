@@ -20,6 +20,11 @@ const ROLE_RANK: Record<StaffRole, number> = {
   PartsUser: 1,
   Cashier: 1,
   WorkshopManager: 2,
+  // 2026-09-24: Supervisor is a new, distinct StaffRole that keeps the same ServiceAdvisorUp/
+  // WorkshopManagerUp floor WorkshopManager already had, PLUS exclusive access to the new
+  // Technician Employee tab - same rank as WorkshopManager for every "up" check below. Mirrors
+  // web/src/auth/StaffAuthContext.tsx's own ROLE_RANK.
+  Supervisor: 2,
   DealerAdmin: 3,
   CorporateAdmin: 4,
   SystemAdmin: 5,

@@ -13,7 +13,7 @@ interface StaffUser {
   active: boolean
 }
 
-const ROLES: StaffRole[] = ['ServiceAdvisor', 'WorkshopManager', 'Technician', 'PartsUser', 'Cashier', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']
+const ROLES: StaffRole[] = ['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'Technician', 'PartsUser', 'Cashier', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']
 
 interface AzureDirectoryUser {
   objectId: string

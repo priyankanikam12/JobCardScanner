@@ -3,6 +3,7 @@
 export type StaffRole =
   | 'ServiceAdvisor'
   | 'WorkshopManager'
+  | 'Supervisor'
   | 'Technician'
   | 'PartsUser'
   | 'Cashier'
@@ -610,6 +611,78 @@ export interface CurrentUser {
    * is actually allowed to use - server-side enforcement (JobCardsController, DmsBaplDataController)
    * is the real gate; this is just so the UI doesn't offer a choice it will only reject. */
   workLocationCodes: string[]
+}
+
+// ==================== Technician Employee (2026-09-24) ====================
+// Mirrors backend Models/Technicians.cs / TechniciansController.cs - a login-less roster of
+// technicians, scoped by dealer + workshop location, managed on the "Technician Employee" tab
+// (Supervisor role and above only) and consumed as a dropdown on the Job Card Wizard's
+// "Technician" field and the Job Card Detail page's "Assign Technician" field. Deliberately NOT a
+// User - see Technician.cs's own doc comment.
+export interface Technician {
+  id: string
+  dealerId: string
+  name: string
+  locationCode: string
+  locationName?: string | null
+  active: boolean
+  createdAt: string
+}
+
+export interface CreateTechnicianRequest {
+  name: string
+  locationCode: string
+  locationName?: string | null
+}
+
+export interface UpdateTechnicianRequest {
+  name?: string | null
+  locationCode?: string | null
+  locationName?: string | null
+  active?: boolean | null
+}
+
+/// One row of GET /api/technicians/supervisors - deliberately just {id, name}, not the full
+/// CurrentUser/User shape (see TechniciansController.Supervisors' doc comment for why this reads
+/// Users directly instead of going through GET /api/users).
+export interface SupervisorOption {
+  id: string
+  name: string
+}
+
+// ==================== Local Parts/Labour Catalog (2026-09-24) ====================
+// "Part Suggestion and Labour Suggestion that link with our labour-master, item-master and
+// part-upload" - GET /api/jobcards/parts-catalog and /api/jobcards/labour-catalog
+// (JobCardsController.PartsCatalog/LabourCatalog) - replaces the old DMS-sourced
+// /api/bapl-dms/parts and /api/bapl-dms/labour reads for these two pickers specifically. Sourced
+// from this app's OWN Item Master (BAPL C_ItemMaster catalog, read-only mirror) + Part Upload
+// (dealer-uploaded stock) + Labour Master (imported rate card) - see JobCardsController.cs's own
+// doc comment for the exact merge.
+export interface JobCardsPartsCatalogRow {
+  itemCode: string
+  description?: string | null
+  hsnCode?: string | null
+  mrp?: number | null
+  sgst?: number | null
+  cgst?: number | null
+  igst?: number | null
+  /** Only populated when a locationCode was passed - this item's Part Upload BalQty at that
+   * location. Null when no Part Upload row matches (not necessarily "0 in stock"). */
+  availableQty?: number | null
+}
+
+export interface JobCardsLabourCatalogRow {
+  id: number
+  labourCode: string
+  labourDescription?: string | null
+  hsnCode?: string | null
+  labourRate?: number | null
+  sgst?: number | null
+  cgst?: number | null
+  igst?: number | null
+  /** Only set for a row sourced from Partwise Labour Master. */
+  partCode?: string | null
+  partDescription?: string | null
 }
 
 export interface Customer {

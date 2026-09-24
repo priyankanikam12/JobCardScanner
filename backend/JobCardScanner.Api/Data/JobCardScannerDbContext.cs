@@ -9,6 +9,9 @@ public class JobCardScannerDbContext : DbContext
 
     public DbSet<Dealer> Dealers => Set<Dealer>();
     public DbSet<User> Users => Set<User>();
+    /// <summary>2026-09-24 - the new "Technician Employee" master list (login-less, see
+    /// Technician.cs's own doc comment) - deliberately its own table, not a User row.</summary>
+    public DbSet<Technician> Technicians => Set<Technician>();
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<Vehicle> Vehicles => Set<Vehicle>();
     public DbSet<Warranty> Warranties => Set<Warranty>();
@@ -92,6 +95,17 @@ public class JobCardScannerDbContext : DbContext
             e.HasIndex(x => x.AzureAdObjectId);
             e.Property(x => x.Role).HasConversion<string>().HasMaxLength(30);
             e.HasOne(x => x.Dealer).WithMany(d => d.Users).HasForeignKey(x => x.DealerId);
+        });
+
+        // ----- Technician (2026-09-24 - login-less Technician Employee master) -----
+        b.Entity<Technician>(e =>
+        {
+            e.HasIndex(x => new { x.DealerId, x.LocationCode });
+            // No navigation property back onto Dealer (unlike User above) - this table is read
+            // almost exclusively as "every active technician at this DealerId+LocationCode" (a
+            // flat projection for a dropdown), never joined through Dealer for anything else, so a
+            // plain FK constraint (no .WithMany on Dealer) keeps this simple.
+            e.HasOne<Dealer>().WithMany().HasForeignKey(x => x.DealerId);
         });
 
         // ----- Customer / Vehicle / Warranty -----

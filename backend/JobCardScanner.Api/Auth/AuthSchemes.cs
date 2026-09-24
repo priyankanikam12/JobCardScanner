@@ -33,4 +33,13 @@ public static class Policies
     public const string DealerAdminUp = "DealerAdminUp";
     public const string CorporateAdminUp = "CorporateAdminUp";
     public const string SystemAdminOnly = "SystemAdminOnly";
+    /// <summary>2026-09-24 - the new "Technician Employee" tab (TechniciansController's write
+    /// actions - Create/Update/Delete). Deliberately its OWN policy, not folded into
+    /// WorkshopManagerUp: per the explicit request ("that supervisor when login then he have
+    /// access to create Tecnician"), a WorkshopManager should NOT automatically get this - only
+    /// Supervisor and the dealer/corporate/system admin tiers above it. See
+    /// StaffRole.Supervisor's own doc comment. TechniciansController's own GET (list) action is
+    /// gated ServiceAdvisorUp instead (see that controller) - reading the list to populate a
+    /// dropdown is a much wider need than managing the records.</summary>
+    public const string SupervisorUp = "SupervisorUp";
 }

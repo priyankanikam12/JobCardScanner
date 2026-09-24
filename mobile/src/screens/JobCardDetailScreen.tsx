@@ -25,8 +25,9 @@ import { Badge } from '../components/Badge'
 import { PartSuggestionSection } from '../components/PartSuggestionSection'
 import { LabourSuggestionSection } from '../components/LabourSuggestionSection'
 import { WorkflowTimelineView, type WorkflowTimelineHistoryEntry } from '../components/WorkflowTimelineView'
+import { PickerField, type PickerOption } from '../components/PickerField'
 import { buildEstimatePrintHtml, buildJobCardPrintHtml } from '../utils/printJobCard'
-import type { BaplDmsJobCardHistory, JobCardDetail, StaffRole, WorkflowStage } from '../types'
+import type { BaplDmsJobCardHistory, JobCardDetail, StaffRole, Technician, WorkflowStage } from '../types'
 import type { RootStackParamList } from '../navigation/RootNavigator'
 import { colors } from '../theme/colors'
 
@@ -199,7 +200,7 @@ export function JobCardDetailScreen({ route }: Props) {
         <Text style={{ marginTop: 6 }}>{jc.vehicle?.model} {jc.vehicle?.variant}</Text>
         <Text style={styles.muted}>Reg: {jc.vehicle?.regNo} | Odometer: {jc.odometerAtCheckIn} km</Text>
         <Text style={styles.muted}>Tracking link: /track/{jc.trackingToken}</Text>
-        {jc.customer && hasRole('WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
+        {jc.customer && hasRole('WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
           <CustomerPasswordResetButton customerId={jc.customer.id} customerName={jc.customer.name} />
         )}
         {baplLine.length > 0 && (
@@ -227,8 +228,8 @@ export function JobCardDetailScreen({ route }: Props) {
         <WorkflowHistoryGrid jc={jc} />
       </View>
 
-      {hasRole('ServiceAdvisor', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
-        <UpdateWorkflowStageCard jc={jc} stages={stages} busy={busy} run={run} canAssignTechnician={hasRole('WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin')} />
+      {hasRole('ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
+        <UpdateWorkflowStageCard jc={jc} stages={stages} busy={busy} run={run} canAssignTechnician={hasRole('WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin')} />
       )}
 
       <ComplaintsCard jc={jc} run={run} />
@@ -242,11 +243,13 @@ export function JobCardDetailScreen({ route }: Props) {
       <LabourSuggestionSection jc={jc} onChanged={load} estimatesLocked={estimatesLocked} totalLockReached={estimateGrandTotal >= ESTIMATE_TOTAL_LOCK_THRESHOLD} />
       <EstimatesCard jc={jc} estimatesLocked={estimatesLocked} setEstimatesLocked={setEstimatesLocked} />
       <BaplServiceHistoryCard chassisNo={jc.vehicle?.vin} dealerCode={jc.dealer?.code} />
-      {/* Standalone Invoice card, matching web's PrintMenu doc comment: "the Print menu's own
-         Invoice option stays too, so both paths work; this one is the quick one-click download
-         without opening the menu." Same role gate as PrintMenu's Invoice option. */}
-      {hasRole('Cashier', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && <InvoiceCard jc={jc} />}
-      <ClosureCard jc={jc} run={run} />
+      {/* 2026-09-24 CHANGE ("Invoice ... OTP Based Closure ... remove that 2 card in details page"):
+         the standalone Invoice card and OTP-Based Closure card are both hidden here - Invoice is
+         already reachable via the header's Print ▾ menu (see PrintMenu's own "Invoice" option
+         above, same role gate), and OTP-Based Closure isn't part of this round's kept workflow.
+         InvoiceCard/ClosureCard are left defined below, just unused, matching this file's existing
+         convention for a removed-but-not-deleted card (see the DMS Service History timing comment
+         higher up for the same pattern). */}
       </ScrollView>
     </View>
   )
@@ -540,6 +543,14 @@ function UpdateWorkflowStageCard({
   run: Run
   canAssignTechnician: boolean
 }) {
+  // 2026-09-24 CHANGE ("that bind in jobcard ... Assign Technician name update"): was a free-text
+  // name (no confirmed technician catalog existed); now a dropdown bound to the new login-less
+  // Technician Employee roster (see backend Models/Technicians.cs), scoped to this job card's own
+  // Service Location - same GET /api/technicians?locationCode=... the Job Card Wizard's own
+  // Technician field uses. Still sent as the plain assignedTechnicianName string on PUT
+  // /api/jobcards/{id} (unchanged field/shape on the backend) - the dropdown only changes how the
+  // value is picked, not what's stored. Mirrors web/src/pages/staff/JobCardDetailPage.tsx's
+  // UpdateWorkflowStageCard exactly.
   const [technicianName, setTechnicianName] = useState(jc.assignedTechnicianName ?? '')
   // 2026-09-05: was missing entirely - web's UpdateWorkflowStageCard saves Assign Technician AND
   // Expected Completion together in one PUT (saveDetails), but this screen only ever sent
@@ -547,11 +558,31 @@ function UpdateWorkflowStageCard({
   // it was first set at creation. Mirrors the wizard screen's own date/time picker pattern below.
   const [expectedDeliveryAt, setExpectedDeliveryAt] = useState<Date | null>(jc.expectedDeliveryAt ? new Date(jc.expectedDeliveryAt) : null)
   const [notes, setNotes] = useState('')
+  const [technicianOptions, setTechnicianOptions] = useState<Technician[]>([])
 
   useEffect(() => {
     setTechnicianName(jc.assignedTechnicianName ?? '')
     setExpectedDeliveryAt(jc.expectedDeliveryAt ? new Date(jc.expectedDeliveryAt) : null)
   }, [jc.id, jc.assignedTechnicianName, jc.expectedDeliveryAt])
+
+  useEffect(() => {
+    // No dealerId param for a regular dealer-scoped login (TechniciansController.List already
+    // scopes to _currentUser.DealerId) - only relevant for a Corporate/System Admin viewing a job
+    // card outside their own dealer, hence jc.dealer?.id here. Mirrors web's same effect.
+    apiClient.get<Technician[]>('/api/technicians', { params: { dealerId: jc.dealer?.id, locationCode: jc.baplServiceLocationCode || undefined } })
+      .then(({ data }) => setTechnicianOptions(data))
+      .catch(() => setTechnicianOptions([]))
+  }, [jc.dealer?.id, jc.baplServiceLocationCode])
+
+  const technicianPickOptions: PickerOption[] = [
+    ...technicianOptions.map((t) => ({ label: t.name, value: t.name })),
+    // A pre-existing name (saved as free text before this dropdown existed, or a Technician later
+    // deactivated/removed) that no longer matches any option - keep it selectable so opening this
+    // picker never silently blanks/overwrites it on Save.
+    ...(technicianName && !technicianOptions.some((t) => t.name === technicianName)
+      ? [{ label: `${technicianName} (not in this location's list)`, value: technicianName }]
+      : []),
+  ]
 
   const saveDetails = () => apiClient.put(`/api/jobcards/${jc.id}`, {
     assignedTechnicianName: technicianName || null,
@@ -594,10 +625,29 @@ function UpdateWorkflowStageCard({
         The stage above now advances automatically as work happens. Use the two buttons below only
         for the steps with no automatic trigger.
       </Text>
+      {/* 2026-09-24 CHANGE ("before start required Assign Technician name update"): every stage
+         change - the two manual buttons below AND every automatic trigger elsewhere on this screen
+         (worklog start, part/labour suggestion) - is now refused with a 400 until a Technician is
+         assigned here first (see backend JobCardsController.RequireAssignedTechnician). The
+         refusal's own message already surfaces through this screen's msg banner (see run()'s catch
+         block above), but this note says so up front instead of only after a first failed attempt.
+         Mirrors web's same banner exactly. */}
+      {!jc.assignedTechnicianName && (
+        <Text style={[styles.errorText, { marginTop: -2, marginBottom: 6 }]}>
+          ⚠ No Technician assigned yet - every stage update (including the automatic ones above)
+          will be refused until one is set below.
+        </Text>
+      )}
       {canAssignTechnician && (
         <View style={{ marginTop: 10, marginBottom: 10 }}>
-          <Text style={styles.label}>Assign Technician</Text>
-          <TextInput style={styles.input} value={technicianName} editable={!busy} onChangeText={setTechnicianName} placeholder="Technician name" />
+          <PickerField
+            label="Assign Technician"
+            value={technicianName}
+            options={technicianPickOptions}
+            placeholder={technicianOptions.length ? 'Select technician…' : 'No Technician set up for this location yet'}
+            onChange={setTechnicianName}
+            disabled={busy}
+          />
           <Text style={[styles.label, { marginTop: 8 }]}>Expected Completion</Text>
           <TouchableOpacity style={styles.field} disabled={busy} onPress={openExpectedDeliveryPicker}>
             <Text style={styles.fieldText}>{expectedDeliveryAt ? expectedDeliveryAt.toLocaleString() : 'Not set'}</Text>

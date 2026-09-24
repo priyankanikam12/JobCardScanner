@@ -2448,3 +2448,401 @@ VERIFICATION:
   I build that platform's list screen.
 
 ================================================================================================
+SECTION 86 - 2026-09-24 - "in Jobcards have Supervisor * and Technician * ... this technician dont
+want to bid username and password ... wants to create technician and that Supervisor login which
+we create from Dealer Employees ... that tab name Technician Employee ... bind in jobcard which
+have Part Suggestion and Labour Suggestion that link with our labour-master, item-master and
+part-upload ... dont save this jobcard in dms remove this all over flow that save in jobcard db
+only ... for every Update Workflow Stage for evry stage before start required Assign Technician
+name update ... hide Invoice and OTP-Based Closure" (BACKEND + WEB - Android NOT done this round,
+see NOT CHANGED note below)
+================================================================================================
+
+This is the largest single round in this project: it reverses a standing design decision from an
+earlier session (BAPL DMS as the sole source of truth for job cards - see the plan file this
+session inherited, titled "Make BAPL DMS the sole source of truth for job cards") because this
+message explicitly asked for the opposite ("dont save this jobcard in dms ... save in jobcard db
+only"). Four points in this request were genuinely ambiguous or conflicted with that standing
+plan, so before writing any code this round used AskUserQuestion to get an explicit decision on
+each one. Your answers (now the source of truth for everything below):
+
+  a. DMS sync direction: STOP DMS SYNC ENTIRELY. Job card creation writes ONLY to JobCardScanner's
+     own database from now on. The BAPL-DMS-source-of-truth plan is dropped.
+  b. Supervisor: a NEW StaffRole (not reusing/aliasing WorkshopManager) - same Dealer Employees
+     page, same username+password/Work-Area-scoped mechanism every other staff role already uses.
+  c. Technician: Name + Location ONLY - no login, no mobile, no employee code.
+  d. Assign-Technician stage gate: EVERY stage change is blocked until a Technician is assigned -
+     not just the two manual buttons, but every automatic trigger too (worklog start, part
+     suggestion, labour suggestion). This was the more disruptive of the two options offered, and
+     it is a real behavior change you should read carefully below (see "Assign Technician gate").
+
+BACKEND (backend/JobCardScanner.Api/):
+
+New Supervisor role (Models/MasterData.cs, Auth/AuthSchemes.cs, Program.cs, Controllers/
+UsersController.cs):
+  - StaffRole gets a new value, Supervisor. It is granted the same ServiceAdvisorUp/
+    WorkshopManagerUp floor a WorkshopManager already had (Program.cs's RoleUp(...) policy table),
+    PLUS exclusive access to the new Technician Employee tab that a plain WorkshopManager does NOT
+    get - a new Policies.SupervisorUp policy (RoleUp("Supervisor","DealerAdmin","CorporateAdmin",
+    "SystemAdmin")).
+  - UsersController.RoleForDesignation's "Supervisor" -> Role mapping is repointed from
+    StaffRole.WorkshopManager to StaffRole.Supervisor. This is the Dealer Employees page's existing
+    Designation dropdown - picking "Supervisor" there now creates/edits a Supervisor, not a
+    WorkshopManager alias, exactly matching "that Supervisor login which we create from Dealer
+    Employees ... same page only."
+  - FACT, worth restating plainly: this mapping only runs at Create/Update time. It does NOT
+    retroactively touch any existing User row already saved with Role=WorkshopManager from the OLD
+    mapping - that row keeps WorkshopManager (and does not gain Technician-tab access) until
+    someone next edits/re-saves it on the Employees page.
+  - No schema migration needed for the enum itself (StaffRole is stored as nvarchar via EF's
+    HasConversion<string>() - see JobCardScannerDbContext.cs).
+
+New Technician master data (Models/Technicians.cs, Data/JobCardScannerDbContext.cs, Program.cs,
+Dtos/Requests.cs, Controllers/TechniciansController.cs - all new except DbContext/Program.cs):
+  - New Technician entity: Id, DealerId, Name, LocationCode, LocationName?, Active, CreatedById,
+    CreatedAt. Deliberately NOT a User row and NOT built on the pre-existing (but functionally
+    inert - excluded from every named policy) StaffRole.Technician enum value - this is exactly
+    what "this technician dont want to bid username and password ... wants to create technician"
+    asked for: a name-only roster, no sign-in of any kind.
+  - New self-healing schema block in Program.cs creates dbo.Technicians (with FKs to Dealers and
+    Users) on next app start if it doesn't already exist - same idempotent CREATE TABLE IF NOT
+    EXISTS pattern every other table in this project uses (see Program.cs's own doc comment on why
+    there are no checked-in EF Core migrations).
+  - New TechniciansController (api/technicians), class-level ServiceAdvisorUp (wide - reading the
+    list to populate a dropdown is needed by anyone who can touch a job card):
+      GET    /api/technicians?dealerId=&locationCode=&includeInactive=   (list/dropdown source)
+      GET    /api/technicians/supervisors?dealerId=&locationCode=        (NEW, this turn - see below)
+      POST   /api/technicians          [SupervisorUp only]
+      PUT    /api/technicians/{id}     [SupervisorUp only]
+      DELETE /api/technicians/{id}     [SupervisorUp only]
+  - GET /api/technicians/supervisors is a second read this same controller exposes, straight off
+    the Users table (Role=Supervisor, Active=true), scoped by dealer + optionally by Work Area
+    location (Users.WorkLocationCodes, same JSON-array-string scoping every other Work-Area-aware
+    endpoint uses; an empty WorkLocationCodes list is treated as unrestricted). This exists because
+    the Job Card Wizard's own Supervisor dropdown needs it and UsersController.List is
+    DealerAdminUp-gated - too narrow for the ServiceAdvisor/WorkshopManager staff who actually fill
+    out the wizard. Reads Users directly rather than loosening UsersController's own gate, the same
+    "expose a read from a more-permissive controller" pattern MaterialTransferDocsController.
+    LabourByPartCode already established in an earlier round (see that method's own doc comment) -
+    reused again for JobCardsController.PartsCatalog/LabourCatalog below.
+
+DMS write-back REMOVED from job card creation (Controllers/JobCardsController.cs - Create/Update):
+  - Create() no longer resolves the dealer's BaplDmsDealerCode, no longer requires Job Type/Service
+    Head/Service Type to be filled in for a DMS write, and no longer calls
+    _baplDms.CreateJobCardAsync at all. JobCardNumber goes back to JobCardScanner's own generated
+    number (_numbering.NextJobCardNumberAsync) instead of DMS's JobPrefix+JobNo. The new jobCard row
+    no longer sets BaplJobCardHeaderId/BaplJobNo/BaplSyncStatus - those columns are left null for
+    every job card created from this point on (they stay on the table, unchanged, for OLD rows'
+    history).
+  - The chassis-already-open-job-card duplicate check (local + DMS) is KEPT - this is a read-only
+    safety check, not a write, and there's no reason to let two open job cards exist for one
+    chassis just because DMS write-back is gone.
+  - List()/Get() still show every JobCardScanner row (the earlier session's "hide unsynced rows"
+    plan - see the inherited plan file - is dropped along with everything else that plan asked for,
+    since it depended on DMS being the source of truth).
+  - CRITICAL FIX not explicitly asked for but required by "remove this all over flow": Update() (PUT
+    /api/jobcards/{id} - what actually saves Assign Technician / Priority / Expected Delivery) used
+    to ALSO call _baplDms.UpdateJobCardAsync and hard-require jc.BaplJobCardHeaderId to be set.
+    Since Create() no longer sets that field for new job cards, every "Assign Technician" save on a
+    freshly created job card would have started failing (400) the moment Create() shipped, if
+    Update() had been left as-is. Update() now saves AssignedTechnicianName/Priority/
+    ExpectedDeliveryAt straight to the local row, no DMS call, no BaplJobCardHeaderId requirement.
+  - The Job Type/Service Head/Service Type/Service Location/Source master-data DROPDOWNS themselves
+    are UNCHANGED - they still read live from DMS (GET /api/bapl-dms/job-types etc.) because that
+    master data still only exists in DMS. Only the WRITE-BACK of a created job card into DMS is
+    gone. The wizard still shows a "DMS" badge on that panel for that reason - it is sourcing
+    reference data from DMS, just no longer pushing a new job card record into it.
+
+Part Suggestion / Labour Suggestion re-sourced to local masters (Controllers/JobCardsController.cs
+- new PartsCatalog/LabourCatalog endpoints):
+  - "link with our labour-master, item-master and part-upload in that page and fetch details":
+      GET /api/jobcards/parts-catalog?q=&locationCode=   (replaces GET /api/bapl-dms/parts)
+      GET /api/jobcards/labour-catalog?search=           (replaces GET /api/bapl-dms/labour)
+  - PartsCatalog reads BAPL's own C_ItemMaster catalog (IBaplDealerService.SearchItemMasterAsync -
+    the SAME reference catalog Material Transfer/Repair Bill already price parts against, a
+    read-only mirror table, not the live job-card DMS this controller no longer writes to) and
+    best-effort enriches "available qty" from this dealer's own uploaded Part Upload data
+    (IPartUploadService) for the given location, when a matching Part No exists there. Returns
+    itemCode/description/hsnCode/mrp/sgst/cgst/igst/availableQty.
+  - LabourCatalog unions LabourMasterWithoutPartwise + LabourMasterPartwise (this project's own
+    imported Labour Master rate card - ILabourMasterImportService, the same service the Labour
+    Master admin page already manages), reading through it directly rather than via
+    LabourMasterController (WorkshopManagerUp-gated - too narrow for a plain ServiceAdvisor adding a
+    Labour Suggestion), same established pattern as PartsCatalog/the new Supervisors endpoint above.
+    FACT: this endpoint has no Job Type/Service Head/Service Type cascade filtering any more (the
+    old DMS LabourMaster had one; JobCardScanner's own imported Labour Master has no such concept) -
+    it is now a plain free-text search over labour code/description/model/category. HSN is always
+    null from this source (Labour Master carries no per-row HSN column).
+  - Both gated ServiceAdvisorUp, same floor as AddPartSuggestion/AddLabourSuggestion themselves.
+  - Nothing is written back to DMS by either endpoint or by adding a suggestion - unchanged from
+    before, suggestions have always only ever been recorded in JobCardScannerDb.
+
+Assign Technician gate - EVERY stage change (Controllers/JobCardsController.cs):
+  - New private helper, RequireAssignedTechnician(jc), called at the top of FOUR methods:
+    ChangeStage (the two manual "Repair Completed"/"Ready for Delivery" buttons), StartWorklog,
+    AddPartSuggestion, AddLabourSuggestion. Each now returns 400 ("Assign a Technician to this job
+    card first...") if JobCard.AssignedTechnicianName is blank, before doing anything else.
+  - THIS IS THE MORE DISRUPTIVE OF THE TWO OPTIONS YOU WERE OFFERED, and it is worth restating
+    plainly what it means day to day: a job card that has NOT had a Technician assigned yet cannot
+    have a part suggested, cannot have labour suggested, cannot have its worklog timer started, and
+    cannot be manually marked Repair Completed/Ready for Delivery. Assign Technician (Job Card
+    Detail page, WorkshopManager/Supervisor/DealerAdmin+ only - unchanged gate) has effectively
+    become the very first real action on every job card's workflow. Every EXISTING open job card
+    that has never had a Technician assigned will hit this wall the next time anyone tries any of
+    those four actions on it - this is not limited to newly created job cards.
+  - Reasoning for doing it this way rather than only gating the two manual buttons: you were
+    explicitly offered "just the two manual buttons" as the lower-disruption, recommended option,
+    and chose the broader one instead - so this is your explicit choice, not this round's default.
+
+WEB (web/src/):
+
+types/index.ts:
+  - StaffRole gains 'Supervisor'.
+  - New Technician/CreateTechnicianRequest/UpdateTechnicianRequest/SupervisorOption interfaces
+    (mirror the new backend Technicians.cs/TechniciansController.cs shapes).
+  - New JobCardsPartsCatalogRow/JobCardsLabourCatalogRow interfaces (mirror the new
+    PartsCatalog/LabourCatalog response shapes) - these REPLACE BaplDmsPartStock/BaplDmsLabourRow as
+    the types PartSuggestionCard/LabourSuggestionCard use; the old two types are untouched/still
+    exist for whatever else in the app still reads live DMS PartsInventory/LabourMaster elsewhere
+    (Material Transfer/Repair Bill create pages) - only Part Suggestion/Labour Suggestion's own
+    picker switched source.
+
+auth/StaffAuthContext.tsx:
+  - ROLE_RANK gets Supervisor: 2, same rank as WorkshopManager, so hasRole()'s "up" semantics treat
+    them identically everywhere that matters.
+  - EVERY existing hasRole(...)/RequireRole roles={[...]} list in the app that included
+    'WorkshopManager' also now includes 'Supervisor' (App.tsx's route guards, StaffLayout.tsx's nav
+    filtering + role-pill tier, JobCardDetailPage.tsx's 4 in-page gates). This was NOT explicitly
+    asked for in this message, but was necessary to avoid contradicting this round's own backend
+    design: Supervisor was deliberately given "the same ServiceAdvisorUp/WorkshopManagerUp access
+    WorkshopManager already had" (see StaffRole.Supervisor's backend doc comment) - without this
+    frontend sweep, a Supervisor would have been silently blocked by the UI (RequireRole redirecting
+    them away) from pages the backend would have happily let them use, which is a worse and more
+    confusing outcome than the small mechanical fix applied here. AdminUsersPage.tsx's ROLES picker
+    list also gained 'Supervisor' so HQ admins can assign it directly, not only via Designation.
+
+pages/staff/JobCardWizardPage.tsx (Service Details step):
+  - Supervisor and Technician are now <select> dropdowns, not free-text <input>s. Supervisor is fed
+    by GET /api/technicians/supervisors, Technician by GET /api/technicians - both re-queried and
+    RESET to blank every time the Service Location dropdown changes (a Supervisor/Technician scoped
+    to one workshop is not necessarily valid staff at another). Each dropdown shows an inline hint
+    ("Add a Supervisor for this location on Admin -> Employees...") when the location has none set
+    up yet, instead of silently offering an empty list with no explanation.
+  - The "All fields above are required - they are what let this job card also be created directly
+    inside DMS's own database" note under the Service Details panel was FALSE after this round's
+    DMS-write removal, so it was corrected - Job Type/Service Head/Service Type/Source are still
+    required (they still drive this job card's own internal ServiceType/Source mapping) and Service
+    Location is still required (it now also scopes the two new dropdowns), but none of them write
+    anything into DMS any more.
+
+pages/staff/JobCardDetailPage.tsx:
+  - InvoiceCard and ClosureCard ("OTP-Based Closure") are REMOVED from the page's render output -
+    "hide Invoice and OTP-Based Closure that both coz already have in this invoice in Print button."
+    Both components are left DEFINED in the file (not deleted) in case this needs to be revisited,
+    same convention this project already uses for the hidden Quality Check panel
+    (SHOW_QUALITY_CHECK_PANEL) - oxlint flags both as "declared but never used" now, which is
+    expected and fine.
+  - Part Suggestion / Labour Suggestion switched to the new /api/jobcards/parts-catalog and
+    /api/jobcards/labour-catalog endpoints (see backend section above) - field names line up closely
+    enough with the old BaplDmsPartStock/BaplDmsLabourRow shapes that the UI itself barely changed;
+    headings updated ("from Item Master / Part Upload", "from Labour Master") and the old "No DMS
+    service location - part list unavailable" messaging was corrected (the part/labour catalogs now
+    load regardless of Service Location; a missing location only means "Available Qty" won't show).
+    Labour Suggestion's old Job Type/Service Head/Service Type cascade filtering is gone - see the
+    backend LabourCatalog note above.
+  - Assign Technician (Update Workflow Stage card) is now a <select> dropdown fed by GET
+    /api/technicians?locationCode=<this job card's Service Location>, same source/behavior as the
+    Wizard's own Technician dropdown. If the currently-saved AssignedTechnicianName doesn't match
+    any option (a legacy free-text name saved before this round, or a Technician later
+    deactivated/removed), it is kept as a selectable "(not in this location's list)" option instead
+    of silently disappearing/blanking on save.
+  - New inline warning banner on that same card - "No Technician assigned yet - every stage update
+    (including the automatic ones above) will be refused until one is set below" - shown whenever
+    AssignedTechnicianName is blank, so the new gate's consequence is visible BEFORE someone tries
+    an action and gets a 400, not only after. The 400's own message (RequireAssignedTechnician) was
+    already surfaced through this page's existing error-message plumbing (run()'s catch block reads
+    err.response.data.message) with no code change needed there.
+
+pages/staff/TechnicianEmployeesPage.tsx (NEW) + App.tsx + components/StaffLayout.tsx:
+  - New "Technician Employee" tab, modelled on EmployeesPage.tsx's Add/Edit-card-plus-grid layout
+    but far smaller (Name + Location only - no login fields at all). Route /technician-employees,
+    gated Supervisor/DealerAdmin/CorporateAdmin/SystemAdmin - a plain WorkshopManager does NOT get
+    this tab, which is the one deliberate access difference the new Supervisor role exists to create
+    ("that supervisor when login then he have access to create Tecnician").
+  - KNOWN GAP, disclosed rather than silently shipped: unlike EmployeesPage.tsx, this page has NO
+    Corporate/System Admin cross-dealer view - TechniciansController.List only returns rows for a
+    dealerId a Corporate/System Admin explicitly passes, and this page never passes one, so a
+    Corporate/System Admin opening this tab today sees an empty list. Dealer-scoped Supervisor/
+    DealerAdmin - the actual intended users of this tab per your request - are unaffected.
+
+NOT CHANGED - Android (mobile/src/): this entire round is backend + web only. The mobile app's
+JobCardWizardScreen.tsx, JobCardDetailScreen.tsx, and StaffRole type (mobile/src/types/index.ts)
+still have the OLD free-text Supervisor/Technician fields, the OLD DMS-parts/labour picker sources,
+the Invoice/OTP-Based Closure cards still visible, and NO Technician Employee screen - none of this
+section's changes reached mobile yet. This is flagged, not silently dropped: tell me whether to
+build the Android mirror next (a real, separately-sized piece of work - four new/changed screens
+plus navigation/role wiring) or whether web is enough for now.
+
+VERIFICATION:
+- Backend: no `dotnet build` available in this sandbox (NuGet restore blocked by this sandbox's own
+  egress proxy - same caveat as every backend change in this project). Verified instead by a
+  brace/paren balance check across all 9 touched/created files (Controllers/JobCardsController.cs,
+  Controllers/TechniciansController.cs, Controllers/UsersController.cs, Models/MasterData.cs,
+  Models/Technicians.cs, Data/JobCardScannerDbContext.cs, Program.cs, Auth/AuthSchemes.cs,
+  Dtos/Requests.cs) that EXCLUDES // and /// comment lines (the naive whole-file count first flagged
+  a false-positive 2-paren mismatch in JobCardsController.cs, traced to an English parenthetical
+  aside spanning multiple comment lines, e.g. "(2026-09-24 ...)" opening on one line and closing
+  several lines later - not a real code defect) - every file balances at 0 once comments are
+  excluded. Please build/test this on your end before deploying, as with every backend round in this
+  project.
+- Web: `cd web && npx tsc -p tsconfig.app.json --noEmit` -> exit 0, whole project, run after every
+  file above was in place (including the ROLE_RANK/RequireRole 'Supervisor' sweep and the new
+  TechnicianEmployeesPage.tsx). `npx oxlint` (whole project) -> exit 0 (no errors); only warnings,
+  all pre-existing patterns already present elsewhere in this codebase (set-state-in-effect,
+  exhaustive-deps, a couple of Fast-Refresh advisories) plus the two expected new "declared but
+  never used" warnings for InvoiceCard/ClosureCard (see above - intentional, left in place).
+- Please confirm on your end, ideally against a copy of your production database rather than
+  straight on production: (1) a fresh job card create with no DMS-linked dealer still succeeds and
+  is NOT pushed into DMS; (2) the Supervisor/Technician dropdowns on the Wizard actually populate
+  once you've added at least one Supervisor (via Admin -> Employees, Designation: Supervisor) and
+  one Technician (via the new Technician Employee tab) for a real Service Location; (3) Part
+  Suggestion/Labour Suggestion still find real items/labour codes against your actual Item
+  Master/Labour Master/Part Upload data; (4) the Assign-Technician gate's scope (every stage change,
+  not just the two manual buttons) is really what you want live in production, given how many
+  existing open job cards likely have no Technician assigned yet; (5) whether to proceed with the
+  Android mirror next.
+
+================================================================================================
+
+================================================================================================
+SECTION 87 - Android (mobile/src/) - mirrors SECTION 86 onto the Expo React Native app
+================================================================================================
+Date: 24.09.2026
+Scope: mirrors every SECTION 86 backend/web change onto Android, per your "Build Android now"
+answer. No backend files touched in this round - the backend endpoints SECTION 86 already added
+(/api/technicians, /api/technicians/supervisors, /api/jobcards/parts-catalog,
+/api/jobcards/labour-catalog) are reused as-is; this round is Android UI only.
+
+FILES CHANGED/ADDED (9, all under mobile/src/):
+
+1. types/index.ts
+   - Added 'Supervisor' to the StaffRole union.
+   - Added Technician, CreateTechnicianRequest, UpdateTechnicianRequest, SupervisorOption,
+     JobCardsPartsCatalogRow, JobCardsLabourCatalogRow interfaces - identical field shapes to
+     web/src/types/index.ts's same-named interfaces (JobCardsLabourCatalogRow in particular has the
+     exact same fields as the existing BaplDmsLabourRow: id/labourCode/labourDescription/hsnCode/
+     labourRate/sgst/cgst/igst/partCode/partDescription - so the Labour Suggestion source-switch
+     below is a straightforward type swap, not a shape change).
+
+2. auth/StaffAuthContext.tsx
+   - Added `Supervisor: 2` to ROLE_RANK (same rank as WorkshopManager) - required for TypeScript's
+     `Record<StaffRole, number>` to compile once StaffRole gained the new member; same fix web
+     needed in SECTION 86.
+
+3. screens/JobCardDetailScreen.tsx (sed-replaced 3 occurrences from SECTION 86, plus new edits
+   this round):
+   - sed: 'WorkshopManager', 'DealerAdmin' -> 'WorkshopManager', 'Supervisor', 'DealerAdmin' across
+     all 3 hasRole/RequireRole-style checks on this screen (Customer password reset button, Update
+     Workflow Stage card visibility, canAssignTechnician) - same frontend/backend permission-parity
+     fix SECTION 86 made on web, so a Supervisor isn't silently blocked from something the backend
+     now allows them.
+   - REMOVED the standalone Invoice card and OTP-Based Closure card from this screen's render, per
+     your explicit request ("Invoice ... OTP Based Closure ... remove that 2 card in details page").
+     Invoice is still reachable via the header's "Print ▾" menu's own "Invoice" option (PrintMenu
+     component, unchanged, same role gate). InvoiceCard/ClosureCard are left defined in the file,
+     just no longer rendered - matching the exact convention web used for the same two cards in
+     SECTION 86 (kept for easy revert, not deleted).
+   - Assign Technician: was a free-text TextInput; now a PickerField dropdown fed by
+     GET /api/technicians?dealerId=&locationCode=jc.baplServiceLocationCode, mirroring web's
+     UpdateWorkflowStageCard exactly, including the same "legacy name not in the list" fallback
+     option (a previously-saved free-text name, or a since-deactivated Technician, stays selectable
+     so opening the picker never silently blanks/overwrites it on Save).
+   - Added the same "⚠ No Technician assigned yet - every stage update (including the automatic
+     ones above) will be refused until one is set below." warning banner web has, shown whenever
+     jc.assignedTechnicianName is empty - the backend gate (JobCardsController.RequireAssignedTechnician,
+     SECTION 86) applies identically to both platforms, so this warning needed to exist on both.
+
+4. screens/JobCardWizardScreen.tsx
+   - Added supervisorOptions/technicianOptions state + a fetch effect (GET
+     /api/technicians/supervisors and GET /api/technicians, both scoped by
+     dealerId+selectedWorkshopLocCode), positioned AFTER selectedWorkshopLocCode's own declaration -
+     learned from the TS2448/TS2454 "used before declaration" mistake SECTION 86 made on web the
+     first time, avoided here by getting the ordering right from the start.
+   - Replaced the free-text Supervisor/Technician <Field> inputs with <PickerField> dropdowns,
+     disabled until a Service Location is picked, with the same "no X set up for this location"
+     placeholder text used on web.
+   - Corrected the trailing "these fields let this job card be created inside DMS" helper text to
+     the DMS-independent wording (DMS write-back no longer exists per SECTION 86's #5).
+
+5. navigation/RootNavigator.tsx
+   - Added TechnicianEmployeesScreen import, `TechnicianEmployees: undefined` to
+     RootStackParamList, and a new <Stack.Screen name="TechnicianEmployees" .../> registration
+     (title "Technician Employee").
+
+6. screens/DashboardScreen.tsx
+   - Added the ONE role-gated ActionCard on this screen: "Technician Employee", shown only to
+     hasRole('Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'). Worth flagging: every
+     other ActionCard on this Dashboard is deliberately NOT role-gated (access control on Android
+     otherwise relies entirely on backend policy enforcement, not hidden buttons) - this is the one
+     intentional exception, since gating the entry point is the whole reason the new Supervisor role
+     exists (a plain WorkshopManager should not see this tab at all, not just be blocked server-side
+     if they somehow reach it).
+
+7. screens/TechnicianEmployeesScreen.tsx (NEW)
+   - Full CRUD screen mirroring web's TechnicianEmployeesPage.tsx: Name (TextInput) + Location
+     (PickerField, sourced from GET /api/bapl-dms/workshops) form, gated by
+     canManage = hasRole('Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'); an "include
+     inactive" Switch toggle; FlatList rows with Edit/Deactivate/Delete (Delete uses Alert.alert
+     confirmation, the RN equivalent of web's window.confirm).
+   - Same KNOWN GAP disclosed on web: no Corporate/System Admin cross-dealer view (this screen never
+     passes a dealerId param, so TechniciansController.List falls back to the logged-in user's own
+     dealer only).
+
+8. components/PartSuggestionSection.tsx
+   - Switched from BaplDmsPartStock/GET /api/bapl-dms/parts (required locationCode) to
+     JobCardsPartsCatalogRow/GET /api/jobcards/parts-catalog (locationCode now optional, only
+     affects whether availableQty gets enriched) - mirrors web's PartSuggestionCard change in
+     SECTION 86 exactly. Heading and "no Service Location" messaging updated to match web's wording.
+
+9. components/LabourSuggestionSection.tsx
+   - Switched from BaplDmsLabourRow/GET /api/bapl-dms/labour (Job Type/Service Head/Service
+     Type/dealerCode cascade + free-text q) to JobCardsLabourCatalogRow/GET
+     /api/jobcards/labour-catalog (search-only - JobCardsController.LabourCatalog's actual signature
+     is `[FromQuery] string? search`, no cascade concept exists on this app's own imported Labour
+     Master) - mirrors web's LabourSuggestionCard change in SECTION 86 exactly. Dropped the now-
+     meaningless jc.baplJobTypeId/baplServiceHeadId/baplServiceTypeId/baplDealerCode dependencies
+     from the search effect's dependency array (kept only `q`, debounced 300ms as before). Heading
+     changed from "Suggest labour (from DMS LabourMaster)" to "Suggest labour (from Labour Master)".
+     addSuggestion's POST body needed NO changes - JobCardsLabourCatalogRow carries the exact same
+     field names as BaplDmsLabourRow, so this was a type-rename plus endpoint/params change only.
+
+RN-SPECIFIC PATTERNS USED (for context, not code changes elsewhere):
+- PickerField (tap-to-open modal list) stands in for every web <select> in this round - Assign
+  Technician, Wizard Supervisor/Technician, Technician Employee's own Location field.
+- Alert.alert(...) stands in for web's window.confirm(...) on TechnicianEmployeesScreen's Delete
+  button.
+- No per-screen role guard exists in RootNavigator.tsx itself (unlike web's <RequireRole> route
+  wrapper) - Android's access control is DashboardScreen's ActionCard visibility (client-side
+  convenience only) plus backend policy enforcement (the actual gate). The Technician Employee
+  ActionCard gate above is the only Dashboard entry that does this; every other screen on Android is
+  reachable by any authenticated staff member, same as before this round.
+
+VERIFICATION:
+- No backend files touched this round - SECTION 86's backend verification still stands, unchanged.
+- Mobile: `cd mobile && npx tsc --noEmit -p tsconfig.json` -> exit 0, whole project, run after all
+  9 files above were in place. No ESLint/oxlint config exists for mobile (established earlier in
+  this project) - tsc is the only mobile lint/typecheck gate.
+- Please confirm on your end, on a real device/emulator (this sandbox cannot run the Expo app):
+  (1) the Technician Employee tab appears on the Dashboard only for Supervisor/DealerAdmin/
+  CorporateAdmin/SystemAdmin logins, and the Add/Edit form there actually saves; (2) the Job Card
+  Wizard's Supervisor/Technician pickers populate once you have real Supervisor/Technician rows for
+  a Service Location, same as SECTION 86 asked for web; (3) Part Suggestion/Labour Suggestion on a
+  real job card find real Item Master/Labour Master/Part Upload rows; (4) the Assign Technician
+  picker on Job Card Detail saves correctly and the "No Technician assigned yet" banner disappears
+  once one is picked; (5) the Invoice and OTP-Based Closure cards are gone from Job Card Detail, and
+  Invoice is still reachable from the header's Print ▾ menu.
+
+This closes out both the web/backend (SECTION 86) and Android (this section) halves of the original
+request. All platforms - backend, web, Android - are now in sync for this feature set.
+
+================================================================================================

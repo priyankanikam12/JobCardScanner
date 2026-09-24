@@ -3,7 +3,7 @@ import * as ImagePicker from 'expo-image-picker'
 import { Alert, Image, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'
 import { apiClient } from '../api/client'
 import { Badge } from './Badge'
-import type { BaplDmsPartStock, JobCardDetail, JobCardPhoto } from '../types'
+import type { JobCardDetail, JobCardPhoto, JobCardsPartsCatalogRow } from '../types'
 
 // Photo/video URLs come back from the API as a relative path (e.g.
 // "/uploads/jobcard-photos/.../x.jpg") - same origin as the API itself, not the app's own bundle.
@@ -13,15 +13,18 @@ const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? ''
 const photoSrc = (url: string) => (url.startsWith('http') ? url : `${API_BASE_URL}${url}`)
 
 /**
- * "Part Suggestion" panel - mirrors web/src/pages/staff/JobCardDetailPage.tsx's PartSuggestionCard
- * (Item 16 rework): a type-ahead search bound to item code/description, a Qty field, and a
- * Remove button per suggestion, instead of the old Paid/U-W-toggle-only version. Parts come live
- * from DMS's own PartsInventory for this job card's service location (GET
- * /api/bapl-dms/parts?locationCode=...); Description/HsnCode/Mrp are snapshotted onto the
- * suggestion at add time (POST .../part-suggestions), not re-fetched afterwards.
+ * "Part Suggestion" panel - mirrors web/src/pages/staff/JobCardDetailPage.tsx's PartSuggestionCard.
+ * A type-ahead search bound to item code/description, a Qty field, and a Remove button per
+ * suggestion. 2026-09-24 CHANGE ("Part Suggestion and Labour Suggestion that link with our
+ * labour-master, item-master and part-upload"): parts now come from this app's OWN Item Master +
+ * Part Upload data (GET /api/jobcards/parts-catalog?locationCode=... -
+ * JobCardsController.PartsCatalog) instead of DMS's live PartsInventory (the old
+ * GET /api/bapl-dms/parts) - consistent with job cards no longer being written into/read from DMS.
+ * Description/HsnCode/Mrp are snapshotted onto the suggestion at add time (POST
+ * .../part-suggestions), not re-fetched afterwards.
  */
 export function PartSuggestionSection({ jc, onChanged, estimatesLocked, totalLockReached }: { jc: JobCardDetail; onChanged: () => void; estimatesLocked: boolean; totalLockReached: boolean }) {
-  const [availableParts, setAvailableParts] = useState<BaplDmsPartStock[]>([])
+  const [availableParts, setAvailableParts] = useState<JobCardsPartsCatalogRow[]>([])
   const [search, setSearch] = useState('')
   const [itemCode, setItemCode] = useState('')
   const [qty, setQty] = useState('1')
@@ -29,9 +32,10 @@ export function PartSuggestionSection({ jc, onChanged, estimatesLocked, totalLoc
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    if (!jc.baplServiceLocationCode) { setAvailableParts([]); return }
+    // 2026-09-24: locationCode is now optional (only used for the availableQty enrichment) -
+    // fetched even with no Service Location on this job card, unlike the old DMS-scoped endpoint.
     apiClient
-      .get<BaplDmsPartStock[]>('/api/bapl-dms/parts', { params: { locationCode: jc.baplServiceLocationCode } })
+      .get<JobCardsPartsCatalogRow[]>('/api/jobcards/parts-catalog', { params: jc.baplServiceLocationCode ? { locationCode: jc.baplServiceLocationCode } : {} })
       .then(({ data }) => setAvailableParts(data))
       .catch(() => setAvailableParts([]))
   }, [jc.baplServiceLocationCode])
@@ -42,7 +46,7 @@ export function PartSuggestionSection({ jc, onChanged, estimatesLocked, totalLoc
     .filter((p) => p.itemCode.toLowerCase().includes(q) || (p.description ?? '').toLowerCase().includes(q))
     .slice(0, 20)
 
-  const pickPart = (p: BaplDmsPartStock) => {
+  const pickPart = (p: JobCardsPartsCatalogRow) => {
     setItemCode(p.itemCode)
     setSearch(`${p.itemCode}${p.description ? ' - ' + p.description : ''}`)
   }
@@ -123,9 +127,9 @@ export function PartSuggestionSection({ jc, onChanged, estimatesLocked, totalLoc
         </Text>
       ) : (
       <>
-      <Text style={styles.subheading}>Suggest a part (from DMS PartsInventory)</Text>
+      <Text style={styles.subheading}>Suggest a part (from Item Master{jc.baplServiceLocationCode ? ' / Part Upload' : ''})</Text>
       {!jc.baplServiceLocationCode && (
-        <Text style={styles.muted}>No DMS service location on this job card - part list unavailable.</Text>
+        <Text style={styles.muted}>No Service Location on this job card - Available Qty won't be shown (the part list itself still works).</Text>
       )}
 
       <TextInput
@@ -153,9 +157,7 @@ export function PartSuggestionSection({ jc, onChanged, estimatesLocked, totalLoc
         <View style={styles.pickerBox}>
           <View style={styles.pickerRow}>
             <Text style={[styles.pickerRowText, styles.muted]}>
-              {jc.baplServiceLocationCode
-                ? `Part number "${search.trim()}" does not exist for dealer location ${jc.baplServiceLocationCode}.`
-                : 'No DMS service location on this job card - part list unavailable.'}
+              {`Part number "${search.trim()}" does not exist in Item Master.`}
             </Text>
           </View>
         </View>

@@ -124,16 +124,22 @@ builder.Services.AddAuthorization(options =>
     static void RoleUp(Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder p, params string[] roles) =>
         p.AddAuthenticationSchemes(AuthSchemes.AzureAd, AuthSchemes.DealerJwt).RequireAuthenticatedUser().RequireClaim("app_role", roles);
 
-    options.AddPolicy(Policies.ServiceAdvisorUp, p => RoleUp(p, "ServiceAdvisor", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
-    options.AddPolicy(Policies.WorkshopManagerUp, p => RoleUp(p, "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
+    // 2026-09-24: "Supervisor" (new role, see StaffRole.Supervisor's doc comment) added to both of
+    // these - it keeps the exact same practical access WorkshopManager already has (that's what
+    // Designation="Supervisor" used to map onto before today), it's just now its own distinct role
+    // rather than a plain alias of WorkshopManager.
+    options.AddPolicy(Policies.ServiceAdvisorUp, p => RoleUp(p, "ServiceAdvisor", "Supervisor", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
+    options.AddPolicy(Policies.WorkshopManagerUp, p => RoleUp(p, "Supervisor", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
     options.AddPolicy(Policies.PartsUserUp, p => RoleUp(p, "PartsUser", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
     // See Policies.PartsReadUp's doc comment - union of ServiceAdvisorUp + PartsUserUp's roles,
     // read-only Part Upload access for Repair Bill/Material Transfer's part picker.
-    options.AddPolicy(Policies.PartsReadUp, p => RoleUp(p, "ServiceAdvisor", "PartsUser", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
+    options.AddPolicy(Policies.PartsReadUp, p => RoleUp(p, "ServiceAdvisor", "Supervisor", "PartsUser", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
     options.AddPolicy(Policies.CashierUp, p => RoleUp(p, "Cashier", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
     options.AddPolicy(Policies.DealerAdminUp, p => RoleUp(p, "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
     options.AddPolicy(Policies.CorporateAdminUp, p => RoleUp(p, "CorporateAdmin", "SystemAdmin"));
     options.AddPolicy(Policies.SystemAdminOnly, p => RoleUp(p, "SystemAdmin"));
+    // See Policies.SupervisorUp's own doc comment - deliberately excludes plain WorkshopManager.
+    options.AddPolicy(Policies.SupervisorUp, p => RoleUp(p, "Supervisor", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
 });
 
 // ---------------------------------------------------------------------
@@ -870,6 +876,45 @@ if (app.Environment.IsDevelopment())
     catch (Exception ex)
     {
         Console.WriteLine($"[Startup] WARNING: MaterialTransferDocItems ItemType/TechnicianId schema catch-up failed - {ex.Message}");
+    }
+}
+
+// ---------------------------------------------------------------------
+// TECHNICIAN EMPLOYEE (2026-09-24) - "this technician dont want to bid username and password for
+// that location wants to create technician" - the new login-less Technicians table (see
+// Models/Technicians.cs's own doc comment). Own try/catch block for the same isolation reason as
+// every other block in this file. NOTE: unrelated to MaterialTransferDocItems.TechnicianId just
+// above (a pre-existing, different feature that FKs to Users, not to this new table) - deliberately
+// not touched.
+// ---------------------------------------------------------------------
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
+    try
+    {
+        await db.Database.ExecuteSqlRawAsync(@"
+            IF OBJECT_ID('dbo.Technicians', 'U') IS NULL
+            BEGIN
+                CREATE TABLE dbo.Technicians (
+                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+                    DealerId UNIQUEIDENTIFIER NOT NULL,
+                    Name NVARCHAR(150) NOT NULL,
+                    LocationCode NVARCHAR(20) NOT NULL,
+                    LocationName NVARCHAR(200) NULL,
+                    Active BIT NOT NULL DEFAULT (1),
+                    CreatedById UNIQUEIDENTIFIER NULL,
+                    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+                    CONSTRAINT FK_Technicians_Dealers FOREIGN KEY (DealerId) REFERENCES dbo.Dealers(Id),
+                    CONSTRAINT FK_Technicians_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id)
+                );
+                CREATE INDEX IX_Technicians_DealerId_LocationCode ON dbo.Technicians(DealerId, LocationCode);
+            END
+        ");
+        Console.WriteLine("[Startup] Self-healing schema catch-up (Technicians table) checked/applied.");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Startup] WARNING: Technicians schema catch-up failed - {ex.Message}");
     }
 }
 

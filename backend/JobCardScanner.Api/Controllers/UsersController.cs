@@ -40,13 +40,23 @@ public class UsersController : ControllerBase
     /// cannot create a job card, cannot open Material Transfer or Repair Bill, cannot do most of
     /// what this app's Job Card Wizard/detail pages require. ServiceAdvisor is the lowest role
     /// that actually satisfies ServiceAdvisorUp (Create Job Card, Material Transfer, Repair Bill,
-    /// Part/Labour suggestion, ...), so that's what "Mechanic" resolves to. "Supervisor" maps to
-    /// WorkshopManager, a strict superset of ServiceAdvisor's access. Returns null (caller keeps
-    /// whatever Role was explicitly supplied) for a designation this map doesn't recognise.</summary>
+    /// Part/Labour suggestion, ...), so that's what "Mechanic" resolves to.
+    ///
+    /// 2026-09-24 CHANGE ("that Supervisor login which we create from Dealer Employees"):
+    /// "Supervisor" now maps to the new, distinct StaffRole.Supervisor - it used to map to
+    /// StaffRole.WorkshopManager (a plain alias). Supervisor keeps the same ServiceAdvisorUp/
+    /// WorkshopManagerUp access WorkshopManager already had (see Program.cs's policy table), PLUS
+    /// exclusive access to the new Technician Employee tab that WorkshopManager does not get - see
+    /// StaffRole.Supervisor's own doc comment. FACT, worth restating here: this mapping only runs
+    /// at Create/Update time (below) - it does NOT retroactively touch any User row already saved
+    /// with Role=WorkshopManager from the OLD mapping; that row keeps WorkshopManager (and does
+    /// not gain the new Technician-tab access) until someone next edits/re-saves it on the
+    /// Employees page. Returns null (caller keeps whatever Role was explicitly supplied) for a
+    /// designation this map doesn't recognise.</summary>
     private static StaffRole? RoleForDesignation(string? designation) => designation?.Trim() switch
     {
         "Mechanic" => StaffRole.ServiceAdvisor,
-        "Supervisor" => StaffRole.WorkshopManager,
+        "Supervisor" => StaffRole.Supervisor,
         _ => null,
     };
 

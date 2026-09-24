@@ -13,6 +13,21 @@ public enum StaffRole
     DealerAdmin,
     CorporateAdmin,
     SystemAdmin,
+    /// <summary>2026-09-24 ("that Supervisor login which we create from Dealer Employees that
+    /// supervisor when login then he have access to create Tecnician"): a new, distinct role for
+    /// the Employees page's "Supervisor" designation - previously "Supervisor" mapped onto
+    /// StaffRole.WorkshopManager (see UsersController.RoleForDesignation's old doc comment); it now
+    /// maps here instead, so a Supervisor login is no longer the same account as a WorkshopManager
+    /// one. Granted the same permission floor WorkshopManager had (see Program.cs's ServiceAdvisorUp/
+    /// WorkshopManagerUp policies, both now include Supervisor), PLUS exclusive access to the new
+    /// Technician Employee tab (TechniciansController, Policies.SupervisorUp) that WorkshopManager
+    /// does NOT get - see that controller's own doc comment for why. FACT: this does not retroactively
+    /// change any already-saved employee row - an existing Designation="Supervisor" employee keeps
+    /// their stored Role=WorkshopManager until that employee is next edited/re-saved on the
+    /// Employees page (see UsersController.Update's designation-drives-role logic), at which point
+    /// they'll switch to this new role and pick up its slightly different (Technician-tab-gaining)
+    /// permission set.</summary>
+    Supervisor,
 }
 
 /// <summary>How a <see cref="User"/> proves their identity. AzureAd = signs in via the

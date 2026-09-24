@@ -20,7 +20,7 @@ import { buildJobCardPrintHtml } from '../utils/printJobCard'
 import type {
   BaplDealerResolveResult, BaplDmsComplaint, BaplDmsDealer, BaplDmsJobSource, BaplDmsJobType,
   BaplDmsServiceHead, BaplDmsServiceType, BaplDmsVehicleLookup, BaplDmsVehicleSuggestion, BaplDmsWorkshop,
-  Customer, Dealer, JobCardPriority, JobCardSource, PhotoStage, ServiceType, Vehicle,
+  Customer, Dealer, JobCardPriority, JobCardSource, PhotoStage, ServiceType, SupervisorOption, Technician, Vehicle,
 } from '../types'
 import type { RootStackParamList } from '../navigation/RootNavigator'
 import { colors } from '../theme/colors'
@@ -341,6 +341,16 @@ export function JobCardWizardScreen({ navigation }: Props) {
   const [baplTechnicianName, setBaplTechnicianName] = useState('')
   const [baplManualJobNo, setBaplManualJobNo] = useState('')
 
+  // 2026-09-24 (mirrors web/src/pages/staff/JobCardWizardPage.tsx's own doc comment): Supervisor/
+  // Technician are now PickerField dropdowns fed from this dealer's own Employees (Users with
+  // Role=Supervisor - TechniciansController.Supervisors) and the new login-less Technician
+  // Employee roster (TechniciansController.List), both scoped to the Service Location picked below
+  // - not free text any more. Still stored as a plain name string for POST /api/jobcards, same
+  // field the backend has always accepted. The fetch effect lives further down, after
+  // selectedWorkshopLocCode is declared.
+  const [supervisorOptions, setSupervisorOptions] = useState<SupervisorOption[]>([])
+  const [technicianOptions, setTechnicianOptions] = useState<Technician[]>([])
+
   const [jobTypes, setJobTypes] = useState<BaplDmsJobType[]>([])
   const [serviceHeads, setServiceHeads] = useState<BaplDmsServiceHead[]>([])
   const [serviceTypes, setServiceTypes] = useState<BaplDmsServiceType[]>([])
@@ -401,6 +411,21 @@ export function JobCardWizardScreen({ navigation }: Props) {
       })
       .catch(() => setWorkshops([]))
   }, [effectiveDealerId, profile?.workLocationCodes])
+
+  // Re-fetched whenever the dealer or the selected workshop location changes; a location change
+  // also clears whichever Supervisor/Technician name was picked under the PREVIOUS location, since
+  // either one scoped to one workshop isn't necessarily valid staff at another - mirrors web.
+  useEffect(() => {
+    setBaplSupervisorName('')
+    setBaplTechnicianName('')
+    if (!effectiveDealerId || !selectedWorkshopLocCode) { setSupervisorOptions([]); setTechnicianOptions([]); return }
+    apiClient.get<SupervisorOption[]>('/api/technicians/supervisors', { params: { dealerId: effectiveDealerId, locationCode: selectedWorkshopLocCode } })
+      .then(({ data }) => setSupervisorOptions(data))
+      .catch(() => setSupervisorOptions([]))
+    apiClient.get<Technician[]>('/api/technicians', { params: { dealerId: effectiveDealerId, locationCode: selectedWorkshopLocCode } })
+      .then(({ data }) => setTechnicianOptions(data))
+      .catch(() => setTechnicianOptions([]))
+  }, [effectiveDealerId, selectedWorkshopLocCode])
 
   useEffect(() => {
     if (selectedWorkshopLocCode || workshops.length === 0) return
@@ -786,6 +811,8 @@ export function JobCardWizardScreen({ navigation }: Props) {
   const serviceHeadOptions: PickerOption[] = serviceHeads.map((h) => ({ label: h.name, value: String(h.id) }))
   const serviceTypeOptions: PickerOption[] = serviceTypes.map((t) => ({ label: t.name, value: String(t.id) }))
   const workshopOptions: PickerOption[] = workshops.map((w) => ({ label: `${w.locName} (${w.locCode})`, value: w.locCode }))
+  const supervisorPickOptions: PickerOption[] = supervisorOptions.map((s) => ({ label: s.name, value: s.name }))
+  const technicianPickOptions: PickerOption[] = technicianOptions.map((t) => ({ label: t.name, value: t.name }))
   const jobSourceOptions: PickerOption[] = jobSources.map((s) => ({ label: s.name, value: String(s.id) }))
   const complaintPickOptions: PickerOption[] = complaintOptions.map((c) => ({ label: c.name, value: String(c.id) }))
   const priorityOptions: PickerOption[] = (['Normal', 'High', 'Urgent'] as JobCardPriority[]).map((p) => ({ label: p, value: p }))
@@ -1074,11 +1101,33 @@ export function JobCardWizardScreen({ navigation }: Props) {
             <PickerField label="Service Type *" value={selectedServiceTypeId != null ? String(selectedServiceTypeId) : ''} options={serviceTypeOptions} disabled={!selectedServiceHeadId} placeholder={selectedServiceHeadId ? 'Select service type…' : 'Select a service head first'} onChange={(v) => setSelectedServiceTypeId(v ? Number(v) : null)} />
             <PickerField label="Priority *" value={priority} options={priorityOptions} onChange={(v) => setPriority(v as JobCardPriority)} />
             <PickerField label="Service Location (workshop) *" value={selectedWorkshopLocCode} options={workshopOptions} disabled={!effectiveDealerId} placeholder={workshops.length ? 'Select workshop…' : 'No workshops found for this dealer yet'} onChange={onWorkshopChange} />
-            <Field label="Supervisor *" value={baplSupervisorName} onChangeText={setBaplSupervisorName} placeholder="Supervisor name" />
-            <Field label="Technician *" value={baplTechnicianName} onChangeText={setBaplTechnicianName} placeholder="Technician name" />
+            {/* 2026-09-24 CHANGE (mirrors web): Supervisor/Technician are now dropdowns scoped to
+               the Service Location above, fed from Admin -> Employees (Designation: Supervisor)
+               and the new Technician Employee tab, instead of free text. */}
+            <PickerField
+              label="Supervisor *"
+              value={baplSupervisorName}
+              options={supervisorPickOptions}
+              disabled={!selectedWorkshopLocCode}
+              placeholder={selectedWorkshopLocCode ? (supervisorPickOptions.length ? 'Select supervisor…' : 'No Supervisor set up for this location yet') : 'Select a Service Location first'}
+              onChange={setBaplSupervisorName}
+            />
+            <PickerField
+              label="Technician *"
+              value={baplTechnicianName}
+              options={technicianPickOptions}
+              disabled={!selectedWorkshopLocCode}
+              placeholder={selectedWorkshopLocCode ? (technicianPickOptions.length ? 'Select technician…' : 'No Technician set up for this location yet') : 'Select a Service Location first'}
+              onChange={setBaplTechnicianName}
+            />
             <Field label="Manual Job No." value={baplManualJobNo} onChangeText={setBaplManualJobNo} placeholder="e.g. 0" />
             <PickerField label="Source *" value={selectedJobSourceId != null ? String(selectedJobSourceId) : ''} options={jobSourceOptions} placeholder="Select source…" onChange={onJobSourceChange} />
-            <Text style={styles.muted}>All fields above are required - they are what let this job card also be created directly inside DMS's own database.</Text>
+            {/* 2026-09-24 CHANGE ("dont save this jobcard in dms remove this all over flow that
+               save in jobcard db only"): this job card is saved in JobCardScanner ONLY. These
+               fields are still required for this job card's own records (Job Type/Source drive
+               ServiceType/Source, Service Location scopes Supervisor/Technician above) - not
+               because they feed a DMS write-back any more. */}
+            <Text style={styles.muted}>All fields above are required for this job card's own records. Service Location also determines which Supervisor/Technician are offered above.</Text>
           </View>
 
           <Field label="Battery level at check-in (%)" value={batteryLevel} keyboardType="numeric" onChangeText={setBatteryLevel} />

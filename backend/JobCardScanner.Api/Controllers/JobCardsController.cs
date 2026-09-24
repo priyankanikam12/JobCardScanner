@@ -28,12 +28,24 @@ public class JobCardsController : ControllerBase
     private readonly IEstimatePdfService _estimatePdf;
     private readonly IEmailClient _email;
     private readonly ILogger<JobCardsController> _logger;
+    // 2026-09-24 ("link with our labour-master, item-master and part-upload in that page and fetch
+    // details"): Part Suggestion/Labour Suggestion's picker data now comes from these THREE local
+    // services instead of DMS's live PartsInventory/LabourMaster (see PartsCatalog/LabourCatalog
+    // below) - consistent with dropping DMS involvement from the job card flow generally. Distinct
+    // from _baplDms above (BAPLDMSvad, the live job-card DMS this controller no longer writes to at
+    // all) - these three read BAPL's separate reference/catalog data (baplfinal's C_ItemMaster,
+    // DMSBAPLDATA's LabourMaster/PartWiseLabourMaster) or this app's OWN uploaded stock
+    // (PartUploads), none of which is "the job card" itself.
+    private readonly IBaplDealerService _baplDealer;
+    private readonly ILabourMasterImportService _labourMaster;
+    private readonly IPartUploadService _partUploads;
 
     public JobCardsController(
         JobCardScannerDbContext db, ICurrentUserService currentUser, IJobCardNumberingService numbering,
         IErpClient erp, INotificationClient notifications, IOtpService otp, IAuditLogService audit,
         IWebHostEnvironment env, IBaplDmsService baplDms, IInvoicePdfService invoicePdf,
-        IEstimatePdfService estimatePdf, IEmailClient email, ILogger<JobCardsController> logger)
+        IEstimatePdfService estimatePdf, IEmailClient email, ILogger<JobCardsController> logger,
+        IBaplDealerService baplDealer, ILabourMasterImportService labourMaster, IPartUploadService partUploads)
     {
         _db = db;
         _currentUser = currentUser;
@@ -48,7 +60,100 @@ public class JobCardsController : ControllerBase
         _estimatePdf = estimatePdf;
         _email = email;
         _logger = logger;
+        _baplDealer = baplDealer;
+        _labourMaster = labourMaster;
+        _partUploads = partUploads;
     }
+
+    // ---------------- Part Suggestion / Labour Suggestion picker data (2026-09-24) ----------------
+    /// <summary>GET /api/jobcards/parts-catalog?q=&locationCode= - replaces the old
+    /// GET /api/bapl-dms/parts?locationCode= (DMS's live PartsInventory) as Part Suggestion's
+    /// search source. Item code/description/HSN/MRP/GST come from ItemMasterController's own
+    /// source (BAPL's C_ItemMaster, via IBaplDealerService.SearchItemMasterAsync - the same catalog
+    /// Material Transfer/Repair Bill already price against); "available qty" is best-effort
+    /// enriched from this dealer's own uploaded Part Upload data for the given location when a
+    /// matching PartNo exists there (locationCode optional - omit it to search without a stock
+    /// hint). Gated ServiceAdvisorUp, same floor as AddPartSuggestion itself.</summary>
+    [HttpGet("parts-catalog")]
+    [Authorize(Policy = Policies.ServiceAdvisorUp)]
+    public async Task<IActionResult> PartsCatalog([FromQuery] string? q, [FromQuery] string? locationCode)
+    {
+        IReadOnlyList<BaplItemMasterRow> items;
+        try
+        {
+            items = await _baplDealer.SearchItemMasterAsync(q, HttpContext.RequestAborted);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "PartsCatalog: could not read item master (q: {Q})", q);
+            return StatusCode(502, new { message = ex.Message });
+        }
+
+        Dictionary<string, decimal> availableQtyByCode = new(StringComparer.OrdinalIgnoreCase);
+        if (_currentUser.DealerId.HasValue && !string.IsNullOrWhiteSpace(locationCode))
+        {
+            var uploads = await _partUploads.GetAsync(_currentUser.DealerId.Value, locationCode, null, HttpContext.RequestAborted);
+            foreach (var u in uploads)
+                if (!string.IsNullOrWhiteSpace(u.PartNo) && u.BalQty.HasValue)
+                    availableQtyByCode[u.PartNo] = u.BalQty.Value;
+        }
+
+        return Ok(items.Select(i => new
+        {
+            itemCode = i.ItemCode,
+            description = i.DisplayName ?? i.ItemName,
+            hsnCode = i.HsnCode,
+            mrp = i.DlrPrice,
+            sgst = i.Sgst,
+            cgst = i.Cgst,
+            igst = i.Igst,
+            availableQty = availableQtyByCode.TryGetValue(i.ItemCode, out var qty) ? (int?)qty : null,
+        }));
+    }
+
+    /// <summary>GET /api/jobcards/labour-catalog?search= - replaces the old
+    /// GET /api/bapl-dms/labour as Labour Suggestion's search source. Unions LabourMaster
+    /// (without-partwise) and PartWiseLabourMaster, same as the old endpoint did, but reading
+    /// through ILabourMasterImportService directly rather than LabourMasterController (which is
+    /// gated WorkshopManagerUp - too narrow for a plain ServiceAdvisor, who needs this for Labour
+    /// Suggestion) - mirrors MaterialTransferDocsController.LabourByPartCode's own established
+    /// precedent for exactly this situation (see that method's doc comment).</summary>
+    [HttpGet("labour-catalog")]
+    [Authorize(Policy = Policies.ServiceAdvisorUp)]
+    public async Task<IActionResult> LabourCatalog([FromQuery] string? search)
+    {
+        try
+        {
+            var withoutPartwise = await _labourMaster.GetWithoutPartwiseAsync(search, HttpContext.RequestAborted);
+            var partwise = await _labourMaster.GetPartwiseAsync(search, HttpContext.RequestAborted);
+            var combined = withoutPartwise
+                .Select(r => new { id = (object)r.Id, labourCode = r.LabourCode, labourDescription = r.JobDescription, hsnCode = (string?)null, labourRate = r.LabourRate, sgst = r.Sgst, cgst = r.Cgst, igst = r.Igst, partCode = (string?)null, partDescription = (string?)null })
+                .Concat(partwise.Select(r => new { id = (object)r.Id, labourCode = r.LabourCode, labourDescription = r.JobDescription, hsnCode = (string?)null, labourRate = r.LabourRate, sgst = r.Sgst, cgst = r.Cgst, igst = r.Igst, partCode = r.PartCode, partDescription = r.PartName }));
+            return Ok(combined);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "LabourCatalog failed (search: {Search})", search);
+            return StatusCode(502, new { message = ex.Message });
+        }
+    }
+
+    /// <summary>2026-09-24 ("the in jobcard we update stage for every Update Workflow Stage for
+    /// evry stage before start required Assign Technician name update"): shared gate for every
+    /// action that changes (or can auto-advance) a job card's workflow stage - the manual
+    /// ChangeStage endpoint AND every automatic trigger (StartWorklog, AddPartSuggestion,
+    /// AddLabourSuggestion). Per explicit choice ("every stage change, including the automatic
+    /// ones"), ALL of these are now blocked outright - the whole action is refused with 400, not
+    /// just the stage-advance silently skipped - until a Technician has been assigned via
+    /// JobCard.AssignedTechnicianName (the Job Card Detail page's own "Assign Technician" field,
+    /// now fed by the new Technician Employee dropdown - see TechniciansController). Deliberately
+    /// NOT applied to SyncClosedFromDmsAsync's own stage-advance call below - that one reflects
+    /// DMS's own observed state on a legacy DMS-linked job card, not a user-initiated action, and
+    /// refusing it would leave a job card stuck showing a stale status for no actionable reason.</summary>
+    private IActionResult? RequireAssignedTechnician(JobCard jc) =>
+        string.IsNullOrWhiteSpace(jc.AssignedTechnicianName)
+            ? BadRequest(new { message = "Assign a Technician to this job card first (Update Workflow Stage -> Assign Technician) before doing this." })
+            : null;
 
     // ---------------- List / search / global search ----------------
     [HttpGet]
@@ -454,73 +559,42 @@ public class JobCardsController : ControllerBase
             }
         }
 
-        // ---------------- DMS is now the sole source of truth: create there FIRST ----------------
-        // 2026-09-05: this used to be a best-effort step at the very end of Create() - the local job
-        // card was always saved regardless, and a DMS failure just surfaced as a non-blocking
-        // baplSyncWarning. Per explicit request, JobCardScanner must stop being able to create a job
-        // card DMS doesn't know about: nothing is saved anywhere (no local row, no vehicle
-        // odometer bump, no ERP push, no SMS) unless this DMS write-back succeeds first. The local
-        // JobCard row created below is now purely a same-transaction mirror/attachment point for
-        // DMS's own record (see Models/JobCard.cs's updated class doc comment) - it exists only to
-        // give JobCardScanner-only features (Photos, Worklogs, QC checklist, stage history, Part/
-        // Labour Suggestions) something to attach to, and its JobCardNumber is DMS's own
-        // JobPrefix+JobNo, not a JobCardScanner-generated one.
+        // ---------------- 2026-09-24 CHANGE: DMS write-back REMOVED ("dont save this jobcard in
+        // dms remove this all over flow that save in jobcard db only") ----------------
+        // This used to be mandatory (2026-09-05's "DMS is now the sole source of truth" design,
+        // itself a reversal of an even earlier best-effort design - see git history/the README for
+        // both prior rounds): nothing was saved anywhere unless _baplDms.CreateJobCardAsync
+        // succeeded first. Per this explicit new instruction, that is reversed again: a job card is
+        // now saved ONLY into JobCardScanner's own database, exactly as every other feature in this
+        // app already does (Repair Bill, Material Transfer, ...) - DMS's JobCardHeader is never
+        // written to from here at all any more. FACT/consequence: BaplJobCardHeaderId/BaplJobNo/
+        // BaplSyncStatus/BaplSyncError (still present on the JobCard model/DB column for OLD rows
+        // that DO have DMS data from before this change) are simply left null on every new row -
+        // there is no longer any code path that sets them. JobCardNumber goes back to being
+        // generated locally (_numbering.NextJobCardNumberAsync), same as it worked before the
+        // 2026-09-05 change. Job Type/Service Head/Service Type/Service Location are no longer
+        // REQUIRED to create a job card (they existed only because DMS needed them) - they stay as
+        // OPTIONAL descriptive fields on the wizard, still useful for Print/reporting.
+        //
+        // Deliberately KEPT: the read-only "does DMS already show an open job card for this
+        // chassis" check just above (GetOpenJobCardForChassisAsync) - that is a duplicate-work
+        // safety READ, not a save, and dropping it would let the same vehicle be opened here while
+        // it's still genuinely open in DMS, which is a real risk this app has no other way to catch
+        // (DMS's job cards and JobCardScanner's are now two entirely separate, unlinked systems).
+        // Flagged as an Interpretation - tell me if you'd rather this check go too, now that job
+        // cards are otherwise fully decoupled from DMS.
         var customer = await _db.Customers.AsNoTracking().FirstOrDefaultAsync(c => c.Id == req.CustomerId);
-        if (string.IsNullOrWhiteSpace(dealerBaplCode))
-            return BadRequest(new { message = "This dealer isn't linked to DMS yet, so a job card can't be created for it. Link the dealer to DMS first (see the Job Card Wizard's dealer search)." });
-        if (!req.BaplJobTypeId.HasValue || !req.BaplServiceHeadId.HasValue || !req.BaplServiceTypeId.HasValue)
-            return BadRequest(new { message = "Job Type, Service Head and Service Type are required - DMS needs all three to create the job card there." });
 
         // 2026-09-17 "Employees" page - Work Area location scoping (see User.WorkLocationCodes's
         // doc comment). Empty WorkLocationCodes = unrestricted, unchanged from before this feature.
-        // A user WITH assigned locations can only create a job card at one of them.
+        // A user WITH assigned locations can only create a job card at one of them. Kept unchanged -
+        // this is JobCardScanner's own access control, unrelated to the DMS write-back removed
+        // above - but now only enforced when a Service Location was actually picked (it's optional
+        // now, see above), since there's nothing to scope-check against otherwise.
         var allowedLocations = _currentUser.WorkLocationCodes;
-        if (allowedLocations.Count > 0 && (string.IsNullOrWhiteSpace(req.BaplServiceLocationCode) || !allowedLocations.Contains(req.BaplServiceLocationCode, StringComparer.OrdinalIgnoreCase)))
+        if (allowedLocations.Count > 0 && !string.IsNullOrWhiteSpace(req.BaplServiceLocationCode)
+            && !allowedLocations.Contains(req.BaplServiceLocationCode, StringComparer.OrdinalIgnoreCase))
             return StatusCode(403, new { message = "You're not assigned to this service location. Ask your admin to add it under your Work Area on Admin -> Users." });
-
-        BaplDmsCreateJobCardResult dmsResult;
-        try
-        {
-            dmsResult = await _baplDms.CreateJobCardAsync(new BaplDmsCreateJobCardRequest(
-                DealerCode: dealerBaplCode,
-                JobTypeId: req.BaplJobTypeId.Value,
-                ServiceHeadId: req.BaplServiceHeadId.Value,
-                ServiceHeadName: req.BaplServiceHeadName ?? "",
-                ServiceTypeId: req.BaplServiceTypeId.Value,
-                ServiceTypeName: req.BaplServiceTypeName ?? "",
-                ServiceLocationCode: req.BaplServiceLocationCode,
-                ChassisNo: vehicle.Vin ?? "",
-                RegisterNo: vehicle.RegNo,
-                ModelName: vehicle.Model,
-                VehicleKms: (int)req.OdometerAtCheckIn,
-                Supervisor: req.BaplSupervisorName,
-                Technician: req.BaplTechnicianName,
-                ManualJobNo: req.BaplManualJobNo,
-                CustomerName: customer?.Name,
-                CustomerMobile: customer?.Mobile,
-                CustomerLedgerId: req.BaplCustomerLedgerId,
-                MotorNo: vehicle.MotorNo,
-                BatteryNo: vehicle.BatteryNo,
-                ControllerNo: vehicle.ControllerNo,
-                ConverterNo: vehicle.ConverterNo,
-                ChargerNo: vehicle.ChargerNo,
-                SaleDate: null,
-                InsuranceExpDate: vehicle.InsuranceExpiry,
-                NextServiceDueDate: vehicle.NextServiceDueDate,
-                ExpectedDeliveryAt: req.ExpectedDeliveryAt,
-                Complaints: req.Complaints.Select(c => c.Description).ToList(),
-                CreatedBy: $"JobCardScanner:{_currentUser.UserId}",
-                JobSourceId: req.BaplJobSourceId,
-                Priority: req.Priority.ToString(),
-                CouponNo: req.BaplCouponNo,
-                JobCategory: req.BaplJobCategory),
-                HttpContext.RequestAborted);
-        }
-        catch (InvalidOperationException ex)
-        {
-            _logger.LogWarning(ex, "Could not create this job card in DMS - nothing was saved");
-            return StatusCode(502, new { message = $"Could not create this job card in DMS: {ex.Message}" });
-        }
 
         var firstStage = await _db.WorkflowStages.AsNoTracking()
             .Where(s => (s.DealerId == null || s.DealerId == req.DealerId) && s.Active)
@@ -528,10 +602,9 @@ public class JobCardsController : ControllerBase
 
         var jobCard = new JobCard
         {
-            // DMS is now the source of truth for the job card's own number - see this method's
-            // updated doc comment above. _numbering.NextJobCardNumberAsync is no longer called for
-            // new rows (old rows keep whatever number they were already given).
-            JobCardNumber = $"{dmsResult.JobNo}",
+            // Local numbering again (JC/{dealer code}/{FY}/{seq}) - see this method's doc comment
+            // above for why the DMS-derived number is no longer used for new rows.
+            JobCardNumber = await _numbering.NextJobCardNumberAsync(req.DealerId),
             DealerId = req.DealerId,
             CustomerId = req.CustomerId,
             VehicleId = req.VehicleId,
@@ -556,11 +629,8 @@ public class JobCardsController : ControllerBase
             BaplServiceLocationCode = req.BaplServiceLocationCode,
             BaplJobSourceId = req.BaplJobSourceId,
             BaplJobSourceName = req.BaplJobSourceName,
-            // Set immediately from the DMS result above, not in a later best-effort step - a
-            // JobCard row can no longer exist without these being set.
-            BaplJobCardHeaderId = dmsResult.JobCardHeaderId,
-            BaplJobNo = dmsResult.JobNo,
-            BaplSyncStatus = "Synced",
+            // No BaplJobCardHeaderId/BaplJobNo/BaplSyncStatus - this job card was never written to
+            // DMS, see this method's doc comment above.
             Status = JobCardStatus.Open,
             CurrentStageId = firstStage?.Id,
             CreatedById = _currentUser.UserId,
@@ -600,48 +670,21 @@ public class JobCardsController : ControllerBase
         // from AssignedTechnicianName below, and stays local; DMS has no equivalent.
         if (req.AssignedTechnicianId.HasValue) jc.AssignedTechnicianId = req.AssignedTechnicianId;
 
-        // 2026-09-05: AssignedTechnicianName/Priority/ExpectedDeliveryAt are no longer
-        // JobCardScanner-local-only fields - DMS's own JobCardHeader already has
-        // Technician/Priority/EstdelDate+EstdelTime columns for these, so per explicit decision they
-        // now write straight there (BaplDmsService.UpdateJobCardAsync) instead of only living in
-        // JobCardScannerDb. Every job card is guaranteed to have a BaplJobCardHeaderId (Create() no
-        // longer allows one to exist without it - see Create()'s own doc comment), so this is never
-        // expected to hit the "no DMS link" branch below for a row created after that change.
-        // A DMS failure fails this whole request - no silently-local-only value DMS never sees.
-        var technicianNameProvided = req.AssignedTechnicianName is not null;
-        var priorityProvided = req.Priority.HasValue;
-        var etaProvided = req.ExpectedDeliveryAt.HasValue;
-        if (technicianNameProvided || priorityProvided || etaProvided)
-        {
-            if (!jc.BaplJobCardHeaderId.HasValue)
-                return StatusCode(502, new { message = "This job card has no DMS link - technician/priority/expected delivery can't be updated." });
-
-            // Free-text technician name (see JobCard.AssignedTechnicianName's doc comment) - the Job
-            // Card Detail page's "Assign Technician" field types a name directly rather than picking
-            // from a User dropdown, since there's no confirmed technician catalog to populate one
-            // from. An empty string clears it, same as before.
-            var trimmedTechnicianName = string.IsNullOrWhiteSpace(req.AssignedTechnicianName) ? "" : req.AssignedTechnicianName!.Trim();
-            try
-            {
-                await _baplDms.UpdateJobCardAsync(jc.BaplJobCardHeaderId.Value, new BaplDmsUpdateJobCardRequest(
-                    Technician: technicianNameProvided ? trimmedTechnicianName : null,
-                    ExpectedDeliveryAt: etaProvided ? req.ExpectedDeliveryAt : null,
-                    Priority: priorityProvided ? req.Priority!.Value.ToString() : null),
-                    HttpContext.RequestAborted);
-            }
-            catch (InvalidOperationException ex)
-            {
-                _logger.LogWarning(ex, "Could not update job card {JobCardId} in DMS", jc.Id);
-                return StatusCode(502, new { message = $"Could not update this job card in DMS: {ex.Message}" });
-            }
-
-            // Mirror the same values into the local row too, purely as a fast-read cache for
-            // List()/Get() (so every list/detail render doesn't need a live DMS round-trip) - DMS
-            // above is what's actually authoritative; this is never the only place a value is saved.
-            if (technicianNameProvided) jc.AssignedTechnicianName = string.IsNullOrWhiteSpace(trimmedTechnicianName) ? null : trimmedTechnicianName;
-            if (priorityProvided) jc.Priority = req.Priority!.Value;
-            if (etaProvided) jc.ExpectedDeliveryAt = req.ExpectedDeliveryAt;
-        }
+        // 2026-09-24 CHANGE ("dont save this jobcard in dms remove this all over flow that save in
+        // jobcard db only"): AssignedTechnicianName/Priority/ExpectedDeliveryAt go back to being
+        // JobCardScanner-local-only fields, saved ONLY here - the 2026-09-05 design this replaces
+        // wrote them straight into DMS's own JobCardHeader (BaplDmsService.UpdateJobCardAsync) and
+        // REFUSED to save at all if the job card had no BaplJobCardHeaderId. Since Create() no
+        // longer links any new job card to DMS at all (see Create()'s own doc comment), that old
+        // behavior would now 502-refuse this save for every job card created after that change -
+        // this rewrite removes the DMS call and the BaplJobCardHeaderId requirement entirely, so
+        // Assign Technician/Priority/Expected Delivery work the same for every job card regardless
+        // of whether it happens to carry old DMS-linkage data from before this change.
+        var trimmedTechnicianName = req.AssignedTechnicianName is null ? null
+            : string.IsNullOrWhiteSpace(req.AssignedTechnicianName) ? null : req.AssignedTechnicianName.Trim();
+        if (req.AssignedTechnicianName is not null) jc.AssignedTechnicianName = trimmedTechnicianName;
+        if (req.Priority.HasValue) jc.Priority = req.Priority.Value;
+        if (req.ExpectedDeliveryAt.HasValue) jc.ExpectedDeliveryAt = req.ExpectedDeliveryAt;
         jc.UpdatedAt = DateTime.UtcNow;
 
         await _db.SaveChangesAsync();
@@ -657,6 +700,8 @@ public class JobCardsController : ControllerBase
         var jc = await _db.JobCards.Include(j => j.StageHistory).FirstOrDefaultAsync(j => j.Id == id);
         var stage = await _db.WorkflowStages.AsNoTracking().FirstOrDefaultAsync(s => s.Id == req.StageId);
         if (jc is null || stage is null) return NotFound();
+        var technicianGate = RequireAssignedTechnician(jc);
+        if (technicianGate is not null) return technicianGate;
 
         var openHistory = jc.StageHistory.Where(h => h.ExitedAt == null).OrderByDescending(h => h.EnteredAt).FirstOrDefault();
         if (openHistory is not null) openHistory.ExitedAt = DateTime.UtcNow;
@@ -828,6 +873,8 @@ public class JobCardsController : ControllerBase
     {
         var jc = await _db.JobCards.FirstOrDefaultAsync(j => j.Id == id);
         if (jc is null) return NotFound();
+        var technicianGate = RequireAssignedTechnician(jc);
+        if (technicianGate is not null) return technicianGate;
 
         var log = new JobCardWorklog { JobCardId = id, TechnicianId = req.TechnicianId, TaskDescription = req.TaskDescription };
         _db.JobCardWorklogs.Add(log);
@@ -1142,6 +1189,8 @@ public class JobCardsController : ControllerBase
     {
         var jc = await _db.JobCards.FirstOrDefaultAsync(j => j.Id == id);
         if (jc is null) return NotFound();
+        var technicianGate = RequireAssignedTechnician(jc);
+        if (technicianGate is not null) return technicianGate;
         if (string.IsNullOrWhiteSpace(req.ItemCode)) return BadRequest(new { message = "itemCode is required." });
         if (req.Status != "Paid" && req.Status != "U/W") return BadRequest(new { message = "status must be 'Paid' or 'U/W'." });
 
@@ -1232,6 +1281,8 @@ public class JobCardsController : ControllerBase
     {
         var jc = await _db.JobCards.FirstOrDefaultAsync(j => j.Id == id);
         if (jc is null) return NotFound();
+        var technicianGate = RequireAssignedTechnician(jc);
+        if (technicianGate is not null) return technicianGate;
         if (string.IsNullOrWhiteSpace(req.LabourCode)) return BadRequest(new { message = "labourCode is required." });
         if (req.Quantity < 1) return BadRequest(new { message = "quantity must be at least 1." });
 

@@ -47,7 +47,7 @@ const TILES: { key: keyof DashboardKpis; label: string; icon: string; to: JobCar
 ]
 
 export function DashboardScreen({ navigation }: Props) {
-  const { profile } = useStaffAuth()
+  const { profile, hasRole } = useStaffAuth()
   const [kpis, setKpis] = useState<DashboardKpis | null>(null)
   const [refreshing, setRefreshing] = useState(false)
 
@@ -126,6 +126,12 @@ export function DashboardScreen({ navigation }: Props) {
           {/* 2026-09-23 - new list screen for bills already saved in JobCardScanner, split out of
              the Repair Bill create screen above. */}
           <ActionCard title="Repair Bill List" subtitle="Saved repair bills - view, edit, Save as Invoice" onPress={() => navigation.navigate('RepairBillList')} />
+          {/* 2026-09-24 - deliberately role-gated (unlike every other ActionCard on this screen,
+             none of which check hasRole) - see TechnicianEmployeesScreen.tsx's own doc comment for
+             why: this tab is the one access difference the new Supervisor role exists to create. */}
+          {hasRole('Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
+            <ActionCard title="Technician Employee" subtitle="Login-less technician roster for Job Card dropdowns" onPress={() => navigation.navigate('TechnicianEmployees')} />
+          )}
         </View>
       </ScrollView>
     </View>
