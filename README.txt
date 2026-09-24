@@ -2846,3 +2846,58 @@ This closes out both the web/backend (SECTION 86) and Android (this section) hal
 request. All platforms - backend, web, Android - are now in sync for this feature set.
 
 ================================================================================================
+
+================================================================================================
+SECTION 88 - BUG FIX: newly created job cards were invisible in the app's own Job Cards list
+================================================================================================
+Date: 24.09.2026
+Reported by: you, from `select * from JobCards` showing job card JC/288/26-27/0010 (created after
+today's Android/SECTION 86 changes) with BaplJobCardHeaderId/BaplJobNo/BaplSyncStatus all NULL -
+present in the raw JobCards table, but not appearing in DMS's own job card list, and (this is the
+part that was actually a bug, not by design) not appearing in JobCardScanner's own Job Cards list
+or detail page either.
+
+FACT - root cause: on 2026-09-24 (SECTION 86), Create() was changed to stop writing to BAPL DMS
+entirely - a new job card is now saved only into JobCardScanner's own database, and its doc comment
+in Create() explicitly says BaplJobCardHeaderId/BaplJobNo/BaplSyncStatus are "simply left null on
+every new row - there is no longer any code path that sets them." That part of SECTION 86 is
+correct and working exactly as intended - a job card genuinely never reaches DMS now, so it
+correctly does not show up in BAPL DMS's own job card list. That is expected, not a bug.
+
+The bug: List() and Get() (Controllers/JobCardsController.cs) still carried a `.Where(j =>
+j.BaplJobCardHeaderId != null)` filter from an EARLIER, since-reversed design (2026-09-05's "DMS is
+the sole source of truth" rule, from before the "Make BAPL DMS the sole source of truth for job
+cards" plan was itself reversed by SECTION 86). That filter was never removed when Create() stopped
+setting BaplJobCardHeaderId, so it silently excluded EVERY job card created since SECTION 86 shipped
+from both the Job Cards list (List()) and the Job Card Detail page (Get(), which 404'd). The row
+itself, and everything on it (stage history, photos, part/labour suggestions, worklogs), was never
+lost - it just could never be viewed through the app's own screens. Any job card created between
+whenever SECTION 86's Create() change went live and this fix is affected the same way.
+
+FIX - Controllers/JobCardsController.cs:
+- List(): removed the `.Where(j => j.BaplJobCardHeaderId != null)` filter and its now-inaccurate
+  2026-09-05 comment; replaced with a 2026-09-24 FIX comment explaining why it's gone.
+- Get(): removed the matching `&& j.BaplJobCardHeaderId != null` condition on the same grounds - a
+  job card with no DMS link no longer 404s when opened.
+- Search()'s doc comment (the Repair Bill/Material Transfer "Job Search" picker, which was already
+  correctly unrestricted since 2026-09-21) updated to stop describing List()/Get() as still
+  DMS-gated, now that they agree with it.
+- IsDmsLinked (Search()'s response flag, already existed) is untouched and still correctly reports
+  false for every job card going forward, since none will ever get a BaplJobCardHeaderId again - it
+  was never the bug, just a leftover marker from the old design.
+
+VERIFICATION:
+- Comment-excluded brace/paren balance check (this sandbox's standard proxy for `dotnet build`,
+  same method as every other backend round) on the full file -> 0/0, balanced.
+- Confirmed via grep that no other controller/service in the backend enforces a
+  `BaplJobCardHeaderId != null` filter anywhere else - this was confined to List() and Get().
+- Please confirm on your end: (1) job card JC/288/26-27/0010 (and any other job card created since
+  SECTION 86 went live) now appears in the Job Cards list and opens correctly on both web and
+  Android; (2) a freshly created job card also appears immediately after creation, without needing a
+  page refresh trick or anything unusual.
+
+ONE FILE CHANGED THIS ROUND: backend/JobCardScanner.Api/Controllers/JobCardsController.cs (no web
+or Android changes needed - both already just render whatever List()/Get() return, same as every
+prior round's pattern in this project).
+
+================================================================================================

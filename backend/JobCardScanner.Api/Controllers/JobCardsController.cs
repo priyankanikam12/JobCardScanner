@@ -169,12 +169,16 @@ public class JobCardsController : ControllerBase
         var query = _db.JobCards.AsNoTracking()
             .Include(j => j.Customer).Include(j => j.Vehicle).Include(j => j.CurrentStage)
             .Include(j => j.ServiceAdvisor).Include(j => j.AssignedTechnician).Include(j => j.Photos)
-            // 2026-09-05: DMS is now the sole source of truth - a job card created before this
-            // change that never got a BaplJobCardHeaderId (DMS sync failed, or wasn't attempted) is
-            // no longer shown or openable. Its row (and any photos/history on it) is NOT deleted,
-            // just hidden, in case this needs revisiting. Every row created after this change always
-            // has this set (Create() now requires DMS success before a row can exist at all).
-            .Where(j => j.BaplJobCardHeaderId != null)
+            // 2026-09-24 FIX: the 2026-09-05 "DMS is the sole source of truth" rule (which hid any
+            // job card with no BaplJobCardHeaderId) is gone - see Create()'s own 2026-09-24 doc
+            // comment ("DMS write-back REMOVED"). That change made BaplJobCardHeaderId null on
+            // EVERY newly created job card with no code path left to ever set it, but this filter
+            // was mistakenly left in place, which meant every job card created after that change
+            // was silently invisible here even though its row existed and Search()/direct
+            // stage/worklog/suggestion endpoints (none of which filter on this) worked fine against
+            // it - exactly the "shows in `select * from JobCards` but not in the app's own Job
+            // Cards list" symptom this was caught from. Removed - every local job card is shown
+            // again, DMS-linked or not, same as Search() already did.
             .AsQueryable();
 
         // Two bugs fixed here (found while chasing "dealer login sees every dealer's job cards"):
@@ -327,10 +331,13 @@ public class JobCardsController : ControllerBase
     /// here. Same dealer + Work Area (WorkLocationCodes) scoping as List() above.
     ///
     /// 2026-09-21 ("jobcards wants to save in our JobCardScannerDb not in dms" - clarified via
-    /// AskUserQuestion to mean specifically this picker, not a reversal of the 2026-09-05 "DMS is
-    /// the sole source of truth" rule on List()/Get()/Create(), which is unchanged): unlike
-    /// List()/Get(), this picker is NOT restricted to BaplJobCardHeaderId != null - it now returns
-    /// every JobCardScanner job card in scope, DMS-linked or not, since a Repair Bill/Material
+    /// AskUserQuestion to mean specifically this picker at the time, not yet a reversal of the
+    /// 2026-09-05 "DMS is the sole source of truth" rule on List()/Get()/Create()): this picker was
+    /// never restricted to BaplJobCardHeaderId != null, unlike List()/Get() at the time. That rule
+    /// was fully reversed on 2026-09-24 (DMS write-back removed from Create() entirely, and the
+    /// same now-stale BaplJobCardHeaderId != null filter removed from List()/Get() too - see both
+    /// methods' own doc comments), so all three endpoints now agree: it returns every JobCardScanner
+    /// job card in scope, DMS-linked or not, since a Repair Bill/Material
     /// Transfer can legitimately be raised against a job card that hasn't synced to DMS (or never
     /// will, e.g. DMS is unreachable) - it only needs a local JobCard row to link
     /// RepairBillDoc.JobCardId/MaterialTransferDoc.JobCardId to. IsDmsLinked in the response tags
@@ -411,9 +418,11 @@ public class JobCardsController : ControllerBase
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id)
     {
-        // 2026-09-05: same DMS-only rule as List() above - a job card with no BaplJobCardHeaderId
-        // 404s now instead of opening.
-        var jc = await FullQuery().FirstOrDefaultAsync(j => j.Id == id && j.BaplJobCardHeaderId != null);
+        // 2026-09-24 FIX: same stale "DMS is the sole source of truth" filter removed from List()
+        // above, for the same reason - see that method's doc comment. A job card with no
+        // BaplJobCardHeaderId (i.e. every job card created since DMS write-back was removed from
+        // Create()) used to 404 here instead of opening.
+        var jc = await FullQuery().FirstOrDefaultAsync(j => j.Id == id);
         if (jc is null) return NotFound();
         // 2026-09-17 "Employees" page - same Work Area location scoping as List() above. A job
         // card at a location outside the caller's Work Area 404s, same as one that doesn't exist -
