@@ -59,7 +59,10 @@
         {
           "locationAlwaysAndWhenInUsePermission": "JobCardScanner uses your location to tag where a job card photo was taken."
         }
-      ]
+      ],
+      "expo-secure-store",
+      "expo-sharing",
+      "expo-web-browser"
     ],
     "extra": {
       "eas": {

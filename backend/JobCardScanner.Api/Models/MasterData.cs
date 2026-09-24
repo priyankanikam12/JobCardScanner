@@ -70,7 +70,7 @@ public class Dealer
     /// JobCardScanner doesn't have BAPL's employee master, so there's nothing to resolve it against
     /// yet.</summary>
     [MaxLength(30)] public string? AssignedRepCode { get; set; }
-    /// <summary>BAPL DMS's own Dealercode (DealerMaster.Dealercode in the separate BAPLDMSvad
+    /// <summary>DMS's own Dealercode (DealerMaster.Dealercode in the separate BAPLDMSvad
     /// database - see Services/BaplDmsService.cs), captured when this dealer is resolved via the
     /// Job Card Wizard's "search BAPL Dealer/Workshop" picker. Deliberately a SEPARATE field from
     /// <see cref="Code"/> (which for BaplImport-sourced dealers holds BAPL ERP's CustomerCode from
@@ -139,10 +139,10 @@ public class User
     /// role) so a created employee can actually sign in and use the app, while this field
     /// preserves the literal job-title wording for display.</summary>
     [MaxLength(50)] public string? Designation { get; set; }
-    /// <summary>JSON array of BAPL DMS workshop LocCodes (e.g. ["CUS0288W5","CUS0071W1"]) this
+    /// <summary>JSON array of DMS workshop LocCodes (e.g. ["CUS0288W5","CUS0071W1"]) this
     /// user is allowed to work in - the Employees page's "Work Area" checkbox list. Stored as a
     /// JSON string rather than a join table because the "locations" master itself lives in a
-    /// separate database (BAPL DMS's own LocationMaster via BaplDmsService, not anything in
+    /// separate database (DMS's own LocationMaster via BaplDmsService, not anything in
     /// JobCardScannerDb) - there is no local table to foreign-key against. Empty/null means
     /// UNRESTRICTED (every existing user before this feature shipped, and any admin who hasn't
     /// assigned specific locations yet) - see JobCardsController/DmsBaplDataController's location-
@@ -209,7 +209,7 @@ public class Vehicle
     [MaxLength(50)] public string? MotorNo { get; set; }
     [MaxLength(50)] public string? SerialNo { get; set; }
     /// <summary>Controller/converter/charger serial numbers - added alongside BatteryNo/MotorNo
-    /// above specifically so a BAPL DMS chassis/reg-no lookup (BaplDmsService.LookupVehicleAsync)
+    /// above specifically so a DMS chassis/reg-no lookup (BaplDmsService.LookupVehicleAsync)
     /// can auto-fill everything it returns for this vehicle, not just the two fields this model
     /// already tracked. Optional/nullable since a manually-added vehicle (not sourced from BAPL
     /// DMS) has no reason to fill these in.</summary>
@@ -218,7 +218,7 @@ public class Vehicle
     [MaxLength(50)] public string? ChargerNo { get; set; }
     public DateOnly? PurchaseDate { get; set; }
     public DateOnly? LastServiceDate { get; set; }
-    /// <summary>From BAPL DMS's VehicleSaleBillDetail.InsExpDate / ModelwiseServiceSchedule-derived
+    /// <summary>From DMS's VehicleSaleBillDetail.InsExpDate / ModelwiseServiceSchedule-derived
     /// due date (see BaplDmsService) - purely informational fields carried over on auto-fill, not
     /// computed or enforced by this app.</summary>
     public DateOnly? InsuranceExpiry { get; set; }

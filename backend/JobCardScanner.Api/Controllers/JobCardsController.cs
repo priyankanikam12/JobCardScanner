@@ -388,7 +388,7 @@ public class JobCardsController : ControllerBase
             JobDate = DateOnly.FromDateTime(j.CreatedAt),
             Location = j.BaplServiceLocation,
             LocationCode = j.BaplServiceLocationCode,
-            // Now includes job cards that never synced to BAPL DMS (see the widened Search() doc
+            // Now includes job cards that never synced to DMS (see the widened Search() doc
             // comment above) - flagged so the Job Search modal can show which is which rather than
             // presenting them identically.
             IsDmsLinked = j.BaplJobCardHeaderId != null,

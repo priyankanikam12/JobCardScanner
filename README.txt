@@ -437,7 +437,7 @@ VERIFICATION:
 
 ================================================================================
 SECTION 65 - Repair Bill Part grid: auto-load from Material Transfer (no manual
-Part search on Repair Bill), matching the real BAPL DMS reference architecture
+Part search on Repair Bill), matching the real DMS reference architecture
 ================================================================================
 
 YOUR WORDS: "now i saved from material transfer bill now this will shown in
@@ -445,7 +445,7 @@ repair bill with which i material transfer and from repair bill we can add only
 labour from labour master in dropdown and that will add save as proforma" ...
 "give proper flow for repair bill material transfer is ok now"
 
-CONTEXT - confirmed from the real BAPL DMS production reference source you
+CONTEXT - confirmed from the real DMS production reference source you
 pasted (RepairBillController.cs, RepairBillRepo.cs, repair-bill-service.ts,
 repair-bill.ts/.html, repair-bill-list.ts/.html, repair-bill-invoice.ts/.html):
 FACT - the reference's repair-bill.html has NO manual Part search dropdown at
@@ -523,7 +523,7 @@ WHAT WAS DELIBERATELY NOT DONE (disclosed, not an oversight):
   rule. Practical effect: the same Material Transfer item will keep appearing
   on this Job's Repair Bill screen even if it was already billed once before
   (e.g. if the first Repair Bill was later cancelled and a new one started).
-  Flag this back to us if BAPL DMS actually does track/prevent double-billing
+  Flag this back to us if DMS actually does track/prevent double-billing
   a transferred part - we did not see it in what was pasted.
 - MaterialTransferCreatePage.tsx (Material Transfer's OWN creation screen) is
   UNCHANGED this section. Its manual Part search (SECTION 63/64) stays exactly
@@ -703,13 +703,13 @@ SECTION 68 - Extended Battery Warranty Scheme: new table + logic, native to JobC
 
 YOUR WORDS: "needs to create warenty table in jobcardscanner db for this functionality and add
 this in our function" - i.e. port the Extended Battery Warranty Scheme concept (which you earlier
-pasted from BAPL DMS's own separate codebase, and I delivered as a text-only patch for THAT
+pasted from DMS's own separate codebase, and I delivered as a text-only patch for THAT
 codebase, since I don't have file access to it) into JobCardScanner's own database, which I do
 have full access to, and wire it into Repair Bill.
 
 WHAT THIS IS: a brand-new, dealer-configurable "Extended Battery Warranty Scheme" master table,
-native to JobCardScannerDb (NOT a copy of any BAPL DMS table, NOT written to BAPLDMSvad/baplfinal).
-Ported in SHAPE from the BAPL DMS reference you pasted, with two deliberate adaptations disclosed
+native to JobCardScannerDb (NOT a copy of any DMS table, NOT written to BAPLDMSvad/baplfinal).
+Ported in SHAPE from the DMS reference you pasted, with two deliberate adaptations disclosed
 below. A Repair Bill's Part lines are checked against it automatically and non-destructively.
 
 FACT vs INTERPRETATION - please review before treating this as production-ready:
@@ -724,7 +724,7 @@ FACT vs INTERPRETATION - please review before treating this as production-ready:
   with no pricing or scheme concept. This new table does NOT read, write, or replace that field;
   they are two independent, additive concepts. Flagging this now so the two are never confused as
   the same feature.
-- INTERPRETATION (carried over from the BAPL DMS delivery's own disclosure, not confirmed BGauss
+- INTERPRETATION (carried over from the DMS delivery's own disclosure, not confirmed BGauss
   policy): FromDate/ToDate on a scheme are read as "which batch of vehicle purchases this scheme's
   pricing/terms apply to" - a scheme is a candidate only when the vehicle's own Purchase Date falls
   inside that window. Coverage for a claim = Purchase Date + Duration(DurationType), compared
@@ -733,12 +733,12 @@ FACT vs INTERPRETATION - please review before treating this as production-ready:
   formula should be checked against actual BGauss Extended Battery Warranty policy before being
   relied on for a real claim - I have not been given that policy and have not assumed one beyond
   what's written here.
-- ASSUMPTION: PurchaseValidityDays is stored on the scheme (matching the BAPL DMS reference's own
-  field) but NOT used anywhere in the eligibility check - same reason as the earlier BAPL DMS
+- ASSUMPTION: PurchaseValidityDays is stored on the scheme (matching the DMS reference's own
+  field) but NOT used anywhere in the eligibility check - same reason as the earlier DMS
   delivery: nothing confirms what it's meant to gate.
-- Two adaptations from the BAPL DMS reference, not a 1:1 field copy: VehicleModel is free text
+- Two adaptations from the DMS reference, not a 1:1 field copy: VehicleModel is free text
   (no OemModelId FK - see above) and DurationType is a plain string "Days"/"Months"/"Years" (not a
-  numeric id into an unconfirmed lookup, avoiding the same ambiguity flagged in the BAPL DMS
+  numeric id into an unconfirmed lookup, avoiding the same ambiguity flagged in the DMS
   delivery's own README).
 
 WHAT CHANGED:
@@ -876,7 +876,7 @@ SECTION 70 - Repair Bill UI clean-up: column naming, hide Tax Type/Issue Type de
 selectors, "Selected Job Details" panel after Job Search
 ================================================================================
 
-YOUR WORDS (pasted alongside two screenshots of the real BAPL DMS reference's own /repair-bill
+YOUR WORDS (pasted alongside two screenshots of the real DMS reference's own /repair-bill
 page): "AMount and Rate colums also shown in table give proper in after IGST Amt proper heading
 name ..Tax Type hide dont show in ui automatically login dealer state wise it select and Issue
 Type (default for new lines) that also hide..in labour after jobcard serach this automatically
@@ -1001,7 +1001,7 @@ SECTION 72 - OEM Model Master + OEM Model Warranty (new tables in JobCardScanner
 
 YOUR REQUEST (verbatim): "this wants to integrate for my battery-warranty-schemes for link models
 for warrenty and this all table add in jobcard db that all functionality need to craete in jc" -
-alongside a full paste of the real BAPL DMS reference's OemmodelMaster + OemmodelWarranty tables,
+alongside a full paste of the real DMS reference's OemmodelMaster + OemmodelWarranty tables,
 Angular list/add/edit screens, and C# controller/repo/service/viewmodel layers.
 
 Before building this I asked 3 scoping questions (AskUserQuestion) because the schema/scope
@@ -1761,7 +1761,7 @@ will add and this grid button click from db which material transfer that will sh
 proporma and save as invoice ... i will showing u video this button clcik shown all details which
 material transfer for which job card that button add"
 
-WHAT THE VIDEO SHOWED: screen recording of the REFERENCE BAPL DMS web app (bapldmssite-...
+WHAT THE VIDEO SHOWED: screen recording of the REFERENCE DMS web app (bapldmssite-...
 .azurewebsites.net/repair-bill-list and /repair-bill/85) - not JobCardScanner. It shows: opening
 the Repair Bill List, clicking an existing bill row (Bill No 22), which reopens as the SAME
 editable Repair Bill form used to create a bill - Date/Location/Bill No/Party Name/Job Search
@@ -2459,8 +2459,8 @@ see NOT CHANGED note below)
 ================================================================================================
 
 This is the largest single round in this project: it reverses a standing design decision from an
-earlier session (BAPL DMS as the sole source of truth for job cards - see the plan file this
-session inherited, titled "Make BAPL DMS the sole source of truth for job cards") because this
+earlier session (DMS as the sole source of truth for job cards - see the plan file this
+session inherited, titled "Make DMS the sole source of truth for job cards") because this
 message explicitly asked for the opposite ("dont save this jobcard in dms ... save in jobcard db
 only"). Four points in this request were genuinely ambiguous or conflicted with that standing
 plan, so before writing any code this round used AskUserQuestion to get an explicit decision on
@@ -2857,16 +2857,16 @@ present in the raw JobCards table, but not appearing in DMS's own job card list,
 part that was actually a bug, not by design) not appearing in JobCardScanner's own Job Cards list
 or detail page either.
 
-FACT - root cause: on 2026-09-24 (SECTION 86), Create() was changed to stop writing to BAPL DMS
+FACT - root cause: on 2026-09-24 (SECTION 86), Create() was changed to stop writing to DMS
 entirely - a new job card is now saved only into JobCardScanner's own database, and its doc comment
 in Create() explicitly says BaplJobCardHeaderId/BaplJobNo/BaplSyncStatus are "simply left null on
 every new row - there is no longer any code path that sets them." That part of SECTION 86 is
 correct and working exactly as intended - a job card genuinely never reaches DMS now, so it
-correctly does not show up in BAPL DMS's own job card list. That is expected, not a bug.
+correctly does not show up in DMS's own job card list. That is expected, not a bug.
 
 The bug: List() and Get() (Controllers/JobCardsController.cs) still carried a `.Where(j =>
 j.BaplJobCardHeaderId != null)` filter from an EARLIER, since-reversed design (2026-09-05's "DMS is
-the sole source of truth" rule, from before the "Make BAPL DMS the sole source of truth for job
+the sole source of truth" rule, from before the "Make DMS the sole source of truth for job
 cards" plan was itself reversed by SECTION 86). That filter was never removed when Create() stopped
 setting BaplJobCardHeaderId, so it silently excluded EVERY job card created since SECTION 86 shipped
 from both the Job Cards list (List()) and the Job Card Detail page (Get(), which 404'd). The row
@@ -2899,5 +2899,100 @@ VERIFICATION:
 ONE FILE CHANGED THIS ROUND: backend/JobCardScanner.Api/Controllers/JobCardsController.cs (no web
 or Android changes needed - both already just render whatever List()/Get() return, same as every
 prior round's pattern in this project).
+
+================================================================================================
+
+================================================================================================
+SECTION 89 - Android: fixed `expo doctor` patch-version mismatches (mobile/package.json)
+================================================================================================
+Date: 24.09.2026
+Reported by: you, pasting an `expo doctor` run showing 11 packages resolved to a patch version
+below what Expo SDK 57 expects, plus a separate `npx expo-doctor` run (different invocation, same
+tool) whose "Check Expo config (app.json/app.config.js) schema" check timed out connecting to
+exp.host.
+
+THESE ARE TWO SEPARATE ISSUES - only the first is fixed by this change:
+
+1. FIXED - patch version mismatches. Not caused by any of this project's app code (no feature
+   work touched these packages' versions) - just routine Expo SDK dependency drift: these 11
+   packages had been installed at whatever patch version was current when each was first added to
+   the project, and Expo SDK 57 has since published newer patches for all of them.
+   - mobile/package.json: bumped expo, expo-auth-session, expo-crypto, expo-file-system,
+     expo-image-picker, expo-location, expo-print, expo-secure-store, expo-sharing,
+     expo-web-browser to the exact "expected" versions your `expo doctor` output listed (all now
+     pinned with Expo's own `~` patch-range convention, replacing the inconsistent mix of `~`/`^`
+     that was there before).
+   - Added expo-build-properties (~57.0.21) as a new direct dependency - app.json's own
+     `plugins` array already references it (Android usesCleartextTraffic config), and your `expo
+     doctor` output shows it installed and out of date on your machine (found 57.0.17), but it was
+     never actually listed in package.json in this project's tracked copy - an existing gap, not
+     something this round introduced, now closed.
+   - Ran `npm install` in this sandbox (network access to registry.npmjs.org is available here,
+     unlike Expo's own API - see item 2) to resolve real, verified versions and regenerate
+     package-lock.json - confirmed every one of the 11 packages now resolves to exactly the
+     version `expo doctor` expects (checked each installed package.json's own "version" field
+     directly, not just the requested range).
+   - Verified `npx tsc --noEmit -p tsconfig.json` still passes clean (exit 0) against the
+     upgraded packages - a patch bump can occasionally shift a type signature, this one didn't.
+   - Files in this delivery: mobile/package.json, mobile/package-lock.json. AFTER MERGING both
+     into your project, run `npm install` (or `npm ci`) locally once so your own node_modules
+     actually picks up these versions - copying the two files alone doesn't install anything.
+
+2. NOT FIXED (not a code issue) - the exp.host connection timeout on your `npx expo-doctor` run's
+   config-schema check. That check calls out to Expo's own API server (exp.host) to validate
+   app.json/app.config against Expo's schema - it's the only one of expo-doctor's checks that
+   needs a live connection to Expo's servers rather than just reading your local node_modules (the
+   package-version check above, which DID succeed, only reads locally-installed packages' own
+   package.json - no network needed, which is exactly why I could fix and verify it above but not
+   this one). A timeout connecting to exp.host from your machine points at your own network path
+   to Expo (corporate proxy/firewall/VPN, or a transient Expo API outage), not at anything in this
+   project's code - I have nothing to change here. Suggest: retry once (Expo's API has occasional
+   blips), and if it keeps failing, check whether your network/proxy allows outbound HTTPS to
+   exp.host and api.expo.dev specifically (the same class of restriction this sandbox itself hit
+   trying to reach Expo's API - only registry.npmjs.org was reachable here). This one check failing
+   does not block a normal `expo start`/build - it's an informational schema-validation check, not
+   a build-time dependency check like #1.
+
+================================================================================================
+
+================================================================================================
+SECTION 90 - mobile/package.json confirmed correct (with 3 extra native-module adjustments)
+================================================================================================
+Date: 24.09.2026
+
+You pasted your current local mobile/package.json and asked me to confirm/correct it. Good news:
+the file you pasted is correct and verified - no changes needed to what you have. Three packages
+in it differ from what SECTION 89's zip originally delivered, and all three are legitimate,
+Expo-blessed adjustments, not a regression:
+
+  @react-native-community/datetimepicker   ^9.2.0  -> 9.1.0 (exact pin, no ^)
+  react-native-safe-area-context           ^5.9.1  -> ~5.7.0
+  react-native-screens                     ^4.27.0 -> ~4.26.0
+
+FACT: these three are NOT Expo-owned packages, but they ARE covered by Expo's own SDK 57
+native-module compatibility table (they ship native/binary code that must match your installed
+Expo SDK + React Native 0.86.3 build exactly) - `npx expo install` aligns them to Expo's known-good
+versions for your SDK, which can be lower than whatever was in package.json before. Your earlier
+`npx expo install` run (before you had SECTION 89's fix) is almost certainly what applied this -
+and it's confirmed correct because your own `npx expo-doctor` output never flagged any of these
+three in its mismatch list, only the 11 expo-* packages SECTION 89 already fixed.
+
+VERIFICATION (this sandbox, matching your exact file):
+- Replaced this sandbox's package.json with precisely what you pasted, deleted node_modules, and
+  ran a full `npm install` from scratch - clean install, 529 packages, no errors.
+- Confirmed every one of the 11 expo-* packages resolves to exactly the version expo-doctor
+  expects (expo 57.0.24, expo-build-properties 57.0.21, etc. - same as SECTION 89).
+- Confirmed node_modules/expo/tsconfig.base.json exists and resolves correctly on this exact
+  install - this directly addresses the "File 'expo/tsconfig.base' not found" error from your
+  Problems panel: that error was a symptom of an incomplete/mid-reinstall node_modules on your
+  machine at the moment VS Code's TS server checked it, not anything wrong with package.json
+  itself. A clean `npm ci`/`npm install` followed by "TypeScript: Restart TS Server" in VS Code
+  should clear the whole cascade of "--jsx not set" errors, since they all trace back to that one
+  file failing to resolve.
+- Ran `npx tsc --noEmit -p tsconfig.json` against this exact install -> exit 0, clean.
+
+Files in this delivery: mobile/package.json (now byte-for-byte what you have), mobile/package-lock.json
+(regenerated from a clean install matching it). No source-code changes this round - this section is
+purely confirming and re-verifying the dependency file you already have in place.
 
 ================================================================================================

@@ -28,7 +28,7 @@ namespace JobCardScanner.Api.Models;
 /// == "Billed" for the same JobId) - MaterialTransferDocsController.Delete enforces the identical
 /// check (a RepairBillDoc for the same JobCardId with Status == Billed) unless the caller is
 /// SystemAdmin. The reference's stock-ledger reversal on delete (PartsInventory "SD" transaction)
-/// is NOT ported - it debits/credits BAPL DMS's own live PartsInventory table in BAPLDMSvad, which
+/// is NOT ported - it debits/credits DMS's own live PartsInventory table in BAPLDMSvad, which
 /// this app cannot write to and has no equivalent live-stock table for; see the delivery notes.
 ///
 /// 2026-09-21 ("part-upload balance qty use for that stock ... we delete thi material tranfer
@@ -57,7 +57,7 @@ public class MaterialTransferDoc
 
     /// <summary>Minted via IJobCardNumberingService.NextMaterialTransferNumberAsync, e.g.
     /// "MT-DL01-2026-000001" - same per-dealer Counter-table convention as Estimate/Invoice
-    /// numbers, not BAPL DMS's own document numbering.</summary>
+    /// numbers, not DMS's own document numbering.</summary>
     [Required, MaxLength(40)] public string TransferNumber { get; set; } = default!;
 
     public Guid DealerId { get; set; }
@@ -81,7 +81,7 @@ public class MaterialTransferDoc
     /// actual Technician field.</summary>
     [MaxLength(200)] public string? PartyName { get; set; }
 
-    /// <summary>Reference: MaterialTransfer.Technician (an int employee id into BAPL DMS's own
+    /// <summary>Reference: MaterialTransfer.Technician (an int employee id into DMS's own
     /// staff table, which this app has no access to). Mapped onto this app's own User instead of
     /// copying a foreign int that means nothing in JobCardScannerDb - "according to our project"
     /// per your instruction, same reasoning JobCardWorklog.TechnicianId already uses.</summary>

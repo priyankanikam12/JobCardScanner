@@ -8,7 +8,7 @@ namespace JobCardScanner.Api.Models;
 /// both pages data i want save in JobCardScannerDb", corrected 2026-09-21 ("backend logic which i
 /// gave u ... same make only according to our project dont chnage Repair Bill and Material
 /// tranfer logic") - a Repair Bill created directly inside JobCardScanner (own, writable
-/// database), NOT a mirror of BAPL DMS's own RepairBillHeader/RepairBillDetail tables (those live
+/// database), NOT a mirror of DMS's own RepairBillHeader/RepairBillDetail tables (those live
 /// in BAPLDMSvad, which this app never writes to) and NOT the same thing as the "Repair Bill
 /// Report" page's DmsBaplDataRepairBillRow (a read-only DMSBAPLDATA sync).
 ///
@@ -41,7 +41,7 @@ public class RepairBillDoc
     public Guid Id { get; set; } = Guid.NewGuid();
 
     /// <summary>Minted via IJobCardNumberingService.NextRepairBillNumberAsync, e.g. "RB-DL01-2026-000001" -
-    /// same per-dealer Counter-table convention as Estimate/Invoice numbers, NOT BAPL DMS's own
+    /// same per-dealer Counter-table convention as Estimate/Invoice numbers, NOT DMS's own
     /// invoice numbering (this bill never touches DMS).</summary>
     [Required, MaxLength(40)] public string BillNumber { get; set; } = default!;
 
@@ -177,7 +177,7 @@ public class RepairBillDocItem
     // and RepairBillDocsController.Create for where this is set. NON-DESTRUCTIVE: neither field
     // ever changes Rate/TaxableAmount/CgstAmount/SgstAmount/IgstAmount/TotalAmount above, which stay
     // exactly what the caller submitted - this is audit/display metadata only, same principle used
-    // for the BAPL DMS version of this same feature earlier in this session. Both nullable so
+    // for the DMS version of this same feature earlier in this session. Both nullable so
     // existing rows are unaffected. ----
     public Guid? ExtendedBatteryWarrantySchemeId { get; set; }
     public ExtendedBatteryWarrantyScheme? ExtendedBatteryWarrantyScheme { get; set; }

@@ -15,7 +15,7 @@ public record CreateUserRequest(
     /// Role is supplied (the older "Add staff user manually" panel), Designation stays null and
     /// Role is used exactly as given, unchanged from before this feature.</summary>
     string? Designation = null,
-    /// <summary>BAPL DMS workshop LocCodes this user is scoped to (the "Work Area" checkboxes) -
+    /// <summary>DMS workshop LocCodes this user is scoped to (the "Work Area" checkboxes) -
     /// see User.WorkLocationCodes's doc comment. Empty/omitted = unrestricted.</summary>
     IReadOnlyList<string>? WorkLocationCodes = null);
 
@@ -257,7 +257,7 @@ public record LabourMasterPartwiseUpdateRequest(
 // "backend logic which u gave u ... dont chnage Repair Bill and Material tranfer logic") - see
 // Controllers/RepairBillDocsController.cs / MaterialTransferDocsController.cs and
 // Models/RepairBillDocs.cs / MaterialTransferDocs.cs for what these save and why they're
-// JobCardScannerDb-native, distinct from both BAPL DMS's own tables and the read-only
+// JobCardScannerDb-native, distinct from both DMS's own tables and the read-only
 // DMSBAPLDATA-synced report pages of a similar name. ----------------
 // CgstPct/SgstPct/IgstPct: three INDEPENDENT caller-supplied rates, matching the reference
 // RepairBillRepo which never infers same-state/different-state itself - it only persists
@@ -348,7 +348,7 @@ public record CombinedMaterialTransferRow(
 
 // 2026-09-22 "create warenty table in jobcardscanner db" - see
 // Models/ExtendedBatteryWarrantySchemes.cs's own doc comment for every field's meaning and the
-// two deliberate adaptations from the BAPL DMS reference (free-text VehicleModel instead of an
+// two deliberate adaptations from the DMS reference (free-text VehicleModel instead of an
 // OemModelId FK, free-text DurationType instead of a guessed numeric id).
 // 2026-09-22 OemModelId added (nullable) - see ExtendedBatteryWarrantyScheme's own updated doc
 // comment: the admin UI's model picker sends this alongside VehicleModel so the two stay in sync,
@@ -361,7 +361,7 @@ public record CreateExtendedBatteryWarrantySchemeRequest(
 
 // ---------------------------------------------------------------------------------------------
 // OEM Model Master + OEM Model Warranty (2026-09-22) - see Models/OemModels.cs's own doc comment
-// for the full reasoning ported from the BAPL DMS reference's OemmodelMaster/OemmodelWarranty.
+// for the full reasoning ported from the DMS reference's OemmodelMaster/OemmodelWarranty.
 // ---------------------------------------------------------------------------------------------
 public record CreateOemModelRequest(string ModelName, string? ModelShortName, bool IsActive = true);
 

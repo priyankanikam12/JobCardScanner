@@ -11,7 +11,7 @@ namespace JobCardScanner.Api.Controllers;
 
 /// <summary>
 /// 2026-09-22 - CRUD for the new OEM Model Warranty master (see Models/OemModels.cs for the full
-/// field-by-field reasoning ported from the BAPL DMS reference's OemmodelWarranty table/screens
+/// field-by-field reasoning ported from the DMS reference's OemmodelWarranty table/screens
 /// you pasted, including the EffectiveDate-must-be-after-the-model's-last-EffectiveDate rule this
 /// controller enforces server-side).
 ///

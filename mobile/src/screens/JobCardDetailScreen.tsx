@@ -199,7 +199,7 @@ export function JobCardDetailScreen({ route }: Props) {
         <Text>{jc.customer?.mobile}</Text>
         <Text style={{ marginTop: 6 }}>{jc.vehicle?.model} {jc.vehicle?.variant}</Text>
         <Text style={styles.muted}>Reg: {jc.vehicle?.regNo} | Odometer: {jc.odometerAtCheckIn} km</Text>
-        <Text style={styles.muted}>Tracking link: /track/{jc.trackingToken}</Text>
+        {/* <Text style={styles.muted}>Tracking link: /track/{jc.trackingToken}</Text> */}
         {jc.customer && hasRole('WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
           <CustomerPasswordResetButton customerId={jc.customer.id} customerName={jc.customer.name} />
         )}
@@ -621,10 +621,10 @@ function UpdateWorkflowStageCard({
   return (
     <View style={styles.card}>
       <Text style={styles.cardTitle}>Update Workflow Stage</Text>
-      <Text style={styles.muted}>
+      {/* <Text style={styles.muted}>
         The stage above now advances automatically as work happens. Use the two buttons below only
         for the steps with no automatic trigger.
-      </Text>
+      </Text> */}
       {/* 2026-09-24 CHANGE ("before start required Assign Technician name update"): every stage
          change - the two manual buttons below AND every automatic trigger elsewhere on this screen
          (worklog start, part/labour suggestion) - is now refused with a 400 until a Technician is

@@ -104,11 +104,11 @@ export function TechnicianEmployeesPage() {
   return (
     <div>
       <h2>Technician Employee</h2>
-      <p className="muted" style={{ marginTop: -8 }}>
+      {/* <p className="muted" style={{ marginTop: -8 }}>
         These technicians appear in the Job Card Wizard's "Technician" dropdown and the Job Card
         Detail page's "Assign Technician" dropdown, scoped to the Location picked below. No
         login/password - this is a name-only roster, not a staff account.
-      </p>
+      </p> */}
 
       {canManage && (
         <div className="card">

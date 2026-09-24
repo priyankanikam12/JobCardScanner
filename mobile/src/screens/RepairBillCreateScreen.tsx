@@ -719,7 +719,7 @@ export function RepairBillCreateScreen() {
       <View style={styles.field}>
         <Text style={styles.label}>Issue Type (default for new lines)</Text>
         <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
-          {(['', 'Paid', 'U/W', 'FSC'] as const).map((t) => (
+          {(['', 'Paid', 'U/W'] as const).map((t) => (
             <TouchableOpacity key={t || 'none'} style={[styles.pill, issueType === t && styles.pillSelected]} onPress={() => setIssueType(t)}>
               <Text style={[styles.pillText, issueType === t && styles.pillTextSelected]}>{t || 'none'}</Text>
             </TouchableOpacity>
@@ -822,7 +822,7 @@ export function RepairBillCreateScreen() {
           <View style={styles.field}>
             <Text style={styles.label}>Issue Type (this line)</Text>
             <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
-              {(['', 'Paid', 'U/W', 'FSC'] as const).map((t) => (
+              {(['', 'Paid', 'U/W'] as const).map((t) => (
                 <TouchableOpacity key={t || 'default'} style={[styles.pill, draft.issueType === t && styles.pillSelected]} onPress={() => setDraft((d) => ({ ...d, issueType: t }))}>
                   <Text style={[styles.pillText, draft.issueType === t && styles.pillTextSelected]}>{t || `default (${issueType || 'none'})`}</Text>
                 </TouchableOpacity>

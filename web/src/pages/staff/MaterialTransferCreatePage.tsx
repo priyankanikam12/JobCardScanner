@@ -29,7 +29,7 @@ import { PartSearchInput, isConfirmedOutOfStock } from '../../components/PartSea
  * form's own Location field AND the combined-list filter below now read from the same scoped
  * workshops list (previously only the filter used it, the create form was free text).
  *
- * Technician: the reference's MaterialTransfer.Technician is an int id into BAPL DMS's own staff
+ * Technician: the reference's MaterialTransfer.Technician is an int id into DMS's own staff
  * table; this app maps it onto its own User (MaterialTransferDoc.TechnicianId), but there is no
  * accessible technician catalog endpoint for a ServiceAdvisor-level user to pick from (GET
  * /api/users requires DealerAdminUp, a higher policy than this page's own ServiceAdvisorUp - the

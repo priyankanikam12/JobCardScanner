@@ -20,7 +20,7 @@ namespace JobCardScanner.Api.Models;
 //
 // "that all from save in JobCardScannerDb ... all flow with JobCardScannerDb" (your follow-up,
 // same message): this table lives in JobCardScannerDb, like every other *Docs table added this
-// project - NOT written into BAPL DMS/DMSBAPLDATA's live PartsInventory/ItemMaster (uploading an
+// project - NOT written into DMS/DMSBAPLDATA's live PartsInventory/ItemMaster (uploading an
 // arbitrary spreadsheet straight into the production DMS's real inventory tables would risk
 // corrupting live stock data with no undo - a materially different, much higher-stakes feature
 // than "create a table here and let me upload into it", which is what was asked).

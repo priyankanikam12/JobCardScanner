@@ -59,7 +59,7 @@ function makeRowGetter(headerRow: unknown[]) {
 }
 
 /**
- * Maps one row of a real BAPL DMS / ERP "Vehicle Sale Report" export (2026-09-18: "this excel
+ * Maps one row of a real DMS / ERP "Vehicle Sale Report" export (2026-09-18: "this excel
  * format i want to import in my project" - you uploaded a 53,000+ row report with columns like
  * Model Code/Chasis No/Reg No/Dealer Name/Sale Date/Total Amount) onto this page's own
  * DmsBaplDataVehicleSale shape, so imported rows render in exactly the same table/detail-panel/
@@ -166,7 +166,7 @@ function mapVsrRow(dataRow: unknown[], get: ReturnType<typeof makeRowGetter>, in
  *  - The "Sold To" search box is gone from view per your request ("Sold To zomato hide this") -
  *    the page still only ever asks DMSBAPLDATA for Zomato's sales (soldTo stays hardcoded below),
  *    just without a visible, editable field for it. A plain Refresh button re-runs that same query.
- *  - "Import Vehicle Sale Report" reads a real BAPL DMS/ERP report export (see mapVsrRow's doc
+ *  - "Import Vehicle Sale Report" reads a real DMS/ERP report export (see mapVsrRow's doc
  *    comment above) entirely in the browser and SWAPS the page over to showing that file's rows
  *    instead of DMSBAPLDATA's - not a bulk filter over the DMSBAPLDATA results like Repair Bill/
  *    Material Transfer's Import Excel buttons still are, since this file is a full alternate

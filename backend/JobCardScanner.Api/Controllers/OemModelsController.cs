@@ -13,7 +13,7 @@ namespace JobCardScanner.Api.Controllers;
 /// 2026-09-22 "this wants to integrate for my battery-warranty-schemes for link models for
 /// warrenty and this all table add in jobcard db that all functionality need to craete in jc" -
 /// CRUD for the new OEM Model Master (see Models/OemModels.cs for the full field-by-field
-/// reasoning ported from the BAPL DMS reference's OemmodelMaster table/screens you pasted).
+/// reasoning ported from the DMS reference's OemmodelMaster table/screens you pasted).
 ///
 /// GLOBAL, not dealer-scoped (confirmed via AskUserQuestion) - so List/Get are gated at
 /// WorkshopManagerUp (any dealer's Workshop Manager can browse this catalog to pick a model on an

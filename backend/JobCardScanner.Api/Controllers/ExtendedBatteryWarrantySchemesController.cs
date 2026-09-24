@@ -13,7 +13,7 @@ namespace JobCardScanner.Api.Controllers;
 /// 2026-09-22 "needs to create warenty table in jobcardscanner db for this functionality and add
 /// this in our function" - CRUD + eligibility check for the dealer-configurable Extended Battery
 /// Warranty Scheme master (see Models/ExtendedBatteryWarrantySchemes.cs for the full field-by-field
-/// disclosure of what was ported vs. adapted from the BAPL DMS reference pasted earlier in this
+/// disclosure of what was ported vs. adapted from the DMS reference pasted earlier in this
 /// session, and for the eligibility formula itself - which is INTERPRETATION and should be checked
 /// against actual BGauss policy before being treated as authoritative for a real warranty claim,
 /// not a confirmed business rule).

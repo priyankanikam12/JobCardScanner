@@ -45,7 +45,7 @@ const REPORT_COLUMNS: ReportColumn<DmsBaplDataServiceHistory>[] = [
  *
  * 2026-09-18 FURTHER REVISION - "its taken from jobcard i want fetch data in service history from
  * [DMS_ServiceHistory query]": the dropdown initially reused the wizard's OWN endpoint
- * (/api/bapl-dms/vehicle-suggestions), which searches BAPL DMS's live ChassisDetails table - a sale/
+ * (/api/bapl-dms/vehicle-suggestions), which searches DMS's live ChassisDetails table - a sale/
  * stock record, not a service one. That could suggest a sold vehicle with zero service visits (pick
  * it here and you'd just get "no service history found"), or miss a vehicle whose ChassisDetails row
  * doesn't cleanly match. Suggestions now come from a dedicated endpoint

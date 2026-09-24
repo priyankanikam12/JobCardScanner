@@ -17,7 +17,7 @@ public interface ICurrentUserService
     string? UserName { get; }
     StaffRole? Role { get; }
     Guid? DealerId { get; }
-    /// <summary>BAPL DMS workshop LocCodes this user is scoped to (the "Work Area" checkboxes on
+    /// <summary>DMS workshop LocCodes this user is scoped to (the "Work Area" checkboxes on
     /// the Employees page) - see User.WorkLocationCodes's doc comment. Empty = unrestricted (every
     /// user before this feature shipped, and any admin who hasn't assigned locations yet).</summary>
     IReadOnlyList<string> WorkLocationCodes { get; }

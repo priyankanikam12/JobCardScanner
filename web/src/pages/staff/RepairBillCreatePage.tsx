@@ -13,7 +13,7 @@ import { LabourSearchInput } from '../../components/LabourSearchInput'
  * wants to show in 1 place"; corrected 2026-09-21, "backend logic which u gave u and ui same make
  * only according to our project dont chnage Repair Bill and Material tranfer logic"). Two parts:
  *  1. A create form that POSTs to /api/repair-bill-docs - saved into JobCardScanner's OWN
- *     database (RepairBillDocs/RepairBillDocItems), never into BAPL DMS or DMSBAPLDATA.
+ *     database (RepairBillDocs/RepairBillDocItems), never into DMS or DMSBAPLDATA.
  *  2. A combined list below (GET /api/repair-bill-docs/combined) showing bills created here
  *     side-by-side with the existing read-only DMSBAPLDATA-synced repair bills - each row tagged
  *     with its Source so the two are never presented as if they were the same record.
@@ -128,7 +128,7 @@ import { LabourSearchInput } from '../../components/LabourSearchInput'
  *
  * 2026-09-22 ("now i saved from material transfer bill now this will shown in repair bill with
  * which i material transfer and from repair bill we can add only labour from labour master in
- * dropdown and that will add save as proforma" + you pasted the REAL BAPL DMS reference source -
+ * dropdown and that will add save as proforma" + you pasted the REAL DMS reference source -
  * RepairBillController.cs/RepairBillRepo.cs, repair-bill.ts/.html, repair-bill-list.ts/.html,
  * repair-bill-invoice.ts/.html): this is a confirmed architecture correction, not an
  * interpretation - the pasted repair-bill.html's own Part search UI is commented out entirely
@@ -1233,9 +1233,9 @@ export function RepairBillCreatePage() {
             <label>Issue Type</label>
             <select value={draftLabour.issueType} onChange={(e) => setDraftLabour((p) => ({ ...p, issueType: e.target.value }))} disabled={!jobCardId}>
               <option value="">— default —</option>
-              <option value="Paid">Paid (taxed)</option>
-              <option value="U/W">U/W - Under Warranty (zero tax)</option>
-              <option value="FSC">FSC - Free Service Coupon (zero tax)</option>
+              <option value="Paid">Paid</option>
+              <option value="U/W">U/W </option>
+              {/* <option value="FSC">FSC - Free Service Coupon (zero tax)</option> */}
             </select>
           </div>
           <div className="field field-compact">
@@ -1342,7 +1342,7 @@ export function RepairBillCreatePage() {
             {partRows.length > 0 && <span className="badge" style={{ background: 'var(--accent-3-soft)', color: 'var(--warning)' }}>{partRows.length}</span>}
           </div>
 
-        {/* 2026-09-22: mirrors the real BAPL DMS reference's own onSelect() warning ("Material
+        {/* 2026-09-22: mirrors the real DMS reference's own onSelect() warning ("Material
             Transfer is not completed for this Job Card") - shown here once the for-job fetch has
             actually completed (mtFetchDone) so it never flashes during the initial load, and only
             when a Job is linked at all (jobCardId) and that fetch came back empty. Client-side only,

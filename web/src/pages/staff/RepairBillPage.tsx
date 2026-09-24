@@ -13,7 +13,7 @@ import { usePagination } from '../../lib/usePagination'
  * and from DMSBAPLDATA databse fetch all data for in this page") - read-only view of the
  * Zomato-fleet repair bill data synced into DMSBAPLDATA (see GET /api/dms-bapl-data/repair-bills
  * and DmsBaplDataService.cs's doc comment for what that database is). Column layout takes its cue
- * from BAPL DMS's own repair-bill-list.html (Bill No/Date/Party Name/Reg No/ChassisNo/Location/
+ * from DMS's own repair-bill-list.html (Bill No/Date/Party Name/Reg No/ChassisNo/Location/
  * Bill Type/Bill Amount), adapted to the fields DMSBAPLDATA's DMS_RepairBill/DMS_RepairBillItem
  * actually carry - this is a synced copy, not the live DMS database, so a few live-only columns
  * (Job No, Status, Prepared/Modified by) have no equivalent here and are left out rather than

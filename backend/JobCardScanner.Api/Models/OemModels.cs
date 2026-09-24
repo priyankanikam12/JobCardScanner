@@ -6,7 +6,7 @@ namespace JobCardScanner.Api.Models;
 /// <summary>
 /// 2026-09-22 "this wants to integrate for my battery-warranty-schemes for link models for
 /// warrenty and this all table add in jobcard db that all functionality need to craete in jc" -
-/// ported from the real BAPL DMS reference's OemmodelMaster table (Id/ModelName/ModelShortName/
+/// ported from the real DMS reference's OemmodelMaster table (Id/ModelName/ModelShortName/
 /// IsActive/audit fields) you pasted this session, native to JobCardScannerDb (not a read from
 /// BAPLDMSvad/baplfinal - this app owns this table).
 ///

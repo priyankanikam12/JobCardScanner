@@ -19,7 +19,7 @@ public class Technician
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid DealerId { get; set; }
     [Required, MaxLength(150)] public string Name { get; set; } = default!;
-    /// <summary>BAPL DMS workshop LocCode (e.g. "CUS0288W5") this technician works at - same code
+    /// <summary>DMS workshop LocCode (e.g. "CUS0288W5") this technician works at - same code
     /// space as User.WorkLocationCodes/BaplDmsWorkshop.LocCode, so the Job Card Wizard's Service
     /// Location selection can filter this dropdown down to just the technicians at that one
     /// workshop, exactly as it already does for the Supervisor dropdown (Users where
@@ -28,7 +28,7 @@ public class Technician
     /// <summary>Human-readable workshop name (e.g. "Chakan Service Center") captured alongside
     /// LocationCode purely for display on the Technician Employee grid, the same way
     /// EmployeesPage.tsx's Work Area picker shows "{locName} ({locCode})" rather than the bare
-    /// code - not authoritative (BAPL DMS's own WorkshopMaster/LocationMaster is, same as
+    /// code - not authoritative (DMS's own WorkshopMaster/LocationMaster is, same as
     /// everywhere else in this app), just a snapshot taken at the moment this record was saved.</summary>
     [MaxLength(200)] public string? LocationName { get; set; }
     /// <summary>Soft-deactivate, same convention as User.Active - lets a Supervisor retire a

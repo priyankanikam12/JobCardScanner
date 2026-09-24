@@ -4,7 +4,7 @@ import type { JobSearchResult } from '../types'
 
 /**
  * "Job Search" modal (2026-09-21, "give me this and proper flow of this" - modelled on the
- * reference BAPL DMS app's own Job Search popup on its Material Transfer / Repair Bill [GST]
+ * reference DMS app's own Job Search popup on its Material Transfer / Repair Bill [GST]
  * create pages: Date From/To + Job No/Registration No/Chassis Number filters, a results grid with
  * Job No/Job Date/Location/Job Type-Service Name/Party Name/Regn.-Chassis No/Vehicle Type/Job
  * Source, and a Select action per row). Shared between RepairBillCreatePage.tsx and
@@ -125,8 +125,8 @@ export function JobSearchModal({ onSelect, onClose, onlyWithMaterialTransfer = f
                 <th>Party Name</th>
                 <th>Regn. / Chassis No.</th>
                 <th>Vehicle Type</th>
-                <th>Job Source</th>
-                <th>DMS</th>
+                {/* <th>Job Source</th>
+                <th>DMS</th> */}
                 <th></th>
               </tr>
             </thead>
@@ -140,14 +140,12 @@ export function JobSearchModal({ onSelect, onClose, onlyWithMaterialTransfer = f
                   <td>{j.partyName ?? '—'}</td>
                   <td>{j.regNo ?? '—'}{j.chassisNo ? ` / ${j.chassisNo}` : ''}</td>
                   <td>{j.vehicleType ?? '—'}</td>
-                  <td>{j.jobSource ?? '—'}</td>
+                  {/* <td>{j.jobSource ?? '—'}</td>
                   <td>
-                    {/* 2026-09-21: this picker now also returns job cards that never synced to
-                        BAPL DMS - tagged rather than hidden, see JobCardsController.Search. */}
                     <span className={`badge ${j.isDmsLinked ? 'badge-success' : 'badge-muted'}`}>
                       {j.isDmsLinked ? 'Synced' : 'Local only'}
                     </span>
-                  </td>
+                  </td> */}
                   <td><button className="btn btn-sm btn-primary" onClick={() => onSelect(j)}>Select</button></td>
                 </tr>
               ))}

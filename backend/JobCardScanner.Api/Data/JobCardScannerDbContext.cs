@@ -38,7 +38,7 @@ public class JobCardScannerDbContext : DbContext
 
     // 2026-09-19 "Create Repair Bill and Material Transfer Bill ... save in JobCardScannerDb" -
     // see Models/RepairBillDocs.cs / MaterialTransferDocs.cs doc comments for how these differ
-    // from both BAPL DMS's own (never-written-to) tables and the read-only DMSBAPLDATA-synced
+    // from both DMS's own (never-written-to) tables and the read-only DMSBAPLDATA-synced
     // report pages of the same name.
     public DbSet<RepairBillDoc> RepairBillDocs => Set<RepairBillDoc>();
     public DbSet<RepairBillDocItem> RepairBillDocItems => Set<RepairBillDocItem>();

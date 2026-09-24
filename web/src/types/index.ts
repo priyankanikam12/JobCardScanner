@@ -315,7 +315,7 @@ export interface BaplDmsInvoiceLineItemsResult {
 
 /// One Part/Labour line item on a DMSBAPLDATA-sourced repair bill (dbo.DMS_RepairBillItem) - see
 /// DmsBaplDataRepairBillItemRow's doc comment in DmsBaplDataService.cs. Distinct from
-/// BaplDmsInvoiceLineItem above, which is the shaped print-preview breakdown for the LIVE BAPL DMS
+/// BaplDmsInvoiceLineItem above, which is the shaped print-preview breakdown for the LIVE DMS
 /// database (BAPLDMSvad) - this is the raw synced row from the separate DMSBAPLDATA database.
 export interface DmsBaplDataRepairBillItem {
   id: number
@@ -431,7 +431,7 @@ export interface DmsBaplDataMaterialTransfer {
 ///
 /// `regNo` and `isImported` are the two exceptions: DMS_VehicleSales itself has no Reg No column
 /// (confirmed by that same live query), so `regNo` is ONLY ever populated for rows that came from
-/// VehicleSalePage.tsx's "Import Vehicle Sale Report" feature (a real BAPL DMS/ERP report export
+/// VehicleSalePage.tsx's "Import Vehicle Sale Report" feature (a real DMS/ERP report export
 /// that DOES carry Reg No) - see that page's own doc comment for the full rationale. `isImported`
 /// marks exactly those rows so the page can tell imported data apart from DMSBAPLDATA-sourced data.
 export interface DmsBaplDataVehicleSale {
@@ -578,7 +578,7 @@ export interface DmsBaplDataServiceHistory {
 /// One suggestion row for the Service History page's typeahead - GET
 /// /api/dms-bapl-data/service-history/suggestions?q=... See DmsBaplDataServiceHistorySuggestion's
 /// doc comment in DmsBaplDataService.cs: deliberately sourced from DMS_ServiceHistory itself, NOT
-/// the Job Card wizard's BaplDmsVehicleSuggestion (a different table - BAPL DMS's ChassisDetails).
+/// the Job Card wizard's BaplDmsVehicleSuggestion (a different table - DMS's ChassisDetails).
 export interface DmsBaplDataServiceHistorySuggestion {
   chassisNo: string
   regNo?: string | null
@@ -604,7 +604,7 @@ export interface CurrentUser {
    * recorded - callers fall back to a manual pick. */
   dealerState?: string | null
   avatarColor?: string | null
-  /** BAPL DMS workshop LocCodes (the W1..Wn series) this user is scoped to - see
+  /** DMS workshop LocCodes (the W1..Wn series) this user is scoped to - see
    * User.WorkLocationCodes's doc comment (backend/Models/MasterData.cs). Empty = unrestricted
    * (every user before the Employees/Work Area feature shipped, and any admin with no locations
    * assigned). Used to filter the Service Location / workshop pickers down to only what this user
@@ -1116,7 +1116,7 @@ export interface CreateExtendedBatteryWarrantySchemeRequest {
 // all table add in jobcard db that all functionality need to craete in jc" - mirrors
 // OemModelsController.ToRow/CreateOemModelRequest and OemModelWarrantiesController.ToRow/
 // CreateOemModelWarrantyRequest (backend/Controllers/OemModel*.cs, backend/Dtos/Requests.cs). See
-// backend/Models/OemModels.cs's own doc comment for the full reasoning ported from the BAPL DMS
+// backend/Models/OemModels.cs's own doc comment for the full reasoning ported from the DMS
 // reference's OemmodelMaster/OemmodelWarranty tables, including why this is a GLOBAL (not
 // dealer-scoped) master.
 export interface OemModel {
@@ -1259,7 +1259,7 @@ export interface JobSearchResult {
   chassisNo?: string | null
   vehicleType?: string | null
   jobSource?: string | null
-  /** 2026-09-21: this picker now also returns job cards that never synced to BAPL DMS (see
+  /** 2026-09-21: this picker now also returns job cards that never synced to DMS (see
    * JobCardsController.Search's doc comment) - true when this one did. */
   isDmsLinked?: boolean
   /** 2026-09-22 - Vehicle.Odometer / JobCard.AssignedTechnicianName, added for Repair Bill's

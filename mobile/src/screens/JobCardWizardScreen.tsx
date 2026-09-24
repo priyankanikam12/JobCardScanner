@@ -33,7 +33,7 @@ const IST_TIME_ZONE = 'Asia/Kolkata'
 
 /** A date/time in real IST (UTC+05:30), not whatever timezone the device happens to be set to -
  * per explicit request "Current time in IST (UTC+05:30) use everywhere on ui". Used for the
- * Expected delivery picker's displayed value and BAPL DMS sale dates below. */
+ * Expected delivery picker's displayed value and DMS sale dates below. */
 function formatIST(value: Date | string, opts: Intl.DateTimeFormatOptions): string {
   const d = typeof value === 'string' ? new Date(value) : value
   return d.toLocaleString('en-IN', { timeZone: IST_TIME_ZONE, ...opts })
@@ -860,8 +860,8 @@ export function JobCardWizardScreen({ navigation }: Props) {
             </View>
           )}
 
-          <Text style={styles.h3}>(Registered customer Details)</Text>
-          <Text style={styles.label}>Search by chassis no. / registration no.</Text>
+          <Text style={styles.h3}>Registered customer Details</Text>
+          <Text style={styles.label}>Chassis no. / RegNo.</Text>
           <View style={styles.searchRow}>
             <TextInput
               style={[styles.input, { flex: 1 }]}
@@ -872,7 +872,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
               // row below to register (its own onPress) before this hides the list out from
               // under it.
               onBlur={() => setTimeout(() => setShowVehicleSuggestions(false), 150)}
-              placeholder="Chassis no. or registration no. (e.g. P6)"
+              placeholder="Chassis no./ RegNo. (e.g. P6)"
               autoCapitalize="characters"
               autoCorrect={false}
               onSubmitEditing={() => lookupByChassisOrReg()}
@@ -952,14 +952,14 @@ export function JobCardWizardScreen({ navigation }: Props) {
               </TouchableOpacity>
             </View>
           )}
-          {baplVehicleHit && (
+          {/* {baplVehicleHit && (
             <Text style={styles.muted}>
               Customer Details : customer-{baplVehicleHit.customerName || 'Unknown customer'}
               {baplVehicleHit.customerMobile ? ` (${baplVehicleHit.customerMobile})` : ''} - model- {baplVehicleHit.modelName || 'Model unknown'}
               {baplVehicleHit.registerNo ? `, reg no. ${baplVehicleHit.registerNo}` : ''}
               {baplVehicleHit.saleDate ? `, sale date ${formatISTDate(baplVehicleHit.saleDate)}.` : '.'}
             </Text>
-          )}
+          )} */}
 
           <Text style={[styles.h3, { marginTop: 20 }]}>Registered Customer</Text>
           {customerFieldsLocked && (
@@ -1100,7 +1100,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
             <PickerField label="Service Head *" value={selectedServiceHeadId != null ? String(selectedServiceHeadId) : ''} options={serviceHeadOptions} disabled={!selectedJobTypeId} placeholder={selectedJobTypeId ? 'Select service head…' : 'Select a job type first'} onChange={onServiceHeadChange} />
             <PickerField label="Service Type *" value={selectedServiceTypeId != null ? String(selectedServiceTypeId) : ''} options={serviceTypeOptions} disabled={!selectedServiceHeadId} placeholder={selectedServiceHeadId ? 'Select service type…' : 'Select a service head first'} onChange={(v) => setSelectedServiceTypeId(v ? Number(v) : null)} />
             <PickerField label="Priority *" value={priority} options={priorityOptions} onChange={(v) => setPriority(v as JobCardPriority)} />
-            <PickerField label="Service Location (workshop) *" value={selectedWorkshopLocCode} options={workshopOptions} disabled={!effectiveDealerId} placeholder={workshops.length ? 'Select workshop…' : 'No workshops found for this dealer yet'} onChange={onWorkshopChange} />
+            <PickerField label="Service Location *" value={selectedWorkshopLocCode} options={workshopOptions} disabled={!effectiveDealerId} placeholder={workshops.length ? 'Select workshop…' : 'No workshops found for this dealer yet'} onChange={onWorkshopChange} />
             {/* 2026-09-24 CHANGE (mirrors web): Supervisor/Technician are now dropdowns scoped to
                the Service Location above, fed from Admin -> Employees (Designation: Supervisor)
                and the new Technician Employee tab, instead of free text. */}
@@ -1127,7 +1127,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
                fields are still required for this job card's own records (Job Type/Source drive
                ServiceType/Source, Service Location scopes Supervisor/Technician above) - not
                because they feed a DMS write-back any more. */}
-            <Text style={styles.muted}>All fields above are required for this job card's own records. Service Location also determines which Supervisor/Technician are offered above.</Text>
+            {/* <Text style={styles.muted}>All fields above are required for this job card's own records. Service Location also determines which Supervisor/Technician are offered above.</Text> */}
           </View>
 
           <Field label="Battery level at check-in (%)" value={batteryLevel} keyboardType="numeric" onChangeText={setBatteryLevel} />
@@ -1138,7 +1138,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
             </TouchableOpacity>
           </View>
 
-          <Text style={[styles.label, { marginTop: 12 }]}>Customer complaints (Customer Voice)<Text style={styles.requiredStar}> *</Text></Text>
+          <Text style={[styles.label, { marginTop: 12 }]}>Customer complaints<Text style={styles.requiredStar}> *</Text></Text>
           {complaintPickOptions.length > 0 && (
             <View style={styles.searchRow}>
               <View style={{ flex: 1 }}>
@@ -1160,7 +1160,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
             <Text style={styles.muted}>No complaints added yet.</Text>
           )}
 
-          <Text style={[styles.label, { marginTop: 12 }]}>(Customer Voice) notes</Text>
+          <Text style={[styles.label, { marginTop: 12 }]}>Customer Voice</Text>
           <TextInput style={[styles.input, { height: 80, textAlignVertical: 'top' }]} multiline value={consentNotes} onChangeText={setConsentNotes} />
 
           <View style={styles.btnRow}>
@@ -1186,10 +1186,10 @@ export function JobCardWizardScreen({ navigation }: Props) {
               <Text style={styles.label}>Photos<Text style={styles.requiredStar}> *</Text></Text>
               <View style={{ flexDirection: 'row', gap: 10, marginBottom: 10 }}>
                 <TouchableOpacity style={styles.btn} disabled={capturingPhoto} onPress={takePhoto}>
-                  <Text style={styles.btnText}>{capturingPhoto ? 'Adding…' : '📷 Take Photo'}</Text>
+                  <Text style={styles.btnText}>{capturingPhoto ? 'Adding…' : '📷 Capture'}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.btn} disabled={capturingPhoto} onPress={pickPhoto}>
-                  <Text style={styles.btnText}>🖼️ Choose Photo</Text>
+                  <Text style={styles.btnText}>🖼️ Choose Picture</Text>
                 </TouchableOpacity>
               </View>
               {photoLocationNote && <Text style={styles.muted}>{photoLocationNote}</Text>}

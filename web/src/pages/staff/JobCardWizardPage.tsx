@@ -61,7 +61,7 @@ function nowForDatetimeLocalInput(): string {
   return new Date(Date.now() + IST_OFFSET_MINUTES * 60 * 1000).toISOString().slice(0, 16)
 }
 
-/** A date (e.g. a vehicle's BAPL DMS sale date) in real IST, not the browser's own timezone -
+/** A date (e.g. a vehicle's DMS sale date) in real IST, not the browser's own timezone -
  * same reasoning as nowForDatetimeLocalInput above. */
 function formatISTDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-IN', { timeZone: IST_TIME_ZONE })
@@ -885,7 +885,7 @@ export function JobCardWizardPage() {
               )}
             </div>
           )}
-          <h3>(Registered customer Details)</h3>
+          <h3>Registered customer Details</h3>
           {/* "Search by mobile number or name" commented out per your request - chassis/reg no.
              search (below) is now the only way to look up a customer here. */}
           {/* <div className="field">
@@ -896,7 +896,7 @@ export function JobCardWizardPage() {
             </div>
           </div> */}
           <div className="field" style={{ position: 'relative' }}>
-            <label>Search by chassis no. / registration no.</label>
+            <label>Chassis no. / Reg No.</label>
             <div style={{ display: 'flex', gap: 8 }}>
               <input
                 value={chassisOrRegQ}
@@ -904,7 +904,7 @@ export function JobCardWizardPage() {
                 onFocus={() => setShowVehicleSuggestions(true)}
                 onBlur={() => setTimeout(() => setShowVehicleSuggestions(false), 150)}
                 onKeyDown={(e) => e.key === 'Enter' && lookupByChassisOrReg()}
-                placeholder="Chassis no. or registration no. (e.g. P6)"
+                placeholder="Chassis no. / RegNo. (e.g. P6)"
                 autoComplete="off"
               />
               <button className="btn" onClick={() => lookupByChassisOrReg()} disabled={vehicleLookupLoading || !chassisOrRegQ.trim()}>
@@ -1022,14 +1022,14 @@ export function JobCardWizardPage() {
                 <button type="button" className="btn btn-sm btn-primary" onClick={applyGlobalHit}>Use this vehicle</button>
               </div>
             )}
-            {baplVehicleHit && (
+            {/* {baplVehicleHit && (
               <p className="muted" style={{ marginTop: 4 }}>
                 Customer Details : customer-{baplVehicleHit.customerName || 'Unknown customer'}
                 {baplVehicleHit.customerMobile ? ` (${baplVehicleHit.customerMobile})` : ''} - model- {baplVehicleHit.modelName || 'Model unknown'}
                 {baplVehicleHit.registerNo ? `, reg no. ${baplVehicleHit.registerNo}` : ''}
                 {baplVehicleHit.saleDate ? `, sale date ${formatISTDate(baplVehicleHit.saleDate)}.` : '.'}
               </p>
-            )}
+            )} */}
           </div>
           <h3 style={{ marginTop: 24 }}>Registered Customer</h3>
           {customerFieldsLocked && (
@@ -1264,7 +1264,7 @@ export function JobCardWizardPage() {
             </div>
             <div className="form-row" style={{ marginBottom: 0 }}>
               <div className="field">
-                <label>Service Location (workshop)<Req /></label>
+                <label>Service Location<Req /></label>
                 <select value={selectedWorkshopLocCode} disabled={!effectiveDealerId} onChange={(e) => onWorkshopChange(e.target.value)}>
                   <option value="">{workshops.length ? 'Select workshop…' : 'No workshops found for this dealer yet'}</option>
                   {workshops.map((w) => <option key={w.locCode} value={w.locCode}>{w.locName} ({w.locCode})</option>)}
@@ -1314,17 +1314,10 @@ export function JobCardWizardPage() {
                 </select>
               </div>
             </div>
-            <p className="muted" style={{ margin: '8px 0 0', fontSize: 12 }}>
-              {/* 2026-09-24 CHANGE ("dont save this jobcard in dms remove this all over flow that
-                 save in jobcard db only"): this job card is saved in JobCardScanner ONLY - it is no
-                 longer written into DMS's own database. Job Type/Service Head/Service Type/Source
-                 are still sourced from DMS's own master data (hence the "DMS" badge above) and are
-                 still required, since Job Type/Source drive this job card's own ServiceType/Source
-                 fields and Service Location scopes the Supervisor/Technician dropdowns below - not
-                 because they feed a DMS write-back any more. */}
-              All fields above are required for this job card's own records. Service Location also
+            {/* <p className="muted" style={{ margin: '8px 0 0', fontSize: 12 }}>
+             records. Service Location also
               determines which Supervisor/Technician are offered below.
-            </p>
+            </p> */}
           </div>
 
           <div className="form-row">
@@ -1333,7 +1326,7 @@ export function JobCardWizardPage() {
           </div>
 
           <div className="field">
-            <label>Customer complaints (Customer Voice)<Req /></label>
+            <label>Customer complaints<Req /></label>
             {/* Manual "+ Add complaint" free-text flow removed per your request - the DMS
                ComplaintMaster dropdown below is now the only way to add one, and it supports adding
                several (pick, Add, pick another, Add again). */}
@@ -1377,7 +1370,7 @@ export function JobCardWizardPage() {
           </div>
 
           <div className="field">
-            <label>(Customer Voice) notes</label>
+            <label>Customer Voice</label>
             <textarea rows={3} value={consentNotes} onChange={(e) => setConsentNotes(e.target.value)} />
           </div>
 
@@ -1422,7 +1415,7 @@ export function JobCardWizardPage() {
               <label>Photos<Req /></label>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: pendingPhotos.length > 0 ? 12 : 0 }}>
                 <label className="btn btn-sm" style={{ cursor: capturingPhoto ? 'default' : 'pointer', opacity: capturingPhoto ? 0.6 : 1 }}>
-                  {capturingPhoto ? 'Adding…' : '📷 Take / Upload Photo'}
+                  {capturingPhoto ? 'Adding…' : '📷 Capture / Upload Photo'}
                   <input
                     type="file"
                     accept="image/*"

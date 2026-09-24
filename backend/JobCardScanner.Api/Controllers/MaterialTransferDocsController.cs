@@ -207,7 +207,7 @@ public class MaterialTransferDocsController : ControllerBase
     /// <summary>
     /// GET /api/material-transfer-docs/for-job/{jobCardId} - 2026-09-22 ("now i saved from
     /// material transfer bill now this will shown in repair bill with which i material transfer"):
-    /// the real BAPL DMS reference you pasted (repair-bill.ts's loadMaterialedJobCardList calling
+    /// the real DMS reference you pasted (repair-bill.ts's loadMaterialedJobCardList calling
     /// JobCardService.getMaterialedJobCardList(jobId, dealerCode)) auto-populates a Repair Bill's
     /// own Part grid from whatever Material Transfer items already exist for the SAME job - Parts
     /// are never manually searched/added inside Repair Bill itself there (confirmed: the pasted

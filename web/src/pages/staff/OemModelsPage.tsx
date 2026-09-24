@@ -8,7 +8,7 @@ import { usePagination } from '../../lib/usePagination'
  * "OEM Model Master" admin page (2026-09-22: "this wants to integrate for my
  * battery-warranty-schemes for link models for warrenty and this all table add in jobcard db that
  * all functionality need to craete in jc"). Manages the GLOBAL (not dealer-scoped) vehicle model
- * catalog behind OemModelsController - ported in shape from the BAPL DMS reference's own
+ * catalog behind OemModelsController - ported in shape from the DMS reference's own
  * OemmodelMaster list/add/edit screens you pasted, ID/ModelName/ModelShortName/IsActive + an Excel
  * "Download" button.
  *

@@ -7,7 +7,7 @@ import { usePagination } from '../../lib/usePagination'
 /**
  * "OEM Model Warranty" admin page (2026-09-22 - see OemModelsPage.tsx's own doc comment for the
  * shared context). Manages the OEM/manufacturer's own STANDARD warranty terms per model
- * (OemModelWarrantiesController) - ported in shape from the BAPL DMS reference's own
+ * (OemModelWarrantiesController) - ported in shape from the DMS reference's own
  * oemmodel-warranty/add-oemmodel-warranty screens: list with date-range filter + Excel download,
  * and an add/edit form with a model dropdown (not free text - see OemModel's own doc comment for
  * why this table, unlike Vehicle.Model, is real FK-based).

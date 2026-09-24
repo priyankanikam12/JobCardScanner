@@ -10,7 +10,7 @@ namespace JobCardScanner.Api.Controllers;
 /// Backs the "Repair Bill" sidebar page (2026-09-17: "add 2 sidebar option in our jobscanner
 /// Material Transfer and Repair bill ... for only this repair bill create this take reference all
 /// of this and from DMSBAPLDATA databse fetch all data") - a read-only view of the Zomato-fleet
-/// repair bill data AutoGeniusSync syncs from BAPL DMS's live RepairBill documents into DMSBAPLDATA
+/// repair bill data AutoGeniusSync syncs from DMS's live RepairBill documents into DMSBAPLDATA
 /// (a separate database on the same AWS RDS server as JobCardScannerDb itself - see
 /// DMSBAPLDATAConnection's comment in appsettings.json). This app never writes to DMSBAPLDATA,
 /// same read-only convention as BaplDmsController/BaplDmsService for the live BAPLDMSvad database.

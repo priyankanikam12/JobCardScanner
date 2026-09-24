@@ -33,8 +33,8 @@ public record DmsBaplDataRepairBillItemRow(
 /// <summary>
 /// One repair bill header row from DMSBAPLDATA's own dbo.DMS_RepairBill (confirmed table/column
 /// names via the `select * from DMS_RepairBill` you ran directly against DMSBAPLDATA) - the
-/// Zomato-fleet repair bill data AutoGeniusSync syncs in from BAPL DMS's live RepairBill documents.
-/// This is a DIFFERENT database from both JobCardScannerDb and BAPL DMS's own live BAPLDMSvad (see
+/// Zomato-fleet repair bill data AutoGeniusSync syncs in from DMS's live RepairBill documents.
+/// This is a DIFFERENT database from both JobCardScannerDb and DMS's own live BAPLDMSvad (see
 /// DMSBAPLDATAConnection's comment in appsettings.json) - a synced/replicated read model, not the
 /// system of record, so this service is read-only, same convention as BaplDmsService.
 /// </summary>
@@ -116,7 +116,7 @@ public record DmsBaplDataMaterialTransferItemRow(
 /// already built for the "DMS Parts Inventory" panel on the Parts & Inventory page - see
 /// BaplDmsController.Workshops/GetWorkshopsAsync). Same DMSBAPLDATA database as
 /// <see cref="DmsBaplDataRepairBillRow"/> above - a synced/replicated read model (AutoGeniusSync),
-/// not the live BAPL DMS database - this app never writes to it, same as everything else here.
+/// not the live DMS database - this app never writes to it, same as everything else here.
 /// The Action column (a JSON audit-trail array AutoGeniusSync appends to on every insert/update) is
 /// intentionally left out of this shape - it's sync-process bookkeeping, not something the sidebar
 /// page needs to show.
@@ -317,12 +317,12 @@ public record DmsBaplDataServiceHistoryRow(
 
 /// <summary>
 /// One vehicle suggestion for the "Service History" page's typeahead - DISTINCT vehicles (grouped by
-/// ChassisNo) from DMSBAPLDATA's own dbo.DMS_ServiceHistory, not BAPL DMS's ChassisDetails (the
+/// ChassisNo) from DMSBAPLDATA's own dbo.DMS_ServiceHistory, not DMS's ChassisDetails (the
 /// table the Job Card wizard's /api/bapl-dms/vehicle-suggestions searches).
 ///
 /// 2026-09-18 "its taken from jobcard i want fetch data in service history from [DMS_ServiceHistory
 /// query]": the first version of this page's typeahead reused the wizard's own vehicle-suggestions
-/// endpoint outright, for speed - but that searches ChassisDetails in the LIVE BAPL DMS database
+/// endpoint outright, for speed - but that searches ChassisDetails in the LIVE DMS database
 /// (BAPLDMSvad), which is a sale/stock record, not a service one. A vehicle could be sold (so it
 /// shows up there) with zero service visits yet (so picking it here would show "no service history
 /// found"), or - the more likely real-world gap - a DMS_ServiceHistory row could exist for a chassis
@@ -375,7 +375,7 @@ public interface IDmsBaplDataService
     /// Typeahead suggestions for the "Service History" search box, sourced from DMS_ServiceHistory
     /// itself (one row per distinct ChassisNo, most-recently-serviced first) - see
     /// DmsBaplDataServiceHistorySuggestion's doc comment for why this is deliberately NOT the Job
-    /// Card wizard's /api/bapl-dms/vehicle-suggestions (a different table, BAPL DMS's ChassisDetails).
+    /// Card wizard's /api/bapl-dms/vehicle-suggestions (a different table, DMS's ChassisDetails).
     /// Fewer than 2 characters returns an empty list without querying DMSBAPLDATA.
     /// </summary>
     Task<IReadOnlyList<DmsBaplDataServiceHistorySuggestion>> SearchServiceHistoryVehiclesAsync(string? q, int take, CancellationToken ct = default);

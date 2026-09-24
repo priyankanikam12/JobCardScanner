@@ -120,11 +120,11 @@ export function TechnicianEmployeesScreen() {
         keyExtractor={(t) => t.id}
         ListHeaderComponent={
           <>
-            <Text style={styles.intro}>
+            {/* <Text style={styles.intro}>
               These technicians appear in the Job Card Wizard's "Technician" dropdown and the Job
               Card Detail screen's "Assign Technician" dropdown, scoped to the Location picked
               below. No login/password - this is a name-only roster, not a staff account.
-            </Text>
+            </Text> */}
             {canManage && (
               <View style={styles.card}>
                 <Text style={styles.cardTitle}>{form.id ? 'Edit Technician' : 'Add Technician'}</Text>

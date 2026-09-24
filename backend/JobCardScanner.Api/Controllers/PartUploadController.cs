@@ -10,7 +10,7 @@ namespace JobCardScanner.Api.Controllers;
 /// "Part Upload" sidebar tab (2026-09-21: "new tab add Part Upload using this excel create table
 /// and functionality to upload using this excel file for upload") - see Models/PartUploads.cs's
 /// doc comment for the confirmed source spreadsheet columns and why this writes to
-/// JobCardScannerDb rather than BAPL DMS/DMSBAPLDATA. Gated to PartsUserUp, matching the existing
+/// JobCardScannerDb rather than DMS/DMSBAPLDATA. Gated to PartsUserUp, matching the existing
 /// Parts &amp; Inventory page's own policy (PartsController's GET /api/parts) - a role that
 /// already sees the Parts &amp; Inventory nav entry can also see and use this one.
 /// </summary>

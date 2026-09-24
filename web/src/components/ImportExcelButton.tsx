@@ -30,7 +30,7 @@ const normalize = (s: unknown) => String(s ?? '').trim().toLowerCase().replace(/
  * scoped separately rather than assumed.
  *
  * 2026-09-18: now looks for a real header row (via `headerCandidates`) instead of always reading
- * column A - you tested the original column-A-only version against a real BAPL DMS report export
+ * column A - you tested the original column-A-only version against a real DMS report export
  * where the useful column wasn't first, so this is more forgiving of real-world files.
  */
 export function ImportExcelButton({ onValues, headerCandidates, label = 'Import Excel' }: Props) {
