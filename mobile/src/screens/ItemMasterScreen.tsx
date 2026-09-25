@@ -58,6 +58,9 @@ export function ItemMasterScreen() {
             <View style={{ alignItems: 'flex-end' }}>
               <Text style={styles.price}>{fmtAmt(it.dlrPrice)}</Text>
               <Text style={styles.muted}>S {fmtPct(it.sgst)} · C {fmtPct(it.cgst)} · I {fmtPct(it.igst)}</Text>
+              {/* 2026-09-25: this dealer's uploaded Part Upload stock, summed across every location -
+                  not a C_ItemMaster column. Blank means nothing uploaded yet, not 0 in stock. */}
+              <Text style={styles.muted}>Qty {it.qty ?? '—'}</Text>
             </View>
           </View>
         )}

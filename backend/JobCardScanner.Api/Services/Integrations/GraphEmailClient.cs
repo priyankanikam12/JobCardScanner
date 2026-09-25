@@ -42,8 +42,15 @@ public interface IEmailClient
     /// risking that channel on an email misconfiguration - see EmailSendResult's doc comment for
     /// why Error exists alongside Success. `attachment` is optional - added for the Estimates
     /// Amount "email with attached PDF" feature (JobCardsController.EmailEstimate); the original
-    /// OTP-email caller (OtpService) passes none and is unaffected.</summary>
-    Task<EmailSendResult> SendAsync(string toEmail, string subject, string htmlBody, EmailAttachment? attachment = null, CancellationToken ct = default);
+    /// OTP-email caller (OtpService) passes none and is unaffected.
+    ///
+    /// `fromMailbox` (2026-09-24, "mail going from fixed mailid... which user logged from this
+    /// logged user mailid wants to sent mail add this") - optional override for which mailbox
+    /// Graph sends "as" (see GraphEmailClient's class doc comment for how this is used and its one
+    /// real caveat re: Exchange Application Access Policy). Null/blank falls back to the
+    /// configured AzureAdGraph:SenderMailbox default - this is what OtpService's OTP-email path
+    /// keeps doing unchanged, since a customer OTP has no signed-in staff user to send "as".</summary>
+    Task<EmailSendResult> SendAsync(string toEmail, string subject, string htmlBody, EmailAttachment? attachment = null, string? fromMailbox = null, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -65,6 +72,24 @@ public interface IEmailClient
 /// /v1.0/users/{mailbox}/sendMail (there is no "me" to send as without a signed-in user), which
 /// 404s/403s if that mailbox doesn't actually exist or isn't licensed for Exchange.
 ///
+/// 2026-09-24 CHANGE ("mail going from fixed mailid currently... which user logged from this
+/// logged user mailid wants to sent mail add this"): SendAsync's `fromMailbox` parameter, when
+/// given, is sent "as" INSTEAD of the configured SenderMailbox - JobCardsController.EmailEstimate
+/// passes the signed-in staff user's own Users.Email (via ICurrentUserService.Email) so the
+/// Estimate email goes out from that person's real mailbox rather than one fixed address for
+/// everyone. This works through the exact same app-only Mail.Send permission as before - Graph's
+/// application-permission Mail.Send is NOT scoped to one mailbox by default, it can send "as" any
+/// mailbox in the tenant. ONE CAVEAT worth flagging to whoever manages the Azure/Exchange tenant:
+/// if an Exchange Online "Application Access Policy" has been set up to restrict this app's
+/// Mail.Send to specific mailboxes (a common tenant-hardening step, and not something visible from
+/// this code), sending "as" a staff member outside that policy's scope will fail with a 403
+/// ErrorAccessDenied - which SendAsync already surfaces as EmailSendResult.Error, so it fails
+/// loud/visibly rather than silently, but widening that policy (if one exists) is an Exchange
+/// admin-center change, not something this code can do. Every staff mailbox must also actually be
+/// a real, licensed Exchange Online mailbox for the same reason the single SenderMailbox needed to
+/// be (see the paragraph above) - a staff User.Email that isn't a real mailbox (e.g. a
+/// locally-created login not backed by an Exchange account) will 404 the same way.
+///
 /// Deliberately plain HttpClient, no Microsoft.Graph/Azure.Identity SDK, matching
 /// AzureAdDirectoryService for the same reason (no new NuGet package needed, and this sandbox/dev
 /// environment can't reach NuGet to add one anyway).
@@ -81,13 +106,17 @@ public class GraphEmailClient : IntegrationClientBase, IEmailClient
         _logger = logger;
     }
 
-    public async Task<EmailSendResult> SendAsync(string toEmail, string subject, string htmlBody, EmailAttachment? attachment = null, CancellationToken ct = default)
+    public async Task<EmailSendResult> SendAsync(string toEmail, string subject, string htmlBody, EmailAttachment? attachment = null, string? fromMailbox = null, CancellationToken ct = default)
     {
         var section = _config.GetSection("AzureAdGraph");
         var tenantId = section["TenantId"];
         var clientId = section["ClientId"];
         var clientSecret = section["ClientSecret"];
-        var sender = section["SenderMailbox"];
+        // fromMailbox (the signed-in staff user's own mailbox, when the caller has one - see
+        // JobCardsController.EmailEstimate) wins over the configured default; blank/whitespace is
+        // treated the same as "not passed" so a caller can pass ICurrentUserService.Email straight
+        // through even when it's null for an unauthenticated/customer-context call.
+        var sender = string.IsNullOrWhiteSpace(fromMailbox) ? section["SenderMailbox"] : fromMailbox;
         if (string.IsNullOrWhiteSpace(tenantId) || string.IsNullOrWhiteSpace(clientId) ||
             string.IsNullOrWhiteSpace(clientSecret) || string.IsNullOrWhiteSpace(sender))
         {
@@ -99,7 +128,7 @@ public class GraphEmailClient : IntegrationClientBase, IEmailClient
 
         try
         {
-            await ExecuteAsync(IntegrationSystem.Email, "POST /users/{sender}/sendMail", new { to = toEmail, subject, hasAttachment = attachment != null }, async () =>
+            await ExecuteAsync(IntegrationSystem.Email, "POST /users/{sender}/sendMail", new { to = toEmail, subject, hasAttachment = attachment != null, sender }, async () =>
             {
                 var accessToken = await GetAppOnlyAccessTokenAsync(tenantId, clientId, clientSecret, ct);
 

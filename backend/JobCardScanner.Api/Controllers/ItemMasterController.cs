@@ -21,29 +21,70 @@ namespace JobCardScanner.Api.Controllers;
 public class ItemMasterController : ControllerBase
 {
     private readonly IBaplDealerService _baplDealer;
+    private readonly IPartUploadService _partUploads;
+    private readonly ICurrentUserService _currentUser;
     private readonly ILogger<ItemMasterController> _logger;
 
-    public ItemMasterController(IBaplDealerService baplDealer, ILogger<ItemMasterController> logger)
+    public ItemMasterController(IBaplDealerService baplDealer, IPartUploadService partUploads, ICurrentUserService currentUser, ILogger<ItemMasterController> logger)
     {
         _baplDealer = baplDealer;
+        _partUploads = partUploads;
+        _currentUser = currentUser;
         _logger = logger;
     }
 
     /// <summary>GET /api/item-master?q=... - the sidebar page's own browse/search list. q is
     /// optional (substring match on ItemCode/ItemName/DisplayName); omit for an unfiltered browse
-    /// (capped at 1000 rows server-side - see SearchItemMasterAsync's doc comment).</summary>
+    /// (capped at 1000 rows server-side - see SearchItemMasterAsync's doc comment).
+    ///
+    /// 2026-09-25 ("in item master also qty bind in this page"): C_ItemMaster (baplfinal) itself
+    /// has NO quantity/stock column at all - FACT, see BaplItemMasterRow's own doc comment, this
+    /// table only carries Dlr_Price/GST%, never stock. The only quantity source in this codebase
+    /// that isn't the live BAPLDMSvad connection (which the rest of this app's 2026-09-24 direction
+    /// is moving away from - see JobCardsController.PartsCatalog's doc comment) is this dealer's own
+    /// uploaded Part Upload data (PartUploads.BalQty) - the SAME source Part Suggestion's
+    /// "(avail. X)" hint now uses. Summed across every location this dealer has uploaded stock for,
+    /// since this page has no per-location filter UI. INTERPRETATION: a part with no "qty" value
+    /// here means nothing has been uploaded for it yet, not necessarily "zero in stock"; a
+    /// multi-workshop dealer's total here can overstate what's on the shelf at any one specific
+    /// location - same disclosed trade-off as PartsCatalog's fallback.</summary>
     [HttpGet]
     public async Task<IActionResult> Search([FromQuery] string? q)
     {
+        IReadOnlyList<BaplItemMasterRow> items;
         try
         {
-            return Ok(await _baplDealer.SearchItemMasterAsync(q, HttpContext.RequestAborted));
+            items = await _baplDealer.SearchItemMasterAsync(q, HttpContext.RequestAborted);
         }
         catch (InvalidOperationException ex)
         {
             _logger.LogWarning(ex, "Could not read BAPL item master (q: {Q})", q);
             return StatusCode(502, new { message = ex.Message });
         }
+
+        Dictionary<string, decimal> qtyByCode = new(StringComparer.OrdinalIgnoreCase);
+        if (_currentUser.DealerId.HasValue)
+        {
+            var uploads = await _partUploads.GetAsync(_currentUser.DealerId.Value, null, null, HttpContext.RequestAborted);
+            foreach (var u in uploads)
+                if (!string.IsNullOrWhiteSpace(u.PartNo) && u.BalQty.HasValue)
+                    qtyByCode[u.PartNo] = (qtyByCode.TryGetValue(u.PartNo, out var existing) ? existing : 0m) + u.BalQty.Value;
+        }
+
+        return Ok(items.Select(i => new
+        {
+            itemCode = i.ItemCode,
+            itemName = i.ItemName,
+            displayName = i.DisplayName,
+            hsnCode = i.HsnCode,
+            dlrPrice = i.DlrPrice,
+            sgst = i.Sgst,
+            cgst = i.Cgst,
+            igst = i.Igst,
+            itemType = i.ItemType,
+            status = i.Status,
+            qty = qtyByCode.TryGetValue(i.ItemCode, out var qty) ? (decimal?)qty : null,
+        }));
     }
 
     /// <summary>

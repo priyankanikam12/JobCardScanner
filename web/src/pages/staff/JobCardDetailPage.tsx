@@ -441,7 +441,7 @@ export function JobCardDetailPage() {
           <h3>Customer & Vehicle</h3>
           <p><strong>{jc.customer?.name}</strong><br />{jc.customer?.mobile}</p>
           <p>{jc.vehicle?.model} {jc.vehicle?.variant}<br />Reg: {jc.vehicle?.regNo} | Odometer: {jc.odometerAtCheckIn} km</p>
-          {/* <p className="muted">Tracking link: /track/{jc.trackingToken}</p> */}
+          <p className="muted">Tracking link: /track/{jc.trackingToken}</p>
           {jc.customer && hasRole('WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
             <CustomerPasswordResetButton customerId={jc.customer.id} customerName={jc.customer.name} />
           )}
@@ -771,11 +771,11 @@ function UpdateWorkflowStageCard({
   return (
     <div className="card">
       <h3>Update Workflow Stage</h3>
-      {/* <p className="muted" style={{ marginTop: -6 }}>
+      <p className="muted" style={{ marginTop: -6 }}>
         The stage above now advances automatically as work happens - parts/labour suggested, an
         estimate drafted, a technician's first worklog started, an invoice generated. Use the two
         buttons below only for the steps with no automatic trigger.
-      </p> */}
+      </p>
       {/* 2026-09-24 CHANGE ("before start required Assign Technician name update"): every stage
          change - the two manual buttons below AND every automatic trigger elsewhere on this page
          (worklog start, part/labour suggestion) - is now refused with a 400 until a Technician is
@@ -1267,7 +1267,7 @@ function PartSuggestionCard({ jc, run, estimatesLocked, totalLockReached }: { jc
                       style={{ width: '100%', textAlign: 'left', border: 'none', background: 'transparent', padding: '6px 8px' }}
                       onMouseDown={(e) => { e.preventDefault(); pickPart(p) }}
                     >
-                      <strong>{p.itemCode}</strong>{p.description ? ` — ${p.description}` : ''} <span className="muted">(avail. {p.availableQty})</span>
+                      <strong>{p.itemCode}</strong>{p.description ? ` — ${p.description}` : ''} <span className="muted">(avail. {p.availableQty ?? '—'})</span>
                     </button>
                   </li>
                 ))}

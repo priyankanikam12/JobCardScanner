@@ -242,6 +242,10 @@ export interface BaplItemMaster {
   igst?: number | null
   itemType?: string | null
   status?: string | null
+  /** 2026-09-25: NOT a C_ItemMaster column (that table has no stock field at all) - this dealer's
+   * own uploaded Part Upload stock (PartUploads.BalQty) summed across every location, matched by
+   * ItemCode = PartNo. Null means nothing has been uploaded for this part yet, not "0 in stock". */
+  qty?: number | null
 }
 
 /// One search-as-you-type match for the chassis/registration-no. autocomplete - see
@@ -666,8 +670,10 @@ export interface JobCardsPartsCatalogRow {
   sgst?: number | null
   cgst?: number | null
   igst?: number | null
-  /** Only populated when a locationCode was passed - this item's Part Upload BalQty at that
-   * location. Null when no Part Upload row matches (not necessarily "0 in stock"). */
+  /** This item's Part Upload BalQty - at the given locationCode when one was passed, or summed
+   * across every location this dealer has uploaded stock for otherwise (2026-09-25 fallback, see
+   * JobCardsController.PartsCatalog's doc comment). Null when no Part Upload row matches at all
+   * (not necessarily "0 in stock"). */
   availableQty?: number | null
 }
 

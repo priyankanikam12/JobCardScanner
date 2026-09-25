@@ -94,6 +94,10 @@ public class AppClaimsTransformation : IClaimsTransformation
         if (user.DealerId.HasValue)
             identity.AddClaim(new Claim("app_dealer_id", user.DealerId.Value.ToString()));
         identity.AddClaim(new Claim("app_name", user.Name));
+        // 2026-09-24 - see ICurrentUserService.Email's doc comment: lets JobCardsController.
+        // EmailEstimate send the Estimate email "as" this signed-in person's own mailbox instead
+        // of one fixed address for everyone.
+        identity.AddClaim(new Claim("app_email", user.Email));
         // 2026-09-17 "Employees" page - same Work Area location-scoping claim DealerJwtTokenService
         // stamps for local sign-ins, added here too so an Azure AD staff account assigned specific
         // locations is scoped the same way. Empty/null = unrestricted (unchanged behavior).

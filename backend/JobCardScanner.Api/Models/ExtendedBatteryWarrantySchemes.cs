@@ -7,12 +7,12 @@ namespace JobCardScanner.Api.Models;
 /// 2026-09-22 "needs to create warenty table in jobcardscanner db for this functionality and add
 /// this in our function" - a dealer-configurable Extended Battery Warranty scheme master, native to
 /// JobCardScannerDb (this app's own database, not BAPLDMSvad/baplfinal). Ported in SHAPE from the
-/// real BAPL DMS reference's own ExtendedBatteryWarranty table/screens you pasted earlier in this
+/// real DMS reference's own ExtendedBatteryWarranty table/screens you pasted earlier in this
 /// session (SchemeName/RateType/Duration/DurationType/Kms/DealerPrice/CustomerPrice/
 /// DiscountAmount/Gstpercentage/PurchaseValidity/BatteryPartCode/PartCode/FromDate/ToDate/IsActive),
 /// with two deliberate adaptations rather than a field-for-field copy:
 ///
-///  1. The reference links a scheme to a vehicle via OemmodelId, an FK into BAPL DMS's own
+///  1. The reference links a scheme to a vehicle via OemmodelId, an FK into DMS's own
 ///     OemmodelMaster table - JobCardScannerDb had NO such master when this class was first
 ///     written (confirmed: grepped Models/ and Controllers/ for "OemModel"/"VehicleModel", nothing
 ///     existed). Vehicle.Model here is a plain free-text string (see Models/MasterData.cs), so
@@ -40,10 +40,10 @@ namespace JobCardScanner.Api.Models;
 /// comment): a scheme is a candidate when VehicleModel matches (case-insensitive) AND the vehicle's
 /// own Vehicle.PurchaseDate falls inside [FromDate, ToDate] (reading FromDate/ToDate as "which batch
 /// of vehicle purchases this scheme's pricing/terms apply to", the same INTERPRETATION - not
-/// confirmed BGauss policy - used for the BAPL DMS version of this feature). Coverage for a given
+/// confirmed BGauss policy - used for the DMS version of this feature). Coverage for a given
 /// claim = PurchaseDate + Duration(DurationType) for the date side, and Kms for the mileage side,
 /// "whichever comes first". PurchaseValidityDays is carried through but NOT used in the eligibility
-/// check, for the same reason it wasn't used in the BAPL DMS version: nothing confirms what it
+/// check, for the same reason it wasn't used in the DMS version: nothing confirms what it
 /// gates. All of this should be reviewed against actual BGauss policy before it's treated as
 /// authoritative for a real claim - see ExtendedBatteryWarrantySchemesController's doc comment.
 /// </summary>

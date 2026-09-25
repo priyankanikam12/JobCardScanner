@@ -815,7 +815,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
   const technicianPickOptions: PickerOption[] = technicianOptions.map((t) => ({ label: t.name, value: t.name }))
   const jobSourceOptions: PickerOption[] = jobSources.map((s) => ({ label: s.name, value: String(s.id) }))
   const complaintPickOptions: PickerOption[] = complaintOptions.map((c) => ({ label: c.name, value: String(c.id) }))
-  const priorityOptions: PickerOption[] = (['Normal', 'High', 'Urgent'] as JobCardPriority[]).map((p) => ({ label: p, value: p }))
+  const priorityOptions: PickerOption[] = (['1', '2', '3'] as unknown as JobCardPriority[]).map((p) => ({ label: p, value: p }))
   const dealerOptions: PickerOption[] = dealers.map((d) => ({ label: `${d.name} (${d.code})`, value: d.id }))
 
   return (
@@ -872,7 +872,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
               // row below to register (its own onPress) before this hides the list out from
               // under it.
               onBlur={() => setTimeout(() => setShowVehicleSuggestions(false), 150)}
-              placeholder="Chassis no./ RegNo. (e.g. P6)"
+              placeholder="Chassis no. or registration no. (e.g. P6)"
               autoCapitalize="characters"
               autoCorrect={false}
               onSubmitEditing={() => lookupByChassisOrReg()}
@@ -1096,15 +1096,15 @@ export function JobCardWizardScreen({ navigation }: Props) {
               <Text style={{ fontWeight: '700', fontSize: 14 }}>Job Card fields</Text>
             </View>
             {baplMastersError && <Text style={styles.errorText}>{baplMastersError}</Text>}
-            <PickerField label="Job Type *" value={selectedJobTypeId != null ? String(selectedJobTypeId) : ''} options={jobTypeOptions} placeholder="Select job type…" onChange={onJobTypeChange} />
+            <PickerField label="Job Type *" value={selectedJobTypeId != null ? String(selectedJobTypeId) : ''} options={jobTypes.map((jobType) => ({ label: jobType.name, value: String(jobType.id) }))} onChange={onJobTypeChange} />
             <PickerField label="Service Head *" value={selectedServiceHeadId != null ? String(selectedServiceHeadId) : ''} options={serviceHeadOptions} disabled={!selectedJobTypeId} placeholder={selectedJobTypeId ? 'Select service head…' : 'Select a job type first'} onChange={onServiceHeadChange} />
-            <PickerField label="Service Type *" value={selectedServiceTypeId != null ? String(selectedServiceTypeId) : ''} options={serviceTypeOptions} disabled={!selectedServiceHeadId} placeholder={selectedServiceHeadId ? 'Select service type…' : 'Select a service head first'} onChange={(v) => setSelectedServiceTypeId(v ? Number(v) : null)} />
+            {/* <PickerField label="Service Type *" value={selectedServiceTypeId != null ? String(selectedServiceTypeId) : ''} options={serviceTypeOptions} disabled={!selectedServiceHeadId} placeholder={selectedServiceHeadId ? 'Select service type…' : 'Select a service head first'} onChange={(v) => setSelectedServiceTypeId(v ? Number(v) : null)} /> */}
             <PickerField label="Priority *" value={priority} options={priorityOptions} onChange={(v) => setPriority(v as JobCardPriority)} />
-            <PickerField label="Service Location *" value={selectedWorkshopLocCode} options={workshopOptions} disabled={!effectiveDealerId} placeholder={workshops.length ? 'Select workshop…' : 'No workshops found for this dealer yet'} onChange={onWorkshopChange} />
+            <PickerField label="Service Location (workshop) *" value={selectedWorkshopLocCode} options={workshopOptions} disabled={!effectiveDealerId} placeholder={workshops.length ? 'Select workshop…' : 'No workshops found for this dealer yet'} onChange={onWorkshopChange} />
             {/* 2026-09-24 CHANGE (mirrors web): Supervisor/Technician are now dropdowns scoped to
                the Service Location above, fed from Admin -> Employees (Designation: Supervisor)
                and the new Technician Employee tab, instead of free text. */}
-            <PickerField
+            {/* <PickerField
               label="Supervisor *"
               value={baplSupervisorName}
               options={supervisorPickOptions}
@@ -1119,9 +1119,9 @@ export function JobCardWizardScreen({ navigation }: Props) {
               disabled={!selectedWorkshopLocCode}
               placeholder={selectedWorkshopLocCode ? (technicianPickOptions.length ? 'Select technician…' : 'No Technician set up for this location yet') : 'Select a Service Location first'}
               onChange={setBaplTechnicianName}
-            />
+            /> */}
             <Field label="Manual Job No." value={baplManualJobNo} onChangeText={setBaplManualJobNo} placeholder="e.g. 0" />
-            <PickerField label="Source *" value={selectedJobSourceId != null ? String(selectedJobSourceId) : ''} options={jobSourceOptions} placeholder="Select source…" onChange={onJobSourceChange} />
+            {/* <PickerField label="Source *" value={selectedJobSourceId != null ? String(selectedJobSourceId) : ''} options={jobSourceOptions} placeholder="Select source…" onChange={onJobSourceChange} /> */}
             {/* 2026-09-24 CHANGE ("dont save this jobcard in dms remove this all over flow that
                save in jobcard db only"): this job card is saved in JobCardScanner ONLY. These
                fields are still required for this job card's own records (Job Type/Source drive
@@ -1160,7 +1160,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
             <Text style={styles.muted}>No complaints added yet.</Text>
           )}
 
-          <Text style={[styles.label, { marginTop: 12 }]}>Customer Voice</Text>
+          <Text style={[styles.label, { marginTop: 12 }]}>Customer notes</Text>
           <TextInput style={[styles.input, { height: 80, textAlignVertical: 'top' }]} multiline value={consentNotes} onChangeText={setConsentNotes} />
 
           <View style={styles.btnRow}>
@@ -1186,11 +1186,11 @@ export function JobCardWizardScreen({ navigation }: Props) {
               <Text style={styles.label}>Photos<Text style={styles.requiredStar}> *</Text></Text>
               <View style={{ flexDirection: 'row', gap: 10, marginBottom: 10 }}>
                 <TouchableOpacity style={styles.btn} disabled={capturingPhoto} onPress={takePhoto}>
-                  <Text style={styles.btnText}>{capturingPhoto ? 'Adding…' : '📷 Capture'}</Text>
+                  <Text style={styles.btnText}>{capturingPhoto ? 'Adding…' : '📷 Capture Photo'}</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.btn} disabled={capturingPhoto} onPress={pickPhoto}>
-                  <Text style={styles.btnText}>🖼️ Choose Picture</Text>
-                </TouchableOpacity>
+                {/* <TouchableOpacity style={styles.btn} disabled={capturingPhoto} onPress={pickPhoto}>
+                  <Text style={styles.btnText}>🖼️ Choose Photo</Text>
+                </TouchableOpacity> */}
               </View>
               {photoLocationNote && <Text style={styles.muted}>{photoLocationNote}</Text>}
               {pendingPhotos.length === 0 && <Text style={styles.errorText}>At least one photo is required.</Text>}

@@ -36,6 +36,10 @@ public class DealerJwtTokenService : IDealerJwtTokenService
             new("app_role", user.Role.ToString()),
             new(ClaimTypes.Role, user.Role.ToString()),
             new("app_name", user.Name),
+            // 2026-09-24 - see ICurrentUserService.Email's doc comment: lets JobCardsController.
+            // EmailEstimate send the Estimate email "as" this signed-in person's own mailbox
+            // instead of one fixed address for everyone.
+            new("app_email", user.Email),
             new("app_auth_type", "Local"),
         };
         if (user.DealerId.HasValue)

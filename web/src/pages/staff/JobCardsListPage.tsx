@@ -1,3 +1,4 @@
+// web\src\pages\staff\JobCardsListPage.tsx
 import { useEffect, useState } from 'react'
 import type { MouseEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'

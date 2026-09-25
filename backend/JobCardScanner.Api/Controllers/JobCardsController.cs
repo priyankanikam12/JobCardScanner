@@ -39,13 +39,22 @@ public class JobCardsController : ControllerBase
     private readonly IBaplDealerService _baplDealer;
     private readonly ILabourMasterImportService _labourMaster;
     private readonly IPartUploadService _partUploads;
+    // 2026-09-25 ("worklocation chassis no and reg no use from vehicle sale which we data fetch"):
+    // backs the wizard's chassis/reg-no lookup and typeahead suggestions (VehicleLookupForWizard /
+    // VehicleSuggestionsForWizard below), reading BaplConnection's DMS_SaleBill/DMS_SaleBillCustomer -
+    // the same source DmsBaplDataService.GetVehicleSalesAsync uses for the "Vehicle Sale" sidebar
+    // page (see that service's SECTION 95 migration notes). Replaces the wizard's previous use of
+    // _baplDms (BAPLDMSvad)'s VehicleLookupAsync/VehicleSuggestionsAsync for this purpose - _baplDms
+    // itself is unchanged and still used elsewhere in this controller (workshops, etc.).
+    private readonly IDmsBaplDataService _dmsBaplData;
 
     public JobCardsController(
         JobCardScannerDbContext db, ICurrentUserService currentUser, IJobCardNumberingService numbering,
         IErpClient erp, INotificationClient notifications, IOtpService otp, IAuditLogService audit,
         IWebHostEnvironment env, IBaplDmsService baplDms, IInvoicePdfService invoicePdf,
         IEstimatePdfService estimatePdf, IEmailClient email, ILogger<JobCardsController> logger,
-        IBaplDealerService baplDealer, ILabourMasterImportService labourMaster, IPartUploadService partUploads)
+        IBaplDealerService baplDealer, ILabourMasterImportService labourMaster, IPartUploadService partUploads,
+        IDmsBaplDataService dmsBaplData)
     {
         _db = db;
         _currentUser = currentUser;
@@ -63,6 +72,7 @@ public class JobCardsController : ControllerBase
         _baplDealer = baplDealer;
         _labourMaster = labourMaster;
         _partUploads = partUploads;
+        _dmsBaplData = dmsBaplData;
     }
 
     // ---------------- Part Suggestion / Labour Suggestion picker data (2026-09-24) ----------------
@@ -73,7 +83,21 @@ public class JobCardsController : ControllerBase
     /// Material Transfer/Repair Bill already price against); "available qty" is best-effort
     /// enriched from this dealer's own uploaded Part Upload data for the given location when a
     /// matching PartNo exists there (locationCode optional - omit it to search without a stock
-    /// hint). Gated ServiceAdvisorUp, same floor as AddPartSuggestion itself.</summary>
+    /// hint). Gated ServiceAdvisorUp, same floor as AddPartSuggestion itself.
+    ///
+    /// 2026-09-25 ("(avail. ) placeholder blank" - FACT/diagnosis: Job Type/Service Head/Service
+    /// Type/Service Location became OPTIONAL on the wizard once DMS write-back was removed (see
+    /// JobCardsController.Create's own 2026-09-24 doc comment) - so an increasing share of job
+    /// cards carry no BaplServiceLocationCode at all, meaning the frontend never sends locationCode
+    /// here (see JobCardDetailPage.tsx/PartSuggestionSection.tsx's own "locationCode is optional"
+    /// comment), and availableQtyByCode stayed empty for every one of them): when locationCode is
+    /// blank, this now falls back to this dealer's Part Upload stock summed ACROSS EVERY LOCATION
+    /// they've uploaded for, instead of showing no quantity hint at all. INTERPRETATION / disclosed
+    /// trade-off: for a dealer with more than one workshop location (W1, W2, ...) with genuinely
+    /// different stock levels, this dealer-wide fallback can overstate what's actually on the shelf
+    /// at the specific workshop this job is at - it is a best-effort hint, same as before, not a
+    /// stock guarantee. Picking a Service Location on the job card (still optional) gives the exact
+    /// per-workshop number instead of this fallback.</summary>
     [HttpGet("parts-catalog")]
     [Authorize(Policy = Policies.ServiceAdvisorUp)]
     public async Task<IActionResult> PartsCatalog([FromQuery] string? q, [FromQuery] string? locationCode)
@@ -90,12 +114,16 @@ public class JobCardsController : ControllerBase
         }
 
         Dictionary<string, decimal> availableQtyByCode = new(StringComparer.OrdinalIgnoreCase);
-        if (_currentUser.DealerId.HasValue && !string.IsNullOrWhiteSpace(locationCode))
+        if (_currentUser.DealerId.HasValue)
         {
+            // locationCode narrows to one workshop when the job card has one; null/blank returns
+            // this dealer's uploads across every location (see this method's doc comment above) -
+            // summed per PartNo rather than a plain overwrite, since more than one location's row
+            // can now match the same PartNo once locationCode isn't filtering them down to one.
             var uploads = await _partUploads.GetAsync(_currentUser.DealerId.Value, locationCode, null, HttpContext.RequestAborted);
             foreach (var u in uploads)
                 if (!string.IsNullOrWhiteSpace(u.PartNo) && u.BalQty.HasValue)
-                    availableQtyByCode[u.PartNo] = u.BalQty.Value;
+                    availableQtyByCode[u.PartNo] = (availableQtyByCode.TryGetValue(u.PartNo, out var existing) ? existing : 0m) + u.BalQty.Value;
         }
 
         return Ok(items.Select(i => new
@@ -475,6 +503,14 @@ public class JobCardsController : ControllerBase
     /// needs). Returns 400 for a missing/malformed address, 404 if the job card doesn't exist, and
     /// 502 if BuildEstimatePdfAsync or the Graph send itself fails - matches this controller's
     /// existing InvoicePdf/BaplDms error-response convention.
+    ///
+    /// 2026-09-24 CHANGE ("mail going from fixed mailid currently... which user logged from this
+    /// logged user mailid wants to sent mail add this"): sent "as" _currentUser.Email - the
+    /// signed-in staff user's own mailbox (same on web and mobile, since both call this one
+    /// endpoint) - instead of always AzureAdGraph:SenderMailbox. See GraphEmailClient's
+    /// fromMailbox doc comment for the one real caveat (an Exchange Application Access Policy, if
+    /// the tenant has one, could still restrict which mailboxes this app is allowed to send "as" -
+    /// that would surface here as the 502 below, not a silent failure).
     /// </summary>
     [HttpPost("{id:guid}/estimates/email")]
     public async Task<IActionResult> EmailEstimate(Guid id, EmailEstimateRequest req)
@@ -511,7 +547,7 @@ public class JobCardsController : ControllerBase
         // config somewhere" - it says exactly what Graph (or the token endpoint) rejected, e.g.
         // "SenderMailbox isn't a licensed Exchange Online mailbox" (404) vs. "Mail.Send not
         // consented" (403) vs. a bad ClientSecret at the token step.
-        var emailResult = await _email.SendAsync(req.Email, subject, htmlBody, attachment, HttpContext.RequestAborted);
+        var emailResult = await _email.SendAsync(req.Email, subject, htmlBody, attachment, _currentUser.Email, HttpContext.RequestAborted);
         if (!emailResult.Success)
             return StatusCode(502, new { message = $"Could not send the email: {emailResult.Error ?? "unknown error"}" });
 
@@ -1360,5 +1396,128 @@ public class JobCardsController : ControllerBase
         _db.JobCardLabourSuggestions.Remove(suggestion);
         await _db.SaveChangesAsync();
         return Ok(new { message = "Removed." });
+    }
+
+    // ---------------- Wizard vehicle lookup (2026-09-25, off BAPLDMSvad, onto Vehicle Sale) ----------------
+    /// <summary>GET /api/jobcards/vehicle-lookup?value=&dealerId= - replaces the wizard's previous
+    /// GET /api/bapl-dms/vehicle-lookup (BAPLDMSvad, the live job-card DMS this controller stopped
+    /// writing to on 2026-09-24 - see Create's own doc comment). Looks the entered chassis no. or
+    /// reg. no. up in BaplConnection's DMS_SaleBill/DMS_SaleBillCustomer instead (the same source
+    /// backing the "Vehicle Sale" sidebar page - see DmsBaplDataService.GetVehicleSalesAsync's
+    /// SECTION 95 migration notes), via IDmsBaplDataService.LookupVehicleForWizardAsync.
+    ///
+    /// dealerId is optional and, when given, is translated to that Dealer's BaplDmsDealerCode and
+    /// used to scope the match to sales billed under that dealer - same dealer-code convention
+    /// GetVehicleSalesAsync/Create already use elsewhere in this file (see e.g. dealerBaplCode
+    /// above). Without a match, the wizard falls back to manual entry - this endpoint returning 404
+    /// is an expected, non-error outcome for a vehicle this dealer never sold (or hasn't been billed
+    /// yet).
+    ///
+    /// "already has an open job card" is now a LOCAL-ONLY check against this app's own JobCardScannerDb
+    /// (matching by VIN, i.e. chassis no., against this dealer's own not-yet-closed job cards) -
+    /// there is no live DMS signal for this any more since DMS write-back was removed; a job card
+    /// opened in a DIFFERENT dealer's DMS for the same chassis (if any) cannot be detected here.
+    /// openJobCardSource is always "local" (never a DMS-sourced value) when present, kept as an
+    /// explicit field so the frontend doesn't need to guess.</summary>
+    [HttpGet("vehicle-lookup")]
+    [Authorize(Policy = Policies.ServiceAdvisorUp)]
+    public async Task<IActionResult> VehicleLookupForWizard([FromQuery] string? value, [FromQuery] Guid? dealerId)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return BadRequest(new { message = "value is required." });
+
+        string? dealerCode = null;
+        if (dealerId.HasValue)
+        {
+            dealerCode = await _db.Dealers.AsNoTracking()
+                .Where(d => d.Id == dealerId)
+                .Select(d => d.BaplDmsDealerCode)
+                .FirstOrDefaultAsync();
+        }
+
+        DmsBaplDataVehicleSaleRow? hit;
+        try
+        {
+            hit = await _dmsBaplData.LookupVehicleForWizardAsync(value.Trim(), dealerCode, HttpContext.RequestAborted);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Vehicle lookup for wizard failed for value {Value}, dealerId {DealerId}", value, dealerId);
+            return StatusCode(502, new { message = ex.Message });
+        }
+
+        if (hit is null) return NotFound(new { message = $"\"{value}\" wasn't found in Vehicle Sale." });
+
+        string? openJobCardNumber = null;
+        string? openJobCardStatus = null;
+        if (dealerId.HasValue && !string.IsNullOrWhiteSpace(hit.ChassisNo))
+        {
+            var openJc = await _db.JobCards.AsNoTracking()
+                .Where(j => j.DealerId == dealerId && j.Status != JobCardStatus.Closed)
+                .Where(j => j.Vehicle != null && j.Vehicle.Vin == hit.ChassisNo)
+                .Select(j => new { j.JobCardNumber, j.Status })
+                .FirstOrDefaultAsync();
+            if (openJc is not null)
+            {
+                openJobCardNumber = openJc.JobCardNumber;
+                openJobCardStatus = openJc.Status.ToString();
+            }
+        }
+
+        return Ok(new
+        {
+            chassisNo = hit.ChassisNo,
+            registerNo = hit.RegNo,
+            modelName = hit.ItemModel ?? hit.Oemmodel,
+            locationCode = hit.LocCode,
+            dealerCode = hit.DealerCode,
+            saleDate = hit.InvoiceDate,
+            motorNo = hit.MotorNo,
+            controllerNo = hit.ControllerNo,
+            converterNo = hit.Converter,
+            chargerNumber = hit.ChargerNo,
+            batteryNumber = hit.Battery,
+            batteryChemical = hit.BatteryChemical,
+            batteryCapacity = hit.BatteryCapacity,
+            batteryMake = hit.BatteryMake,
+            customerName = hit.SoldTo,
+            customerMobile = hit.CusMob,
+            customerEmail = hit.PartyEmail,
+            customerCity = hit.City,
+            customerAddress = string.Join(", ", new[] { hit.Address1, hit.Address2 }.Where(s => !string.IsNullOrWhiteSpace(s))),
+            openJobCardNumber,
+            openJobCardSource = openJobCardNumber != null ? "local" : null,
+            openJobCardStatus,
+        });
+    }
+
+    /// <summary>GET /api/jobcards/vehicle-suggestions?q=&dealerId= - replaces the wizard's previous
+    /// GET /api/bapl-dms/vehicle-suggestions (BAPLDMSvad) typeahead. Sourced from the same
+    /// BaplConnection/DMS_SaleBill data as VehicleLookupForWizard above, via
+    /// IDmsBaplDataService.SearchVehiclesForWizardAsync (2-char minimum, capped at 20 results -
+    /// see that method's own doc comment for the exact matching rule against chassis_no/reg_number).
+    /// dealerId is optional, translated to BaplDmsDealerCode the same way as VehicleLookupForWizard.</summary>
+    [HttpGet("vehicle-suggestions")]
+    [Authorize(Policy = Policies.ServiceAdvisorUp)]
+    public async Task<IActionResult> VehicleSuggestionsForWizard([FromQuery] string? q, [FromQuery] Guid? dealerId)
+    {
+        string? dealerCode = null;
+        if (dealerId.HasValue)
+        {
+            dealerCode = await _db.Dealers.AsNoTracking()
+                .Where(d => d.Id == dealerId)
+                .Select(d => d.BaplDmsDealerCode)
+                .FirstOrDefaultAsync();
+        }
+
+        try
+        {
+            var hits = await _dmsBaplData.SearchVehiclesForWizardAsync(q, dealerCode, 20, HttpContext.RequestAborted);
+            return Ok(hits.Select(h => new { chassisNo = h.ChassisNo, regNo = h.RegNo, modelName = h.ModelName, saleDate = h.SaleDate }));
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Vehicle suggestions for wizard failed for q {Q}, dealerId {DealerId}", q, dealerId);
+            return StatusCode(502, new { message = ex.Message });
+        }
     }
 }

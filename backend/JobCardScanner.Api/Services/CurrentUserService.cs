@@ -19,6 +19,7 @@ public class CurrentUserService : ICurrentUserService
 
     public Guid? UserId => Guid.TryParse(Principal?.FindFirst("app_user_id")?.Value, out var g) ? g : null;
     public string? UserName => Principal?.FindFirst("app_name")?.Value;
+    public string? Email => Principal?.FindFirst("app_email")?.Value;
     public StaffRole? Role => Enum.TryParse<StaffRole>(Principal?.FindFirst("app_role")?.Value, out var r) ? r : null;
     public Guid? DealerId => Guid.TryParse(Principal?.FindFirst("app_dealer_id")?.Value, out var g) ? g : null;
 

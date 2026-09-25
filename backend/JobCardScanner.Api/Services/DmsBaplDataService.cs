@@ -33,8 +33,8 @@ public record DmsBaplDataRepairBillItemRow(
 /// <summary>
 /// One repair bill header row from DMSBAPLDATA's own dbo.DMS_RepairBill (confirmed table/column
 /// names via the `select * from DMS_RepairBill` you ran directly against DMSBAPLDATA) - the
-/// Zomato-fleet repair bill data AutoGeniusSync syncs in from DMS's live RepairBill documents.
-/// This is a DIFFERENT database from both JobCardScannerDb and DMS's own live BAPLDMSvad (see
+/// Zomato-fleet repair bill data AutoGeniusSync syncs in from BAPL DMS's live RepairBill documents.
+/// This is a DIFFERENT database from both JobCardScannerDb and BAPL DMS's own live BAPLDMSvad (see
 /// DMSBAPLDATAConnection's comment in appsettings.json) - a synced/replicated read model, not the
 /// system of record, so this service is read-only, same convention as BaplDmsService.
 /// </summary>
@@ -116,7 +116,7 @@ public record DmsBaplDataMaterialTransferItemRow(
 /// already built for the "DMS Parts Inventory" panel on the Parts & Inventory page - see
 /// BaplDmsController.Workshops/GetWorkshopsAsync). Same DMSBAPLDATA database as
 /// <see cref="DmsBaplDataRepairBillRow"/> above - a synced/replicated read model (AutoGeniusSync),
-/// not the live DMS database - this app never writes to it, same as everything else here.
+/// not the live BAPL DMS database - this app never writes to it, same as everything else here.
 /// The Action column (a JSON audit-trail array AutoGeniusSync appends to on every insert/update) is
 /// intentionally left out of this shape - it's sync-process bookkeeping, not something the sidebar
 /// page needs to show.
@@ -139,27 +139,22 @@ public record DmsBaplDataMaterialTransferRow(
     IReadOnlyList<DmsBaplDataMaterialTransferItemRow> Items);
 
 /// <summary>
-/// One vehicle sale row from DMSBAPLDATA's own dbo.DMS_VehicleSales - the "Vehicle Sale" sidebar
-/// page's data source (2026-09-18: "i want 1 option in sidebar that was Vehicle sale from
-/// DMSBAPLDATA select * from DMS_VehicleSales where SoldTo like '%Zomato%'").
+/// One vehicle sale row for the "Vehicle Sale" sidebar page.
 ///
-/// CORRECTED 2026-09-18: the first version of this DTO used a column list built from what your
-/// pasted `select *` grid happened to show (Id, LedgerId, ChassisNo, ItemCode, ItemName, ItemColor,
-/// DealerId, LocationCode, SaleDate, CreatedBy, CreatedDate, UpdatedBy, UpdatedDate, RegNo) and
-/// deliberately avoided the much larger AutoGeniusSync.Models.DmsVehicleSale shape you'd also
-/// pasted, on the theory the two didn't match. That was wrong - running it threw "Invalid column
-/// name" for every one of those columns except Id/ChassisNo/SoldTo, which proves the OPPOSITE: this
-/// table's real shape IS the AutoGeniusSync model (it's what actually generated the column list you
-/// originally saw truncated in a wide grid - your `select *` grid must have been scrolled/cut off
-/// before the columns that matter here). This DTO now carries that model's full field set. Field
-/// names below match the model's C# property spelling exactly (including the scaffolded-looking
-/// lowercase-after-acronym forms like Sgstper/Hsnsaccode/Oemmodel/Vcu/FameIi) - SQL Server's default
-/// collation matches column names case-insensitively, so the SELECT list uses that same spelling
-/// and should resolve to the real columns regardless of their original casing.
-/// Only Id, ChassisNo and SoldTo are independently confirmed live (they didn't error). Every other
-/// field here is inferred from your AutoGeniusSync model, not yet independently confirmed - if any
-/// of them still come back "Invalid column name", paste the exact error again and only those need
-/// fixing/dropping, not a redo of the whole page.
+/// MIGRATED 2026-09-25 ("this data for vehiclesale fetch from BaplConnection db"): this no longer
+/// reads DMSBAPLDATA/DMS_IOT_DATA's DMS_VehicleSales at all. It's now sourced from BaplConnection -
+/// the "baplfinal" ERP warehouse BaplDealerService.cs already reads for Dealer/Item Master data -
+/// joining dbo.DMS_SaleBill (the sale/bill header, one row per vehicle sold) to
+/// dbo.DMS_SaleBillCustomer (the buyer, via DMS_SaleBill.CustId -> DMS_SaleBillCustomer.Id) for the
+/// customer-facing fields. FACT: both tables' column names/types below are read directly off the
+/// CREATE TABLE scripts you pasted (not inferred), cross-checked against a live `select *` you ran
+/// on each - the strongest confirmation this file has had for any of its data sources.
+///
+/// This DTO keeps the SAME field names/shape as the old DMSBAPLDATA-sourced version (so the API
+/// response contract - and every existing frontend field reference - doesn't change), but roughly a
+/// third of these fields have no equivalent column in DMS_SaleBill/DMS_SaleBillCustomer and are
+/// always null now - see each field's own comment below in GetVehicleSalesAsync for exactly which,
+/// and why (no guessed mappings - a field with no clear source is left null, not approximated).
 /// </summary>
 public record DmsBaplDataVehicleSaleRow(
     int Id,
@@ -183,6 +178,12 @@ public record DmsBaplDataVehicleSaleRow(
     string? ExecutiveName,
     string? Pin,
     string? ChassisNo,
+    // MIGRATED 2026-09-25: unlike the old DMSBAPLDATA/DMS_VehicleSales source (which had no RegNo
+    // column at all, forcing a second batched lookup against DMS_ServiceHistory), DMS_SaleBill has
+    // its OWN reg_number column directly on the sale row - FACT, confirmed via your CREATE TABLE
+    // script and live `select *`. Read straight off DMS_SaleBill.reg_number in GetVehicleSalesAsync
+    // below; no second query needed any more.
+    string? RegNo,
     string? MotorNo,
     string? Remarks,
     string? ItemModel,
@@ -228,6 +229,14 @@ public record DmsBaplDataVehicleSaleRow(
     string? SchemeName,
     DateTime? CreatedAt,
     DateTime? UpdatedAt);
+
+/// <summary>
+/// One chassis/reg-no typeahead suggestion for the Job Card Wizard's vehicle search, sourced from
+/// BaplConnection's dbo.DMS_SaleBill - see IDmsBaplDataService.SearchVehiclesForWizardAsync's doc
+/// comment. Deliberately its own small shape rather than the full DmsBaplDataVehicleSaleRow - a
+/// typeahead dropdown only ever needs enough to tell rows apart while picking one.
+/// </summary>
+public record DmsBaplDataVehicleSuggestion(string ChassisNo, string? RegNo, string? ModelName, DateTime? SaleDate);
 
 /// <summary>
 /// One job row from DMSBAPLDATA's own dbo.DMS_ServiceHistory - the "Service History" sidebar page's
@@ -317,12 +326,12 @@ public record DmsBaplDataServiceHistoryRow(
 
 /// <summary>
 /// One vehicle suggestion for the "Service History" page's typeahead - DISTINCT vehicles (grouped by
-/// ChassisNo) from DMSBAPLDATA's own dbo.DMS_ServiceHistory, not DMS's ChassisDetails (the
+/// ChassisNo) from DMSBAPLDATA's own dbo.DMS_ServiceHistory, not BAPL DMS's ChassisDetails (the
 /// table the Job Card wizard's /api/bapl-dms/vehicle-suggestions searches).
 ///
 /// 2026-09-18 "its taken from jobcard i want fetch data in service history from [DMS_ServiceHistory
 /// query]": the first version of this page's typeahead reused the wizard's own vehicle-suggestions
-/// endpoint outright, for speed - but that searches ChassisDetails in the LIVE DMS database
+/// endpoint outright, for speed - but that searches ChassisDetails in the LIVE BAPL DMS database
 /// (BAPLDMSvad), which is a sale/stock record, not a service one. A vehicle could be sold (so it
 /// shows up there) with zero service visits yet (so picking it here would show "no service history
 /// found"), or - the more likely real-world gap - a DMS_ServiceHistory row could exist for a chassis
@@ -352,12 +361,37 @@ public interface IDmsBaplDataService
     Task<IReadOnlyList<DmsBaplDataMaterialTransferRow>> GetMaterialTransfersAsync(string? locCode, CancellationToken ct = default);
 
     /// <summary>
-    /// Vehicle sales from DMSBAPLDATA's dbo.DMS_VehicleSales, filtered to SoldTo LIKE '%{soldToFilter}%' -
-    /// the "Vehicle Sale" sidebar page's data source. soldToFilter defaults to "Zomato" (set by the
-    /// controller, same convention as GetRepairBillsAsync's partyNameFilter); pass null/empty for
-    /// every SoldTo. See DmsBaplDataVehicleSaleRow's doc comment for the column-confirmation history.
+    /// Vehicle sales from BaplConnection's dbo.DMS_SaleBill (+ dbo.DMS_SaleBillCustomer for the
+    /// buyer), filtered to the customer's first_name LIKE '%{soldToFilter}%' - the "Vehicle Sale"
+    /// sidebar page's data source. MIGRATED 2026-09-25 off DMSBAPLDATA/DMS_VehicleSales onto
+    /// BaplConnection/baplfinal - see DmsBaplDataVehicleSaleRow's doc comment. soldToFilter defaults
+    /// to "Zomato" (set by the controller, same convention as GetRepairBillsAsync's partyNameFilter);
+    /// pass null/empty for every buyer.
     /// </summary>
     Task<IReadOnlyList<DmsBaplDataVehicleSaleRow>> GetVehicleSalesAsync(string? soldToFilter, CancellationToken ct = default);
+
+    /// <summary>
+    /// Looks up ONE vehicle by chassis no. or registration no. from BaplConnection's
+    /// dbo.DMS_SaleBill (+ dbo.DMS_SaleBillCustomer for the buyer) - the Job Card Wizard's
+    /// chassis/reg-no search (2026-09-25: "worklocation chassis no and reg no use from vehicle sale
+    /// which we data fetch that will bind in JobCardWizardPage for both web and android"),
+    /// replacing the old BAPLDMSvad-backed vehicle-lookup for this one purpose. Matches chassis_no
+    /// exactly (trimmed) OR reg_number with spaces/hyphens stripped from both sides (a reg no. is
+    /// commonly typed with different spacing/punctuation - same normalization
+    /// JobCardsController.List already applies to its own RegNo search). dealerCode optional - null
+    /// searches every dealer, same "no scope = everything" convention as GetVehicleSalesAsync's
+    /// soldToFilter. Returns the most recently created matching sale when more than one row
+    /// matches, or null (not an exception) when nothing matches - an everyday result, not an error.
+    /// </summary>
+    Task<DmsBaplDataVehicleSaleRow?> LookupVehicleForWizardAsync(string value, string? dealerCode, CancellationToken ct = default);
+
+    /// <summary>
+    /// Typeahead suggestions for the Job Card Wizard's chassis/reg-no search box, sourced from the
+    /// same BaplConnection dbo.DMS_SaleBill table as LookupVehicleForWizardAsync above - one row per
+    /// distinct chassis, most recently sold first. Fewer than 2 characters returns an empty list
+    /// without querying BaplConnection, same convention as SearchServiceHistoryVehiclesAsync below.
+    /// </summary>
+    Task<IReadOnlyList<DmsBaplDataVehicleSuggestion>> SearchVehiclesForWizardAsync(string? q, string? dealerCode, int take, CancellationToken ct = default);
 
     /// <summary>
     /// Service history job rows from DMSBAPLDATA's dbo.DMS_ServiceHistory, matched against BOTH
@@ -375,7 +409,7 @@ public interface IDmsBaplDataService
     /// Typeahead suggestions for the "Service History" search box, sourced from DMS_ServiceHistory
     /// itself (one row per distinct ChassisNo, most-recently-serviced first) - see
     /// DmsBaplDataServiceHistorySuggestion's doc comment for why this is deliberately NOT the Job
-    /// Card wizard's /api/bapl-dms/vehicle-suggestions (a different table, DMS's ChassisDetails).
+    /// Card wizard's /api/bapl-dms/vehicle-suggestions (a different table, BAPL DMS's ChassisDetails).
     /// Fewer than 2 characters returns an empty list without querying DMSBAPLDATA.
     /// </summary>
     Task<IReadOnlyList<DmsBaplDataServiceHistorySuggestion>> SearchServiceHistoryVehiclesAsync(string? q, int take, CancellationToken ct = default);
@@ -394,6 +428,12 @@ public class DmsBaplDataService : IDmsBaplDataService
 
     private string ConnStr => _config.GetConnectionString("DMSBAPLDATAConnection")
         ?? throw new InvalidOperationException("DMSBAPLDATAConnection isn't configured in appsettings.json's ConnectionStrings section.");
+
+    // 2026-09-25 ("vehiclesale use from BaplConnection db"): Vehicle Sale's data source moved off
+    // DMSBAPLDATA/DMS_IOT_DATA entirely, onto BaplConnection - the "baplfinal" ERP warehouse
+    // BaplDealerService.cs already reads for Dealer/Item Master data. See GetVehicleSalesAsync below.
+    private string BaplConnStr => _config.GetConnectionString("BaplConnection")
+        ?? throw new InvalidOperationException("BaplConnection isn't configured in appsettings.json's ConnectionStrings section.");
 
     public async Task<IReadOnlyList<DmsBaplDataRepairBillRow>> GetRepairBillsAsync(string? partyNameFilter, CancellationToken ct = default)
     {
@@ -649,118 +689,235 @@ public class DmsBaplDataService : IDmsBaplDataService
         }).ToList();
     }
 
+    // Shared between GetVehicleSalesAsync, LookupVehicleForWizardAsync and
+    // SearchVehiclesForWizardAsync below - all three read the same dbo.DMS_SaleBill (+
+    // dbo.DMS_SaleBillCustomer) shape, just with different WHERE/ORDER/TOP clauses, so the column
+    // list and join live in one place rather than three copies that could drift apart. c.IsDelete
+    // is filtered in the JOIN's ON clause (not WHERE) so a sale bill whose customer row was
+    // soft-deleted still comes back (with blank customer fields) rather than disappearing outright -
+    // a LEFT JOIN filtered in WHERE would behave like an INNER JOIN for exactly that case.
+    private const string VehicleSaleSelectColumns = @"
+        sb.Id, sb.dealer_code, sb.salebill_no, sb.InvoiceDate, sb.salebill_date,
+        sb.locationname, sb.LocCode, sb.LocationCity, sb.AccountType, sb.Pin,
+        sb.chassis_no, sb.reg_number, sb.motor_id, sb.Item_Modl, sb.OEMModel,
+        sb.HSNSACCode, sb.SaleType, sb.FinancedBy, sb.Item_Rate, sb.Insu_Amnt,
+        sb.Regn_Amnt, sb.DiscountType, sb.FameII, sb.StateFameII, sb.SGSTPer,
+        sb.SGSTAmnt, sb.CGSTPer, sb.CGSTAmnt, sb.IGSTPer, sb.IGSTAmnt, sb.Net_Amnt,
+        sb.battery_serial_no, sb.BatteryChemical, sb.BatteryCapacity, sb.BatteryMake,
+        sb.ChargerNo, sb.Converter, sb.VCU, sb.motor_controller_no, sb.FameIIRequired,
+        sb.SegmentName, sb.InstitutionalName, sb.SchemeName, sb.CreatedOn, sb.ModifiedOn,
+        sb.Group1,
+        c.first_name AS CustFirstName, c.email_id, c.mobile, c.Address1, c.Address2,
+        c.City, c.State";
+
+    private const string VehicleSaleFromJoin = @"
+        FROM [dbo].[DMS_SaleBill] sb
+        LEFT JOIN [dbo].[DMS_SaleBillCustomer] c
+            ON c.Id = sb.CustId AND (c.IsDelete IS NULL OR c.IsDelete = 0)";
+
+    // Maps one row of VehicleSaleSelectColumns/VehicleSaleFromJoin's result set - see
+    // DmsBaplDataVehicleSaleRow's own doc comment for which fields have no source column on
+    // DMS_SaleBill/DMS_SaleBillCustomer and are always null here (not guessed).
+    private static DmsBaplDataVehicleSaleRow MapVehicleSaleRow(SqlDataReader rdr) => new(
+        (int)rdr["Id"],
+        null, // DealerName - DMS_SaleBill only carries dealer_code, no dealer-name text column
+        rdr["dealer_code"] as string,
+        rdr["salebill_no"] as string, // InvoiceNo - the bill number is this ERP's equivalent
+        // InvoiceDate: prefer the real datetime column; DMS_SaleBill.InvoiceDate is NULL on a lot
+        // of older rows (per your own sample data), where salebill_date (a free-text "dd-MM-yyyy"
+        // string, e.g. "10-08-2022") holds the actual date instead.
+        (rdr["InvoiceDate"] as DateTime?) ?? ParseSalebillDate(rdr["salebill_date"] as string),
+        rdr["locationname"] as string,
+        rdr["LocCode"] as string,
+        rdr["LocationCity"] as string,
+        null, // CustDob - DMS_SaleBillCustomer.DateofBirth is free-text, unconfirmed format - not parsed/guessed
+        null, // Gender - no column on either table
+        rdr["CustFirstName"] as string, // SoldTo - the buyer's name, via the CustId join
+        rdr["AccountType"] as string,
+        rdr["email_id"] as string,
+        rdr["mobile"] as string,
+        rdr["Address1"] as string,
+        rdr["Address2"] as string,
+        rdr["City"] as string,
+        rdr["State"] as string,
+        null, // ExecutiveName - no column on either table
+        rdr["Pin"] as string,
+        rdr["chassis_no"] as string,
+        rdr["reg_number"] as string, // RegNo - direct column now, see the record's doc comment
+        rdr["motor_id"] as string,
+        null, // Remarks - no column
+        rdr["Item_Modl"] as string,
+        rdr["OEMModel"] as string,
+        null, // ColorCode - no separate column (Item_Modl's free text sometimes embeds a color
+              // name, e.g. "BGauss D15 Pro  Racing Red", but that's not reliably parseable into a
+              // clean code, so left null rather than guessed)
+        null, // VehicleType - no column
+        rdr["Group1"] as string, // VehicleGroup - ASSUMPTION: Group1's exact business meaning on
+                                  // DMS_SaleBill isn't confirmed; mapped here as the closest-named
+                                  // column, flag if this looks wrong
+        rdr["HSNSACCode"] as string,
+        rdr["SaleType"] as string,
+        rdr["FinancedBy"] as string,
+        null, // FinAmount - no distinct "financed amount" column
+        rdr["Item_Rate"] as decimal?,
+        rdr["Insu_Amnt"] as decimal?,
+        rdr["Regn_Amnt"] as decimal?,
+        null, // AcsryAmount - no column
+        null, // PreGstdiscAmount - DMS_SaleBill.RegDiscAmnt is a registration discount, not the
+              // same figure as a pre-GST discount, so deliberately not mapped here rather than
+              // conflating two different amounts
+        rdr["DiscountType"] as string,
+        null, // PostGstdisc - no column
+        rdr["FameII"] as decimal?,
+        rdr["StateFameII"] as decimal?,
+        rdr["SGSTPer"] as decimal?,
+        rdr["SGSTAmnt"] as decimal?,
+        rdr["CGSTPer"] as decimal?,
+        rdr["CGSTAmnt"] as decimal?,
+        rdr["IGSTPer"] as decimal?,
+        rdr["IGSTAmnt"] as decimal?,
+        rdr["Net_Amnt"] as decimal?,
+        null, // ReferenceNo - no column (ReceiptGUID exists but is a receipt URL, not a reference number)
+        null, // BookingDate - no column
+        null, // TotalCount - no column
+        rdr["battery_serial_no"] as string,
+        rdr["BatteryChemical"] as string,
+        rdr["BatteryCapacity"] as string,
+        rdr["BatteryMake"] as string,
+        rdr["ChargerNo"] as string,
+        null, // ChargerNo2 - only one charger-number column exists on DMS_SaleBill
+        rdr["Converter"] as string,
+        rdr["VCU"] as string,
+        rdr["motor_controller_no"] as string,
+        rdr["FameIIRequired"] as string,
+        rdr["SegmentName"] as string,
+        rdr["InstitutionalName"] as string,
+        rdr["SchemeName"] as string,
+        rdr["CreatedOn"] as DateTime?,
+        rdr["ModifiedOn"] as DateTime?);
+
     public async Task<IReadOnlyList<DmsBaplDataVehicleSaleRow>> GetVehicleSalesAsync(string? soldToFilter, CancellationToken ct = default)
     {
         var rows = new List<DmsBaplDataVehicleSaleRow>();
 
         try
         {
-            await using var conn = new SqlConnection(ConnStr);
+            await using var conn = new SqlConnection(BaplConnStr);
             await conn.OpenAsync(ct);
 
-            // Column list matches the AutoGeniusSync.Models.DmsVehicleSale shape you pasted - see
-            // DmsBaplDataVehicleSaleRow's own doc comment for why (the first attempt's smaller,
-            // "confirmed from a select * grid" column list turned out to be wrong - every one of
-            // those columns errored as invalid except Id/ChassisNo/SoldTo). Only those three are
-            // independently confirmed; the rest is inferred from the model. If any of these still
-            // 400/502 with "Invalid column name", tell me which ones and I'll fix just those.
-            const string sql = @"
-                SELECT
-                    Id, DealerName, DealerCode, InvoiceNo, InvoiceDate, Location, LocCode,
-                    LocationCity, CustDob, Gender, SoldTo, AccountType, PartyEmail, CusMob,
-                    Address1, Address2, City, State, ExecutiveName, Pin, ChassisNo, MotorNo,
-                    Remarks, ItemModel, Oemmodel, ColorCode, VehicleType, VehicleGroup,
-                    Hsnsaccode, SaleType, FinancedBy, FinAmount, ItemRate, InsuAmount, RegnAmount,
-                    AcsryAmount, PreGstdiscAmount, DiscTypeName, PostGstdisc, FameIi, StateFameIi,
-                    Sgstper, Sgstamount, Cgstper, Cgstamount, Igstper, Igstamount, NetAmount,
-                    ReferenceNo, BookingDate, TotalCount, Battery, BatteryChemical,
-                    BatteryCapacity, BatteryMake, ChargerNo, ChargerNo2, Converter, Vcu,
-                    ControllerNo, FameIirequired, SegmentName, InstitutionalName, SchemeName,
-                    CreatedAt, UpdatedAt
-                FROM [dbo].[DMS_VehicleSales]
-                WHERE (@soldTo IS NULL OR SoldTo LIKE @soldTo)
-                ORDER BY InvoiceDate DESC, Id DESC";
+            var sql = $@"
+                SELECT {VehicleSaleSelectColumns}
+                {VehicleSaleFromJoin}
+                WHERE (sb.IsDelete IS NULL OR sb.IsDelete = 0)
+                  AND (@soldTo IS NULL OR c.first_name LIKE @soldTo)
+                ORDER BY sb.CreatedOn DESC, sb.Id DESC";
 
             await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
             cmd.Parameters.AddWithValue("@soldTo", string.IsNullOrWhiteSpace(soldToFilter) ? DBNull.Value : $"%{soldToFilter.Trim()}%");
             await using var rdr = await cmd.ExecuteReaderAsync(ct);
             while (await rdr.ReadAsync(ct))
+                rows.Add(MapVehicleSaleRow(rdr));
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Could not read BaplConnection's vehicle sales (DMS_SaleBill/DMS_SaleBillCustomer): {ex.Message}", ex);
+        }
+
+        return rows;
+    }
+
+    public async Task<DmsBaplDataVehicleSaleRow?> LookupVehicleForWizardAsync(string value, string? dealerCode, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        try
+        {
+            await using var conn = new SqlConnection(BaplConnStr);
+            await conn.OpenAsync(ct);
+
+            // Reg no. is commonly typed with different spacing/hyphenation ("MH12AB1234" vs
+            // "MH12 AB 1234") - strip spaces/hyphens from both sides before comparing, same fix
+            // already applied to JobCardsController.List's own RegNo search and
+            // BaplDmsService's vehicle lookup. Chassis no. is compared as an exact trimmed match
+            // (chassis numbers don't have this formatting-inconsistency problem in practice).
+            var sql = $@"
+                SELECT TOP 1 {VehicleSaleSelectColumns}
+                {VehicleSaleFromJoin}
+                WHERE (sb.IsDelete IS NULL OR sb.IsDelete = 0)
+                  AND (@dealerCode IS NULL OR sb.dealer_code = @dealerCode)
+                  AND (LTRIM(RTRIM(sb.chassis_no)) = @value
+                       OR REPLACE(REPLACE(LTRIM(RTRIM(sb.reg_number)), ' ', ''), '-', '') = @valueNoSpaces)
+                ORDER BY sb.CreatedOn DESC, sb.Id DESC";
+
+            await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+            var trimmed = value.Trim();
+            cmd.Parameters.AddWithValue("@dealerCode", string.IsNullOrWhiteSpace(dealerCode) ? DBNull.Value : dealerCode.Trim());
+            cmd.Parameters.AddWithValue("@value", trimmed);
+            cmd.Parameters.AddWithValue("@valueNoSpaces", trimmed.Replace(" ", "").Replace("-", ""));
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            return await rdr.ReadAsync(ct) ? MapVehicleSaleRow(rdr) : null;
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Could not look up the vehicle in BaplConnection (DMS_SaleBill/DMS_SaleBillCustomer): {ex.Message}", ex);
+        }
+    }
+
+    public async Task<IReadOnlyList<DmsBaplDataVehicleSuggestion>> SearchVehiclesForWizardAsync(string? q, string? dealerCode, int take, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(q) || q.Trim().Length < 2) return Array.Empty<DmsBaplDataVehicleSuggestion>();
+        take = take is > 0 and <= 50 ? take : 20;
+
+        var results = new List<DmsBaplDataVehicleSuggestion>();
+        try
+        {
+            await using var conn = new SqlConnection(BaplConnStr);
+            await conn.OpenAsync(ct);
+
+            const string sql = @"
+                SELECT TOP (@take) sb.chassis_no, sb.reg_number, sb.Item_Modl, sb.InvoiceDate, sb.salebill_date, sb.CreatedOn
+                FROM [dbo].[DMS_SaleBill] sb
+                WHERE (sb.IsDelete IS NULL OR sb.IsDelete = 0)
+                  AND (@dealerCode IS NULL OR sb.dealer_code = @dealerCode)
+                  AND sb.chassis_no IS NOT NULL
+                  AND (sb.chassis_no LIKE @q OR sb.reg_number LIKE @q)
+                ORDER BY sb.CreatedOn DESC";
+
+            await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+            cmd.Parameters.AddWithValue("@take", take);
+            cmd.Parameters.AddWithValue("@dealerCode", string.IsNullOrWhiteSpace(dealerCode) ? DBNull.Value : dealerCode.Trim());
+            cmd.Parameters.AddWithValue("@q", $"%{q.Trim()}%");
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            // DISTINCT by chassis in code, not SQL - the same chassis can have more than one
+            // DMS_SaleBill row (e.g. a corrected/re-issued bill), and a typeahead only needs to
+            // show each vehicle once.
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            while (await rdr.ReadAsync(ct) && results.Count < take)
             {
-                rows.Add(new DmsBaplDataVehicleSaleRow(
-                    (int)rdr["Id"],
-                    rdr["DealerName"] as string,
-                    rdr["DealerCode"] as string,
-                    rdr["InvoiceNo"] as string,
-                    rdr["InvoiceDate"] as DateTime?,
-                    rdr["Location"] as string,
-                    rdr["LocCode"] as string,
-                    rdr["LocationCity"] as string,
-                    rdr["CustDob"] as DateTime?,
-                    rdr["Gender"] as string,
-                    rdr["SoldTo"] as string,
-                    rdr["AccountType"] as string,
-                    rdr["PartyEmail"] as string,
-                    rdr["CusMob"] as string,
-                    rdr["Address1"] as string,
-                    rdr["Address2"] as string,
-                    rdr["City"] as string,
-                    rdr["State"] as string,
-                    rdr["ExecutiveName"] as string,
-                    rdr["Pin"] as string,
-                    rdr["ChassisNo"] as string,
-                    rdr["MotorNo"] as string,
-                    rdr["Remarks"] as string,
-                    rdr["ItemModel"] as string,
-                    rdr["Oemmodel"] as string,
-                    rdr["ColorCode"] as string,
-                    rdr["VehicleType"] as string,
-                    rdr["VehicleGroup"] as string,
-                    rdr["Hsnsaccode"] as string,
-                    rdr["SaleType"] as string,
-                    rdr["FinancedBy"] as string,
-                    rdr["FinAmount"] as decimal?,
-                    rdr["ItemRate"] as decimal?,
-                    rdr["InsuAmount"] as decimal?,
-                    rdr["RegnAmount"] as decimal?,
-                    rdr["AcsryAmount"] as decimal?,
-                    rdr["PreGstdiscAmount"] as decimal?,
-                    rdr["DiscTypeName"] as string,
-                    rdr["PostGstdisc"] as decimal?,
-                    rdr["FameIi"] as decimal?,
-                    rdr["StateFameIi"] as decimal?,
-                    rdr["Sgstper"] as decimal?,
-                    rdr["Sgstamount"] as decimal?,
-                    rdr["Cgstper"] as decimal?,
-                    rdr["Cgstamount"] as decimal?,
-                    rdr["Igstper"] as decimal?,
-                    rdr["Igstamount"] as decimal?,
-                    rdr["NetAmount"] as decimal?,
-                    rdr["ReferenceNo"] as string,
-                    rdr["BookingDate"] as DateTime?,
-                    rdr["TotalCount"] as string,
-                    rdr["Battery"] as string,
-                    rdr["BatteryChemical"] as string,
-                    rdr["BatteryCapacity"] as string,
-                    rdr["BatteryMake"] as string,
-                    rdr["ChargerNo"] as string,
-                    rdr["ChargerNo2"] as string,
-                    rdr["Converter"] as string,
-                    rdr["Vcu"] as string,
-                    rdr["ControllerNo"] as string,
-                    rdr["FameIirequired"] as string,
-                    rdr["SegmentName"] as string,
-                    rdr["InstitutionalName"] as string,
-                    rdr["SchemeName"] as string,
-                    rdr["CreatedAt"] as DateTime?,
-                    rdr["UpdatedAt"] as DateTime?));
+                var chassis = rdr["chassis_no"] as string;
+                if (string.IsNullOrWhiteSpace(chassis) || !seen.Add(chassis)) continue;
+                var saleDate = (rdr["InvoiceDate"] as DateTime?) ?? ParseSalebillDate(rdr["salebill_date"] as string);
+                results.Add(new DmsBaplDataVehicleSuggestion(chassis, rdr["reg_number"] as string, rdr["Item_Modl"] as string, saleDate));
             }
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not read DMSBAPLDATA's vehicle sales (DMS_VehicleSales): {ex.Message}", ex);
+            throw new InvalidOperationException($"Could not search BaplConnection's vehicles for suggestions (DMS_SaleBill): {ex.Message}", ex);
         }
 
-        return rows;
+        return results;
+    }
+
+    // DMS_SaleBill.salebill_date is a free-text nvarchar, not a real date column - your own sample
+    // data showed values like "10-08-2022" (dd-MM-yyyy) sitting there even when the real InvoiceDate
+    // datetime column was NULL, so GetVehicleSalesAsync falls back to this when InvoiceDate itself is
+    // blank. Returns null (rather than guessing) for anything that doesn't match that exact format -
+    // if you spot dates in a different format coming through blank, tell me the format and I'll add it.
+    private static DateTime? ParseSalebillDate(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        return DateTime.TryParseExact(raw.Trim(), "dd-MM-yyyy", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var dt)
+            ? dt
+            : null;
     }
 
     // SQL Server's 'date' columns come back through the SqlDataReader indexer as a boxed DateTime

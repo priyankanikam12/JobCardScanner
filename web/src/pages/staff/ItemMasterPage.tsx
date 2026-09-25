@@ -79,6 +79,7 @@ export function ItemMasterPage() {
               <th className="text-end">SGST %</th>
               <th className="text-end">CGST %</th>
               <th className="text-end">IGST %</th>
+              <th className="text-end">Qty</th>
               <th>Type</th>
               <th>Status</th>
             </tr>
@@ -93,12 +94,13 @@ export function ItemMasterPage() {
                 <td className="text-end">{fmtPct(it.sgst)}</td>
                 <td className="text-end">{fmtPct(it.cgst)}</td>
                 <td className="text-end">{fmtPct(it.igst)}</td>
+                <td className="text-end" title="This dealer's uploaded Part Upload stock, summed across every location - not a C_ItemMaster column. Blank means nothing uploaded yet, not 0 in stock.">{it.qty ?? '—'}</td>
                 <td>{it.itemType ?? '—'}</td>
                 <td>{it.status === 'Y' ? <span className="badge badge-success">Active</span> : it.status === 'N' ? <span className="badge badge-muted">Inactive</span> : (it.status ?? '—')}</td>
               </tr>
             ))}
             {items.length === 0 && !loading && !error && (
-              <tr><td colSpan={9} className="muted" style={{ textAlign: 'center', padding: 16 }}>
+              <tr><td colSpan={10} className="muted" style={{ textAlign: 'center', padding: 16 }}>
                 No items found{q ? ` matching "${q}"` : ''}.
               </td></tr>
             )}

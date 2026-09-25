@@ -1,3 +1,4 @@
+// mobile\src\screens\JobCardsListScreen.tsx
 import { useEffect, useState } from 'react'
 import { FlatList, Pressable, RefreshControl, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'

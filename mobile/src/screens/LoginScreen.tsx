@@ -154,9 +154,9 @@ export function LoginScreen() {
             <View>
               {step === 'login' && (
                 <>
-                  <Text style={styles.copy}>
+                  {/* <Text style={styles.copy}>
                     For dealer workshop staff signing in with the email/dealer code & password issued by your admin, or your DMS login.
-                  </Text>
+                  </Text> */}
                   <Field label="Email or Dealer Code">
                     <TextInput
                       style={[styles.input, focusedField === 'email' && styles.inputFocused]}
@@ -272,7 +272,7 @@ export function LoginScreen() {
             </View>
           )}
 
-          <Text style={styles.portalHint}>Customers should use the tracking link their workshop sent them.</Text>
+          {/* <Text style={styles.portalHint}>Customers should use the tracking link their workshop sent them.</Text> */}
         </View>
       </ScrollView>
     </KeyboardAvoidingView>

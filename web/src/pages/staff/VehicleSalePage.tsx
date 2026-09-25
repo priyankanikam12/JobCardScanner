@@ -181,6 +181,12 @@ export function VehicleSalePage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<number | null>(null)
+  // 2026-09-25 ("add search option"): a client-side filter over whatever's currently loaded
+  // (DMSBAPLDATA's results, or an imported report - same "everything downstream reads from
+  // effectiveSales" convention this page already uses below). Not a new server call/param - the
+  // Sold To=Zomato query itself is unchanged, this just narrows what's already on screen. Matches
+  // across the same fields the on-screen table + report export show, case-insensitive substring.
+  const [query, setQuery] = useState('')
 
   const [importedRows, setImportedRows] = useState<DmsBaplDataVehicleSale[] | null>(null)
   const [importedFileName, setImportedFileName] = useState<string | null>(null)
@@ -245,7 +251,22 @@ export function VehicleSalePage() {
   // Everything downstream (table, pagination, export) reads from whichever source is active -
   // the imported report when one's loaded, DMSBAPLDATA's own results otherwise.
   const effectiveSales = importedRows ?? sales
-  const { page, setPage, pageSize, setPageSize, pageCount, pageRows, total } = usePagination(effectiveSales)
+
+  // 2026-09-25 ("add search option"): narrows effectiveSales by a free-text query across the
+  // fields visible in the table plus a few more someone's likely to search by (Invoice No,
+  // Chassis No, Reg No, Dealer, Model, Sold To, Sale Type, City, State, Executive, Customer
+  // Mobile). Excel/PDF export downloads whatever's currently filtered/visible, same as the
+  // on-screen table - not a hidden "export everything regardless of search" surprise.
+  const filteredSales = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return effectiveSales
+    return effectiveSales.filter((s) =>
+      [s.invoiceNo, s.chassisNo, s.regNo, s.dealerName, s.dealerCode, s.itemModel, s.oemmodel,
+        s.colorCode, s.soldTo, s.saleType, s.locationCity, s.city, s.state, s.executiveName, s.cusMob]
+        .some((v) => v != null && String(v).toLowerCase().includes(q)))
+  }, [effectiveSales, query])
+
+  const { page, setPage, pageSize, setPageSize, pageCount, pageRows, total } = usePagination(filteredSales)
 
   const fmtDate = (d?: string | null) => (d ? new Date(d).toLocaleDateString('en-IN') : '—')
   const fmtAmt = (n?: number | null) => (n == null ? '—' : `₹${n.toFixed(2)}`)
@@ -260,11 +281,24 @@ export function VehicleSalePage() {
         {' '}Click a row for the full details.
       </p>
 
+      <div className="card">
+        <div className="form-row">
+          <div className="field">
+            <label>Search</label>
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Invoice No, Chassis No, Reg No, Dealer, Model, Sold To…"
+            />
+          </div>
+        </div>
+      </div>
+
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
         <ReportDownloadButtons
-          disabled={effectiveSales.length === 0}
-          onExcel={() => exportReportToExcel('Vehicle_Sale_Report', REPORT_COLUMNS, effectiveSales)}
-          onPdf={() => exportReportToPdf('Vehicle Sale Report', 'Vehicle_Sale_Report', REPORT_COLUMNS, effectiveSales)}
+          disabled={filteredSales.length === 0}
+          onExcel={() => exportReportToExcel('Vehicle_Sale_Report', REPORT_COLUMNS, filteredSales)}
+          onPdf={() => exportReportToPdf('Vehicle Sale Report', 'Vehicle_Sale_Report', REPORT_COLUMNS, filteredSales)}
         />
         <button type="button" className="btn btn-sm btn-import" onClick={() => fileInputRef.current?.click()} disabled={importing}>
           {importing ? 'Parsing…' : '⬆ Import Vehicle Sale Report'}
@@ -357,9 +391,11 @@ export function VehicleSalePage() {
                 )}
               </Fragment>
             ))}
-            {effectiveSales.length === 0 && !loading && !error && (
+            {filteredSales.length === 0 && !loading && !error && (
               <tr><td colSpan={10} className="muted" style={{ textAlign: 'center', padding: 16 }}>
-                No vehicle sales found{!importedRows ? ` for "${soldTo}"` : ''}.
+                {query.trim()
+                  ? <>No vehicle sales match "{query.trim()}".</>
+                  : <>No vehicle sales found{!importedRows ? ` for "${soldTo}"` : ''}.</>}
               </td></tr>
             )}
           </tbody>

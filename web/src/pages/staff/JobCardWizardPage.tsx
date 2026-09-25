@@ -3,14 +3,25 @@ import { useNavigate } from 'react-router-dom'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
 import type {
-  BaplDealerResolveResult, BaplDmsComplaint, BaplDmsDealer, BaplDmsJobSource, BaplDmsJobType,
-  BaplDmsServiceHead, BaplDmsServiceType, BaplDmsVehicleLookup, BaplDmsVehicleSuggestion, BaplDmsWorkshop,
-  Customer, Dealer, JobCardPriority, JobCardSource, PhotoStage, ServiceType, SupervisorOption, Technician, Vehicle,
+  BaplDealerResolveResult, BaplDmsDealer, BaplDmsVehicleLookup, BaplDmsVehicleSuggestion, BaplDmsWorkshop,
+  Customer, Dealer, JobCardPriority, JobCardSource, PhotoStage, ServiceType, Vehicle,
 } from '../../types'
 import { VEHICLE_MODELS, variantsForModel } from '../../data/vehicleCatalog'
+import {
+  COMPLAINTS, JOB_SOURCES, JOB_TYPES, SERVICE_HEADS, SERVICE_TYPES, serviceHeadsForJobType,
+} from '../../data/serviceCatalog'
 import { buildJobCardPrintHtml } from '../../lib/jobCardPrintHtml'
 
 const STEPS = ['Customer', 'Vehicle', 'Service Details', 'Review & Create']
+
+// 2026-09-25 ("Priority * option 1, 2, 3..OTHER"): displayed as 1/2/3, still backed by the same
+// Normal/High/Urgent values JobCardPriority already posts as - see the Priority <select>'s own
+// doc comment further down for why "Other" isn't wired up yet. Shared between the picker and the
+// Review step's summary so both show the same label for the same value.
+const PRIORITY_OPTIONS: [JobCardPriority, string][] = [['Normal', '1'], ['High', '2'], ['Urgent', '3']]
+function priorityLabel(value: JobCardPriority): string {
+  return PRIORITY_OPTIONS.find(([v]) => v === value)?.[1] ?? value
+}
 
 /** Red "*" marker for required-field labels (2026-09-03 - "all required feild are red star"),
  * used everywhere a label needs one instead of a plain " *" that just inherited the label's own
@@ -19,29 +30,23 @@ function Req() {
   return <span style={{ color: '#dc2626' }}> *</span>
 }
 
-// JobCardScanner's own ServiceType/JobCardSource enums are still required internally (dashboards,
-// filters, the Status Badge, ...) but showing them as their own pickers next to DMS's real
-// Job Type and JobSource dropdowns was pure duplication - two "what kind of service is this"
-// fields and two "where did this job come from" fields for the same job card. These best-effort
-// mappings derive JobCardScanner's own value from whichever DMS option was actually picked,
-// so only one of each is shown to the user; there's no clean 1:1 correspondence between DMS's
-// free-form master data and JobCardScanner's fixed enum, so treat this as "close enough for
-// internal reporting", not an authoritative translation.
+// JobCardScanner's own ServiceType enum is still required internally (dashboards, filters, the
+// Status Badge, ...) but showing it as its own picker next to the Job Type dropdown was pure
+// duplication - this best-effort mapping derives JobCardScanner's own value from whichever Job
+// Type was actually picked, so only one "what kind of service is this" field is shown to the
+// user; there's no clean 1:1 correspondence between the free-form Job Type catalog and
+// JobCardScanner's fixed enum, so treat this as "close enough for internal reporting", not an
+// authoritative translation.
+// 2026-09-25: JOB_TYPES was replaced (Accidental/Major/Minor/Running Repair - see
+// serviceCatalog.ts) - only "accidental" still has a confirmed matching ServiceType enum member
+// (AccidentRepair). Major/Minor/Running Repair fall through to the same 'PaidService' default
+// every previously-unmatched name already used - I don't have a confirmed correct ServiceType enum
+// value for these three, so I'm not guessing one; tell me the right mapping if 'PaidService' isn't
+// accurate for internal reporting.
 function mapBaplJobTypeToServiceType(baplJobTypeName: string): ServiceType {
   const n = baplJobTypeName.trim().toLowerCase()
-  if (n === 'pdi') return 'Pdi'
   if (n === 'accidental') return 'AccidentRepair'
-  if (n === 'in warranty period') return 'Warranty'
-  if (n === 'post warranty period') return 'PaidService'
   return 'PaidService'
-}
-
-function mapBaplJobSourceToSource(baplJobSourceName: string): JobCardSource {
-  const n = baplJobSourceName.trim().toLowerCase()
-  if (n === 'walk in') return 'WalkIn'
-  if (n === 'rsa') return 'Breakdown'
-  if (n === 'mega camp') return 'Scheduled'
-  return 'WalkIn'
 }
 
 const IST_TIME_ZONE = 'Asia/Kolkata'
@@ -189,21 +194,24 @@ export function JobCardWizardPage() {
   const [globalSearchLoading, setGlobalSearchLoading] = useState(false)
   const [globalHit, setGlobalHit] = useState<BaplDmsVehicleLookup | null>(null)
   const [globalSearchNotFound, setGlobalSearchNotFound] = useState(false)
-  // Scopes chassis/reg-no search to the dealer this job card is being created for - the wizard's
-  // own dealer picker (Corporate/System Admin choosing which dealer/workshop) when one is set,
-  // falling back to the signed-in dealer's own DMS code otherwise. Left undefined (unscoped,
-  // matching the backend's existing "search everything" default) only when neither is known yet -
-  // e.g. a brand new dealer login whose BaplDmsDealerCode hasn't been resolved by any lookup yet.
+  // 2026-09-25 ("worklocation chassis no and reg no use from vehicle sale which we data fetch"):
+  // kept only as a DISPLAY value now (the "registered to dealer X, not this workshop" hint on the
+  // cross-dealer search hit below) - the actual lookup/suggestions calls below now scope by
+  // effectiveDealerId (a Guid) directly, since GET /api/jobcards/vehicle-lookup and
+  // /vehicle-suggestions take dealerId, not a BAPL dealer code (they resolve the code themselves
+  // server-side - see JobCardsController.VehicleLookupForWizard's doc comment). Still falls back to
+  // the signed-in dealer's own DMS code for that display comparison when the picker list hasn't
+  // loaded this dealer's row yet.
   const vehicleSearchDealerCode = dealers.find((d) => d.id === effectiveDealerId)?.baplDmsDealerCode ?? profile?.dealerBaplDmsCode ?? undefined
   useEffect(() => {
     if (!showVehicleSuggestions || chassisOrRegQ.trim().length < 2) { setVehicleSuggestions([]); return }
     const handle = setTimeout(() => {
-      staffApi.get<BaplDmsVehicleSuggestion[]>('/api/bapl-dms/vehicle-suggestions', { params: { q: chassisOrRegQ.trim(), dealerCode: vehicleSearchDealerCode } })
+      staffApi.get<BaplDmsVehicleSuggestion[]>('/api/jobcards/vehicle-suggestions', { params: { q: chassisOrRegQ.trim(), dealerId: effectiveDealerId || undefined } })
         .then(({ data }) => setVehicleSuggestions(data))
         .catch(() => setVehicleSuggestions([]))
     }, 300)
     return () => clearTimeout(handle)
-  }, [chassisOrRegQ, showVehicleSuggestions, vehicleSearchDealerCode])
+  }, [chassisOrRegQ, showVehicleSuggestions, effectiveDealerId])
   // Fields pre-filled from a DMS auto-fetch are locked by default (disabled inputs) so they
   // aren't accidentally overwritten - each section has its own "Edit anyway" escape hatch for the
   // rare case the fetched data is wrong. Resets back to locked whenever a fresh hit comes in.
@@ -245,14 +253,15 @@ export function JobCardWizardPage() {
     setGlobalHit(null)
     setGlobalSearchNotFound(false)
     try {
-      const { data } = await staffApi.get<BaplDmsVehicleLookup>('/api/bapl-dms/vehicle-lookup', { params: { value, dealerCode: vehicleSearchDealerCode } })
-      // This chassis already has an open job card somewhere (JobCardScanner locally, or DMS -
-      // see openJobCardNumber's doc comment) - refuse to auto-fill/proceed with it at all, and say
-      // exactly where the open job card is so staff know where to go close it first.
+      const { data } = await staffApi.get<BaplDmsVehicleLookup>('/api/jobcards/vehicle-lookup', { params: { value, dealerId: effectiveDealerId || undefined } })
+      // This chassis already has an open job card here in JobCardScanner - see
+      // JobCardsController.VehicleLookupForWizard's doc comment on why this is now a local-only
+      // check (there's no live DMS signal for this any more since DMS write-back was removed) -
+      // refuse to auto-fill/proceed with it at all, and say which job card so staff know where to
+      // go close it first.
       if (data.openJobCardNumber) {
-        const where = data.openJobCardSource === 'bapl-dms' ? 'in DMS' : 'here'
         const status = data.openJobCardStatus ? ` (status: ${data.openJobCardStatus})` : ''
-        setOpenJobCardNotice(`This chassis already has an open job card ${where}: ${data.openJobCardNumber}${status}. It must be closed before this chassis can be used for a new job card.`)
+        setOpenJobCardNotice(`This chassis already has an open job card here: ${data.openJobCardNumber}${status}. It must be closed before this chassis can be used for a new job card.`)
         return
       }
       // Item 3: a hit with no SaleDate on file isn't auto-fetched - alert and leave the customer/
@@ -270,15 +279,15 @@ export function JobCardWizardPage() {
     } catch (err: unknown) {
       const response = (err as { response?: { status?: number; data?: { message?: string } } })?.response
       if (response?.status === 404) {
-        setVehicleLookupError(`"${value}" wasn't found in DMS for this dealer.`)
+        setVehicleLookupError(`"${value}" wasn't found in Vehicle Sale for this dealer.`)
         // Offer the cross-dealer fallback right on the "not found" flag, instead of only letting
         // the user give up and add the vehicle manually - see the state block above for why this
         // needs no new backend endpoint.
         setShowGlobalSearchOffer(true)
       } else {
         setVehicleLookupError(response?.data?.message
-          ? `DMS error: ${response.data.message}`
-          : 'Could not reach DMS right now - add the customer/vehicle manually below.')
+          ? `Vehicle Sale error: ${response.data.message}`
+          : 'Could not reach Vehicle Sale right now - add the customer/vehicle manually below.')
       }
     } finally {
       setVehicleLookupLoading(false)
@@ -296,7 +305,7 @@ export function JobCardWizardPage() {
     setGlobalSearchNotFound(false)
     setGlobalHit(null)
     try {
-      const { data } = await staffApi.get<BaplDmsVehicleLookup>('/api/bapl-dms/vehicle-lookup', { params: { value } })
+      const { data } = await staffApi.get<BaplDmsVehicleLookup>('/api/jobcards/vehicle-lookup', { params: { value } })
       setGlobalHit(data)
     } catch {
       setGlobalSearchNotFound(true)
@@ -308,11 +317,11 @@ export function JobCardWizardPage() {
   const applyGlobalHit = () => {
     if (!globalHit) return
     // Same open-job-card block as the dealer-scoped lookup above - a cross-dealer hit can still
-    // belong to a chassis with an open job card (at this dealer or elsewhere).
+    // belong to a chassis with an open job card (at this dealer or elsewhere). Always "here" now -
+    // see VehicleLookupForWizard's doc comment on why this is local-only.
     if (globalHit.openJobCardNumber) {
-      const where = globalHit.openJobCardSource === 'bapl-dms' ? 'in DMS' : 'here'
       const status = globalHit.openJobCardStatus ? ` (status: ${globalHit.openJobCardStatus})` : ''
-      setOpenJobCardNotice(`This chassis already has an open job card ${where}: ${globalHit.openJobCardNumber}${status}. It must be closed before this chassis can be used for a new job card.`)
+      setOpenJobCardNotice(`This chassis already has an open job card here: ${globalHit.openJobCardNumber}${status}. It must be closed before this chassis can be used for a new job card.`)
       setShowGlobalSearchOffer(false)
       setGlobalHit(null)
       return
@@ -387,9 +396,8 @@ export function JobCardWizardPage() {
   const [batteryLevel, setBatteryLevel] = useState<number | ''>('')
   const [expectedDeliveryAt, setExpectedDeliveryAt] = useState(nowForDatetimeLocalInput)
   const [consentNotes, setConsentNotes] = useState('')
-  // Populated only from the DMS ComplaintMaster dropdown now (see addComplaintFromDropdown) -
-  // the old free-text "+ Add complaint" flow is gone per your request, so this never starts with a
-  // blank placeholder entry any more.
+  // Populated from the fixed Complaint button grid and/or manual entry (see toggleComplaint/
+  // addManualComplaint below) - never starts with a blank placeholder entry.
   const [complaints, setComplaints] = useState<string[]>([])
   // BAPL-DMS-style fields, captured alongside JobCardScanner's own Service Type/Source/Priority
   // above. Job Type -> Service Head -> Service Type is a live cascade straight off DMS's own
@@ -404,82 +412,58 @@ export function JobCardWizardPage() {
   const [baplTechnicianName, setBaplTechnicianName] = useState('')
   const [baplManualJobNo, setBaplManualJobNo] = useState('')
 
-  // 2026-09-24 ("Supervisior that will link and like Dealer Employees ... this technician dont
-  // want to bid username and password ... wants to create technician"): Supervisor/Technician are
-  // now dropdowns fed from this dealer's own Employees (Users with Role=Supervisor - see
-  // TechniciansController.Supervisors) and the new login-less Technician Employee roster (see
-  // TechniciansController.List), both scoped to the Service Location picked below (selectedWorkshopLocCode)
-  // - not free text any more. Still stored as a plain name string (baplSupervisorName/
-  // baplTechnicianName) for JobCardsController.Create, same field the backend has always accepted;
-  // the dropdown just picks which value goes in rather than letting the user type anything. The
-  // fetch effect itself lives further down (after selectedWorkshopLocCode is declared) - see the
-  // comment there.
-  const [supervisorOptions, setSupervisorOptions] = useState<SupervisorOption[]>([])
-  const [technicianOptions, setTechnicianOptions] = useState<Technician[]>([])
+  // 2026-09-25 ("according screenshot only those feilds show on page"): Supervisor/Technician
+  // dropdowns (and the GET /api/technicians/supervisors, GET /api/technicians fetch that fed them)
+  // are REMOVED - they're not in your screenshot any more. baplSupervisorName/baplTechnicianName
+  // state stays (still posted to POST /api/jobcards, just always empty now) since removing it
+  // would touch the submit payload's shape for no benefit.
 
-  const [jobTypes, setJobTypes] = useState<BaplDmsJobType[]>([])
-  const [serviceHeads, setServiceHeads] = useState<BaplDmsServiceHead[]>([])
-  const [serviceTypes, setServiceTypes] = useState<BaplDmsServiceType[]>([])
+  // 2026-09-25 ("Job Type * hardcoded in dropdown ... Service Head *, Service Type * ... all
+  // harcoded with dependancy like previous"): Job Type/Service Head/Service Type are no longer
+  // fetched live from DMS - they're a fixed local catalog (web/src/data/serviceCatalog.ts,
+  // transcribed from/dictated as your own real Job Type/Service Head/Service Type data).
+  // serviceHeadOptions below is derived straight from the selected id, same cascade shape as
+  // before (Job Type narrows Service Head) - just resolved locally instead of via
+  // GET /api/bapl-dms/service-heads/{id}, so there's no fetch error state to show any more.
+  // Service Type itself is no longer shown as a field at all (see the removed picker further
+  // down), so there's no serviceTypeOptions here any more either - selectedServiceTypeId is kept
+  // only because JobCardsController.Create's payload still has a slot for it (always null now).
   const [selectedJobTypeId, setSelectedJobTypeId] = useState<number | null>(null)
   const [selectedServiceHeadId, setSelectedServiceHeadId] = useState<number | null>(null)
   const [selectedServiceTypeId, setSelectedServiceTypeId] = useState<number | null>(null)
-  const [baplMastersError, setBaplMastersError] = useState<string | null>(null)
+  const serviceHeadOptions = serviceHeadsForJobType(selectedJobTypeId)
 
   const [workshops, setWorkshops] = useState<BaplDmsWorkshop[]>([])
   const [selectedWorkshopLocCode, setSelectedWorkshopLocCode] = useState('')
 
-  // Re-fetched whenever the dealer or the selected workshop location changes; a location change
-  // also clears whichever Supervisor/Technician name was picked under the PREVIOUS location, since
-  // either one scoped to one workshop isn't necessarily valid staff at another.
-  useEffect(() => {
-    setBaplSupervisorName('')
-    setBaplTechnicianName('')
-    if (!effectiveDealerId || !selectedWorkshopLocCode) { setSupervisorOptions([]); setTechnicianOptions([]); return }
-    staffApi.get<SupervisorOption[]>('/api/technicians/supervisors', { params: { dealerId: effectiveDealerId, locationCode: selectedWorkshopLocCode } })
-      .then(({ data }) => setSupervisorOptions(data))
-      .catch(() => setSupervisorOptions([]))
-    staffApi.get<Technician[]>('/api/technicians', { params: { dealerId: effectiveDealerId, locationCode: selectedWorkshopLocCode } })
-      .then(({ data }) => setTechnicianOptions(data))
-      .catch(() => setTechnicianOptions([]))
-  }, [effectiveDealerId, selectedWorkshopLocCode])
+  // 2026-09-25 ("Customer complaints top 5 radio button dont show in dropdown direct top 5
+  // complain show direct in radio button ... button multiple mutiple selection and manual type"):
+  // Customer complaints is now a grid of toggle BUTTONS (multi-select) straight off the fixed
+  // COMPLAINTS list (serviceCatalog.ts) instead of a dropdown+Add - showing all 8 real complaints,
+  // not just 5, since there's no usage-frequency data to pick a genuine "top 5" from (your call,
+  // "show all 8"). manualComplaintText brings back a free-text option alongside the buttons, per
+  // your "and manual type" - the earlier removal of free-text complaints (2026-09-03) is reversed
+  // for this one case since you explicitly asked for it back here.
+  const [manualComplaintText, setManualComplaintText] = useState('')
 
-  const [complaintOptions, setComplaintOptions] = useState<BaplDmsComplaint[]>([])
-  const [selectedComplaintId, setSelectedComplaintId] = useState('')
-
-  // Replaces the old hardcoded WalkIn/PickupAndDrop/Breakdown/Scheduled/Online "Source" dropdown -
-  // DMS's own JobSource master (Walk In/RSA/Mega Camp/...) is now the only "where did this job
-  // come from" picker shown; JobCardScanner's own `source` state above is derived from it (see
-  // mapBaplJobSourceToSource) rather than picked directly.
-  const [jobSources, setJobSources] = useState<BaplDmsJobSource[]>([])
+  // 2026-09-25 ("according screenshot only those feilds show on page"): the Source picker itself
+  // is removed - selectedJobSourceId is kept only because JobCardsController.Create's payload
+  // still has baplJobSourceId/baplJobSourceName slots for it (always null now); `source`
+  // (JobCardScanner's own JobCardSource enum) stays at its default 'WalkIn' since nothing sets it
+  // any more.
   const [selectedJobSourceId, setSelectedJobSourceId] = useState<number | null>(null)
 
   const [baplSyncWarning, setBaplSyncWarning] = useState<string | null>(null)
 
-  // Every field in the "Job Card fields" (DMS) panel is now required, per your request -
-  // "Continue to Review" stays disabled until all of them are filled in, so a job card can no
-  // longer reach Review with a half-filled DMS section.
-  // Manual Job No. is no longer required (Item 5) - every other DMS field still is.
-  // 2026-09-03: Expected delivery and Customer complaints (Customer Voice) are now required too,
-  // per explicit request - both got a red * label to match.
+  // 2026-09-25 ("according screenshot only those feilds show on page"): only the fields still
+  // actually shown on this step are required now - Service Type/Service Location/Supervisor/
+  // Technician/Source were dropped from here since their pickers are gone (Service Location is
+  // still auto-filled internally, just not required from the user any more since there's nothing
+  // left for them to pick). Manual Job No. was already optional. Expected delivery and Complaints
+  // stay required per the 2026-09-03 request.
   const serviceDetailsValid = !!(
-    selectedJobTypeId && selectedServiceHeadId && selectedServiceTypeId &&
-    selectedWorkshopLocCode && baplSupervisorName.trim() && baplTechnicianName.trim() &&
-    selectedJobSourceId && expectedDeliveryAt && complaints.length > 0
+    selectedJobTypeId && selectedServiceHeadId && expectedDeliveryAt && complaints.length > 0
   )
-
-  // Job Type/JobSource masters + Complaint master are all small, session-wide lists - fetched once
-  // each, not re-fetched per wizard step.
-  useEffect(() => {
-    staffApi.get<BaplDmsJobType[]>('/api/bapl-dms/job-types')
-      .then(({ data }) => setJobTypes(data))
-      .catch(() => setBaplMastersError('Could not load DMS\'s Job Type list - Service Details will only capture JobCardScanner\'s own fields.'))
-    staffApi.get<BaplDmsComplaint[]>('/api/bapl-dms/complaints')
-      .then(({ data }) => setComplaintOptions(data))
-      .catch(() => setComplaintOptions([]))
-    staffApi.get<BaplDmsJobSource[]>('/api/bapl-dms/job-sources')
-      .then(({ data }) => setJobSources(data))
-      .catch(() => setJobSources([]))
-  }, [])
 
   useEffect(() => {
     // Clear whatever Service Location was previously selected (manually or auto-defaulted) any
@@ -511,9 +495,10 @@ export function JobCardWizardPage() {
   // Default the Service Location to this dealer's own W-series, lowest number first (W1 if it
   // has one, else W2, and so on) - per your request, so a Service Location is already picked as
   // soon as the dealer/workshop list resolves, instead of starting blank until step 2. Only fires
-  // when nothing is selected yet, so it never overrides a manual pick (onWorkshopChange below) or
-  // - since that effect runs after this one and always re-sets on a match - the more specific
-  // auto-fill from a chassis/reg-no DMS hit right below.
+  // when nothing is selected yet. 2026-09-25: this is now the ONLY way Service Location gets set
+  // (the picker itself is hidden - see the read-only display further down) other than the more
+  // specific chassis/reg-no auto-fill effect right below, which always re-sets on a match and so
+  // still wins over this plain default.
   useEffect(() => {
     if (selectedWorkshopLocCode || workshops.length === 0) return
     const bySeries = [...workshops].sort((a, b) => {
@@ -542,57 +527,51 @@ export function JobCardWizardPage() {
     }
   }, [baplVehicleHit, workshops])
 
+  // 2026-09-25: resolved locally against JOB_TYPES/serviceHeadsForJobType now (no more
+  // GET /api/bapl-dms/service-heads/{id} fetch) - same cascade reset behavior as before, just
+  // synchronous. NEW per your instruction ("for 1. Accidental dependancy wants Accidental direct
+  // select in Service Head bi defualt Accidental dont give option Select Service head"): when the
+  // picked Job Type has exactly ONE Service Head (Accidental -> Accidental, Running Repair ->
+  // Running Repair - see serviceCatalog.ts), that Service Head is auto-selected immediately
+  // instead of showing a "Select service head…" placeholder. A Job Type with more than one Service
+  // Head (Major -> M1/M2, Minor -> D1/D2) still shows the picker as before.
   const onJobTypeChange = (value: string) => {
     const id = value ? Number(value) : null
     setSelectedJobTypeId(id)
-    const name = jobTypes.find((j) => j.id === id)?.name ?? ''
+    const name = JOB_TYPES.find((j) => j.id === id)?.name ?? ''
     setBaplJobType(name)
     // JobCardScanner's own ServiceType is derived from the Job Type picked here rather than shown
     // as a separate dropdown - see mapBaplJobTypeToServiceType's doc comment above.
     if (name) setServiceType(mapBaplJobTypeToServiceType(name))
-    setSelectedServiceHeadId(null)
-    setServiceHeads([])
+    const heads = serviceHeadsForJobType(id)
+    setSelectedServiceHeadId(heads.length === 1 ? heads[0].id : null)
     setSelectedServiceTypeId(null)
-    setServiceTypes([])
-    if (id == null) return
-    staffApi.get<BaplDmsServiceHead[]>(`/api/bapl-dms/service-heads/${id}`)
-      .then(({ data }) => setServiceHeads(data))
-      .catch(() => setServiceHeads([]))
   }
 
-  const onJobSourceChange = (value: string) => {
-    const id = value ? Number(value) : null
-    setSelectedJobSourceId(id)
-    const name = jobSources.find((j) => j.id === id)?.name ?? ''
-    if (name) setSource(mapBaplJobSourceToSource(name))
-  }
-
+  // 2026-09-25: resolved locally against SERVICE_HEADS now (no more
+  // GET /api/bapl-dms/service-types/{id} fetch - Service Type itself is no longer a field on this
+  // step at all, see the removed picker further down).
   const onServiceHeadChange = (value: string) => {
     const id = value ? Number(value) : null
     setSelectedServiceHeadId(id)
     setSelectedServiceTypeId(null)
-    setServiceTypes([])
-    if (id == null) return
-    staffApi.get<BaplDmsServiceType[]>(`/api/bapl-dms/service-types/${id}`)
-      .then(({ data }) => setServiceTypes(data))
-      .catch(() => setServiceTypes([]))
   }
 
-  const onWorkshopChange = (locCode: string) => {
-    setSelectedWorkshopLocCode(locCode)
-    setBaplServiceLocation(workshops.find((w) => w.locCode === locCode)?.locName ?? '')
-  }
-
-  // Dropdown-only now (multi-select by repeated Add clicks) - the old manual "+ Add complaint"
-  // free-text flow is gone per your request.
-  const addComplaintFromDropdown = () => {
-    if (!selectedComplaintId) return
-    const picked = complaintOptions.find((c) => String(c.id) === selectedComplaintId)
-    if (!picked) return
-    if (!complaints.includes(picked.name)) setComplaints((prev) => [...prev, picked.name])
-    setSelectedComplaintId('')
+  // 2026-09-25: toggle-button multi-select against the fixed COMPLAINTS list - clicking an
+  // already-added complaint's button removes it again (same as the Remove button in the list
+  // below), so the buttons double as an at-a-glance "what's picked" view.
+  const toggleComplaint = (name: string) => {
+    setComplaints((prev) => (prev.includes(name) ? prev.filter((c) => c !== name) : [...prev, name]))
   }
   const removeComplaint = (name: string) => setComplaints((prev) => prev.filter((c) => c !== name))
+  // Manual/free-text complaint entry, brought back per your "and manual type" request - adds
+  // whatever's typed as its own complaint line, same as a button pick.
+  const addManualComplaint = () => {
+    const text = manualComplaintText.trim()
+    if (!text || complaints.includes(text)) return
+    setComplaints((prev) => [...prev, text])
+    setManualComplaintText('')
+  }
 
   // Photos captured BEFORE the job card exists (Review & Create step, ahead of the "Create Job
   // Card" button) - kept as in-memory File objects with a local object-URL preview until the job
@@ -732,13 +711,13 @@ export function JobCardWizardPage() {
         // writing this job card into DMS's own database (see JobCardsController.Create).
         baplJobTypeId: selectedJobTypeId,
         baplServiceHeadId: selectedServiceHeadId,
-        baplServiceHeadName: serviceHeads.find((h) => h.id === selectedServiceHeadId)?.name ?? null,
+        baplServiceHeadName: SERVICE_HEADS.find((h) => h.id === selectedServiceHeadId)?.name ?? null,
         baplServiceTypeId: selectedServiceTypeId,
-        baplServiceTypeName: serviceTypes.find((t) => t.id === selectedServiceTypeId)?.name ?? null,
+        baplServiceTypeName: SERVICE_TYPES.find((t) => t.id === selectedServiceTypeId)?.name ?? null,
         baplServiceLocationCode: selectedWorkshopLocCode || null,
         baplCustomerLedgerId: baplVehicleHit?.customerLedgerId ?? null,
         baplJobSourceId: selectedJobSourceId,
-        baplJobSourceName: jobSources.find((s) => s.id === selectedJobSourceId)?.name ?? null,
+        baplJobSourceName: JOB_SOURCES.find((s) => s.id === selectedJobSourceId)?.name ?? null,
         baplCouponNo: couponNo || null,
         baplJobCategory: jobCategory,
       })
@@ -794,9 +773,9 @@ export function JobCardWizardPage() {
       location: baplServiceLocation,
       jobinDate: new Date().toISOString(),
       jobtype: baplJobType,
-      jobsource: jobSources.find((s) => s.id === selectedJobSourceId)?.name,
-      serviceHead: serviceHeads.find((h) => h.id === selectedServiceHeadId)?.name,
-      serviceType: serviceTypes.find((t) => t.id === selectedServiceTypeId)?.name,
+      jobsource: JOB_SOURCES.find((s) => s.id === selectedJobSourceId)?.name,
+      serviceHead: SERVICE_HEADS.find((h) => h.id === selectedServiceHeadId)?.name,
+      serviceType: SERVICE_TYPES.find((t) => t.id === selectedServiceTypeId)?.name,
       estdelDate: expectedDeliveryAt,
       vehiclekms: vehicle?.odometer,
       manualjobNo: baplManualJobNo,
@@ -997,7 +976,7 @@ export function JobCardWizardPage() {
                   display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
                 }}
               >
-                🔎 Not found for this dealer.{globalSearchNotFound ? ' Not found anywhere in DMS either.' : ' Search DMS across every dealer?'}
+                🔎 Not found for this dealer.{globalSearchNotFound ? ' Not found anywhere in Vehicle Sale either.' : ' Search Vehicle Sale across every dealer?'}
                 <button
                   type="button"
                   className="btn btn-sm btn-primary"
@@ -1012,7 +991,7 @@ export function JobCardWizardPage() {
             {globalHit && (
               <div style={{ marginTop: 8, padding: '10px 14px', borderRadius: 8, background: '#eef6ff', border: '1px solid #bfdcff' }}>
                 <p style={{ fontWeight: 600, color: '#1e3a5f', margin: 0 }}>
-                  Found in DMS{globalHit.dealerCode && globalHit.dealerCode !== vehicleSearchDealerCode ? ` — registered to dealer ${globalHit.dealerCode}, not this workshop` : ''}
+                  Found in Vehicle Sale{globalHit.dealerCode && globalHit.dealerCode !== vehicleSearchDealerCode ? ` — registered to dealer ${globalHit.dealerCode}, not this workshop` : ''}
                 </p>
                 <p className="muted" style={{ margin: '4px 0 8px' }}>
                   {globalHit.customerName || 'Unknown customer'}{globalHit.customerMobile ? ` (${globalHit.customerMobile})` : ''} · {globalHit.modelName || 'Model unknown'}
@@ -1228,96 +1207,89 @@ export function JobCardWizardPage() {
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
               <span style={{ background: '#1c64f2', color: '#fff', fontSize: 12, fontWeight: 600, padding: '2px 8px', borderRadius: 999 }}>
-                DMS
+                Service Details
               </span>
               <strong style={{ fontSize: 14 }}>Job Card fields</strong>
             </div>
-            {baplMastersError && <p className="error-text" style={{ marginTop: 0 }}>{baplMastersError}</p>}
             <div className="form-row">
               <div className="field">
                 <label>Job Type<Req /></label>
                 <select value={selectedJobTypeId ?? ''} onChange={(e) => onJobTypeChange(e.target.value)}>
                   <option value="">Select job type…</option>
-                  {jobTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  {JOB_TYPES.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                 </select>
               </div>
               <div className="field">
                 <label>Service Head<Req /></label>
-                <select value={selectedServiceHeadId ?? ''} disabled={!selectedJobTypeId} onChange={(e) => onServiceHeadChange(e.target.value)}>
-                  <option value="">{selectedJobTypeId ? 'Select service head…' : 'Select a job type first'}</option>
-                  {serviceHeads.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
-                </select>
-              </div>
-              <div className="field">
-                <label>Service Type<Req /></label>
-                <select value={selectedServiceTypeId ?? ''} disabled={!selectedServiceHeadId} onChange={(e) => setSelectedServiceTypeId(e.target.value ? Number(e.target.value) : null)}>
-                  <option value="">{selectedServiceHeadId ? 'Select service type…' : 'Select a service head first'}</option>
-                  {serviceTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                </select>
+                {/* 2026-09-25: auto-selected and shown read-only when the Job Type has exactly one
+                   Service Head (see onJobTypeChange above) - still an editable dropdown when there's
+                   a real choice (Major -> M1/M2, Minor -> D1/D2). */}
+                {selectedJobTypeId && serviceHeadOptions.length === 1 ? (
+                  <input value={serviceHeadOptions[0].name} disabled readOnly />
+                ) : (
+                  <select value={selectedServiceHeadId ?? ''} disabled={!selectedJobTypeId} onChange={(e) => onServiceHeadChange(e.target.value)}>
+                    <option value="">{selectedJobTypeId ? 'Select service head…' : 'Select a job type first'}</option>
+                    {serviceHeadOptions.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
+                  </select>
+                )}
               </div>
               <div className="field">
                 <label>Priority<Req /></label>
+                {/* 2026-09-25 ("Priority * option 1, 2, 3..OTHER"): displayed as 1/2/3 per your
+                   request, but still POSTS the same Normal/High/Urgent values the backend's
+                   JobCardPriority field already expects (see POST /api/jobcards below) - relabeling
+                   only, not a new value set. "Other" is NOT implemented: JobCardPriority looks like
+                   a fixed enum (JobCardsController.AssignJobCard does `req.Priority.Value` on it),
+                   and posting an arbitrary 4th value to a strict enum field would very likely fail
+                   server-side model binding and break Create Job Card entirely - tell me the
+                   backend's actual JobCardPriority definition (or that it now takes free text) and
+                   I'll wire up a real "Other" option safely. */}
                 <select value={priority} onChange={(e) => setPriority(e.target.value as JobCardPriority)}>
-                  {(['Normal', 'High', 'Urgent'] as JobCardPriority[]).map((s) => <option key={s} value={s}>{s}</option>)}
+                  {PRIORITY_OPTIONS.map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
                 </select>
               </div>
             </div>
             <div className="form-row" style={{ marginBottom: 0 }}>
+              {/* 2026-09-25 ("Service Location (workshop) for main dealer all that hide"): the
+                 workshop PICKER is hidden - Service Location is auto-selected (this dealer's own
+                 W-series, lowest number first, or the workshop tied to a chassis/reg-no hit - see
+                 the two useEffects above that still set selectedWorkshopLocCode/baplServiceLocation
+                 unchanged) rather than left for the user to pick. Shown read-only so it's still
+                 visible which workshop Supervisor/Technician below are scoped to. */}
               <div className="field">
-                <label>Service Location<Req /></label>
-                <select value={selectedWorkshopLocCode} disabled={!effectiveDealerId} onChange={(e) => onWorkshopChange(e.target.value)}>
-                  <option value="">{workshops.length ? 'Select workshop…' : 'No workshops found for this dealer yet'}</option>
-                  {workshops.map((w) => <option key={w.locCode} value={w.locCode}>{w.locName} ({w.locCode})</option>)}
-                </select>
-              </div>
-              <div className="field">
-                <label>Supervisor<Req /></label>
-                <select
-                  value={baplSupervisorName}
-                  disabled={!selectedWorkshopLocCode}
-                  onChange={(e) => setBaplSupervisorName(e.target.value)}
-                >
-                  <option value="">{selectedWorkshopLocCode ? (supervisorOptions.length ? 'Select supervisor…' : 'No Supervisor set up for this location yet') : 'Select a Service Location first'}</option>
-                  {supervisorOptions.map((s) => <option key={s.id} value={s.name}>{s.name}</option>)}
-                </select>
-                {selectedWorkshopLocCode && supervisorOptions.length === 0 && (
-                  <p className="muted" style={{ margin: '4px 0 0', fontSize: 12 }}>
-                    Add a Supervisor for this location on Admin → Employees (Designation: Supervisor).
-                  </p>
-                )}
-              </div>
-              <div className="field">
-                <label>Technician<Req /></label>
-                <select
-                  value={baplTechnicianName}
-                  disabled={!selectedWorkshopLocCode}
-                  onChange={(e) => setBaplTechnicianName(e.target.value)}
-                >
-                  <option value="">{selectedWorkshopLocCode ? (technicianOptions.length ? 'Select technician…' : 'No Technician set up for this location yet') : 'Select a Service Location first'}</option>
-                  {technicianOptions.map((t) => <option key={t.id} value={t.name}>{t.name}</option>)}
-                </select>
-                {selectedWorkshopLocCode && technicianOptions.length === 0 && (
-                  <p className="muted" style={{ margin: '4px 0 0', fontSize: 12 }}>
-                    Add a Technician for this location on the Technician Employee tab.
-                  </p>
-                )}
+                <label>Service Location</label>
+                <input value={baplServiceLocation || (effectiveDealerId ? 'Resolving…' : 'Select a dealer first')} disabled readOnly />
               </div>
               <div className="field">
                 <label>Manual Job No.</label>
                 <input value={baplManualJobNo} onChange={(e) => setBaplManualJobNo(e.target.value)} placeholder="e.g. 0" />
               </div>
-              <div className="field">
-                <label>Source<Req /></label>
-                <select value={selectedJobSourceId ?? ''} onChange={(e) => onJobSourceChange(e.target.value)}>
-                  <option value="">Select source…</option>
-                  {jobSources.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                </select>
-              </div>
+              {/* 2026-09-25 ("according screenshot only those feilds show on page"): Supervisor,
+                 Technician and Source are no longer shown on this step - only the fields visible
+                 in your screenshot remain (Job Type, Service Head, Priority, Service Location
+                 (read-only), Manual Job No., Battery level, Expected delivery, Complaints, Notes).
+                 The supervisorOptions/technicianOptions fetch (GET /api/technicians/supervisors,
+                 GET /api/technicians) and its effect were removed along with the pickers -
+                 baplSupervisorName/baplTechnicianName/baplJobSourceId/baplJobSourceName state is
+                 kept (POST /api/jobcards still has slots for them) but will always post as
+                 empty/null now. ASSUMPTION, not confirmed: I'm assuming the backend still accepts
+                 a job card without these (Job Type/Service Head/Service Location already became
+                 optional server-side on 2026-09-24 - see JobCardsController.Create's own doc
+                 comment) - if it still hard-requires Supervisor/Technician/Source, Create Job Card
+                 will fail with a validation error until that's relaxed too. */}
             </div>
-            {/* <p className="muted" style={{ margin: '8px 0 0', fontSize: 12 }}>
-             records. Service Location also
-              determines which Supervisor/Technician are offered below.
-            </p> */}
+            <p className="muted" style={{ margin: '8px 0 0', fontSize: 12 }}>
+              {/* 2026-09-24 CHANGE ("dont save this jobcard in dms remove this all over flow that
+                 save in jobcard db only"): this job card is saved in JobCardScanner ONLY - it is no
+                 longer written into DMS's own database. 2026-09-25: Job Type/Service Head are no
+                 longer even READ from DMS live - they're a fixed local catalog (see
+                 serviceCatalog.ts). Service Location is still auto-selected behind the scenes (this
+                 dealer's own default workshop, or the one tied to a chassis/reg-no hit) even though
+                 it's no longer shown or required here. */}
+              Job Type, Service Head, Expected delivery and at least one Complaint are required.
+            </p>
           </div>
 
           <div className="form-row">
@@ -1326,26 +1298,44 @@ export function JobCardWizardPage() {
           </div>
 
           <div className="field">
-            <label>Customer complaints<Req /></label>
-            {/* Manual "+ Add complaint" free-text flow removed per your request - the DMS
-               ComplaintMaster dropdown below is now the only way to add one, and it supports adding
-               several (pick, Add, pick another, Add again). */}
-            {complaintOptions.length > 0 && (
-              <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-                <select value={selectedComplaintId} onChange={(e) => setSelectedComplaintId(e.target.value)}>
-                  <option value="">Pick from DMS's complaint list…</option>
-                  {complaintOptions.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
-                <button
-                  className="btn btn-sm btn-primary"
-                  disabled={!selectedComplaintId}
-                  onClick={addComplaintFromDropdown}
-                  style={{ fontWeight: 600 }}
-                >
-                  + Add
-                </button>
-              </div>
-            )}
+            <label>Complaint<Req /></label>
+            {/* 2026-09-25: toggle-button multi-select against the fixed COMPLAINTS list (see
+               serviceCatalog.ts, all 8 real complaints - no genuine "top 5" ranking data exists),
+               plus a manual free-text entry alongside it. Click a button again (or Remove below)
+               to un-pick it. */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+              {COMPLAINTS.map((c) => {
+                const picked = complaints.includes(c.name)
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    className="btn btn-sm"
+                    aria-pressed={picked}
+                    onClick={() => toggleComplaint(c.name)}
+                    style={picked ? { background: '#2563eb', color: '#fff', border: '1px solid #2563eb' } : undefined}
+                  >
+                    {c.name}
+                  </button>
+                )
+              })}
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+              <input
+                value={manualComplaintText}
+                onChange={(e) => setManualComplaintText(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && addManualComplaint()}
+                placeholder="Type a complaint not listed above…"
+              />
+              <button
+                className="btn btn-sm btn-primary"
+                disabled={!manualComplaintText.trim()}
+                onClick={addManualComplaint}
+                style={{ fontWeight: 600 }}
+              >
+                + Add
+              </button>
+            </div>
             {complaints.length > 0 ? (
               <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {complaints.map((c) => (
@@ -1370,7 +1360,7 @@ export function JobCardWizardPage() {
           </div>
 
           <div className="field">
-            <label>Customer Voice</label>
+            <label>(Customer Voice) notes</label>
             <textarea rows={3} value={consentNotes} onChange={(e) => setConsentNotes(e.target.value)} />
           </div>
 
@@ -1395,14 +1385,14 @@ export function JobCardWizardPage() {
             <strong>Vehicle</strong> — <strong>Model:</strong> {vehicle.model} {vehicle.variant} &nbsp; <strong>Reg No.:</strong> {vehicle.regNo || '-'}
             {' '}&nbsp; <strong>KM:</strong> {vehicle.odometer} &nbsp; <strong>Job No.:</strong> {baplManualJobNo || '-'}
           </p>
-          <p><strong>Service:</strong> {baplJobType || serviceType} via {jobSources.find((s) => s.id === selectedJobSourceId)?.name || source}, priority {priority}</p>
+          <p><strong>Service:</strong> {baplJobType || serviceType} via {JOB_SOURCES.find((s) => s.id === selectedJobSourceId)?.name || source}, priority {priorityLabel(priority)}</p>
           <p><strong>Complaints:</strong> {complaints.join('; ') || 'None recorded'}</p>
           {(baplJobType || baplServiceLocation || baplSupervisorName || baplTechnicianName || baplManualJobNo) && (
             <p>
               <strong>DMS fields:</strong>{' '}
               {baplJobType && <><strong>Job Type:</strong> {baplJobType}. </>}
-              {serviceHeads.find((h) => h.id === selectedServiceHeadId)?.name && <><strong>Service Head:</strong> {serviceHeads.find((h) => h.id === selectedServiceHeadId)?.name}. </>}
-              {serviceTypes.find((t) => t.id === selectedServiceTypeId)?.name && <><strong>Service Type:</strong> {serviceTypes.find((t) => t.id === selectedServiceTypeId)?.name}. </>}
+              {SERVICE_HEADS.find((h) => h.id === selectedServiceHeadId)?.name && <><strong>Service Head:</strong> {SERVICE_HEADS.find((h) => h.id === selectedServiceHeadId)?.name}. </>}
+              {SERVICE_TYPES.find((t) => t.id === selectedServiceTypeId)?.name && <><strong>Service Type:</strong> {SERVICE_TYPES.find((t) => t.id === selectedServiceTypeId)?.name}. </>}
               {baplServiceLocation && <><strong>Location:</strong> {baplServiceLocation}. </>}
               {baplSupervisorName && <><strong>Supervisor:</strong> {baplSupervisorName}. </>}
               {baplTechnicianName && <><strong>Technician:</strong> {baplTechnicianName}. </>}
@@ -1415,7 +1405,7 @@ export function JobCardWizardPage() {
               <label>Photos<Req /></label>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: pendingPhotos.length > 0 ? 12 : 0 }}>
                 <label className="btn btn-sm" style={{ cursor: capturingPhoto ? 'default' : 'pointer', opacity: capturingPhoto ? 0.6 : 1 }}>
-                  {capturingPhoto ? 'Adding…' : '📷 Capture / Upload Photo'}
+                  {capturingPhoto ? 'Adding…' : '📷 Take / Upload Photo'}
                   <input
                     type="file"
                     accept="image/*"

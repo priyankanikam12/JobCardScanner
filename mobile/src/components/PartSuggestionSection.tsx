@@ -146,7 +146,7 @@ export function PartSuggestionSection({ jc, onChanged, estimatesLocked, totalLoc
           {matches.map((p) => (
             <TouchableOpacity key={p.itemCode} style={styles.pickerRow} onPress={() => pickPart(p)}>
               <Text style={styles.pickerRowText}>
-                <Text style={{ fontWeight: '700' }}>{p.itemCode}</Text>{p.description ? ` — ${p.description}` : ''} (avail. {p.availableQty})
+                <Text style={{ fontWeight: '700' }}>{p.itemCode}</Text>{p.description ? ` — ${p.description}` : ''} (avail. {p.availableQty ?? '—'})
               </Text>
             </TouchableOpacity>
           ))}

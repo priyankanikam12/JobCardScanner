@@ -15,6 +15,12 @@ public interface ICurrentUserService
 
     Guid? UserId { get; }
     string? UserName { get; }
+    /// <summary>The signed-in staff user's own Users.Email (Azure AD sign-in or local login,
+    /// whichever this token came from - see AppClaimsTransformation/DealerJwtTokenService's
+    /// "app_email" claim). Null for an unauthenticated/customer-portal request. 2026-09-24: added
+    /// so a caller (JobCardsController.EmailEstimate) can send an outgoing email "as" this actual
+    /// person instead of one fixed mailbox - see GraphEmailClient's fromMailbox doc comment.</summary>
+    string? Email { get; }
     StaffRole? Role { get; }
     Guid? DealerId { get; }
     /// <summary>DMS workshop LocCodes this user is scoped to (the "Work Area" checkboxes on

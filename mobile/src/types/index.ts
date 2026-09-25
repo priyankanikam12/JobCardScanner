@@ -277,6 +277,10 @@ export interface BaplItemMaster {
   igst?: number | null
   itemType?: string | null
   status?: string | null
+  /** 2026-09-25: NOT a C_ItemMaster column (that table has no stock field at all) - this dealer's
+   * own uploaded Part Upload stock (PartUploads.BalQty) summed across every location, matched by
+   * ItemCode = PartNo. Null means nothing has been uploaded for this part yet, not "0 in stock". */
+  qty?: number | null
 }
 
 /// One row of GET /api/jobcards/search - the "Job Search" picker on the Material Transfer Bill/
