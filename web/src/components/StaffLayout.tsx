@@ -99,6 +99,7 @@ export const NAV_ITEMS: NavItem[] = [
   // routes themselves are guarded to match (see RequireRole in App.tsx), so this isn't just
   // cosmetic - a DealerAdmin/WorkshopManager typing the URL directly is redirected away too.
   { to: '/admin/users', label: 'Admin: Users', icon: '⚙️', subtitle: 'Manage users, roles, Work Area', roles: ['CorporateAdmin', 'SystemAdmin'] },
+  { to: '/attendance', label: 'Attendance', icon: '🗓️', subtitle: 'Mark daily staff attendance by dealer', roles: ['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
   { to: '/admin/workflow', label: 'Admin: Workflow', icon: '🔧', subtitle: 'Configure job card stages', roles: ['CorporateAdmin', 'SystemAdmin'] },
 ]
 

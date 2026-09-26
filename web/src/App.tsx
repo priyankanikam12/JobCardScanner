@@ -49,7 +49,7 @@ import { ReportsPage } from './pages/staff/ReportsPage'
 import { PortalLoginPage } from './pages/portal/PortalLoginPage'
 import { PortalMyJobCardsPage } from './pages/portal/PortalMyJobCardsPage'
 import { PortalTrackPage } from './pages/portal/PortalTrackPage'
-
+import { AttendancePage } from './pages/staff/AttendancePage'
 export default function App() {
   return (
     <Routes>
@@ -73,6 +73,14 @@ export default function App() {
           </RequireStaff>
         }
       >
+      <Route
+        path="/attendance"
+        element={
+          <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin']}>
+            <AttendancePage />
+          </RequireRole>
+        }
+      />
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/jobcards" element={<JobCardsListPage />} />

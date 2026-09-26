@@ -142,6 +142,7 @@ public class JobCard
     /// own picker any more - see JobCardWizardPage's mapBaplSourceToLocal) since it's used by
     /// existing dashboards/filters that expect one of JobCardSource's fixed values.</summary>
     public int? BaplJobSourceId { get; set; }
+    public string? BaplCouponNo { get; set; }
     [MaxLength(60)] public string? BaplJobSourceName { get; set; }
     public int? BaplServiceHeadId { get; set; }
     [MaxLength(120)] public string? BaplServiceHeadName { get; set; }

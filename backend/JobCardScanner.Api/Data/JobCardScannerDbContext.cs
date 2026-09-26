@@ -64,6 +64,7 @@ public class JobCardScannerDbContext : DbContext
     public DbSet<AuditLogEntry> AuditLogEntries => Set<AuditLogEntry>();
     public DbSet<IntegrationLogEntry> IntegrationLogEntries => Set<IntegrationLogEntry>();
     public DbSet<Counter> Counters => Set<Counter>();
+    public DbSet<Attendance> Attendance { get; set; }
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -367,6 +368,42 @@ public class JobCardScannerDbContext : DbContext
         {
             e.HasIndex(x => new { x.DealerId, x.CounterType }).IsUnique();
             e.HasOne(x => x.Dealer).WithMany().HasForeignKey(x => x.DealerId);
+        });
+
+        b.Entity<Attendance>(e =>
+        {
+            e.HasIndex(x => new { x.EmployeeId, x.AttendanceDate })
+                .IsUnique();
+
+            e.Property(x => x.EmployeeName)
+                .HasMaxLength(200)
+                .IsRequired();
+
+            e.Property(x => x.EmployeeRole)
+                .HasMaxLength(50)
+                .IsRequired();
+
+            e.Property(x => x.Status)
+                .HasConversion<string>()
+                .HasMaxLength(20);
+
+            e.Property(x => x.Remarks)
+                .HasMaxLength(500);
+
+            e.HasOne<User>()
+                .WithMany()
+                .HasForeignKey(x => x.EmployeeId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            e.HasOne<User>()
+                .WithMany()
+                .HasForeignKey(x => x.MarkedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            e.HasOne<Dealer>()
+                .WithMany()
+                .HasForeignKey(x => x.DealerId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
     }
 }
