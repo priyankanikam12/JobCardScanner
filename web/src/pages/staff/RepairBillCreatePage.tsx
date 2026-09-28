@@ -950,10 +950,10 @@ export function RepairBillCreatePage() {
           <span aria-hidden="true">☰</span>Repair Bill List
         </button>
       </div>
-      <p className="muted">
+      {/* <p className="muted">
         Create a repair bill - saved into JobCardScanner's own database. To see bills already saved
         here (with Edit / Save as Invoice), use "View Repair Bill List" above.
-      </p>
+      </p> */}
 
       <div className="card">
         {/* 2026-09-23 ("this grid button click from db which material transfer that will shown

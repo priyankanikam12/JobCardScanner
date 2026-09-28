@@ -224,10 +224,10 @@ export function PartUploadScreen() {
   return (
     <View style={styles.screen}>
       <ScrollView contentContainerStyle={{ paddingBottom: 24 }} refreshControl={<RefreshControl refreshing={loading} onRefresh={load} />}>
-        <Text style={styles.title}>Part Upload</Text>
-        <Text style={styles.subtitle}>
+        <Text style={styles.title}>Stock Report</Text>
+        {/* <Text style={styles.subtitle}>
           Upload a Stock Summary Detail Report (.xlsx) - saved into JobCardScanner’s own database, scoped to your dealer.
-        </Text>
+        </Text> */}
 
         {/* ---------------- Upload card ---------------- */}
         <View style={styles.card}>

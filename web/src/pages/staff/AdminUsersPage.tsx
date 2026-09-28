@@ -81,10 +81,29 @@ interface BaplAspNetUser {
   localUserId?: string | null
 }
 
+// 2026-10-01 ("this page also ui make proper tab wise when i click Sync from Azure AD button then
+// shown this in table when i clcik Bulk import dealers from ERP (BAPL) then open this page and
+// hide this previous all proper ui"): this page used to stack all four action cards (Sync from
+// Azure AD / Bulk import dealers from ERP / DMS Logins / Add staff user manually) one under the
+// other, always visible at once. Converted to a tab strip - only the selected tab's card renders,
+// so switching tabs now actually hides the previous card instead of just scrolling past it.
+//
+// ASSUMPTION (flagging, not guessed silently): the final "all users" table at the bottom of the
+// page is left OUTSIDE the tabs, always visible - you didn't call that one out by name, and every
+// action above it (role updates, new adds, activate/deactivate) is really editing rows in that
+// same table, so keeping it always in view as the one shared result/reference list seemed more
+// useful than burying it behind a 5th tab. Say the word if you want it tabbed too, or moved
+// elsewhere.
+type AdminUsersTab = 'azure' | 'bapl' | 'dms' | 'manual'
+
 export function AdminUsersPage() {
   const { profile, hasRole } = useStaffAuth()
   const [users, setUsers] = useState<StaffUser[]>([])
   const [form, setForm] = useState({ name: '', email: '', mobile: '', role: 'ServiceAdvisor' as StaffRole })
+
+  const canSeeBapl = hasRole('CorporateAdmin', 'SystemAdmin')
+  const canSeeDms = hasRole('DealerAdmin', 'CorporateAdmin', 'SystemAdmin')
+  const [activeTab, setActiveTab] = useState<AdminUsersTab>('azure')
 
   // ---------------- Sync from Azure AD ----------------
   const [azureQuery, setAzureQuery] = useState('')
@@ -122,12 +141,14 @@ export function AdminUsersPage() {
   }
 
   // Debounced search-as-you-type - loads the full directory once up front (empty query), then
-  // re-queries a few hundred ms after the admin stops typing.
+  // re-queries a few hundred ms after the admin stops typing. Only while the Azure AD tab is
+  // active - no point re-querying a hidden tab's own debounce timer in the background.
   useEffect(() => {
+    if (activeTab !== 'azure') return
     const t = setTimeout(() => { loadAzureDirectory(azureQuery) }, azureQuery ? 350 : 0)
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [azureQuery])
+  }, [azureQuery, activeTab])
 
   const roleFor = (u: AzureDirectoryUser): StaffRole => azureRoleChoice[u.email] ?? u.role ?? 'ServiceAdvisor'
 
@@ -274,10 +295,48 @@ export function AdminUsersPage() {
     load()
   }
 
+  // Tabs visible to this admin - DealerAdmin never sees the BAPL tab, and only
+  // Dealer/Corporate/System Admin see DMS Logins (same gates the cards used before, just moved up
+  // to decide tab visibility instead of card visibility). If the active tab becomes hidden because
+  // the gate changed (shouldn't normally happen mid-session, but cheap to guard), fall back to the
+  // one tab everyone can always see.
+  useEffect(() => {
+    if (activeTab === 'bapl' && !canSeeBapl) setActiveTab('azure')
+    if (activeTab === 'dms' && !canSeeDms) setActiveTab('azure')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canSeeBapl, canSeeDms])
+
+  const tabButtonStyle = (tab: AdminUsersTab): React.CSSProperties => ({
+    borderBottom: activeTab === tab ? '2px solid #2563eb' : '2px solid transparent',
+    color: activeTab === tab ? '#2563eb' : undefined,
+    fontWeight: activeTab === tab ? 600 : 400,
+    borderRadius: 0,
+  })
+
   return (
     <div>
       <h2>Admin: Users</h2>
 
+      <div className="form-row" style={{ gap: 4, borderBottom: '1px solid #e5e7eb', marginBottom: 16 }}>
+        <button className="btn btn-sm" style={tabButtonStyle('azure')} onClick={() => setActiveTab('azure')}>
+          Sync from Azure AD
+        </button>
+        {canSeeBapl && (
+          <button className="btn btn-sm" style={tabButtonStyle('bapl')} onClick={() => setActiveTab('bapl')}>
+            Bulk import dealers from ERP (BAPL)
+          </button>
+        )}
+        {canSeeDms && (
+          <button className="btn btn-sm" style={tabButtonStyle('dms')} onClick={() => setActiveTab('dms')}>
+            DMS Logins
+          </button>
+        )}
+        <button className="btn btn-sm" style={tabButtonStyle('manual')} onClick={() => setActiveTab('manual')}>
+          Add staff user manually
+        </button>
+      </div>
+
+      {activeTab === 'azure' && (
       <div className="card">
         <h3>Sync from Azure AD</h3>
         <p className="muted">
@@ -369,8 +428,9 @@ export function AdminUsersPage() {
           </>
         )}
       </div>
+      )}
 
-      {hasRole('CorporateAdmin', 'SystemAdmin') && (
+      {activeTab === 'bapl' && canSeeBapl && (
       <div className="card">
         <h3>Bulk import dealers from ERP (BAPL)</h3>
         <p className="muted">
@@ -458,7 +518,7 @@ export function AdminUsersPage() {
       </div>
       )}
 
-      {hasRole('DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
+      {activeTab === 'dms' && canSeeDms && (
       <div className="card">
         <h3>DMS Logins</h3>
         <p className="muted">
@@ -511,6 +571,7 @@ export function AdminUsersPage() {
       </div>
       )}
 
+      {activeTab === 'manual' && (
       <div className="card">
         <h3>Add staff user manually (Azure AD)</h3>
         <p className="muted">For a corporate Azure AD sign-in with any Role (Admin, Cashier, Parts, ...). The email must exactly match the email/UPN they sign in to Azure AD with - see docs/AZURE_AD_SETUP.md. Prefer the Azure AD search above when possible, so you don't have to type it by hand. For a dealer/workshop employee with a local login and Work Area location scoping, use the "Employees" page instead.</p>
@@ -527,6 +588,7 @@ export function AdminUsersPage() {
         </div>
         <button className="btn btn-primary" disabled={!form.name || !form.email} onClick={create}>Add User</button>
       </div>
+      )}
 
       <div className="card" style={{ padding: 0 }}>
         <table>

@@ -980,10 +980,10 @@ export function MaterialTransferCreatePage() {
           <span aria-hidden="true">☰</span>Material Transfer List
         </button>
       </div>
-      <p className="muted">
+      {/* <p className="muted">
         Create a material transfer document - saved into JobCardScanner's own database. To see
         transfers already saved here (with Edit / Confirm Transfer), use "Material Transfer List" above.
-      </p>
+      </p> */}
 
       <div className="card">
         {/* 2026-09-23 ("this button not added why? please add"): this same card/form now doubles

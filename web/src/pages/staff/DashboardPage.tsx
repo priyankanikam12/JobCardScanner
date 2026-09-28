@@ -138,7 +138,7 @@ function DealerDashboard() {
     })
   }, [])
 
-  // 2026-09-28 ("add Stock cards in that total stock shown"): FACT, confirmed from your earlier
+// 2026-09-28 ("add Stock cards in that total stock shown"): FACT, confirmed from your earlier
   // answer - total stock = sum of Bal Qty. Computed client-side from GET /api/part-uploads (the
   // exact same endpoint web/src/pages/staff/PartUploadPage.tsx and mobile's PartUploadScreen.tsx
   // already use - see that screen's own doc comment for the endpoint list), called with no
@@ -151,15 +151,7 @@ function DealerDashboard() {
   // failed" (e.g. a role without access to Part Upload data) - the tile shows "—" either way rather
   // than a wrong number, but only the error case is worth telling apart in code for future
   // debugging.
-  //
-  // 2026-09-29 (SECTION 157, then FIXED same day - SECTION 158): this WAS the same "Part Upload
-  // location scoping" gap as the 9 tiles above (GET /api/part-uploads wasn't WorkLocationCodes-
-  // scoped either) - now fixed at the real backend source once you pasted
-  // PartUploadController.cs/PartUploadService.cs (see backend/JobCardScanner.Api/Controllers/
-  // PartUploadController.cs's own SECTION 158 doc comment). No frontend change was needed here -
-  // this tile already just sums whatever GET /api/part-uploads returns, so it inherits the fix
-  // automatically once that backend change is deployed.
-  const [stockQty, setStockQty] = useState<number | null>(null)
+const [stockQty, setStockQty] = useState<number | null>(null)
   const [stockError, setStockError] = useState(false)
   useEffect(() => {
     staffApi

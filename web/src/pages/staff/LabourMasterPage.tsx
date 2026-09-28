@@ -168,7 +168,7 @@ export function LabourMasterPage() {
   return (
     <div>
       <h2>Labour Master</h2>
-      <p className="muted">Import, edit and export labour rate master data - stored in DMSBAPLDATA.</p>
+      {/* <p className="muted">Import, edit and export labour rate master data - stored in DMSBAPLDATA.</p> */}
 
       <div className="card">
         <h3>Import Excel</h3>

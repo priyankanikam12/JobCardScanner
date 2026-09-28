@@ -120,7 +120,7 @@ export function RepairBillListScreen() {
           <Text style={styles.smallBtnText}>+ New</Text>
         </TouchableOpacity>
       </View>
-      <Text style={styles.muted}>Every repair bill saved in JobCardScanner's own database. Tap a Proforma bill's Edit button to open and edit it.</Text>
+      {/* <Text style={styles.muted}>Every repair bill saved in JobCardScanner's own database. Tap a Proforma bill's Edit button to open and edit it.</Text> */}
 
       <View style={styles.formRow}>
         <View style={{ flex: 1 }}>

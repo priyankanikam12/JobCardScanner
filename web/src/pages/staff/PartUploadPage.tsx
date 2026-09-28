@@ -169,13 +169,13 @@ export function PartUploadPage() {
 
   return (
     <div>
-      <h2>Item Master</h2>
-      <p className="muted">
+      <h2>Stock Report</h2>
+      {/* <p className="muted">
         Upload a Stock Summary Detail Report (.xlsx) to build a searchable parts stock table here -
         saved into JobCardScanner's own database, scoped to your dealer. Re-uploading a newer report
         for the same Location updates each part's stock figures in place by Part No rather than
         adding duplicates.
-      </p>
+      </p> */}
 
       <div className="card">
         <h3>Upload Excel</h3>

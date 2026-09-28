@@ -178,7 +178,7 @@ export function LabourMasterScreen() {
     <View style={styles.screen}>
       <ScrollView contentContainerStyle={{ paddingBottom: 24 }} refreshControl={<RefreshControl refreshing={loading} onRefresh={load} />}>
         <Text style={styles.title}>Labour Master</Text>
-        <Text style={styles.subtitle}>Import, edit and export labour rate master data - stored in DMSBAPLDATA.</Text>
+        {/* <Text style={styles.subtitle}>Import, edit and export labour rate master data - stored in DMSBAPLDATA.</Text> */}
 
         {/* ---------------- Import card ---------------- */}
         <View style={styles.card}>

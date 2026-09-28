@@ -346,12 +346,12 @@ export function VehicleSalePage() {
   return (
     <div>
       <h2>Vehicle Sale</h2>
-      <p className="muted">
+      {/* <p className="muted">
         {importedRows
           ? <>Showing {total} rows imported from <strong>{importedFileName}</strong> - not from DMSBAPLDATA.</>
           : <>Synced vehicle sale data from DMSBAPLDATA. Read-only - this app never writes to DMSBAPLDATA.</>}
         {' '}Click a row for the full details. Use the ✎ next to Reg No to correct it by hand.
-      </p>
+      </p> */}
 
       <div className="card">
         <div className="form-row">
