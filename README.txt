@@ -2286,3 +2286,22 @@ not found" symptom and I'll look at that screen's actual search code.
 FILES TOUCHED
   web/src/pages/staff/JobCardDetailPage.tsx (PartSuggestionCard: real search errors now shown,
   new describeSearchError helper)
+
+--------------------------------------------------------------------------------------------------
+SECTION 138 (2026-09-28) - Vehicle Sale compile error fixed: TS2345 on setEditingChassisNo
+--------------------------------------------------------------------------------------------------
+YOUR REPORT: real TypeScript compiler error - "Argument of type 'string | null | undefined' is not
+assignable to parameter of type 'SetStateAction<string | null>'. Type 'undefined' is not assignable
+to type 'SetStateAction<string | null>'." - plus the real VehicleSalePage.tsx.
+
+FACT: line ~447, the Reg No ✎ button's onClick called `setEditingChassisNo(s.chassisNo)` -
+DmsBaplDataVehicleSale.chassisNo is typed `string | null | undefined`, one notch wider than
+editingChassisNo's own `useState<string | null>`, so TypeScript correctly refuses the `undefined`
+case even though this line only ever runs inside a `!!s.chassisNo &&` guard (so chassisNo is always
+truthy at runtime here regardless).
+
+FIXED: `setEditingChassisNo(s.chassisNo ?? null)` - collapses `undefined` to `null` so it fits the
+state's type. Purely a type-level fix, no behavior change.
+
+FILES TOUCHED
+  web/src/pages/staff/VehicleSalePage.tsx (Reg No edit button: TS2345 fixed)

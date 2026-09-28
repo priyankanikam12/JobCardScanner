@@ -52,11 +52,11 @@ export function ItemMasterPage() {
   return (
     <div>
       <h2>Item Master</h2>
-      <p className="muted">
+      {/* <p className="muted">
         BAPL's item catalog (C_ItemMaster, baplfinal) - Dealer Price and per-item GST% (SGST/CGST/
         IGST), same source Material Transfer Bill and Repair Bill now use to auto-calculate Rate,
         MRP and tax when you pick a part. Read-only - this app never writes to baplfinal.
-      </p>
+      </p> */}
 
       <div className="card">
         <div className="form-row">
