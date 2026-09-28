@@ -174,6 +174,25 @@ function mapVsrRow(dataRow: unknown[], get: ReturnType<typeof makeRowGetter>, in
  *    DMSBAPLDATA or anywhere else - purely client-side, purely for viewing/exporting.
  *  - Pagination defaults to 100 rows/page (was 25) with a selector, since an imported report can run
  *    into the tens of thousands of rows.
+ *
+ * 2026-09-28 CHANGES:
+ *  - Pagination now defaults to 10 rows/page (was 100), per explicit request. Forced via a
+ *    setPageSize(10) on mount rather than editing usePagination's own default - I don't have
+ *    lib/usePagination.ts in this session, and that hook is shared by Repair Bill/Material
+ *    Transfer/Service History too, so changing its internal default would silently change their
+ *    page sizes as well. This only touches Vehicle Sale. Paste usePagination.ts if you'd rather
+ *    the shared default itself changed to 10 for every page that uses it.
+ *  - New inline "Edit" control on the Reg No column: lets you correct a row's Reg No by hand and
+ *    save it - see the doc comment on saveRegNoOverride below for exactly what this does and does
+ *    NOT do. Backed by the new POST /api/vehicle-sale-overrides endpoint
+ *    (VehicleSaleOverridesController.cs) and a new VehicleSaleOverride table in JobCardScannerDb -
+ *    see sql/2026-09-28_create_vehicle_sale_overrides_table.sql and README SECTION 114.
+ *    INTERPRETATION: only Reg No is editable here, since that's the concrete example you gave
+ *    ("edit details like reg no.") - tell me which other fields should also become editable and
+ *    I'll extend the same mechanism (the table/endpoint are generic enough to grow more override
+ *    columns) rather than guessing further fields now. Also built as an inline edit on this same
+ *    page/table (not a separate routed page) since I don't have your router file to safely wire a
+ *    new route - say so if you specifically want a dedicated edit page/URL instead.
  */
 export function VehicleSalePage() {
   const soldTo = 'Zomato' // no longer a visible/editable field - see this component's doc comment
@@ -193,6 +212,12 @@ export function VehicleSalePage() {
   const [importError, setImportError] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // 2026-09-28: Reg No inline-edit state - see saveRegNoOverride's doc comment below.
+  const [editingChassisNo, setEditingChassisNo] = useState<string | null>(null)
+  const [editRegNoValue, setEditRegNoValue] = useState('')
+  const [savingOverrideChassisNo, setSavingOverrideChassisNo] = useState<string | null>(null)
+  const [overrideError, setOverrideError] = useState<string | null>(null)
 
   const search = () => {
     setLoading(true)
@@ -268,8 +293,45 @@ export function VehicleSalePage() {
 
   const { page, setPage, pageSize, setPageSize, pageCount, pageRows, total } = usePagination(filteredSales)
 
+  // 2026-09-28 ("in vehicle sale pagination default 10"): forces this page's initial page size to
+  // 10 rows, once, right after the shared usePagination hook sets up its own default (100, per the
+  // 2026-09-18 doc note above). See this component's own doc comment for why this is done here
+  // rather than inside usePagination itself.
+  useEffect(() => { setPageSize(10) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   const fmtDate = (d?: string | null) => (d ? new Date(d).toLocaleDateString('en-IN') : '—')
   const fmtAmt = (n?: number | null) => (n == null ? '—' : `₹${n.toFixed(2)}`)
+
+  // 2026-09-28 ("edit button for new page where we can edit details like reg no. we can edit and
+  // that was save in our jobcard db that will data reflect on ui"): saves a hand-corrected Reg No
+  // for one chassis into JobCardScannerDb (POST /api/vehicle-sale-overrides), NOT into
+  // DMSBAPLDATA/BaplConnection - this app stays read-only against both of those, same as every
+  // other page here. The saved override is keyed by ChassisNo (the one stable identifier shared
+  // across DMS_SaleBill/DMS_ServiceHistory/imported reports) and, per DmsBaplDataService.
+  // GetVehicleSalesAsync's own 2026-09-28 update, is re-applied as the FINAL/highest-priority layer
+  // on every future load of this page - it wins over both DMS_SaleBill's own reg_number and
+  // anything SECTION 113's DMS_ServiceHistory fallback finds. Updated locally right after a
+  // successful save too, so the table reflects it immediately without waiting for a refresh.
+  const saveRegNoOverride = async (row: DmsBaplDataVehicleSale) => {
+    const chassisNo = row.chassisNo?.trim()
+    const regNo = editRegNoValue.trim()
+    if (!chassisNo) { setOverrideError('This row has no chassis no. on record - a Reg No override needs one to save against.'); return }
+    if (!regNo) { setOverrideError('Reg No cannot be blank.'); return }
+    setOverrideError(null)
+    setSavingOverrideChassisNo(chassisNo)
+    try {
+      await staffApi.post('/api/vehicle-sale-overrides', { chassisNo, regNo })
+      // Reflect it immediately in whichever source array this row actually came from.
+      setSales((prev) => prev.map((s) => (s.chassisNo === chassisNo ? { ...s, regNo } : s)))
+      setImportedRows((prev) => (prev ? prev.map((s) => (s.chassisNo === chassisNo ? { ...s, regNo } : s)) : prev))
+      setEditingChassisNo(null)
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+      setOverrideError(msg ?? 'Could not save the Reg No - try again.')
+    } finally {
+      setSavingOverrideChassisNo(null)
+    }
+  }
 
   return (
     <div>
@@ -278,7 +340,7 @@ export function VehicleSalePage() {
         {importedRows
           ? <>Showing {total} rows imported from <strong>{importedFileName}</strong> - not from DMSBAPLDATA.</>
           : <>Synced vehicle sale data from DMSBAPLDATA (Sold To: Zomato). Read-only - this app never writes to DMSBAPLDATA.</>}
-        {' '}Click a row for the full details.
+        {' '}Click a row for the full details. Use the ✎ next to Reg No to correct it by hand.
       </p>
 
       <div className="card">
@@ -326,6 +388,7 @@ export function VehicleSalePage() {
       </div>
       {importError && <p className="muted" style={{ color: '#b91c1c' }}>{importError}</p>}
       {error && !importedRows && <p className="muted" style={{ color: '#b91c1c' }}>{error}</p>}
+      {overrideError && <p className="muted" style={{ color: '#b91c1c' }}>{overrideError}</p>}
 
       <div className="card" style={{ padding: 0 }}>
         <table>
@@ -352,7 +415,43 @@ export function VehicleSalePage() {
                   <td>{fmtDate(s.invoiceDate)}</td>
                   <td>{s.dealerName ?? s.dealerCode ?? '—'}</td>
                   <td>{s.chassisNo ?? '—'}</td>
-                  <td>{s.regNo ?? '—'}</td>
+                  <td onClick={(e) => e.stopPropagation()}>
+                    {editingChassisNo === s.chassisNo ? (
+                      <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                        <input
+                          autoFocus
+                          value={editRegNoValue}
+                          onChange={(ev) => setEditRegNoValue(ev.target.value)}
+                          onKeyDown={(ev) => { if (ev.key === 'Enter') saveRegNoOverride(s); if (ev.key === 'Escape') setEditingChassisNo(null) }}
+                          style={{ width: 110 }}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-primary"
+                          disabled={savingOverrideChassisNo === s.chassisNo}
+                          onClick={() => saveRegNoOverride(s)}
+                        >
+                          {savingOverrideChassisNo === s.chassisNo ? '…' : 'Save'}
+                        </button>
+                        <button type="button" className="btn btn-sm" onClick={() => setEditingChassisNo(null)}>✕</button>
+                      </div>
+                    ) : (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        {s.regNo ?? '—'}
+                        {!!s.chassisNo && (
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            title="Correct this Reg No"
+                            style={{ border: 'none', background: 'transparent', padding: '0 4px' }}
+                            onClick={() => { setEditingChassisNo(s.chassisNo); setEditRegNoValue(s.regNo ?? ''); setOverrideError(null) }}
+                          >
+                            ✎
+                          </button>
+                        )}
+                      </span>
+                    )}
+                  </td>
                   <td>{s.itemModel ?? '—'}{s.colorCode ? ` / ${s.colorCode}` : ''}</td>
                   <td>{s.soldTo ?? '—'}</td>
                   <td>{s.saleType ?? '—'}</td>

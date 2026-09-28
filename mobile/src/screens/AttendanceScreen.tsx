@@ -26,10 +26,18 @@
  * even though the logic underneath will still be correct. Also still not wired into any navigator -
  * add a screen entry for this component wherever your other staff screens are registered.
  *
- * The business logic and the three endpoints it calls (GET /api/attendance/dealers-summary,
- * GET /api/attendance, POST /api/attendance/mark) are the SAME ones AttendancePage.tsx (web) uses
- * and the SAME ones AttendanceController.cs implements - that part is solid; only the auth-hook
- * import above is still an open guess.
+ * The business logic and the endpoints it calls (GET /api/attendance/dealers-summary,
+ * GET /api/attendance, POST /api/attendance/mark, GET /api/attendance/me) are the SAME ones
+ * AttendancePage.tsx (web) uses and the SAME ones AttendanceController.cs implements - that part is
+ * solid; only the auth-hook import above is still an open guess.
+ *
+ * 2026-09-28 ACCESS-CONTROL REWORK - mirrors web/src/pages/staff/AttendancePage.tsx's own
+ * 2026-09-28 update exactly (see that file's doc comment for the full reasoning): the
+ * dealers-summary/roster/mark flow below is now WorkshopManagerUp+ ("main dealer") only on the
+ * backend, and a 403 from that first call now means "not a manager login" - not an error - and
+ * falls back to a small read-only "my own attendance" list (GET /api/attendance/me) instead. Same
+ * reasoning as the web page for why this is decided by the server's actual response rather than a
+ * guessed profile.role field.
  */
 import { useEffect, useState, useCallback } from 'react'
 import {
@@ -71,11 +79,22 @@ interface StaffRow {
   employeeId: string
   employeeName: string
   role: string
+  location: string | null
   status: AttendanceStatus | null
   checkInTime: string | null
   checkOutTime: string | null
   remarks: string | null
   marked: boolean
+}
+
+interface MyAttendanceRow {
+  date: string
+  status: AttendanceStatus | null
+  location: string | null
+  checkInTime: string | null
+  checkOutTime: string | null
+  shift: string | null
+  remarks: string | null
 }
 
 function todayIso(): string {
@@ -84,6 +103,25 @@ function todayIso(): string {
   const m = String(d.getMonth() + 1).padStart(2, '0')
   const day = String(d.getDate()).padStart(2, '0')
   return `${y}-${m}-${day}`
+}
+
+function isForbidden(err: unknown): boolean {
+  const status = (err as { response?: { status?: number } })?.response?.status
+  return status === 403
+}
+
+// 2026-09-28 - mirrors web/src/pages/staff/AttendancePage.tsx's own describeError added the same
+// round ("also in attendance Could not load the staff list for this dealer. Try again." reported
+// with no console log this time): appends the real HTTP status and this app's own `{ message }`
+// body to the fallback text instead of always showing the same fixed string, so the next
+// occurrence says why on-screen.
+function describeError(err: unknown, fallback: string): string {
+  const e = err as { response?: { status?: number; data?: { message?: string } } }
+  const detail = e?.response?.data?.message
+  const status = e?.response?.status
+  if (detail) return `${fallback} (${detail})`
+  if (status) return `${fallback} (HTTP ${status})`
+  return `${fallback} (no response reached the server - check your connection)`
 }
 
 export default function AttendanceScreen() {
@@ -105,19 +143,34 @@ export default function AttendanceScreen() {
   const [staffError, setStaffError] = useState<string | null>(null)
   const [savingId, setSavingId] = useState<string | null>(null)
 
+  // null = still figuring out which view this login gets, per this file's own 2026-09-28 doc
+  // comment - decided by whether dealers-summary below succeeds or comes back 403.
+  const [isManager, setIsManager] = useState<boolean | null>(null)
+  const [myRows, setMyRows] = useState<MyAttendanceRow[]>([])
+  const [myLoading, setMyLoading] = useState(false)
+  const [myError, setMyError] = useState<string | null>(null)
+
   const loadDealers = useCallback(() => {
     setDealersLoading(true)
     setDealersError(null)
     apiClient
       .get<{ date: string; dealers: DealerSummaryRow[] }>('/api/attendance/dealers-summary', { params: { date } })
       .then(({ data }: any) => {
+        setIsManager(true)
         setDealers(data.dealers)
         if (!isOrgWide && data.dealers.length === 1 && !selectedDealerId) {
           setSelectedDealerId(data.dealers[0].dealerId)
           setSelectedDealerName(data.dealers[0].dealerName)
         }
       })
-      .catch(() => setDealersError('Could not load the dealer summary. Pull to retry.'))
+      .catch((err: unknown) => {
+        if (isForbidden(err)) {
+          setIsManager(false) // not a manager login - expected, not an error, see doc comment above
+          return
+        }
+        setIsManager(true) // let the real error surface instead of silently hiding it behind the self view
+        setDealersError(describeError(err, 'Could not load the dealer summary. Pull to retry.'))
+      })
       .finally(() => setDealersLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [date])
@@ -127,19 +180,34 @@ export default function AttendanceScreen() {
   }, [loadDealers])
 
   const loadStaff = useCallback(() => {
-    if (!selectedDealerId) return
+    if (!isManager || !selectedDealerId) return
     setStaffLoading(true)
     setStaffError(null)
     apiClient
       .get<{ date: string; items: StaffRow[] }>('/api/attendance', { params: { date, dealerId: selectedDealerId } })
       .then(({ data }: any) => setStaff(data.items))
-      .catch(() => setStaffError('Could not load the staff list for this dealer. Pull to retry.'))
+      .catch((err: unknown) => setStaffError(describeError(err, 'Could not load the staff list for this dealer. Pull to retry.')))
       .finally(() => setStaffLoading(false))
-  }, [date, selectedDealerId])
+  }, [date, selectedDealerId, isManager])
 
   useEffect(() => {
     loadStaff()
   }, [loadStaff])
+
+  const loadMine = useCallback(() => {
+    if (isManager !== false) return
+    setMyLoading(true)
+    setMyError(null)
+    apiClient
+      .get<{ fromDate: string; toDate: string; items: MyAttendanceRow[] }>('/api/attendance/me', { params: { date } })
+      .then(({ data }: any) => setMyRows(data.items))
+      .catch((err: unknown) => setMyError(describeError(err, 'Could not load your attendance. Pull to retry.')))
+      .finally(() => setMyLoading(false))
+  }, [date, isManager])
+
+  useEffect(() => {
+    loadMine()
+  }, [loadMine])
 
   const openDealer = (row: DealerSummaryRow) => {
     setSelectedDealerId(row.dealerId)
@@ -185,6 +253,32 @@ export default function AttendanceScreen() {
 
   const saveTimes = (row: StaffRow) => {
     if (row.status === 'Present' || row.status === 'HalfDay') markStatus(row, row.status)
+  }
+
+  if (isManager === false) {
+    return (
+      <View style={styles.screen}>
+        <Text style={styles.title}>My Attendance</Text>
+        <Text style={styles.subtitle}>{date} - your own record only</Text>
+        {myLoading && <ActivityIndicator style={{ marginTop: 16 }} />}
+        {myError && <Text style={styles.errorText}>{myError}</Text>}
+        <FlatList
+          data={myRows}
+          keyExtractor={(r) => r.date}
+          refreshControl={<RefreshControl refreshing={myLoading} onRefresh={loadMine} />}
+          ListEmptyComponent={!myLoading ? <Text style={styles.muted}>No attendance recorded in this range yet.</Text> : null}
+          renderItem={({ item }) => (
+            <View style={styles.staffCard}>
+              <Text style={styles.staffName}>{item.date.slice(0, 10)}</Text>
+              <Text style={styles.muted}>{item.status ?? 'Not marked'}{item.location ? ` - ${item.location}` : ''}</Text>
+              <Text style={styles.muted}>
+                In: {item.checkInTime ?? '-'}  Out: {item.checkOutTime ?? '-'}
+              </Text>
+            </View>
+          )}
+        />
+      </View>
+    )
   }
 
   if (!selectedDealerId) {
@@ -233,7 +327,7 @@ export default function AttendanceScreen() {
         renderItem={({ item }) => (
           <View style={styles.staffCard}>
             <Text style={styles.staffName}>{item.employeeName}</Text>
-            <Text style={styles.muted}>{item.role}</Text>
+            <Text style={styles.muted}>{item.role}{item.location ? ` - ${item.location}` : ''}</Text>
             <View style={styles.statusRow}>
               {STATUS_OPTIONS.map(([value, label]) => (
                 <TouchableOpacity

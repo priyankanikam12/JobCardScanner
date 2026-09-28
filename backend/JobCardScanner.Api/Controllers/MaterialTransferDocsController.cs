@@ -410,6 +410,28 @@ public class MaterialTransferDocsController : ControllerBase
     /// success.</summary>
     private async Task<string?> ApplyStockAndBuildItemsAsync(MaterialTransferDoc doc, CreateMaterialTransferRequest req, Guid dealerId)
     {
+        // 2026-09-28 ("if qty 0 then give alert update qty"): a Part or Labour line saved with
+        // Qty 0 (blank quantity field left as its default, or cleared by mistake) is not a useful
+        // transfer line - reject it here with a message naming the exact line, rather than saving
+        // a 0-qty row silently. This is a server-side safety net: it fires regardless of whether
+        // MaterialTransferCreatePage.tsx (web) or its mobile screen already blocks this client-side
+        // - I don't have either of those files staged this session, so I can't add a matching
+        // client-side check yet, but every existing caller already surfaces this controller's 400
+        // { message } as an on-screen alert (same err.response.data.message handling used for every
+        // other validation error on this page already, e.g. "Add at least one item line." above) -
+        // so this alone gives you the "give alert update qty" behaviour without guessing at either
+        // page's field names/structure. Paste those two files if you also want the qty input
+        // itself to warn/disable Save before the request is even sent.
+        foreach (var it in req.Items)
+        {
+            if (it.Qty <= 0)
+            {
+                var label = !string.IsNullOrWhiteSpace(it.ItemDescription) ? it.ItemDescription
+                    : !string.IsNullOrWhiteSpace(it.ItemCode) ? it.ItemCode : "This line";
+                return $"'{label}' has Qty 0 - please update the quantity before saving.";
+            }
+        }
+
         var partUploadCache = new Dictionary<string, PartUpload>(StringComparer.OrdinalIgnoreCase);
         if (!string.IsNullOrWhiteSpace(req.Location))
         {
@@ -581,3 +603,4 @@ public class MaterialTransferDocsController : ControllerBase
         // CombinedMaterialTransferRow.JobNo's own doc comment.
         JobNo: m.JobCard?.JobCardNumber);
 }
+

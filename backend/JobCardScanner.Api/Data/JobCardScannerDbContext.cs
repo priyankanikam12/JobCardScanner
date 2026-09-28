@@ -65,6 +65,7 @@ public class JobCardScannerDbContext : DbContext
     public DbSet<IntegrationLogEntry> IntegrationLogEntries => Set<IntegrationLogEntry>();
     public DbSet<Counter> Counters => Set<Counter>();
     public DbSet<Attendance> Attendance { get; set; }
+    public DbSet<VehicleSaleOverride> VehicleSaleOverrides => Set<VehicleSaleOverride>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {

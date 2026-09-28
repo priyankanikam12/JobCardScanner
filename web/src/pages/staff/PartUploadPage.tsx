@@ -1,3 +1,4 @@
+// web\src\pages\staff\PartUploadPage.tsx
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'

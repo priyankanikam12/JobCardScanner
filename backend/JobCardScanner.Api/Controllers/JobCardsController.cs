@@ -113,7 +113,59 @@ public class JobCardsController : ControllerBase
             return StatusCode(502, new { message = ex.Message });
         }
 
+        // 2026-09-28 ("for dealeradmin have all location access ... but under this dealer which
+        // location have access only that location item/part code shown"): same Work Area location
+        // scoping List()/Get() above already apply to job cards (see WorkLocationCodes' own doc
+        // comment there, "Employees" page, 2026-09-17) - empty list = unrestricted (DealerAdmin,
+        // and any other account with no Work Area assigned); a non-empty list restricts to those
+        // specific workshop location(s) under this dealer.
+        //
+        // FACT/INTERPRETATION split, please confirm: BAPL's C_ItemMaster (the Item Master catalog
+        // `items` above comes from) is dealer-wide reference data - one shared parts catalog, not
+        // one row per workshop location - so there is no confirmed location field on it to filter
+        // by. Only Part Upload (this dealer's own uploaded STOCK, which genuinely does have a
+        // LocationCode per row - see Models/PartUpload.cs) can be scoped by location today. So a
+        // location-restricted user below still sees the full Item Master catalog list (same as
+        // DealerAdmin), but: (a) their Available Qty hint only counts stock uploaded at THEIR
+        // allowed location(s), and (b) a part that exists ONLY because of an upload (no Item
+        // Master match - see the 2026-09-28 fix below) is hidden unless that upload is at one of
+        // their allowed locations. If you actually need the Item Master catalog LIST itself
+        // narrowed per location (not just the stock/qty), tell me and I'll ask what field on
+        // C_ItemMaster carries that, since I don't have that schema confirmed.
+        var allowedLocations = _currentUser.WorkLocationCodes;
+        // 2026-09-28 FIX - your real screenshots: Part Upload shows BalQty 9 (UTTAM NAGAR) + 24
+        // (OKHLA) = 33 for 22C12110150AS, but Job Card's Part Suggestion showed "avail. 0" for the
+        // exact same part right after the location-scoping above shipped. FACT/ASSUMPTION
+        // correction: the version just above treated ANY account with a non-empty
+        // WorkLocationCodes as location-restricted, on the ASSUMPTION that a DealerAdmin account
+        // would normally carry an EMPTY WorkLocationCodes (unrestricted). That assumption looks
+        // wrong for the account you tested with - Work Area locations on Admin -> Users appear
+        // settable per ACCOUNT regardless of role, not tied to being DealerAdmin - so an account
+        // whose Work Area doesn't happen to include CUS0288W1/W2 (where this part's stock was
+        // actually uploaded) got zeroed out here, even though "dealeradmin have all location
+        // access" was the explicit ask. FIXED: DealerAdmin now ALWAYS bypasses this restriction
+        // regardless of what WorkLocationCodes happens to contain on that specific account -
+        // same for CorporateAdmin/SystemAdmin, matching the existing isOrgWideRole convention
+        // List()/Get()/Technicians() above already use - matching your literal request instead of
+        // an assumption about how accounts are normally configured.
+        //
+        // If qty still shows 0 after this for a DealerAdmin (or non-restricted) account, the cause
+        // is something else - most likely this account's DealerId not matching the PartUpload
+        // rows' DealerId. Tell me the role you tested with, or open DevTools -> Network on this
+        // page and paste the raw JSON GET /api/jobcards/parts-catalog?q=22C12110150AS returns (you
+        // already have a second tab open here) so I can see availableQty directly instead of
+        // guessing further.
+        var isDealerAdminOrAbove = _currentUser.Role is StaffRole.DealerAdmin or StaffRole.CorporateAdmin or StaffRole.SystemAdmin;
+        var isLocationRestricted = allowedLocations.Count > 0 && !isDealerAdminOrAbove;
+
         Dictionary<string, decimal> availableQtyByCode = new(StringComparer.OrdinalIgnoreCase);
+        // 2026-09-28 CORRECTION - your real compiler error (CS0234: "the type or namespace name
+        // 'PartUploadRow' does not exist in the namespace 'JobCardScanner.Api.Dtos'"): my previous
+        // pass here declared `uploads` as `List<Dtos.PartUploadRow>`, a type name I invented rather
+        // than confirmed - it doesn't exist. Fixed by not naming the type at all (`var` below lets
+        // the compiler infer whatever `_partUploads.GetAsync` actually returns) - `partUploadOnlyRows`
+        // is declared outside the dealer-check block, defaulting to empty, so it's usable either way.
+        var partUploadOnlyRows = new List<PartsCatalogRow>();
         if (_currentUser.DealerId.HasValue)
         {
             // locationCode narrows to one workshop when the job card has one; null/blank returns
@@ -121,23 +173,90 @@ public class JobCardsController : ControllerBase
             // summed per PartNo rather than a plain overwrite, since more than one location's row
             // can now match the same PartNo once locationCode isn't filtering them down to one.
             var uploads = await _partUploads.GetAsync(_currentUser.DealerId.Value, locationCode, null, HttpContext.RequestAborted);
+
+            // Work Area location scoping (see this method's 2026-09-28 doc comment above) -
+            // INTERPRETATION: PartUpload.LocationCode is a confirmed real column (Models/
+            // PartUpload.cs), but whether IPartUploadService.GetAsync's return projection exposes
+            // it as `.LocationCode` is inferred, not confirmed the same way PartNo/BalQty/
+            // Description/HsnSacCode/BillPrice already were earlier in this file - if this doesn't
+            // compile (a CS1061 naming the missing member), tell me the real property name.
+            if (isLocationRestricted)
+                uploads = uploads.Where(u => u.LocationCode != null && allowedLocations.Contains(u.LocationCode, StringComparer.OrdinalIgnoreCase)).ToList();
+
             foreach (var u in uploads)
                 if (!string.IsNullOrWhiteSpace(u.PartNo) && u.BalQty.HasValue)
                     availableQtyByCode[u.PartNo] = (availableQtyByCode.TryGetValue(u.PartNo, out var existing) ? existing : 0m) + u.BalQty.Value;
+
+            // FACT, root cause of the bug you originally reported: this endpoint's item LIST only
+            // ever came from SearchItemMasterAsync above (BAPL's external C_ItemMaster) - Part
+            // Upload was only ever used to enrich availableQty on a PartNo that ALREADY matched an
+            // Item Master row, never to add a part that exists ONLY in Part Upload. A part you've
+            // uploaded (real stock, in JobCardScannerDb's own PartUploads table) but which BAPL's
+            // Item Master has no entry for was invisible here even though Part Upload's own page
+            // shows it correctly - "does not exist in Item Master" was a true statement about the
+            // wrong list. FIXED: any uploaded PartNo with no Item Master match is appended below.
+            //
+            // Description/HsnCode/Mrp now filled in too (upgraded from the previous pass, which
+            // left them blank) - now that you've pasted the real Models/PartUpload.cs, u.Description/
+            // u.HsnSacCode/u.BillPrice are confirmed real properties on that entity, and they match
+            // the exact camelCase field names PartUploadPage.tsx's own `PartUpload` TS type already
+            // uses (description/hsnSacCode/billPrice) - so GetAsync's return type very likely
+            // exposes the same members. INTERPRETATION, not certainty: if GetAsync returns a
+            // slimmer projection that's missing one of these three, you'll get one more CS0117-style
+            // error naming exactly which - tell me and I'll drop just that one field.
+            // Sgst/Cgst/Igst stay null - PartUpload.cs's own class doc comment confirms this sheet
+            // has no GST/tax-rate column at all, so there is nothing to fill in there, not a gap.
+            var itemMasterCodes = new HashSet<string>(items.Select(i => i.ItemCode), StringComparer.OrdinalIgnoreCase);
+            partUploadOnlyRows = uploads
+                .Where(u => !string.IsNullOrWhiteSpace(u.PartNo) && !itemMasterCodes.Contains(u.PartNo))
+                .GroupBy(u => u.PartNo, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.OrderByDescending(u => u.UploadedAt).First())
+                .Select(u => new PartsCatalogRow(
+                    ItemCode: u.PartNo,
+                    Description: u.Description,
+                    HsnCode: u.HsnSacCode,
+                    Mrp: u.BillPrice,
+                    Sgst: null,
+                    Cgst: null,
+                    Igst: null,
+                    // 2026-09-28 ("if there is no qty then show 0"): 0, not null, when nothing
+                    // matched - see this method's final Select/Ok below for the same default on
+                    // Item Master rows.
+                    AvailableQty: (int)(availableQtyByCode.TryGetValue(u.PartNo, out var puQty) ? puQty : 0m)))
+                .ToList();
         }
 
-        return Ok(items.Select(i => new
-        {
-            itemCode = i.ItemCode,
-            description = i.DisplayName ?? i.ItemName,
-            hsnCode = i.HsnCode,
-            mrp = i.DlrPrice,
-            sgst = i.Sgst,
-            cgst = i.Cgst,
-            igst = i.Igst,
-            availableQty = availableQtyByCode.TryGetValue(i.ItemCode, out var qty) ? (int?)qty : null,
-        }));
+        // 2026-09-28 ("in that qty show if there is no qty then show 0 ... order where qty are
+        // there in that order from other item show"): AvailableQty defaults to 0 (never null) for
+        // every row now - both here and on partUploadOnlyRows above - and the combined list is
+        // sorted qty-first (descending), ties broken alphabetically by ItemCode for a stable,
+        // predictable order instead of whatever order SearchItemMasterAsync/Concat happened to
+        // return.
+        var itemMasterRows = items.Select(i => new PartsCatalogRow(
+            ItemCode: i.ItemCode,
+            Description: i.DisplayName ?? i.ItemName,
+            HsnCode: i.HsnCode,
+            Mrp: (decimal?)i.DlrPrice,
+            Sgst: (decimal?)i.Sgst,
+            Cgst: (decimal?)i.Cgst,
+            Igst: (decimal?)i.Igst,
+            AvailableQty: (int)(availableQtyByCode.TryGetValue(i.ItemCode, out var qty) ? qty : 0m)));
+
+        return Ok(itemMasterRows.Concat(partUploadOnlyRows)
+            .OrderByDescending(r => r.AvailableQty)
+            .ThenBy(r => r.ItemCode, StringComparer.OrdinalIgnoreCase));
     }
+
+    /// <summary>Shared response shape for PartsCatalog above, covering both an Item-Master-backed
+    /// row and a Part-Upload-only row (see that method's 2026-09-28 doc comment) - a named record
+    /// instead of two separately-shaped anonymous objects so the compiler doesn't need the two
+    /// Select projections above to infer an identical anonymous type before Concat can unify them.
+    /// PascalCase here serializes as camelCase JSON (same global naming policy every other
+    /// controller's ToRow-style projections already rely on), matching JobCardsPartsCatalogRow on
+    /// the frontend exactly as the pre-existing lowercase anonymous object did.</summary>
+    private record PartsCatalogRow(
+        string ItemCode, string? Description, string? HsnCode,
+        decimal? Mrp, decimal? Sgst, decimal? Cgst, decimal? Igst, int? AvailableQty);
 
     /// <summary>GET /api/jobcards/labour-catalog?search= - replaces the old
     /// GET /api/bapl-dms/labour as Labour Suggestion's search source. Unions LabourMaster
@@ -157,6 +276,30 @@ public class JobCardsController : ControllerBase
             var combined = withoutPartwise
                 .Select(r => new { id = (object)r.Id, labourCode = r.LabourCode, labourDescription = r.JobDescription, hsnCode = (string?)null, labourRate = r.LabourRate, sgst = r.Sgst, cgst = r.Cgst, igst = r.Igst, partCode = (string?)null, partDescription = (string?)null })
                 .Concat(partwise.Select(r => new { id = (object)r.Id, labourCode = r.LabourCode, labourDescription = r.JobDescription, hsnCode = (string?)null, labourRate = r.LabourRate, sgst = r.Sgst, cgst = r.Cgst, igst = r.Igst, partCode = r.PartCode, partDescription = r.PartName }));
+
+            // 2026-09-28 ("in labour which i search only that search its whole shown fix this
+            // search in both web and android"): your screenshot - searching "PLPRUV1N0002" in
+            // Labour Suggestion returned PLPRUV1N0001, PLPRUV1N0008, PLPRUV1N0009... codes that
+            // don't contain the search text at all, i.e. GetWithoutPartwiseAsync/GetPartwiseAsync's
+            // OWN search filtering isn't narrowing the result. I don't have
+            // Services/LabourMasterImportService.cs (their actual implementation) staged this
+            // session, so I can't see why - rather than guess at that file's internals, this
+            // re-filters the already-combined result here as a defensive second pass: kept only
+            // when LabourCode or Description actually contains the search text (case-insensitive).
+            // A blank/absent search still returns everything, matching this endpoint's existing
+            // no-search behaviour. This is the ONE endpoint both JobCardDetailPage.tsx (web) and
+            // JobCardDetailScreen.tsx (mobile) call for Labour Suggestion's search - neither
+            // frontend file applies any filtering of its own (both just render whatever this
+            // endpoint returns), so this single backend fix covers both platforms; no frontend
+            // change needed or made.
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var needle = search.Trim();
+                combined = combined.Where(r =>
+                    (r.labourCode != null && r.labourCode.Contains(needle, StringComparison.OrdinalIgnoreCase))
+                    || (r.labourDescription != null && r.labourDescription.Contains(needle, StringComparison.OrdinalIgnoreCase)));
+            }
+
             return Ok(combined);
         }
         catch (InvalidOperationException ex)
@@ -282,69 +425,20 @@ public class JobCardsController : ControllerBase
 
         var results = await query.OrderByDescending(j => j.CreatedAt).Take(200).ToListAsync();
 
-        // Catch any local job card DMS has since closed/billed directly - see
-        // SyncClosedFromDmsAsync's doc comment for the full story ("this is the biggest issue").
-        await SyncClosedFromDmsAsync(results, HttpContext.RequestAborted);
-
+        // 2026-09-28 ("from dms dont fetch jobcards and dont save jobcards only in our jobcard db
+        // save this"): this endpoint used to (a) call SyncClosedFromDmsAsync to pull DMS's own
+        // Closed/Billed status into local rows, and (b) blend in extra, read-only rows for job
+        // cards that exist ONLY in DMS (opened there directly, never created in JobCardScanner) via
+        // _baplDms.SearchJobCardsAsync. Both are DMS FETCHES of job card data - per this explicit
+        // instruction, both are removed entirely. This list is now JobCardScanner's own JobCards
+        // table only, nothing blended in or synced from DMS. SyncClosedFromDmsAsync/SummarizeBapl
+        // below are left defined but unused (same "kept, not deleted" convention the frontend's
+        // QcCard/InvoiceCard/ClosureCard already use) in case DMS status sync needs to come back.
+        // baplDmsWarning stays in the response shape (always null now) so the frontend doesn't
+        // need a matching change just to keep reading `data.items`/`data.baplDmsWarning`.
         var localRows = results.Select(j => (SortKey: j.CreatedAt, Row: Summarize(j)));
-
-        // ---------------- Blend in DMS's own job cards ----------------
-        // Only when the filters in play are ones DMS rows can actually satisfy: status,
-        // technicianId, and stageKey are all JobCardScanner-specific concepts (DMS's JobStatus
-        // vocabulary - "Open", "Material Transfer", ... - doesn't map onto JobCardStatus, and BAPL
-        // DMS has no concept of a JobCardScanner technician/stage at all), so any of those filters
-        // being set means "only show me JobCardScanner's own job cards" rather than trying to guess
-        // a mapping. q (job card #/customer/reg no.) and status-less/technician-less/stage-less
-        // browsing both work fine against DMS too.
-        var baplRows = Enumerable.Empty<(DateTime SortKey, object Row)>();
-        string? baplDmsWarning = null;
-        // Same reasoning as status/technicianId/stageKey above - every new dashboard filter is
-        // also a JobCardScanner-specific concept DMS rows can't be evaluated against, so any
-        // of them being set means "local job cards only".
-        var anyDashboardFilterActive = excludeClosed == true || overdue == true || createdToday == true ||
-            deliveredToday == true || closedThisMonth == true || warrantyOnly == true || pendingBucket == true;
-        if (!status.HasValue && !technicianId.HasValue && string.IsNullOrWhiteSpace(stageKey) && !anyDashboardFilterActive)
-        {
-            string? baplDealerCode = null;
-            var canSearchBapl = true;
-            if (effectiveDealerId.HasValue)
-            {
-                baplDealerCode = await _db.Dealers.AsNoTracking().Where(d => d.Id == effectiveDealerId).Select(d => d.BaplDmsDealerCode).FirstOrDefaultAsync();
-                // This dealer has no known DMS dealer code (never resolved via the Job Card
-                // Wizard's dealer picker) - searching DMS unscoped would leak every other
-                // dealer's job cards into this one dealer's list, so skip it entirely rather than
-                // guess. Not an error - most dealers simply may not be linked yet.
-                canSearchBapl = !string.IsNullOrWhiteSpace(baplDealerCode);
-            }
-
-            if (canSearchBapl)
-            {
-                try
-                {
-                    var hits = await _baplDms.SearchJobCardsAsync(q, baplDealerCode, 50, HttpContext.RequestAborted);
-                    // Dedup against localRows: every JobCardScanner-created job card is ALSO a DMS
-                    // job card (Create() now requires DMS success first - see 2026-09-05 comment
-                    // above), so without this filter the same job card would show up twice - once
-                    // as its native JobCardScanner row (from `results`/`localRows` above) and again
-                    // as a "SummarizeBapl" read-only DMS row for the identical JobCardHeaderId. Only
-                    // DMS job cards JobCardScanner has no local row for at all (opened directly in
-                    // DMS, never created here) should appear as SummarizeBapl rows.
-                    var localBaplHeaderIds = results.Where(j => j.BaplJobCardHeaderId.HasValue)
-                        .Select(j => j.BaplJobCardHeaderId!.Value).ToHashSet();
-                    baplRows = hits.Where(r => !localBaplHeaderIds.Contains(r.JobCardHeaderId)).Select(r => (
-                        SortKey: r.JobInDate?.ToDateTime(TimeOnly.MinValue) ?? DateTime.MinValue,
-                        Row: SummarizeBapl(r)));
-                }
-                catch (InvalidOperationException ex)
-                {
-                    _logger.LogWarning(ex, "Could not blend DMS job cards into the /jobcards list");
-                    baplDmsWarning = "Could not reach DMS right now - showing JobCardScanner's own job cards only.";
-                }
-            }
-        }
-
-        var merged = localRows.Concat(baplRows).OrderByDescending(x => x.SortKey).Take(200).Select(x => x.Row).ToList();
-        return Ok(new { items = merged, baplDmsWarning });
+        var merged = localRows.OrderByDescending(x => x.SortKey).Take(200).Select(x => x.Row).ToList();
+        return Ok(new { items = merged, baplDmsWarning = (string?)null });
     }
 
     /// <summary>
@@ -458,7 +552,12 @@ public class JobCardsController : ControllerBase
         var allowedLocationsForGet = _currentUser.WorkLocationCodes;
         if (allowedLocationsForGet.Count > 0 && (jc.BaplServiceLocationCode is null || !allowedLocationsForGet.Contains(jc.BaplServiceLocationCode, StringComparer.OrdinalIgnoreCase)))
             return NotFound();
-        await SyncClosedFromDmsAsync(new[] { jc }, HttpContext.RequestAborted);
+        // 2026-09-28 ("from dms dont fetch jobcards and dont save jobcards only in our jobcard db
+        // save this"): this used to call SyncClosedFromDmsAsync to pull DMS's own Closed/Billed
+        // status into this job card on every open - a DMS fetch. Removed per this explicit
+        // instruction - see List() above's matching removal and its doc comment for the full
+        // reasoning. SyncClosedFromDmsAsync is left defined (now unused) in case this needs to
+        // come back.
         return Ok(Detail(jc));
     }
 
@@ -575,35 +674,6 @@ public class JobCardsController : ControllerBase
         if (openJobCardForChassis is not null)
             return BadRequest(new { message = $"This chassis already has an open job card ({openJobCardForChassis}). It must be closed before a new job card can be created for it." });
 
-        // 2026-09-05: dealer's DMS code is now resolved once, up front, and reused both for the
-        // DMS open-job-card check below and for the mandatory DMS create further down - see this
-        // method's new doc comment below for why DMS creation moved here and became mandatory.
-        var dealerBaplCode = await _db.Dealers.AsNoTracking().Where(d => d.Id == req.DealerId).Select(d => d.BaplDmsDealerCode).FirstOrDefaultAsync();
-
-        // Same check, but against DMS's own job cards - catches a job card opened directly in
-        // DMS (outside JobCardScanner entirely), which the local-only check above can never
-        // see. Best-effort: a DMS outage here should never block creating a job card locally,
-        // it just means this particular safety check couldn't run this time. Deliberately read-only
-        // - a DMS-only job card is never written into JobCardScanner's own database by this or
-        // any other check; the local JobCards table only ever gets a row for a job card actually
-        // created through this endpoint.
-        if (!string.IsNullOrWhiteSpace(vehicle.Vin))
-        {
-            try
-            {
-                var openInDms = await _baplDms.GetOpenJobCardForChassisAsync(vehicle.Vin, dealerBaplCode);
-                if (openInDms is not null)
-                {
-                    var dmsJobNumber = $"{openInDms.JobPrefix}{openInDms.JobNo}";
-                    return BadRequest(new { message = $"This chassis already has an open job card in DMS ({dmsJobNumber}, status: {openInDms.JobStatus}). It must be closed there before a new job card can be created for it here." });
-                }
-            }
-            catch (InvalidOperationException ex)
-            {
-                _logger.LogWarning(ex, "Could not check DMS for an open job card on chassis {ChassisNo} - proceeding without this check", vehicle.Vin);
-            }
-        }
-
         // ---------------- 2026-09-24 CHANGE: DMS write-back REMOVED ("dont save this jobcard in
         // dms remove this all over flow that save in jobcard db only") ----------------
         // This used to be mandatory (2026-09-05's "DMS is now the sole source of truth" design,
@@ -621,13 +691,16 @@ public class JobCardsController : ControllerBase
         // REQUIRED to create a job card (they existed only because DMS needed them) - they stay as
         // OPTIONAL descriptive fields on the wizard, still useful for Print/reporting.
         //
-        // Deliberately KEPT: the read-only "does DMS already show an open job card for this
-        // chassis" check just above (GetOpenJobCardForChassisAsync) - that is a duplicate-work
-        // safety READ, not a save, and dropping it would let the same vehicle be opened here while
-        // it's still genuinely open in DMS, which is a real risk this app has no other way to catch
-        // (DMS's job cards and JobCardScanner's are now two entirely separate, unlinked systems).
-        // Flagged as an Interpretation - tell me if you'd rather this check go too, now that job
-        // cards are otherwise fully decoupled from DMS.
+        // 2026-09-28 FURTHER CHANGE ("from dms dont fetch jobcards and dont save jobcards only in
+        // our jobcard db save this"): this method used to ALSO run a read-only "does DMS already
+        // show an open job card for this chassis" check right here (dealerBaplCode resolved, then
+        // _baplDms.GetOpenJobCardForChassisAsync) - explicitly flagged in the previous round's
+        // comment as "tell me if you'd rather this check go too, now that job cards are otherwise
+        // fully decoupled from DMS." This instruction answers that: it's removed. DMS is no longer
+        // fetched from OR written to anywhere in job card creation - the local open-job-card check
+        // just above (against JobCardScanner's own JobCards table) is the only duplicate-work
+        // safety check left, and DMS and JobCardScanner job cards are now two fully independent
+        // systems with no cross-check between them at all.
         var customer = await _db.Customers.AsNoTracking().FirstOrDefaultAsync(c => c.Id == req.CustomerId);
 
         // 2026-09-17 "Employees" page - Work Area location scoping (see User.WorkLocationCodes's
@@ -683,21 +756,87 @@ public class JobCardsController : ControllerBase
         foreach (var c in req.Complaints)
             jobCard.Complaints.Add(new JobCardComplaint { Description = c.Description, Category = c.Category, IsCustomerVoice = c.IsCustomerVoice });
 
-        _db.JobCards.Add(jobCard);
-        await _db.SaveChangesAsync();
+        // 2026-09-28 ("jobcard create in our JobCardScanner db now its not craete jobcards"): the
+        // actual save was NOT wrapped at all - any failure here (a bad/missing required field, a
+        // uniqueness clash on JobCardNumber, a DB constraint) came back as a bare, unhandled 500
+        // with no message body, which is exactly why the frontend fell through to its generic
+        // "Failed to create job card." text and neither of us could see what actually broke. Unlike
+        // the ERP/SMS wrapping above, this one is NOT best-effort/swallowed - a save failure here is
+        // real and the request should still fail - it's now caught ONLY so the response carries the
+        // real exception message, so the UI (and you) can see the actual cause immediately next time
+        // instead of needing backend log access.
+        try
+        {
+            _db.JobCards.Add(jobCard);
+            await _db.SaveChangesAsync();
 
-        if (firstStage is not null)
-            _db.JobCardStageHistories.Add(new JobCardStageHistory { JobCardId = jobCard.Id, StageId = firstStage.Id, ChangedById = _currentUser.UserId });
-        vehicle.Odometer = Math.Max(vehicle.Odometer, req.OdometerAtCheckIn);
-        await _db.SaveChangesAsync();
+            if (firstStage is not null)
+                _db.JobCardStageHistories.Add(new JobCardStageHistory { JobCardId = jobCard.Id, StageId = firstStage.Id, ChangedById = _currentUser.UserId });
+            vehicle.Odometer = Math.Max(vehicle.Odometer, req.OdometerAtCheckIn);
+            await _db.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Could not save job card for dealer {DealerId}, vehicle {VehicleId}", req.DealerId, req.VehicleId);
+            // 2026-09-28: your report confirmed the outer message alone ("An error occurred while
+            // saving the entity changes. See the inner exception for details...") is exactly
+            // EF Core's generic DbUpdateException text - it NEVER includes the actual cause. The
+            // real SQL Server error (the constraint/column/value that actually failed) is always one
+            // level down, in InnerException - EF wraps it, it doesn't replace it. Walking to the
+            // innermost exception now, so this returns the real SqlException text (e.g. "Violation
+            // of UNIQUE KEY constraint...", "Cannot insert the value NULL into column...") instead of
+            // the generic wrapper.
+            var root = ex;
+            while (root.InnerException is not null) root = root.InnerException;
+            return StatusCode(500, new { message = $"Could not create the job card: {root.Message}" });
+        }
 
-        await _erp.PushJobCardAsync(jobCard);
+        // 2026-09-28 ("jobcard create in our JobCardScanner db now its not craete jobcards" - real
+        // symptom confirmed: browser console showed a raw HTTP 500 on POST, and the frontend's
+        // generic "Failed to create job card." fallback text - see JobCardWizardPage.tsx line ~761 -
+        // meant the ACTUAL exception was invisible to both of us).
+        //
+        // FACT, found by re-reading this exact method: at this point the job card is ALREADY fully
+        // committed - both SaveChangesAsync() calls above have already run. Everything from here on
+        // (ERP push, SMS notification) is a side effect of an already-successful creation, not part
+        // of it - exactly like every OTHER external-system call in this file (DMS reads throughout
+        // this controller: see the ~13 try/catch blocks around _baplDms/_dmsBaplData calls). Those
+        // two calls were the only ones in this entire file NOT wrapped that way. If your ERP
+        // endpoint or SMS gateway was unreachable/slow/erroring at the moment you tested (very
+        // plausible - it's a live external system), that alone would throw here, AFTER the job card
+        // already exists in JobCardScannerDb, and the whole request would still come back as a 500 -
+        // which matches your report far better than "job cards aren't being created" literally does.
+        // ASSUMPTION (I can't confirm without your backend log, which would show the exact exception
+        // type/message/line): this IS the cause. If your log turns out to show something else
+        // entirely, tell me and I'll fix that instead - but this was a real, pre-existing gap in this
+        // file's own established pattern either way, worth closing regardless.
+        //
+        // FIXED: both now best-effort, matching this file's convention elsewhere - logged as a
+        // warning, never fail the (already-successful) job card creation because of them.
+        try
+        {
+            await _erp.PushJobCardAsync(jobCard);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Job card {JobCardNumber} was created, but the ERP push failed - the job card itself is unaffected.", jobCard.JobCardNumber);
+        }
+
         await _audit.LogAsync("JobCard.Create", "JobCard", jobCard.Id.ToString(), new { jobCard.JobCardNumber });
 
         if (customer is not null)
-            await _notifications.SendAsync(NotificationChannel.Sms, customer.Mobile,
-                $"Hi {customer.Name}, your job card {jobCard.JobCardNumber} has been created. Track: /track/{jobCard.TrackingToken}",
-                templateKey: "JobCardOpened", jobCardId: jobCard.Id, customerId: customer.Id);
+        {
+            try
+            {
+                await _notifications.SendAsync(NotificationChannel.Sms, customer.Mobile,
+                    $"Hi {customer.Name}, your job card {jobCard.JobCardNumber} has been created. Track: /track/{jobCard.TrackingToken}",
+                    templateKey: "JobCardOpened", jobCardId: jobCard.Id, customerId: customer.Id);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Job card {JobCardNumber} was created, but the SMS notification failed - the job card itself is unaffected.", jobCard.JobCardNumber);
+            }
+        }
 
         var full = await FullQuery().FirstAsync(j => j.Id == jobCard.Id);
         return CreatedAtAction(nameof(Get), new { id = jobCard.Id }, Detail(full));
@@ -863,37 +1002,11 @@ public class JobCardsController : ControllerBase
         _db.JobCardPhotos.Add(photo);
         await _db.SaveChangesAsync();
 
-        // ---------------- Best-effort write-back into DMS's own database ----------------
-        // Only attempted when this job card actually synced into DMS (BaplJobCardHeaderId
-        // set). The local save above has ALREADY completed and is never affected by anything below
-        // - this is purely "also try to mirror the photo into DMS", mirroring the exact
-        // non-blocking write-back pattern JobCardsController.Create() uses for the job card itself.
-        if (jobCardForPhoto.BaplJobCardHeaderId.HasValue)
-        {
-            try
-            {
-                byte[] bytes;
-                await using (var ms = new MemoryStream())
-                {
-                    await form.File.CopyToAsync(ms, HttpContext.RequestAborted);
-                    bytes = ms.ToArray();
-                }
-                await _baplDms.SaveJobCardPhotoAsync(
-                    jobCardForPhoto.BaplJobCardHeaderId.Value,
-                    form.File.FileName ?? fileName,
-                    form.File.ContentType,
-                    form.Stage.ToString(),
-                    form.Caption,
-                    bytes,
-                    HttpContext.RequestAborted);
-            }
-            catch (Exception ex)
-            {
-                // Never lets a DMS problem affect this already-successful upload response.
-                _logger.LogWarning(ex, "Could not write job card photo {PhotoId} into DMS for job card {JobCardId}", photo.Id, id);
-            }
-        }
-
+        // 2026-09-28 ("from dms dont fetch jobcards and dont save jobcards only in our jobcard db
+        // save this"): this used to also best-effort mirror the photo into DMS's own database
+        // (_baplDms.SaveJobCardPhotoAsync) whenever this job card had a BaplJobCardHeaderId - a DMS
+        // SAVE. Removed per this explicit instruction; the local save just above (JobCardPhotos,
+        // JobCardScannerDb) is now the only place a job card photo is ever written.
         return Ok(photo);
     }
 
@@ -1493,8 +1606,13 @@ public class JobCardsController : ControllerBase
     /// <summary>GET /api/jobcards/vehicle-suggestions?q=&dealerId= - replaces the wizard's previous
     /// GET /api/bapl-dms/vehicle-suggestions (BAPLDMSvad) typeahead. Sourced from the same
     /// BaplConnection/DMS_SaleBill data as VehicleLookupForWizard above, via
-    /// IDmsBaplDataService.SearchVehiclesForWizardAsync (2-char minimum, capped at 20 results -
-    /// see that method's own doc comment for the exact matching rule against chassis_no/reg_number).
+    /// IDmsBaplDataService.SearchVehiclesForWizardAsync (2-char minimum, capped at 100 results -
+    /// raised from 20 on 2026-09-28, "too less shown shown all chassisno. for this location" -
+    /// the service's own clamp was silently resetting any value above 50 back down to 20 regardless
+    /// of what was passed here, which was the confirmed root cause; see that method's own doc
+    /// comment for the exact matching rule against chassis_no/reg_number and for a flagged, still-
+    /// unconfirmed possibility that a specific dealer login could ALSO be affected by a separate
+    /// dealerId -> BaplDmsDealerCode scoping issue below, not just this cap).
     /// dealerId is optional, translated to BaplDmsDealerCode the same way as VehicleLookupForWizard.</summary>
     [HttpGet("vehicle-suggestions")]
     [Authorize(Policy = Policies.ServiceAdvisorUp)]
@@ -1511,7 +1629,7 @@ public class JobCardsController : ControllerBase
 
         try
         {
-            var hits = await _dmsBaplData.SearchVehiclesForWizardAsync(q, dealerCode, 20, HttpContext.RequestAborted);
+            var hits = await _dmsBaplData.SearchVehiclesForWizardAsync(q, dealerCode, 100, HttpContext.RequestAborted);
             return Ok(hits.Select(h => new { chassisNo = h.ChassisNo, regNo = h.RegNo, modelName = h.ModelName, saleDate = h.SaleDate }));
         }
         catch (InvalidOperationException ex)

@@ -1,3 +1,4 @@
+// mobile\src\screens\RepairBillCreateScreen.tsx
 import { useEffect, useRef, useState } from 'react'
 import { DateTimePickerAndroid, type DateTimePickerEvent } from '@react-native-community/datetimepicker'
 import { Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'

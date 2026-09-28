@@ -1,3 +1,4 @@
+// web\src\pages\staff\ItemMasterPage.tsx
 import { useEffect, useState } from 'react'
 import { staffApi } from '../../api/client'
 import type { BaplItemMaster } from '../../types'

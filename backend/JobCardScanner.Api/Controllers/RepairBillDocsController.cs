@@ -364,6 +364,23 @@ public class RepairBillDocsController : ControllerBase
             string.Equals(issueType, "U/W", StringComparison.OrdinalIgnoreCase)
             || string.Equals(issueType, "FSC", StringComparison.OrdinalIgnoreCase);
 
+        // 2026-09-28 ("if qty 0 then give alert update qty") - same guard, same reasoning, as
+        // MaterialTransferDocsController.ApplyStockAndBuildItemsAsync's own copy: a Part or Labour
+        // line with Qty 0 is rejected with a message naming the line, surfaced as an on-screen
+        // alert via the same err.response.data.message handling every other validation error on
+        // this page already uses (e.g. "Add at least one item or labour line." above). I don't have
+        // RepairBillCreatePage.tsx (or its mobile screen) staged this session to add a matching
+        // client-side check on the qty input itself - paste it if you want that too.
+        foreach (var it in req.Items)
+        {
+            if (it.Qty <= 0)
+            {
+                var label = !string.IsNullOrWhiteSpace(it.ItemDescription) ? it.ItemDescription
+                    : !string.IsNullOrWhiteSpace(it.ItemCode) ? it.ItemCode : "This line";
+                return $"'{label}' has Qty 0 - please update the quantity before saving.";
+            }
+        }
+
         // 2026-09-22 (Extended Battery Warranty Scheme) - resolved once per save, not per line:
         // candidate schemes only depend on the vehicle's Model/PurchaseDate/Odometer and the bill
         // date, none of which vary line to line.
@@ -644,3 +661,4 @@ public class RepairBillDocsController : ControllerBase
             i.IsUnderExtendedWarranty,
         }).ToList());
 }
+

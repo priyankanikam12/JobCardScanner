@@ -69,6 +69,24 @@ public class Attendance
     /// endpoint (SECTION 98's supervisor-facing web page) - that endpoint doesn't ask for or set a
     /// shift. See README SECTION 101 for the full shift-boundary assumptions.</summary>
     public AttendanceShift? Shift { get; set; }
+
+    /// <summary>2026-09-28 ("location also location fetch from which location attendance are
+    /// doing"): a DENORMALIZED SNAPSHOT (same reasoning as EmployeeName/EmployeeRole above) of the
+    /// employee's Users.WorkLocationCodes at the moment attendance was recorded (CheckIn() for a
+    /// self-login, or Mark() for a main-dealer-entered row) - joined with ", " if more than one
+    /// code is assigned. Reuses this app's EXISTING location concept (User.WorkLocationCodes /
+    /// JobCard.BaplServiceLocationCode, already used to scope Job Card creation - see
+    /// JobCardsController.Create()) rather than inventing a new one, per your confirmed answer.
+    ///
+    /// INTERPRETATION, flagged: WorkLocationCodes stores CODES, not human-readable location names -
+    /// I don't have a Locations/branches lookup table in this session to turn e.g. "DEL-01" into a
+    /// display name, so this column (and the roster/self-view UI) shows the raw code(s) as-is. Tell
+    /// me if you have a lookup for this and I'll join it in for a friendlier display.
+    ///
+    /// Null when the employee has no WorkLocationCodes assigned (unrestricted - see
+    /// JobCardsController.Create()'s own "empty WorkLocationCodes = unrestricted" convention) - not
+    /// an error, just "no specific location on record for this person."</summary>
+    public string? Location { get; set; }
 }
 
 /// <summary>ASSUMPTION - a standard 4-state day status. If your dealer network actually tracks

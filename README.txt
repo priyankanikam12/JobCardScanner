@@ -1038,3 +1038,1050 @@ FILES TOUCHED
     fixed)
   Zomato_Integration_Data_API.docx (Section 2 endpoint/curl/notes updated to the query-parameter
     shape; version bumped to 1.6)
+
+============================================================================
+SECTION 111 (2026-09-28) - Vehicle Sale page: fallback RegNo lookup by ChassisNo
+
+You pasted VehicleSalePage.tsx again (unchanged - reference only, not shipped) plus your real
+DMSBAPLDATAConnection connection string, and asked for Reg No, keyed off Chassis No, to be pulled
+from DMS_IOT_DATA's DMS_ServiceHistory table and "linked" in.
+
+IMPORTANT CONTEXT (why this isn't a guess): DmsBaplDataService.cs's own doc comments record that
+Vehicle Sale was MIGRATED on 2026-09-25 off DMSBAPLDATA/DMS_VehicleSales onto BaplConnection's
+DMS_SaleBill, specifically because DMS_SaleBill has its own reg_number column and "no second query
+needed any more" against DMS_ServiceHistory. Your message here is the sign that DMS_SaleBill's
+reg_number is in practice blank on a real share of rows - so the old DMS_ServiceHistory lookup is
+being added BACK, but as a gap-filler, not as the primary source again.
+
+WHAT CHANGED - backend/JobCardScanner.Api/Services/DmsBaplDataService.cs:
+  - GetVehicleSalesAsync now runs its normal BaplConnection/DMS_SaleBill query first, exactly as
+    before. Then, ONLY for rows that come back with a blank RegNo, it collects their ChassisNo
+    values and runs one follow-up batched query against DMSBAPLDATA's own DMS_ServiceHistory table
+    (via DMSBAPLDATAConnection - a different connection/database, DMS_IOT_DATA, not BaplConnection),
+    filling RegNo from there when found.
+  - FILL-ONLY, never override: a row whose DMS_SaleBill.reg_number is already non-blank is never
+    touched by this lookup, even if DMS_ServiceHistory happens to show something different for that
+    chassis. DMS_SaleBill stays authoritative, per the 2026-09-25 migration decision.
+  - Batched, not per-row: the ChassisNo list is deduplicated and queried in one IN-clause query per
+    500 chassis numbers (chunked - SQL Server caps a single query at ~2100 parameters, and a
+    Zomato-scoped result set could plausibly run into the thousands of rows).
+  - Best-effort: if DMSBAPLDATA can't be reached for this lookup, it's logged and swallowed, not
+    thrown - a DMSBAPLDATA hiccup should never break the page, which already has its BaplConnection
+    data in hand by that point.
+  - Multiple DMS_ServiceHistory rows per chassis (repeat service visits) are collapsed with
+    MAX(RegNo) - ASSUMPTION, not yet confirmed: that a chassis's RegNo doesn't change across visits.
+    If vehicles can be genuinely re-registered, tell me and I'll rank by MAX(JobDate) per chassis
+    instead so the most recent RegNo wins, rather than whichever sorts alphabetically highest.
+
+NOT changed (out of scope for what you asked, flagging in case you want it too): the same blank-
+RegNo gap could exist in LookupVehicleForWizardAsync/SearchVehiclesForWizardAsync (Job Card
+Wizard's chassis/reg-no search, also BaplConnection/DMS_SaleBill-sourced) - these were left as-is.
+Say so if the Wizard's vehicle search should get the same DMS_ServiceHistory fallback.
+
+SECURITY NOTE: your message included the real DMSBAPLDATAConnection connection string with its live
+DB password in plain text. This doesn't need panic-mode action, but as hygiene: that password is
+now sitting in this chat's history - worth rotating next time you're doing routine credential
+maintenance, same as any other secret pasted into a chat session.
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Services/DmsBaplDataService.cs (GetVehicleSalesAsync + new private
+    GetRegNoByChassisFromServiceHistoryAsync helper; IDmsBaplDataService's GetVehicleSalesAsync doc
+    comment updated)
+
+============================================================================
+SECTION 112 (2026-09-28) - Web: self check-in/check-out on login/logout (port of mobile's)
+
+You pasted AttendancePage.tsx (unchanged - reference only, not shipped) and asked: "when i login
+then in that automatically check in time shown and when last sign out that was sign out that
+update" - i.e. the same self-check-in/check-out behaviour already built for mobile on 2026-09-26
+(AttendanceController.CheckIn/CheckOut, mobile/src/services/attendanceCheckin.ts), but for the web
+app's own login/logout.
+
+NO BACKEND CHANGE NEEDED - POST /api/attendance/check-in and POST /api/attendance/check-out already
+exist and are login-provider-agnostic (they just read _currentUser.UserId from whatever auth
+scheme is active), so the same two endpoints work for web sign-in/sign-out as-is.
+
+NEW FILE - web/src/services/attendanceCheckin.ts - a straight web port of the mobile service file:
+checkInAfterLogin() and checkOutBeforeLogout(), calling staffApi instead of mobile's apiClient,
+same fire-and-forget/never-throw contract (a failed check-in/out must never block login/logout).
+
+THE "automatically shown" PART NEEDS NOTHING ELSE: AttendancePage.tsx's Step 2 roster already reads
+checkInTime/checkOutTime straight off GET /api/attendance and renders them - it was showing blank
+only because nothing was calling check-in/check-out from the web app yet. Once the calls below are
+wired in, today's login/logout times appear there automatically, no AttendancePage.tsx change
+needed.
+
+NOT WIRED IN - same as mobile's file: I don't have your real web login/logout code in this session
+(StaffAuthContext.tsx or wherever staff sign in/out on web was never pasted here), so nothing there
+was touched. Wire it yourself (see the new file's own doc comment for exact placement), or paste
+that file and I'll wire it in directly.
+
+SAME ASSUMPTIONS AS MOBILE apply here (this file has no say over server-side behaviour - see
+AttendanceController.CheckIn's doc comment / README SECTION 101): Technicians can't use this (no
+login); Shift 1 = 09:00-18:00 IST / Shift 2 = 18:00-24:00 IST off a fixed UTC+5:30 offset; logging
+in always sets today's Status to Present even overriding an earlier manual OnLeave mark; only the
+day's first login moves CheckInTime/Shift.
+
+ASSUMPTION SPECIFIC TO THIS FILE, not yet confirmed: staffApi attaches the staff auth token
+automatically the same way mobile's apiClient does (inferred from every other staff page calling
+staffApi.get/post with no explicit token) - I have not seen your real web api/client.ts this
+session.
+
+FILES TOUCHED
+  web/src/services/attendanceCheckin.ts (new)
+
+============================================================================
+SECTION 113 (2026-09-28) - Vehicle Sale RegNo fallback: fixed to also catch "TEMP" placeholders
+
+You sent a screenshot of the real running Vehicle Sale page (localhost:5173/vehicle-sale) - every
+visible row's Reg No column showed a value like "TEMP4852", "TEMP4848", "TEMP4716" etc., each
+matching that row's own chassis no.'s last 4 digits (chassis "...J014852" -> "TEMP4852"). You also
+re-sent the same DMS_SaleBill/DMS_SaleBillCustomer/DMS_ServiceHistory data as SECTION 111, asking
+again for the actual Reg No to be linked in from DMS_ServiceHistory by chassis no.
+
+WHY SECTION 111 DIDN'T FIX THIS: that fix only treated a BLANK RegNo as "missing" and skipped the
+ServiceHistory lookup otherwise. But your screenshot shows DMS_SaleBill.reg_number isn't blank here
+- it's populated with a "TEMP####" placeholder (clearly a dealer-side stand-in entered before the
+vehicle's real RTO registration is on record, not a blank field). Since IsNullOrWhiteSpace("TEMP4852")
+is false, every one of these rows was silently left alone by the SECTION 111 fix - it never got to
+look them up at all.
+
+FIXED - backend/JobCardScanner.Api/Services/DmsBaplDataService.cs:
+  - New IsPlaceholderRegNo(regNo) helper: true for blank OR anything starting with "TEMP"
+    (case-insensitive).
+  - GetVehicleSalesAsync's "which rows need the ServiceHistory lookup" check now uses
+    IsPlaceholderRegNo instead of a plain blank check - so "TEMP4852" now correctly qualifies.
+  - The merge step now OVERWRITES a placeholder RegNo with the real one found in DMS_ServiceHistory
+    (previously it only ever filled a blank, never touched a non-blank value) - since "TEMP4852" is
+    a placeholder, not a real number worth protecting, it's correct to replace it once a real one is
+    found by chassis no. A RegNo that is neither blank nor TEMP-prefixed (an already-real
+    registration) is still left completely untouched, same as before.
+  - Everything else from SECTION 111 (batched by chassis, chunked at 500, best-effort/non-throwing,
+    MAX(RegNo) per chassis when a chassis has multiple service visits) is unchanged.
+
+ASSUMPTION, still not confirmed by you: "TEMP" is the only placeholder convention your dealers use.
+If you've seen others (all-zeros, "PENDING", "NA", etc.) tell me the exact pattern(s) and I'll add
+them - I'm not guessing beyond what your screenshot actually showed.
+
+ALSO WORTH CHECKING ON YOUR SIDE: since every row in your screenshot showed a TEMP placeholder, it's
+possible this whole Zomato-scoped batch was sold before RTO registration, in which case
+DMS_ServiceHistory may ALSO not have a real RegNo yet for some of these chassis (a vehicle only gets
+a DMS_ServiceHistory row once it's been in for a service job) - those rows will keep showing "TEMP####"
+until either a service visit records the real number or you get it from another source. That's not a
+bug in this fix, just a real data-availability limit worth knowing about before assuming every row
+will resolve.
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Services/DmsBaplDataService.cs (IsPlaceholderRegNo added;
+    GetVehicleSalesAsync's fallback condition and merge logic updated; doc comments updated)
+
+============================================================================
+SECTION 114 (2026-09-28) - Vehicle Sale: pagination default 10 + manual Reg No edit/override
+
+Two separate asks in one message.
+
+1) PAGINATION DEFAULT -> 10 (was 100, set in SECTION "2026-09-18 additions" for large imported
+   reports). Fixed in web/src/pages/staff/VehicleSalePage.tsx with a `useEffect(() =>
+   setPageSize(10), [])` right after the shared usePagination() call, rather than editing
+   lib/usePagination.ts's own internal default - I don't have that file in this session, and it's
+   shared by Repair Bill/Material Transfer/Service History too, so changing ITS default would have
+   silently changed their page sizes as well. This only touches Vehicle Sale. If you'd rather the
+   shared hook's own default changed to 10 for every page that uses it, paste usePagination.ts and
+   I'll do it there instead - cleaner, but a wider-reaching change than what you asked for here.
+
+2) MANUAL REG NO EDIT/OVERRIDE, saved into OUR OWN database, reflected back on the page:
+   - New table `VehicleSaleOverride` in JobCardScannerDb (sql/2026-09-28_create_vehicle_sale_
+     overrides_table.sql) - one row per ChassisNo, holding a corrected RegNo + who/when saved it.
+     Deliberately NOT in DMSBAPLDATA/BaplConnection - this app stays read-only against both of
+     those everywhere else, and a manual correction is no exception.
+   - New model backend/JobCardScanner.Api/Models/VehicleSaleOverride.cs.
+   - New controller backend/JobCardScanner.Api/Controllers/VehicleSaleOverridesController.cs -
+     ONE endpoint, POST /api/vehicle-sale-overrides { chassisNo, regNo }, upserts by ChassisNo (same
+     auth/audit conventions as AttendanceController: Policies.Staff class-level, Policies.
+     ServiceAdvisorUp on the write, IAuditLogService.LogAsync per save).
+   - DmsBaplDataService.GetVehicleSalesAsync now takes a THIRD, final pass after DMS_SaleBill's own
+     reg_number and SECTION 113's DMS_ServiceHistory fallback: any chassis with a saved override
+     always shows that RegNo, since a human explicitly corrected it. This needed a new constructor
+     dependency on JobCardScannerDbContext (previously this service only touched DMSBAPLDATA/
+     BaplConnection via raw ADO.NET, never your own database) - ASP.NET Core's DI resolves this
+     automatically since JobCardScannerDbContext is already registered for every controller; no
+     Program.cs/Startup.cs change should be needed.
+   - web/src/pages/staff/VehicleSalePage.tsx: new ✎ button next to each row's Reg No, opening an
+     inline text box + Save/Cancel right there in the table (not a separate routed page - I don't
+     have your router file to safely wire a new route; say so if you want a dedicated URL instead).
+     Saves via the new endpoint, then updates the row locally immediately (no refetch needed) so the
+     corrected value shows right away.
+
+ACTION NEEDED ON YOUR SIDE (I could not do this myself - I don't have JobCardScannerDbContext.cs in
+this session): add one DbSet line to your real DbContext class -
+    public DbSet<VehicleSaleOverride> VehicleSaleOverrides => Set<VehicleSaleOverride>();
+(or `{ get; set; }` - match whichever style your other DbSets, e.g. Attendance, already use).
+Without this, DmsBaplDataService.cs's `_db.VehicleSaleOverrides` reference won't compile. Also run
+the new SQL script against JobCardScannerDb before testing.
+
+SCOPE, not guessed beyond what you asked: only Reg No is editable/overridable right now, since
+that's the concrete example you gave ("edit details like reg no."). Tell me which other Vehicle
+Sale fields need the same manual-correction treatment and I'll extend the same table/endpoint
+(more nullable override columns) rather than assuming which fields "details" meant.
+
+FILES TOUCHED
+  sql/2026-09-28_create_vehicle_sale_overrides_table.sql (new)
+  backend/JobCardScanner.Api/Models/VehicleSaleOverride.cs (new)
+  backend/JobCardScanner.Api/Controllers/VehicleSaleOverridesController.cs (new)
+  backend/JobCardScanner.Api/Services/DmsBaplDataService.cs (constructor now takes
+    JobCardScannerDbContext; GetVehicleSalesAsync's final override layer added)
+  web/src/pages/staff/VehicleSalePage.tsx (pagination default 10; Reg No inline edit)
+
+============================================================================
+SECTION 115 (2026-09-28) - Job Card Wizard: chassis/reg-no search now also catches TEMP-placeholder
+gaps via DMS_ServiceHistory
+
+You pasted JobCardWizardPage.tsx (unchanged - reference only, not shipped) and asked: "in jobcard
+reg no. not serach according which report came in vehicle sale that also fix". Read together with
+SECTION 113: the Wizard's own chassis/reg-no search (GET /api/jobcards/vehicle-lookup, GET
+/api/jobcards/vehicle-suggestions - both backed by DmsBaplDataService.LookupVehicleForWizardAsync/
+SearchVehiclesForWizardAsync) only ever matched DMS_SaleBill's own reg_number - which, per SECTION
+113, is frequently just a "TEMP####" placeholder. So typing a vehicle's REAL registration number
+(only on record in DMSBAPLDATA's DMS_ServiceHistory once it's had a service visit) found nothing,
+even though the Vehicle Sale page (after SECTION 113's fix) would show that same vehicle's real
+Reg No correctly. This is exactly the gap flagged as "NOT changed / out of scope" in SECTION 111 -
+you've now confirmed you want it closed too.
+
+FIXED - backend/JobCardScanner.Api/Services/DmsBaplDataService.cs:
+  - LookupVehicleForWizardAsync (the "Search"/Enter-triggered exact lookup): if the normal
+    DMS_SaleBill match finds nothing, it now falls through to a new
+    FindChassisByServiceHistoryMatchAsync helper - resolves a ChassisNo from DMS_ServiceHistory by
+    an exact ChassisNo match OR a normalized RegNo match (most-recently-serviced wins if several
+    match) - then re-runs the SAME DMS_SaleBill lookup by that resolved chassis no. Still returns
+    null if neither source has it; this only widens what counts as a match.
+  - SearchVehiclesForWizardAsync (the live typeahead): now ALSO resolves ChassisNo(s) from
+    DMS_ServiceHistory matching the typed query (new FindChassisNumbersByServiceHistoryMatchAsync
+    helper, capped at `take`) and includes those directly in the DMS_SaleBill match, alongside its
+    own existing chassis_no/reg_number LIKE match - so typing a vehicle's real reg no. now surfaces
+    it in the dropdown too, not just via a full "Search".
+  - Both DMS_ServiceHistory helpers are best-effort (log + return null/empty on failure) - a
+    DMSBAPLDATA hiccup only means the widened matching doesn't happen for that call, it never
+    breaks the Wizard's existing DMS_SaleBill-only search.
+
+NOT changed: this only affects the Job Card Wizard's OWN vehicle lookup/suggestions. It does not
+touch GetVehicleSalesAsync (SECTION 113/114, the Vehicle Sale page) - those already had this fix.
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Services/DmsBaplDataService.cs (LookupVehicleForWizardAsync,
+    SearchVehiclesForWizardAsync + 2 new private helpers; interface doc comments updated)
+
+--------------------------------------------------------------------------------------------------
+SECTION 116 (2026-09-28) - Job Card Wizard: Reg No now matches Vehicle Sale exactly + typeahead
+result cap raised from 20 to 100
+--------------------------------------------------------------------------------------------------
+YOUR REQUEST (verbatim): "in web\src\pages\staff\JobCardWizardPage.tsx that page when i search
+chassis no. with that Reg no. are shown different from now which we bind in Vehicle sale that
+chassis no. and that Reg no. shown and search in chassis no. search box and for this login Email
+bgauss.chhatarpur@gmail.com ..have multiple chassis no. but in search box too less shown shown all
+chassisno. for this location"
+
+Two separate bugs, both confirmed from your message and the real, already-staged code - not
+guessed:
+
+BUG 1 - Wizard's Reg No shown didn't match Vehicle Sale's Reg No for the same chassis
+FACT: SECTION 115 (this same day, earlier) widened Wizard search so a real reg no. or chassis no.
+could be found via DMS_ServiceHistory even when DMS_SaleBill's own reg_number was just a "TEMP####"
+placeholder (SECTION 113) - but it only widened MATCHING, not the VALUE returned. So a lookup could
+now find a vehicle it couldn't before, but would still display DMS_SaleBill's raw, often-placeholder
+reg_number - not the Vehicle Sale page's resolved Reg No (which, since SECTION 113/114, always
+applies: 1) DMS_SaleBill.reg_number if real, 2) DMS_ServiceHistory.RegNo fallback if (1) is
+blank/TEMP, 3) your own saved VehicleSaleOverride correction if one exists - highest priority).
+FIXED - backend/JobCardScanner.Api/Services/DmsBaplDataService.cs:
+  - Pulled that 3-layer resolution out of GetVehicleSalesAsync into one shared private helper,
+    ResolveDisplayRegNosAsync(rows, ct) - takes any batch of (ChassisNo, RegNo) pairs, returns the
+    resolved Reg No for each.
+  - LookupVehicleForWizardAsync (Search/Enter) now calls it on its single result before returning.
+  - SearchVehiclesForWizardAsync (live typeahead) now calls it on the whole results list before
+    returning, in one batched pass (not once per suggestion).
+  - Net effect: the Wizard's Search box and its dropdown suggestions now show the IDENTICAL Reg No
+    the Vehicle Sale page shows for that same chassis, including any manual correction you've saved
+    via Vehicle Sale's own edit button (SECTION 114) - a correction there now shows up in the
+    Wizard too, immediately, with no separate step.
+
+BUG 2 - typeahead showing "too less" chassis for bgauss.chhatarpur@gmail.com's login
+FACT, confirmed by reading the real files (not assumed): two separate caps were both silently
+resetting any requested result count back down to 20 -
+  - backend/JobCardScanner.Api/Controllers/JobCardsController.cs's VehicleSuggestionsForWizard
+    action hardcoded the call as `SearchVehiclesForWizardAsync(q, dealerCode, 20, ...)`.
+  - DmsBaplDataService.SearchVehiclesForWizardAsync's OWN clamp was
+    `take = take is > 0 and <= 50 ? take : 20;` - so even if the controller had passed something
+    higher than 50, this line would have reset it straight back to 20 anyway (a double cap).
+  Your frontend's own JobCardWizardPage.tsx already has a "Showing the first N matches" hint that
+  triggers at vehicleSuggestions.length >= 100 - which only makes sense if 100 was always the
+  intended cap. That mismatch (code capped at 20, UI hint written for 100) is the strongest signal
+  this was a bug, not deliberate.
+FIXED:
+  - JobCardsController.cs: the hardcoded 20 -> 100.
+  - DmsBaplDataService.cs: the clamp -> `take is > 0 and <= 200 ? take : 100;`.
+  Both now agree at 100, matching the UI's own existing hint threshold.
+
+NOT CONFIRMED / FLAG FOR YOU: if bgauss.chhatarpur@gmail.com's login still shows fewer chassis
+than expected AFTER this fix (once you've deployed and retested), that would point to something
+else entirely - most likely the dealerId -> BaplDmsDealerCode mapping used to scope the
+`WHERE sb.dealer_code = @dealerCode` filter (in VehicleLookupForWizard/VehicleSuggestionsForWizard,
+JobCardsController.cs) not matching that dealer's actual DMS_SaleBill rows correctly. I can't check
+that from here - it needs a real comparison of that login's Dealer.BaplDmsDealerCode value against
+the dealer_code values actually present in DMS_SaleBill for that location's chassis numbers. Tell me
+what you find (or paste the Dealer row / a few DMS_SaleBill rows for that dealer_code, no customer
+PII needed) and I'll take it from there.
+
+ALSO STILL OPEN (unconfirmed, asked earlier, not blocking this fix):
+  - Whether "TEMP" is the only placeholder prefix DMS_SaleBill.reg_number ever uses.
+  - Whether MAX(RegNo) per chassis (current rule) is right when DMS_ServiceHistory has multiple
+    visits with different RegNo values for one chassis, vs. ranking by MAX(JobDate) instead.
+  - Whether any Vehicle Sale fields besides Reg No should become editable/overridable.
+  - Confirm you've added `public DbSet<VehicleSaleOverride> VehicleSaleOverrides => Set<VehicleSaleOverride>();`
+    to JobCardScannerDbContext.cs and run sql/2026-09-28_create_vehicle_sale_overrides_table.sql -
+    SECTION 114's override feature (and now this section's enrichment of it into the Wizard) won't
+    compile/work until both are done.
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Services/DmsBaplDataService.cs (new ResolveDisplayRegNosAsync helper;
+    LookupVehicleForWizardAsync and SearchVehiclesForWizardAsync now call it; take-cap raised)
+  backend/JobCardScanner.Api/Controllers/JobCardsController.cs (VehicleSuggestionsForWizard's
+    hardcoded take argument: 20 -> 100; doc comment updated)
+
+--------------------------------------------------------------------------------------------------
+SECTION 117 (2026-09-28) - Vehicle Sale page failing with "Could not reach DMSBAPLDATA" - fixed to
+degrade gracefully instead of breaking the whole page
+--------------------------------------------------------------------------------------------------
+YOUR REQUEST (verbatim): "this TABLE dbo.VehicleSaleOverride i want craete in ky db Jobcard db not
+in BaplConnection i want edit this fetch data from my db JobCardScannerDb now shown error Could not
+reach DMSBAPLDATA - check the connection and try again. fix this"
+
+CONFIRMING (no change needed - already built this way): dbo.VehicleSaleOverride was always designed
+to be created in JobCardScannerDb (this app's own database), never in BaplConnection or DMSBAPLDATA.
+See sql/2026-09-28_create_vehicle_sale_overrides_table.sql's own header comment and
+Models/VehicleSaleOverride.cs's doc comment - both say this explicitly. Same for the edit/save flow:
+VehicleSaleOverridesController.Save writes only to JobCardScannerDb, and the Reg No enrichment reads
+it back from there too. Nothing needed to change here for that part of your message.
+
+THE ERROR - diagnosed, not guessed, from your own message's timing plus the code:
+FACT: "Could not reach DMSBAPLDATA - check the connection and try again." is a HARDCODED fallback
+string in web/src/pages/staff/VehicleSalePage.tsx (line ~232) - shown whenever the API call fails
+AND the error response has no `message` field for the frontend to display instead. It is not
+generated from any real connectivity check against DMSBAPLDATA - it is misleading here.
+ASSUMPTION (very likely, given the timing of your message, but I can't see your server logs to
+confirm 100%): GetVehicleSalesAsync and ResolveDisplayRegNosAsync (added in SECTION 114/116) both
+read JobCardScannerDb's own dbo.VehicleSaleOverride table with NO try/catch around that read - a
+deliberate choice at the time ("a failure reading our own database is a real problem, not an
+external hiccup to shrug off"). If that table doesn't exist yet in JobCardScannerDb, or the
+VehicleSaleOverrides DbSet line hasn't been added to your JobCardScannerDbContext.cs yet, that read
+throws (something like "Invalid object name 'VehicleSaleOverride'"), UNCAUGHT - which bubbles up as
+a raw failure with no structured message body, landing on the frontend's generic fallback text -
+wrongly blaming DMSBAPLDATA when the real failure is against your OWN database, for a table that
+simply isn't provisioned yet.
+FIXED - backend/JobCardScanner.Api/Services/DmsBaplDataService.cs: wrapped BOTH of those
+VehicleSaleOverride reads (in GetVehicleSalesAsync and ResolveDisplayRegNosAsync) in try/catch - a
+missing/unreachable table now logs a warning and simply skips the override layer for that request
+(falling back to whatever DMS_SaleBill/DMS_ServiceHistory already resolved), instead of failing the
+whole Vehicle Sale page or Wizard search. This only affects READS - Save still fails loudly and
+correctly if the table genuinely isn't there, since that's an explicit write action you'd want to
+know failed.
+
+ACTION NEEDED ON YOUR SIDE - to get the actual override feature working (not just to stop the
+error): confirm both of these are done, they haven't been reported back yet -
+  1. Run sql/2026-09-28_create_vehicle_sale_overrides_table.sql against JobCardScannerDb (NOT
+     BaplConnection/DMSBAPLDATA).
+  2. Add `public DbSet<VehicleSaleOverride> VehicleSaleOverrides => Set<VehicleSaleOverride>();` to
+     your real JobCardScannerDbContext.cs (I don't have that file, so I can't add it for you).
+Until both are done, the Vehicle Sale page and Wizard search will now load fine (this fix), just
+without any manual Reg No overrides applied yet - and saving a new override via the edit button will
+still fail until the table exists.
+
+NOT CONFIRMED: I don't have DmsBaplDataController.cs (the controller actually behind
+GET /api/dms-bapl-data/vehicle-sales) in this session, so I can't see exactly how it wraps/reports
+GetVehicleSalesAsync's own exceptions today. If you're still seeing a raw/unhelpful error after this
+fix (for an unrelated reason), paste that controller and I'll harden its error response too.
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Services/DmsBaplDataService.cs (GetVehicleSalesAsync's and
+    ResolveDisplayRegNosAsync's VehicleSaleOverride reads wrapped in try/catch; doc comments updated)
+
+--------------------------------------------------------------------------------------------------
+SECTION 118 (2026-09-28) - Job card creation failing with HTTP 500 "Failed to create job card."
+--------------------------------------------------------------------------------------------------
+YOUR REPORT: a screenshot of the Wizard's Review step showing "Failed to create job card." after
+clicking Create Job Card, then (mid-turn) your browser console showing the real underlying detail:
+"AxiosError: Request failed with status code 500" on the POST. You then said "Code changes for all"
+- proceed without waiting for your backend log, which I'd asked for and don't have.
+
+IMPORTANT CAVEAT, upfront: I do NOT have your backend log/stack trace for this specific failure. I
+cannot prove which of the fixes below is THE cause - I found every one of them by re-reading
+JobCardsController.Create() line by line for anything that could throw unexpectedly, given a raw
+500 (not one of the method's own specific BadRequest messages, which the UI would have shown
+instead - it reads err.response.data.message first). All three are real, concrete gaps in that
+method regardless of whether they're what you hit today - if your NEXT attempt still fails, the
+error message will now be specific enough that we won't need your backend log at all.
+
+FOUND, FIXED - backend/JobCardScanner.Api/Controllers/JobCardsController.cs, Create():
+  1. The actual job card save (_db.JobCards.Add + SaveChangesAsync, twice) had NO try/catch at all.
+     Any failure there (a bad/missing field, a uniqueness clash, a DB constraint) came back as a
+     bare 500 with no message body - exactly matching what you saw. Now wrapped: still fails the
+     request (this is a real save failure, not swallowed), but returns
+     { message: "Could not create the job card: <real exception message>" } so the cause is visible
+     in the UI immediately, no backend log needed.
+  2. The DMS-open-job-card check (_baplDms.GetOpenJobCardForChassisAsync) only caught
+     InvalidOperationException, even though its own doc comment already promised "a DMS outage here
+     should never block creating a job card." Widened to catch (Exception ex) so it actually keeps
+     that promise - a raw SqlException/TimeoutException from that live external call would have
+     slipped through before and failed the whole request.
+  3. BIGGEST candidate, found by re-reading closely: the ERP push (_erp.PushJobCardAsync) and SMS
+     notification (_notifications.SendAsync) run AFTER the job card is already fully saved to
+     JobCardScannerDb - but neither was wrapped in try/catch, unlike every other external-system call
+     in this entire file (~13 other try/catch blocks around DMS calls elsewhere). If your ERP
+     endpoint or SMS gateway was unreachable/erroring at that moment, THAT alone would 500 the whole
+     request even though the job card had already been created - which would explain "Failed to
+     create job card" despite (possibly) the job card actually existing in your DB. Both are now
+     best-effort: logged as a warning, never fail an already-successful creation because of them.
+
+ACTION FOR YOU: check whether job card "1" for GREEN DRIVE AUTO SERVICES / DL3EV4294 from your
+screenshot actually exists in JobCardScannerDb right now, despite the error - that would confirm
+fix #3 above was the real cause. If it does NOT exist, or the error persists after these fixes,
+please get me that backend log after all - these are real, justified fixes either way, but there
+may be a fourth thing I can't see from the code alone.
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Controllers/JobCardsController.cs (Create(): save wrapped with a real
+    error message; DMS check widened to catch (Exception); ERP push and SMS notification wrapped
+    as best-effort, matching this file's existing convention for external calls)
+
+--------------------------------------------------------------------------------------------------
+SECTION 119 (2026-09-28) - Attendance: location, self-view-only for non-manager logins, main-dealer
+adjust-across-all-locations
+--------------------------------------------------------------------------------------------------
+YOUR REQUEST (verbatim): "in Attendance add location also location fetch from which location
+attendance are doing and only that login supervisor or technitian attendance shown his page and
+for main dealer his under all location technitian supervisor all users attendance with there
+location ad login time check in time and last sign out check out time for attendance and if this
+user miss then this main dealer can adjust this under user assigned user atteandance dont give
+access for unders users of dealer fix this"
+
+DECISIONS YOU CONFIRMED (via the earlier questions):
+  - "Main dealer" = the Policies.WorkshopManagerUp role.
+  - Location = reuse the EXISTING User.WorkLocationCodes / JobCard.BaplServiceLocationCode concept,
+    not a new one.
+ASSUMPTION STILL NOT CONFIRMED, flagged clearly, one-line change if wrong: "Supervisor" = the
+StaffRole.ServiceAdvisor role (the only other named role visible anywhere in your pasted code,
+via the existing Policies.ServiceAdvisorUp policy). Your own answer to that question ("select *
+from Technicians") didn't resolve it for me - what IS confirmed, straight from
+AttendanceController.cs's own existing doc comment, is that Technicians are a separate, LOGIN-LESS
+table/role - they never sign into the app at all, so "only that login ... technitian attendance
+shown his page" can only ever literally apply to Technicians in the sense of "someone marks it FOR
+them" - never a Technician viewing their own page, since they have no login to view it with.
+
+WHAT WAS BUILT:
+  1. LOCATION - Models/Attendance.cs: new nullable Location column, a snapshot of the employee's
+     WorkLocationCodes at the moment attendance was recorded (mirrors EmployeeName/EmployeeRole's
+     existing snapshot pattern). Stores the raw location CODE(s) (comma-joined if more than one) -
+     I don't have a Locations/branches lookup table to turn a code into a friendly name; tell me if
+     you have one. New migration: sql/2026-09-28_add_attendance_location_column.sql (run against
+     JobCardScannerDb). Set on CheckIn() (self-login, first login of the day only) and on Mark()
+     (re-set every save, since a main-dealer correction should reflect the CURRENT location, unlike
+     EmployeeName/EmployeeRole which stay as the original snapshot). Surfaced in List()'s roster
+     response and the new Me() endpoint below.
+  2. ACCESS CONTROL - AttendanceController.cs: DealersSummary/List/Mark/Summary re-gated from
+     Policies.ServiceAdvisorUp UP TO Policies.WorkshopManagerUp - this is the concrete fix for
+     "dont give access for unders users of dealer": a ServiceAdvisor-level ("Supervisor") login no
+     longer passes this policy at all, so it can never reach the roster or anyone else's row, only
+     WorkshopManagerUp+ ("main dealer") can. Mark()'s existing upsert-by-date behavior (re-POST for
+     a date that already has a row overwrites it) is what satisfies "if this user miss then this
+     main dealer can adjust this" - no new endpoint needed for that, just the tightened policy on
+     who's allowed to call it.
+  3. SELF VIEW - new GET /api/attendance/me endpoint (Policies.Staff, the lowest bar - reachable by
+     everyone): hard-scoped server-side to _currentUser.UserId, no employeeId/dealerId parameter
+     exists on it at all, so there is no way to point it at anyone else's data. Returns the last 14
+     days (default, capped at 62) up to a given date, newest first: date/status/location/
+     checkInTime/checkOutTime/shift. This is what satisfies "only that login supervisor ...
+     attendance shown his page" for whichever role turns out to be your real "Supervisor."
+  4. FRONTEND - web/src/pages/staff/AttendancePage.tsx and mobile/src/screens/AttendanceScreen.tsx:
+     both now try the manager-only dealers-summary call FIRST; if the backend returns 403 (denied by
+     WorkshopManagerUp), that is treated as "not a manager login" (not an error) and both switch to
+     a small read-only "my own attendance" view backed by GET /api/attendance/me instead. Deliberately
+     NOT decided by a guessed profile.role field (I don't have StaffAuthContext.tsx/AuthContext.tsx
+     in this session, so I don't know its real shape) - this way the UI's split is exactly as
+     correct as the server-side policy, automatically, whatever "Supervisor" really turns out to be.
+     Roster table (manager view) also gained a Location column.
+
+NOT DONE, flagged rather than guessed: no per-location FILTERING within a manager's own dealer (your
+request read as "all locations, all users" in one view, which is what List() returns) - tell me if
+a main dealer should instead be able to narrow the roster down to just one location at a time.
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Models/Attendance.cs (new Location property)
+  backend/JobCardScanner.Api/Controllers/AttendanceController.cs (4 endpoints re-gated to
+    WorkshopManagerUp; Location snapshot in CheckIn()/Mark()/List(); new Me() endpoint)
+  sql/2026-09-28_add_attendance_location_column.sql (new)
+  web/src/pages/staff/AttendancePage.tsx (manager/self-view split via 403 probe; Location column)
+  mobile/src/screens/AttendanceScreen.tsx (same split; Location line)
+
+--------------------------------------------------------------------------------------------------
+SECTION 119b (2026-09-28) - CS0019 fix: AttendanceController.cs wouldn't compile
+--------------------------------------------------------------------------------------------------
+YOUR REPORT: VS Code/Roslyn errors, real compiler output this time - CS0019 "Operator '>' cannot be
+applied to operands of type 'method group' and 'int'" at 3 lines, all `WorkLocationCodes.Count > 0`.
+
+FACT, now confirmed by your compiler where I couldn't confirm it before: your Users entity's own
+WorkLocationCodes property is NOT the same type as ICurrentUserService.WorkLocationCodes (which
+JobCardsController.Create() already uses successfully as `allowedLocations.Count > 0` - that one
+compiles fine in your real codebase). Whatever the Users entity's WorkLocationCodes actually IS
+typed as, it has no instance `Count` property - only System.Linq's `Count()` extension method, which
+I'd called without parentheses (`.Count`), so it resolved to the method GROUP instead of a value.
+
+FIXED: all 3 occurrences changed from `.Count > 0` to `.Any()` - works on any IEnumerable<T>
+regardless of the Users entity's real underlying type (List, array, ICollection, custom, etc.), so
+this doesn't depend on knowing that type.
+
+ALSO REPORTED, NOT ACTED ON: 4 nullable-reference warnings (CS8601/CS8604, severity 4 = Warning,
+not Error - these don't block your build) in ZomatoIntegrationController.cs. I have NOT touched
+that file this session and these look pre-existing, unrelated to anything in this thread - tell me
+if you want these fixed too and I'll look at that file specifically.
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Controllers/AttendanceController.cs (3x .Count > 0 -> .Any())
+
+--------------------------------------------------------------------------------------------------
+SECTION 120 (2026-09-28) - Job card creation: real error still hidden ("See the inner exception")
+--------------------------------------------------------------------------------------------------
+YOUR REPORT: after SECTION 118's fix, the UI now shows "Could not create the job card: An error
+occurred while saving the entity changes. See the inner exception for details..." - progress (a
+real, specific message instead of a bare 500), but not yet the ACTUAL cause. You also pasted your
+real JobCardScannerDbContext.cs.
+
+FACT: that generic text is EF Core's own DbUpdateException.Message, always - it NEVER contains the
+real cause. The real SQL Server error (which constraint, which column, which value) is always one
+level down, in ex.InnerException (typically a raw Microsoft.Data.SqlClient.SqlException) - EF wraps
+the real error, it doesn't replace it, and my SECTION 118 fix only read the outer wrapper.
+FIXED: now walks to the innermost exception (`while (ex.InnerException is not null) ex = ex.InnerException;`)
+before building the response message - this will surface the actual SQL Server error text on your
+next attempt.
+
+FROM YOUR REAL DbContext, one useful thing confirmed I didn't know before: Technician is its own
+separate table (`DbSet<Technician> Technicians`, "2026-09-24 - the new 'Technician Employee' master
+list (login-less...)"), NOT the same as a Users row with Role == Technician. This is genuinely
+useful for the STILL-UNRESOLVED "Supervisor role" Attendance question from SECTION 119 - it confirms
+your earlier "select * from Technicians" answer literally meant this table. I haven't changed
+anything about Attendance based on this yet since it doesn't tell me who Supervisor IS, only
+confirms Technician isn't a Users role - flagging for when you're ready to revisit it.
+
+MY BEST GUESS AT THE ACTUAL CAUSE, given your JobCard table has `HasIndex(x => x.JobCardNumber)
+.IsUnique()`: a JobCardNumber collision from _numbering.NextJobCardNumberAsync (I don't have that
+file in this session, so I can't confirm its collision-safety) - your screenshot showed "Job No.: 1"
+/ "Manual Job No.: 1", consistent with an early/low sequence number that's easy to collide on a
+retry. UNCONFIRMED - the new inner-exception message on your next attempt will say for certain
+(something like "Violation of UNIQUE KEY constraint 'IX_JobCards_JobCardNumber'..." if this is it,
+or a completely different message if it's something else entirely - e.g. a NOT NULL column, a bad
+FK). Please paste that new message back to me.
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Controllers/JobCardsController.cs (Create()'s catch block now walks to
+    the innermost exception before building the response message)
+
+--------------------------------------------------------------------------------------------------
+SECTION 121 (2026-09-28) - Real root cause found: JobCards table missing the BaplCouponNo column
+--------------------------------------------------------------------------------------------------
+YOUR REPORT: the full backend log, showing the real chain - SECTION 120's fix worked exactly as
+intended and surfaced it: Microsoft.Data.SqlClient.SqlException, Error Number 207: "Invalid column
+name 'BaplCouponNo'." on the INSERT INTO [JobCards] statement.
+
+FACT: this is model/database drift, nothing to do with any request-handling code touched this
+session (I've never edited JobCard.cs). Your JobCard C# model has a BaplCouponNo property that EF
+Core maps and tries to write to on every Create(), but the real JobCards table in JobCardScannerDb
+was never given a matching column - same class of issue as the VehicleSaleOverride DbSet/table gap
+from SECTION 117/119, just on a different table.
+
+FIXED - new sql/2026-09-28_add_jobcard_baplcouponno_column.sql: `ALTER TABLE dbo.JobCards ADD
+BaplCouponNo NVARCHAR(4000) NULL;`. The size (4000) is NOT a guess - it's read directly from your
+own pasted log: the failed INSERT's parameter list showed "@p4='?' (Size = 4000)", and counting the
+INSERT's column list in order (Id, ActualDeliveryAt, AssignedTechnicianId, AssignedTechnicianName,
+BaplCouponNo, ...) confirms @p4 IS BaplCouponNo - so this matches exactly what EF is already trying
+to send.
+
+ACTION FOR YOU: run that script against JobCardScannerDb (NOT BaplConnection/DMSBAPLDATA - same
+database as every other script in this folder), then retry job card creation. If a DIFFERENT
+"Invalid column name" error shows up for some other column, that confirms more than one column is
+out of sync - paste me JobCard.cs (or its property list) at that point and I'll diff it against the
+complete column list your error log already printed, so we fix everything remaining in one script
+instead of one column at a time.
+
+FILES TOUCHED
+  sql/2026-09-28_add_jobcard_baplcouponno_column.sql (new)
+
+--------------------------------------------------------------------------------------------------
+SECTION 122 (2026-09-28) - Confirming Part Upload / Labour Master -> Job Card -> Material Transfer
+-> Repair Bill flow, plus a Qty 0 alert
+--------------------------------------------------------------------------------------------------
+YOUR REPORT (with PartUploadPage.tsx, LabourMasterPage.tsx, JobCardDetailPage.tsx and
+JobCardDetailScreen.tsx pasted): which parts you upload via Part Upload should show up on the Job
+Card, which Labour Codes from Labour Master should too, and which of those you add should carry
+through into Material Transfer and then Repair Bill when a Job Card is selected there - plus: if a
+line's Qty is 0, give an alert to update the quantity.
+
+FACT, confirmed by re-reading the real backend controllers this round (nothing here was guessed):
+this whole chain is ALREADY BUILT, across several earlier rounds in this same project (dated
+2026-09-19 through 2026-09-24 in the controllers' own doc comments, before this chat session's
+context) - I am not claiming credit for building it just now, only confirming it exists and is
+wired the way you described:
+
+  1. Part Upload -> Job Card: JobCardsController.PartsCatalog (GET /api/jobcards/parts-catalog)
+     already sources its Part suggestion list from this app's own Item Master + Part Upload data
+     (its own 2026-09-24 doc comment says so explicitly) - PartSuggestionCard on both
+     JobCardDetailPage.tsx and JobCardDetailScreen.tsx already call it.
+  2. Labour Master -> Job Card: JobCardsController.LabourCatalog (GET /api/jobcards/labour-catalog)
+     unions LabourMasterWithoutPartwise + LabourMasterPartwise (exactly the two tables
+     LabourMasterPage.tsx imports into) - LabourSuggestionCard already calls it.
+  3. Job Card -> Material Transfer: MaterialTransferDocsController.Create/Update decrement
+     PartUploads.BalQty for every Part line at the transfer's Location (2026-09-21), and expose a
+     "Labour" picker per Part via GET .../labour-by-part-code/{partCode} (2026-09-22), reading
+     LabourMasterPartwise through ILabourMasterImportService - so a Part line added here can carry
+     its own matched Labour Code, sourced from the same Labour Master data.
+  4. Material Transfer -> Repair Bill, when a Job Card is selected: GET
+     /api/material-transfer-docs/for-job/{jobCardId} returns every Part AND Labour line (tagged
+     ItemType) from every Draft/Confirmed transfer against that Job Card - its own doc comment says
+     this backs RepairBillCreatePage.tsx auto-populating its Part/Labour grid from the selected
+     Job's Material Transfer, and GET .../labour-by-codes recovers each synced Labour line's real
+     CGST/SGST/IGST for that same page.
+
+INTERPRETATION: since you sent this as a question rather than an error/screenshot, I'm reading it as
+"please confirm/make sure this is wired correctly" rather than "this is broken" - if something in
+that chain ISN'T actually showing up for you in practice (e.g. a part you uploaded doesn't appear in
+the Job Card's Part Suggestion list), that's a real bug and I need the specific symptom (screenshot,
+or what you searched vs. what showed) to chase it, the same way SECTION 118-121's job-card-creation
+bug got fixed - a description alone risks me guessing.
+
+FIXED (the one part of this that was a genuinely new ask, not a confirmation): added a server-side
+Qty 0 guard to both MaterialTransferDocsController and RepairBillDocsController's own shared
+item-building methods - a Part or Labour line saved with Qty 0 is now rejected with "'<item>' has
+Qty 0 - please update the quantity before saving.", named to the specific line. This fires on both
+Create and Update (web and mobile both call the same API), and surfaces as an on-screen alert
+through the exact same err.response.data.message handling every other validation error on these
+pages already uses (e.g. "Add at least one item line.") - so this gives you the alert without
+touching either create page's frontend code.
+
+ASSUMPTION, flagged: I could NOT add a matching check on the Qty input ITSELF (so the field
+highlights/disables Save before you even hit submit) - I do not have
+web/src/pages/staff/MaterialTransferCreatePage.tsx, web/src/pages/staff/RepairBillCreatePage.tsx,
+or their mobile screens staged in this session (never pasted). If you want the earlier, in-field
+warning too, paste those 4 files and I'll add it to match their real structure instead of guessing
+field names.
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Controllers/MaterialTransferDocsController.cs (Qty 0 guard in
+    ApplyStockAndBuildItemsAsync, shared by Create/Update)
+  backend/JobCardScanner.Api/Controllers/RepairBillDocsController.cs (Qty 0 guard in
+    BuildAndAttachItemsAsync, shared by Create/Update)
+
+--------------------------------------------------------------------------------------------------
+SECTION 123 (2026-09-28) - Root cause found: uploaded part invisible in Job Card ("does not exist
+in Item Master")
+--------------------------------------------------------------------------------------------------
+YOUR REPORT (screenshots): 22C12110150AS sits in Part Upload at two locations (BAL QTY 9 and 24),
+but searching that exact code in a Job Card's "Suggest a part" said `Part number "22C12110150AS"
+does not exist in Item Master.`
+
+FACT, confirmed by re-reading JobCardsController.PartsCatalog and its frontend caller
+(PartSuggestionCard in JobCardDetailPage.tsx): the part LIST itself only ever came from BAPL's
+external Item Master catalog (SearchItemMasterAsync) - Part Upload data was only ever used to
+enrich `availableQty` for a part that ALREADY matched an Item Master code, never to add a part that
+exists ONLY in Part Upload. So a part you've genuinely uploaded (real stock, in JobCardScannerDb's
+own PartUploads table) but that BAPL's own Item Master has no entry for was invisible to Job Card's
+search, even though Part Upload's own page shows it correctly - the "does not exist in Item Master"
+message was literally true, just about the wrong list.
+
+FIXED: PartsCatalog now also appends any uploaded Part No with no Item Master match, so it becomes
+searchable/selectable in the Job Card's "Suggest a part" box too, with its own availableQty.
+
+ASSUMPTION, flagged: I do not have Models/PartUpload.cs or the PartUploadRow DTO's full field list
+staged this session (only PartNo/BalQty, confirmed from this same method's pre-existing code) - so
+Description/HSN/MRP/GST are left blank for a Part-Upload-only row rather than guessing a property
+name that doesn't exist (the same class of compile error SECTION 119b/121 already cost you). Paste
+that model if you want those columns filled in too - the part is now shown and selectable either
+way.
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Controllers/JobCardsController.cs (PartsCatalog now merges in
+    Part-Upload-only rows; new private PartsCatalogRow record for the combined shape)
+
+--------------------------------------------------------------------------------------------------
+SECTION 124 (2026-09-28) - Labour Suggestion search showing everything regardless of what was typed
+--------------------------------------------------------------------------------------------------
+YOUR REPORT (screenshot): typing "PLPRUV1N0002" into Labour Suggestion's search returned
+PLPRUV1N0001, PLPRUV1N0008, PLPRUV1N0009, PLPRUV1N0011... - codes that don't contain the typed text
+at all - and asked for this fixed on both web and Android.
+
+FACT: JobCardDetailPage.tsx's LabourSuggestionCard applies NO client-side filtering of its own - it
+renders exactly whatever GET /api/jobcards/labour-catalog?search=... returns. That endpoint
+(JobCardsController.LabourCatalog) just passes `search` straight through to
+ILabourMasterImportService's GetWithoutPartwiseAsync/GetPartwiseAsync - so the real filtering logic
+lives inside Services/LabourMasterImportService.cs, which I do NOT have staged in this session
+(never pasted) - I can't see why ITS search isn't narrowing results, and guessing at that file's
+internals risks another wrong-property-name round.
+
+FIXED, without touching that unseen file: LabourCatalog now re-filters the already-combined result
+itself, defensively, keeping only rows whose Labour Code or Description actually contains the
+searched text (case-insensitive) - using only the labourCode/labourDescription fields this same
+method already builds. A blank search still returns everything, same as before.
+
+Both web (JobCardDetailPage.tsx) and Android (JobCardDetailScreen.tsx) call this exact same
+endpoint for Labour Suggestion's search, and neither applies any filtering of its own - so this one
+backend fix covers both platforms with no frontend file touched.
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Controllers/JobCardsController.cs (LabourCatalog now re-filters
+    `combined` against the search text before returning it)
+
+--------------------------------------------------------------------------------------------------
+SECTION 125 (2026-09-28) - Attendance: "Could not load the staff list for this dealer" - generic
+message improved (root cause still open, need your help to pin it down)
+--------------------------------------------------------------------------------------------------
+YOUR REPORT: after opening Attendance as a manager login and picking a dealer, "Could not load the
+staff list for this dealer. Try again." - no screenshot or console log this time.
+
+FACT: I read AttendanceController.List() (the endpoint this calls) end to end - nothing in it looks
+obviously wrong (same WorkshopManagerUp gate as dealers-summary, which you'd already gotten past to
+reach this screen; no code path that isn't wrapped in a safe null-check before returning Ok(...)).
+I could NOT find a concrete bug to point at from the code alone this time, unlike SECTION 118-121's
+job-card 500 where your pasted log gave me the exact SQL error.
+
+INTERPRETATION: this message was ALWAYS a fixed generic string regardless of the real cause - the
+same blind spot already hit and fixed twice elsewhere this session (VehicleSaleOverride, the job
+card 500). Rather than guess again, I've applied the same general fix: the error message now
+appends the real HTTP status and this app's own `{ message: ... }` body (every controller already
+returns one on a 4xx/5xx) whenever the browser/app actually got a response, or says explicitly that
+no response reached the server at all (points at network/CORS rather than the API) when it didn't.
+
+ACTION FOR YOU: reproduce this once more and send me the new, more specific message that shows now
+(or open your browser's Network tab / the backend log for this request) - that will say definitively
+whether this is a 401/403 (auth), 500 (an exception - I'll need the log), 404 (routing), or a
+network-level failure (no backend response at all), and I can fix the actual cause instead of
+guessing at it.
+
+FILES TOUCHED
+  web/src/pages/staff/AttendancePage.tsx (new describeError helper, used by all 3 fetches -
+    dealers-summary, staff roster, my-attendance)
+  mobile/src/screens/AttendanceScreen.tsx (same describeError helper, same 3 fetches)
+
+--------------------------------------------------------------------------------------------------
+SECTION 126 (2026-09-28) - Part Upload and Labour Master added to Android
+--------------------------------------------------------------------------------------------------
+YOUR REQUEST: "this page also add in android" - after pasting the real, current
+web/src/pages/staff/PartUploadPage.tsx and web/src/pages/staff/LabourMasterPage.tsx, and the real
+mobile/src/screens/DashboardScreen.tsx to add the nav entries into.
+
+FACT, from your real DashboardScreen.tsx: mobile already uses `useStaffAuth` from
+'../auth/StaffAuthContext' (same hook name as web) with a rich profile object (name/role/
+dealerName already confirmed used there) - this replaces the earlier, still-unconfirmed `useAuth`
+guess AttendanceScreen.tsx used from a different, guessed `../auth/AuthContext` path. I have NOT
+touched AttendanceScreen.tsx's import this round (out of scope for this request) - flagging only so
+the inconsistency between these two screens' auth imports is visible; tell me if you want
+AttendanceScreen.tsx corrected to match too.
+
+NEW: two screens, ported from your real web pages, same backend endpoints (nothing changed on the
+API side - both platforms hit the exact same controllers):
+  mobile/src/screens/PartUploadScreen.tsx    - mirrors PartUploadPage.tsx
+  mobile/src/screens/LabourMasterScreen.tsx  - mirrors LabourMasterPage.tsx
+Both wired into DashboardScreen.tsx's action list (after "Repair Bill List") as new ActionCards.
+
+DELIBERATELY SIMPLER THAN THE WEB PAGES, flagged rather than silently dropped (full reasoning is in
+each screen's own doc comment):
+  - No Excel/PDF export (ReportDownloadButtons/exportReport are web-only libraries).
+  - No full multi-field "click a row" detail modal (RecordDetailModal is a web component) - Edit's
+    modal covers the fields you can actually change.
+  - No shared Pagination component - simple self-contained Prev/Next instead.
+  - Location / Rate Type are chip-style buttons, not a native dropdown; Report Date / Effective
+    Date are plain typed fields (YYYY-MM-DD) - same reasoning AttendanceScreen.tsx already used for
+    not assuming a picker library is installed.
+
+ASSUMPTION, flagged: both screens use `expo-document-picker` for the Excel file picker (the
+standard Expo way - there's no <input type="file"> on native). If it isn't already a dependency,
+run `npx expo install expo-document-picker` first or these two screens won't build.
+
+NOT WIRED UP: I do not have RootNavigator.tsx this session, so the two new routes are NOT
+registered - tapping either new ActionCard will error until you add, wherever your other screens
+are registered:
+  1. `PartUpload: undefined` and `LabourMaster: undefined` to RootStackParamList
+  2. `<Stack.Screen name="PartUpload" component={PartUploadScreen} />` and the same for LabourMaster
+
+FILES TOUCHED
+  mobile/src/screens/PartUploadScreen.tsx (new)
+  mobile/src/screens/LabourMasterScreen.tsx (new)
+  mobile/src/screens/DashboardScreen.tsx (two new ActionCard entries)
+
+--------------------------------------------------------------------------------------------------
+SECTION 127 (2026-09-28) - Compile error fixed: CS0234 "the type or namespace name 'PartUploadRow'
+does not exist" (SECTION 123's own mistake)
+--------------------------------------------------------------------------------------------------
+YOUR REPORT: real VS Code/Roslyn error, CS0234, JobCardsController.cs line 122 - plus the real
+Models/PartUpload.cs pasted.
+
+FACT: SECTION 123's fix (the Part-Upload-only rows in PartsCatalog) declared `uploads` as
+`List<Dtos.PartUploadRow>` - a type name I invented rather than confirmed, because I didn't have
+this model staged yet. It doesn't exist, so the file didn't compile - my own mistake, not a
+pre-existing bug.
+
+FIXED, two changes:
+  1. Stopped NAMING the type at all - `var uploads = await _partUploads.GetAsync(...)` now lets
+     the compiler infer whatever IPartUploadService.GetAsync actually returns, the same way this
+     method's own pre-existing code (u.PartNo/u.BalQty, which already compiled before any of my
+     changes) always did. This is the durable fix - it can't go wrong on a type name again here.
+  2. UPGRADED, now that your real PartUpload.cs is in hand: Description/HsnCode/Mrp for a
+     Part-Upload-only row are no longer left blank (SECTION 123's own limitation) - u.Description/
+     u.HsnSacCode/u.BillPrice are confirmed real properties on this entity, and match
+     PartUploadPage.tsx's own TS field names exactly, so GetAsync's return type very likely carries
+     them too. INTERPRETATION, not certainty: if that's wrong, you'll get one more precise
+     compiler error naming the exact missing member - tell me and I'll drop just that one field.
+     Sgst/Cgst/Igst stay null, confirmed correct: PartUpload.cs's own doc comment states this sheet
+     has no GST/tax-rate column at all.
+  3. When more than one location's upload has the same Part No (no Item Master match, several
+     locations), only the most-recently-uploaded row's Description/HSN/Bill Price are shown -
+     avoids picking an arbitrary one.
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Controllers/JobCardsController.cs (PartsCatalog: uploads no longer
+    explicitly typed; Description/HsnCode/Mrp filled in for Part-Upload-only rows)
+
+--------------------------------------------------------------------------------------------------
+SECTION 128 (2026-09-28) - PartUpload/LabourMaster routes wired into your real RootNavigator.tsx
+--------------------------------------------------------------------------------------------------
+YOUR REPORT: real TS2769 errors, DashboardScreen.tsx - `navigation.navigate('PartUpload')` /
+`('LabourMaster')` don't match RootStackParamList's overloaded navigate signature - exactly the gap
+SECTION 126 flagged (route not registered yet). You then pasted the real RootNavigator.tsx.
+
+FIXED, from your real file:
+  - `PartUpload: undefined` and `LabourMaster: undefined` added to RootStackParamList
+  - Both screens imported and registered as `<Stack.Screen>` entries, same pattern as every other
+    screen in this file (title options included)
+
+ALSO FIXED, a mismatch this surfaced: PartUploadScreen.tsx and LabourMasterScreen.tsx (SECTION 126)
+used `export default function ...`, but every other screen this file imports uses a NAMED export
+(`import { ItemMasterScreen } from '../screens/ItemMasterScreen'`, etc.) - changed both to named
+exports (`export function PartUploadScreen`/`export function LabourMasterScreen`) to match, and
+RootNavigator.tsx imports them the same way. This would have been a second compile error
+(default vs. named export mismatch) right behind the routing one if left as `export default`.
+
+FILES TOUCHED
+  mobile/src/navigation/RootNavigator.tsx (two new routes + Stack.Screen entries)
+  mobile/src/screens/PartUploadScreen.tsx (export default -> export function)
+  mobile/src/screens/LabourMasterScreen.tsx (export default -> export function)
+
+
+SECTION 129 (2026-09-28) - Part Suggestion search: location scoping + Qty shown/ordered
+--------------------------------------------------------------------------------------------------
+YOUR REPORT #1 (screenshots: Item Master page shows 22C12110150AS/"C12 MUDGUARD REAR" exists there
+with full pricing; Job Card Part Suggestion still says "does not exist in Item Master"): "search
+from select * from C_ItemMaster and 3/part-upload but still not search why" - plus you pasted the
+real ItemMasterPage.tsx, ItemMasterController.cs, PartUploadController.cs (all new this round) and
+re-pasted PartUploadPage.tsx unchanged.
+
+YOUR REPORT #2 (new request): "in jobcard Part Suggestion in that which part search in that qty
+show if there is no qty then show 0 and if with any qty that qty show in that from from order where
+qty are there in that order from other item show and show this searchg fix" - interpreted as: show
+each part's Qty in the search results (0 if none), and list parts WITH qty ahead of parts without.
+
+YOUR REPORT #3 (mid-turn): "for dealeradmin have all location access that all location part / item
+code he can search but in under this dealer which location have access only that location item/part
+code shown."
+
+ON REPORT #1 (still open, NOT YET FIXED - see "STILL UNRESOLVED" below): I have NOT been able to
+confirm the root cause this round. FACT, newly noticed: JobCardDetailPage.tsx's PartSuggestionCard
+never sends a `q` (search) param to GET /api/jobcards/parts-catalog - it fetches ONCE on mount with
+only locationCode (or nothing) and filters client-side as you type. ItemMasterPage.tsx's own doc
+comment says SearchItemMasterAsync is "server-capped" and loads "the first 1000 items... alphabet-
+ically" when `q` is blank. CANDIDATE explanation (NOT CONFIRMED - I don't have SearchItemMasterAsync's
+own source this session): if 22C12110150AS falls outside that first-1000-alphabetical slice, a
+blank-`q` call would never return it even though it's genuinely in C_ItemMaster - a different root
+cause than SECTION 123/127 fixed (which assumed the part might be missing from Item Master
+entirely, not just capped out of an unfiltered fetch). Please tell me: (a) did you actually rebuild
++ restart the backend with SECTION 127's fix merged in before re-testing? and (b) if you can, paste
+IBaplDealerService's SearchItemMasterAsync implementation (BaplDealerService.cs or wherever it's
+defined) so I can confirm or rule out the 1000-row cap theory instead of guessing further.
+
+FIXED, JobCardsController.PartsCatalog (report #2 - qty shown/ordered):
+  - AvailableQty now defaults to 0 (never null) on every row, both Item-Master-backed rows and
+    Part-Upload-only rows - previously null meant "no stock hint at all" and null meant "confirmed
+    zero" identically; now every row always carries a real number.
+  - The combined list (Item Master rows + Part-Upload-only rows) is sorted qty-first (descending),
+    ties broken alphabetically by ItemCode, instead of whatever order Concat happened to produce.
+    JobCardDetailPage.tsx's PartSuggestionCard already renders `(avail. {p.availableQty ?? '-'})` -
+    since availableQty is never null any more, this already displays 0 correctly with no frontend
+    change needed (0 ?? '-' evaluates to 0, not '-').
+
+FIXED, JobCardsController.PartsCatalog (report #3 - location scoping):
+  - Reused the SAME Work Area location scoping List()/Get()/Create() already apply to job cards
+    (_currentUser.WorkLocationCodes - empty list = unrestricted, non-empty = restricted to those
+    specific workshop location(s) under the dealer). No new access-control concept invented; this
+    is the existing "Employees" page Work Area feature (2026-09-17), just applied here too.
+  - A location-restricted user's Part Upload stock enrichment (availableQty) and the "part exists
+    ONLY because of an upload, not in Item Master" extra rows (SECTION 123/127's fix) are now BOTH
+    filtered to only uploads at that user's allowed location(s). A user with no Work Area assigned
+    (which I'm assuming is how DealerAdmin accounts are normally set up, matching "dealeradmin have
+    all location access") sees stock/extra-rows across every location, unchanged from before.
+  - INTERPRETATION, please confirm or correct: BAPL's C_ItemMaster (the Item Master catalog list
+    itself) is dealer-wide reference data - one shared parts catalog, not one row per workshop
+    location - so I have NOT filtered the Item Master CATALOG LIST by location (a location-
+    restricted user still sees every catalog item, same as DealerAdmin); only the Qty/extra-rows
+    tied to actual Part Upload stock are location-scoped. If you actually need the catalog list
+    itself narrowed per location (not just stock), tell me what field on C_ItemMaster carries a
+    location, since I don't have that schema confirmed.
+  - Also flagged: whether IPartUploadService.GetAsync's return type actually exposes a `.LocationCode`
+    property is INFERRED (from the confirmed real DB column on Models/PartUpload.cs), not confirmed
+    the same way PartNo/BalQty/Description/HsnSacCode/BillPrice already were - if this doesn't
+    compile (a CS1061 naming a missing member), tell me the real property name and I'll fix just that.
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Controllers/JobCardsController.cs (PartsCatalog method)
+
+
+SECTION 130 (2026-09-28) - "remove DMS Service History" from both web and Android
+--------------------------------------------------------------------------------------------------
+YOUR REQUEST: "and from web and android from both page remove DMS Service History" - plus you
+pasted the full real web/src/pages/staff/JobCardDetailPage.tsx and the full real
+mobile/src/screens/JobCardDetailScreen.tsx (mobile file never seen/staged before this round).
+
+FIXED:
+  - web/src/pages/staff/JobCardDetailPage.tsx: removed the `<BaplServiceHistoryCard .../>` render
+    line. BaplServiceHistoryCard itself is left defined (not deleted) - same "kept, not deleted"
+    convention this file already uses for QcCard/InvoiceCard/ClosureCard - in case this needs to
+    come back.
+  - mobile/src/screens/JobCardDetailScreen.tsx: same removal (the render line only), same
+    kept-but-unused convention, now written to disk here for the first time from your real paste.
+
+FILES TOUCHED
+  web/src/pages/staff/JobCardDetailPage.tsx
+  mobile/src/screens/JobCardDetailScreen.tsx (full file, real, staged for the first time)
+
+
+SECTION 131 (2026-09-28) - "from dms dont fetch jobcards and dont save jobcards only in our
+jobcard db save this" - remaining DMS job-card read/write paths removed
+--------------------------------------------------------------------------------------------------
+YOUR REQUEST (verbatim, mid-turn): "from dms dont fetch jobcards and dont save jobcards only in our
+jobcard db save this."
+
+FACT, checked before changing anything: DMS write-back for job card CREATION was already fully
+removed in a prior round (2026-09-24, "dont save this jobcard in dms remove this all over flow that
+save in jobcard db only" - see that section's own doc comment still in Create()). This instruction
+is broader - it also covers job card FETCHES from DMS, and a few remaining, narrower DMS read/write
+paths that survived the 2026-09-24 change because they weren't part of Create()'s main save flow.
+Four more spots found and removed:
+
+  1. JobCardsController.List() - used to (a) call SyncClosedFromDmsAsync (a DMS FETCH of job
+     statuses, to catch a job card closed/billed directly in DMS) and (b) blend in extra read-only
+     rows for job cards that exist ONLY in DMS (_baplDms.SearchJobCardsAsync, another DMS FETCH).
+     Both removed - this list is now JobCardScanner's own JobCards table only.
+  2. JobCardsController.Get() - same SyncClosedFromDmsAsync call, removed.
+  3. JobCardsController.Create() - the read-only "does DMS already show an open job card for this
+     chassis" check (_baplDms.GetOpenJobCardForChassisAsync, a DMS FETCH). The 2026-09-24 section's
+     own comment had explicitly flagged this one and asked "tell me if you'd rather this check go
+     too" - this instruction answers that: removed. The LOCAL open-job-card check (against
+     JobCardScanner's own JobCards table) stays - that's not a DMS call.
+  4. JobCardsController.UploadPhoto() - a best-effort DMS SAVE of the uploaded photo
+     (_baplDms.SaveJobCardPhotoAsync), only ever fired for OLD job cards that still carry a
+     BaplJobCardHeaderId from before write-back was removed. Removed - the local JobCardPhotos save
+     (JobCardScannerDb) is now the only place a job card photo is ever written.
+
+SyncClosedFromDmsAsync (the private helper method) and SummarizeBapl are left DEFINED but now
+UNUSED (no call sites left) - same "kept, not deleted" convention as the frontend cards - in case
+DMS status sync needs to come back. An unused private C# method is a compiler WARNING at most, not
+an error, so this does not block a build.
+
+NOT touched (please confirm this is intentional / tell me if these should go too - they read DMS
+data that ISN'T strictly "job cards"):
+  - GET /api/jobcards/{id}/invoice-pdf (JobCardsController.InvoicePdf) - reads DMS's own repair
+    bill/RepairBillHeader to render the Invoice PDF (Print menu's "Invoice" option). This is
+    invoice/billing data, not a job card record, so I left it as-is - tell me if "dont fetch...from
+    dms" should extend to this too.
+  - GET /api/bapl-dms/service-history (BaplServiceHistoryCard's endpoint, backend side) - the
+    frontend card that CALLED this was removed in SECTION 130, but I did not delete the backend
+    endpoint itself, in case something else still needs it. Tell me if it should be deleted outright.
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Controllers/JobCardsController.cs (List, Get, Create, UploadPhoto)
+
+
+SECTION 132 (2026-09-28) - ROOT CAUSE FOUND: Part Suggestion search never re-asked the backend
+--------------------------------------------------------------------------------------------------
+YOUR REPORT: pasted real `select * from PartUploads` rows (confirming LocationCode IS a real
+column - CUS0288W2/CUS0288W3 shown - matching SECTION 129's INTERPRETATION about
+IPartUploadService.GetAsync) and the real `select * from C_ItemMaster` column list + 3 sample rows,
+asking "why not search still its shown after exist in Item Master / Part Upload)".
+
+FACT, now confirmed as the actual root cause (not just a theory any more): JobCardDetailPage.tsx's
+PartSuggestionCard fetched GET /api/jobcards/parts-catalog exactly ONCE, on mount, with NO `q`
+param - then filtered that one static batch client-side as you typed in the search box. Per
+ItemMasterPage.tsx's own doc comment, SearchItemMasterAsync (the same method PartsCatalog calls)
+is server-capped to roughly the first 1000 items, ALPHABETICALLY, whenever `q` is blank. So the
+search box was never actually searching BAPL's C_ItemMaster at all - it was searching whatever
+happened to land in that one capped, alphabetically-sorted snapshot taken the moment the page
+loaded. A part outside that snapshot could never appear, no matter how correctly it was typed,
+because nothing ever asked the backend again with the real search text. This explains why the part
+you kept confirming exists in both PartUploads and C_ItemMaster (via direct SQL and the working
+Item Master page, which DOES send a real search) still never showed up here.
+
+FIXED, web/src/pages/staff/JobCardDetailPage.tsx (PartSuggestionCard):
+  - The fetch is now debounced (300ms) and re-runs on every keystroke, sending your typed text as
+    a real `q` param to GET /api/jobcards/parts-catalog - the same debounced-search-as-you-type
+    pattern LabourSuggestionCard already uses successfully (SECTION 124's fix). This makes
+    SearchItemMasterAsync actually search/narrow server-side instead of relying on one unfiltered,
+    capped snapshot - it should now find a part regardless of where it falls alphabetically in the
+    full catalog. Nothing fetches until you've typed at least 1 character, same as before.
+  - Also fixed the SAME "re-derived selection gets silently wiped" bug Labour Suggestion already
+    hit (SECTION 124's `pickLabour`/`selected` fix): `selectedPart` used to be re-derived every
+    render via `availableParts.find(p => p.itemCode === itemCode)` - but picking a part sets
+    `search` to that part's own "code - description" text, which is ALSO this effect's fetch
+    trigger, so the same click that picked a part would, a moment later, re-fire the debounced
+    search against that literal string (rarely a real match) and silently wipe `availableParts`,
+    un-picking whatever had just been selected. `selectedPart` is now set directly, once, at pick
+    time (a real state value), so a later unrelated search can no longer un-pick it.
+
+NOT YET FIXED - please paste this file: mobile's Part Suggestion search lives in a SEPARATE
+component, `mobile/src/components/PartSuggestionSection.tsx`, referenced by
+JobCardDetailScreen.tsx but never pasted/seen this session - I have not touched it and cannot
+assume it has the same bug without seeing its actual fetch logic. If Android's part search has the
+same symptom, paste that file and I'll mirror this exact fix there.
+
+FILES TOUCHED
+  web/src/pages/staff/JobCardDetailPage.tsx (PartSuggestionCard: debounced server-side search,
+  selectedPart stored directly instead of re-derived)
+
+
+SECTION 133 (2026-09-28) - Part Suggestion search now finds the part, but Available Qty showed 0
+--------------------------------------------------------------------------------------------------
+YOUR REPORT (screenshots): searching "22C12110150AS" in Job Card's Part Suggestion now correctly
+finds it (SECTION 132's fix worked) but shows "(avail. 0)" - while the real Part Upload page (also
+screenshotted) shows this exact part with BalQty 9 at MAGNEMITE MOTO LLP-DELHI UTTAM NAGAR and 24
+at MAGNEMITE MOTO LLP-DELHI OKHLA (33 total). "why qty not bind in parts upload bal qty shown 9 the
+in jobcard why shown 0 this will fix."
+
+FACT: this regression lines up exactly with SECTION 129's location-scoping change, shipped
+immediately before you started re-testing. ASSUMPTION now corrected: SECTION 129 treated ANY
+account with a non-empty WorkLocationCodes as location-restricted, assuming a DealerAdmin account
+would normally have an EMPTY WorkLocationCodes. That assumption looks wrong - Work Area locations
+on Admin -> Users appear to be settable per account regardless of role, so the account you tested
+with (if it's DealerAdmin, or any account not meant to be restricted) got its stock zeroed out
+because its own Work Area doesn't happen to include the two locations (CUS0288W1/W2-equivalent)
+where this part was actually uploaded - even though "dealeradmin have all location access" was
+your explicit, literal ask in that same message.
+
+FIXED, JobCardsController.PartsCatalog: DealerAdmin now ALWAYS bypasses the location restriction,
+regardless of what WorkLocationCodes happens to contain on that specific account - same for
+CorporateAdmin/SystemAdmin, matching the existing `isOrgWideRole` convention List()/Get()/
+Technicians() in this same file already use. This matches your literal request directly instead of
+an assumption about how accounts are normally configured.
+
+IF QTY STILL SHOWS 0 after merging this - please tell me: (a) what role the account you're testing
+with actually has (if it's NOT DealerAdmin/CorporateAdmin/SystemAdmin, this fix won't change
+anything for it - that would then be correct behavior under "only that location item/part code
+shown", not a bug, UNLESS that account's Work Area is supposed to include CUS0288W1/W2 and doesn't),
+or (b) open DevTools -> Network (you already have a second browser tab open) and paste the raw JSON
+GET /api/jobcards/parts-catalog?q=22C12110150AS response, so I can see availableQty directly - the
+next most likely cause if this fix doesn't resolve it is the logged-in account's DealerId not
+matching PartUploads.DealerId (38CBC463-A9A5-482F-9D63-C13CB44307CE in your dump).
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Controllers/JobCardsController.cs (PartsCatalog: DealerAdmin/
+  CorporateAdmin/SystemAdmin now bypass Work Area location restriction)

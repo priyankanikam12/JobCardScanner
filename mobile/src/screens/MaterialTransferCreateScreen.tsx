@@ -1,3 +1,4 @@
+// mobile\src\screens\MaterialTransferCreateScreen.tsx
 import { useEffect, useState } from 'react'
 import { DateTimePickerAndroid, type DateTimePickerEvent } from '@react-native-community/datetimepicker'
 import { ActivityIndicator, Alert, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'

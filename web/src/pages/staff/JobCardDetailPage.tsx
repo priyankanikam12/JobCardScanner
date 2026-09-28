@@ -509,9 +509,13 @@ export function JobCardDetailPage() {
       <PartSuggestionCard jc={jc} run={run} estimatesLocked={estimatesLocked} totalLockReached={estimateGrandTotal >= ESTIMATE_TOTAL_LOCK_THRESHOLD} />
       <LabourSuggestionCard jc={jc} run={run} estimatesLocked={estimatesLocked} totalLockReached={estimateGrandTotal >= ESTIMATE_TOTAL_LOCK_THRESHOLD} />
       <EstimatesCard jc={jc} run={run} estimatesLocked={estimatesLocked} setEstimatesLocked={setEstimatesLocked} />
-      {/* Item 13: DMS Service History moves to AFTER Invoice (was the 2nd card, right after
-         Update Workflow Stage). */}
-      <BaplServiceHistoryCard chassisNo={jc.vehicle?.vin} dealerCode={jc.dealer?.code} />
+      {/* 2026-09-28 CHANGE ("remove DMS Service History" from both web and android): this card
+         (DMS's own service/job-card history for this vehicle's chassis, GET /api/bapl-dms/
+         service-history) is no longer rendered here - consistent with the same session's broader
+         "dont fetch jobcards and dont save jobcards from/to dms" instruction (see
+         JobCardsController's matching removals). BaplServiceHistoryCard is left defined below (not
+         deleted), same "kept, not deleted" convention as QcCard/InvoiceCard/ClosureCard, in case
+         this needs to come back. */}
       {/* 2026-09-24 CHANGE ("hide Invoice and OTP-Based Closure that both coz already have in this
          invoice in Print button"): both cards removed from this page - the Print menu (next to the
          status badge above) already has its own "Invoice" option that opens/downloads the exact
@@ -1140,24 +1144,47 @@ function PartSuggestionCard({ jc, run, estimatesLocked, totalLockReached }: { jc
   const [qty, setQty] = useState<number>(1)
   const [status, setStatus] = useState<'Paid' | 'U/W'>('Paid')
 
+  // 2026-09-28 fix ("search from select * from C_ItemMaster and 3/part-upload but still not
+  // search why" - a real part, confirmed by you in both PartUploads and C_ItemMaster, still never
+  // showed up here): FACT, root cause - this used to fetch ONCE on mount with NO `q` param, then
+  // filter that one batch client-side as you typed. GET .../parts-catalog's Item Master list comes
+  // from IBaplDealerService.SearchItemMasterAsync, which (per ItemMasterPage.tsx's own doc
+  // comment) is server-capped to roughly the first 1000 items, ALPHABETICALLY, whenever `q` is
+  // blank. A part that falls outside that one capped, alphabetically-sorted batch could never
+  // appear here no matter what you typed - nothing ever asked the backend again with your actual
+  // search text, it only ever filtered whatever happened to already be in that first blank-query
+  // page. FIXED: now sends your typed text as a real `q` param on every keystroke (debounced
+  // 300ms, same pattern LabourSuggestionCard below already uses), so SearchItemMasterAsync
+  // actually searches/narrows server-side instead of relying on an unfiltered, capped batch - this
+  // should now find a part regardless of where it falls alphabetically in the full catalog.
   useEffect(() => {
-    // 2026-09-24: locationCode is now optional (only used for the availableQty enrichment - see
-    // JobCardsController.PartsCatalog's doc comment) - fetched even with no Service Location on
-    // this job card, unlike the old DMS-scoped endpoint this replaced, which needed one to work at
-    // all.
-    staffApi.get<JobCardsPartsCatalogRow[]>('/api/jobcards/parts-catalog', { params: jc.baplServiceLocationCode ? { locationCode: jc.baplServiceLocationCode } : {} })
-      .then(({ data }) => setAvailableParts(data))
-      .catch(() => setAvailableParts([]))
-  }, [jc.baplServiceLocationCode])
+    const handle = setTimeout(() => {
+      const trimmed = search.trim()
+      if (trimmed.length === 0) { setAvailableParts([]); return }
+      staffApi.get<JobCardsPartsCatalogRow[]>('/api/jobcards/parts-catalog', {
+        params: { q: trimmed, ...(jc.baplServiceLocationCode ? { locationCode: jc.baplServiceLocationCode } : {}) },
+      })
+        .then(({ data }) => setAvailableParts(data))
+        .catch(() => setAvailableParts([]))
+    }, 300)
+    return () => clearTimeout(handle)
+  }, [search, jc.baplServiceLocationCode])
 
-  const selectedPart = availableParts.find((p) => p.itemCode === itemCode)
-  const q = search.trim().toLowerCase()
-  const matches = q.length === 0 ? [] : availableParts
-    .filter((p) => p.itemCode.toLowerCase().includes(q) || (p.description ?? '').toLowerCase().includes(q))
-    .slice(0, 20)
+  // 2026-09-28: selectedPart is now set directly at pick time (see pickPart below) instead of
+  // derived via `availableParts.find(...)` - the same fix already applied to Labour Suggestion's
+  // `selected` state (see LabourSuggestionCard's own 2026-09-03 doc comment for the full story).
+  // Deriving it from availableParts broke the instant you picked a part: pickPart sets `search` to
+  // the picked part's own "code - description" text, which is also this effect's fetch trigger, so
+  // that same assignment re-fires the debounced search a moment later against that literal string -
+  // which rarely matches anything, replacing availableParts with an empty (or different) list and
+  // silently un-picking whatever had just been selected.
+  const [selectedPart, setSelectedPart] = useState<JobCardsPartsCatalogRow | null>(null)
+  const q = search.trim()
+  const matches = availableParts.slice(0, 20)
 
   const pickPart = (p: JobCardsPartsCatalogRow) => {
     setItemCode(p.itemCode)
+    setSelectedPart(p)
     setSearch(`${p.itemCode}${p.description ? ' - ' + p.description : ''}`)
     setShowSuggestions(false)
   }
@@ -1173,6 +1200,7 @@ function PartSuggestionCard({ jc, run, estimatesLocked, totalLockReached }: { jc
       mrp: selectedPart?.mrp ?? null,
     })
     setItemCode('')
+    setSelectedPart(null)
     setSearch('')
     setQty(1)
     setStatus('Paid')
@@ -1247,7 +1275,7 @@ function PartSuggestionCard({ jc, run, estimatesLocked, totalLockReached }: { jc
           <input
             value={search}
             placeholder="Start typing an item code or description…"
-            onChange={(e) => { setSearch(e.target.value); setItemCode(''); setShowSuggestions(true) }}
+            onChange={(e) => { setSearch(e.target.value); setItemCode(''); setSelectedPart(null); setShowSuggestions(true) }}
             onFocus={() => setShowSuggestions(true)}
             onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
             autoComplete="off"
@@ -1747,4 +1775,3 @@ function ClosureCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<u
     </div>
   )
 }
-

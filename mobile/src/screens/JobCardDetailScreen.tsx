@@ -242,14 +242,19 @@ export function JobCardDetailScreen({ route }: Props) {
       <PartSuggestionSection jc={jc} onChanged={load} estimatesLocked={estimatesLocked} totalLockReached={estimateGrandTotal >= ESTIMATE_TOTAL_LOCK_THRESHOLD} />
       <LabourSuggestionSection jc={jc} onChanged={load} estimatesLocked={estimatesLocked} totalLockReached={estimateGrandTotal >= ESTIMATE_TOTAL_LOCK_THRESHOLD} />
       <EstimatesCard jc={jc} estimatesLocked={estimatesLocked} setEstimatesLocked={setEstimatesLocked} />
-      <BaplServiceHistoryCard chassisNo={jc.vehicle?.vin} dealerCode={jc.dealer?.code} />
+      {/* 2026-09-28 CHANGE ("remove DMS Service History" from both web and android): the DMS
+         Service History card (DMS's own service/job-card history for this vehicle's chassis, GET
+         /api/bapl-dms/service-history) is no longer rendered here - consistent with the same
+         session's broader "dont fetch jobcards and dont save jobcards from/to dms" instruction (see
+         backend JobCardsController's matching removals). BaplServiceHistoryCard is left defined
+         below (not deleted), same "kept, not deleted" convention InvoiceCard/ClosureCard already
+         use just below, in case this needs to come back. */}
       {/* 2026-09-24 CHANGE ("Invoice ... OTP Based Closure ... remove that 2 card in details page"):
          the standalone Invoice card and OTP-Based Closure card are both hidden here - Invoice is
          already reachable via the header's Print ▾ menu (see PrintMenu's own "Invoice" option
          above, same role gate), and OTP-Based Closure isn't part of this round's kept workflow.
-         InvoiceCard/ClosureCard are left defined below, just unused, matching this file's existing
-         convention for a removed-but-not-deleted card (see the DMS Service History timing comment
-         higher up for the same pattern). */}
+         InvoiceCard/ClosureCard are left defined below, just unused, same "kept, not deleted"
+         convention as BaplServiceHistoryCard above. */}
       </ScrollView>
     </View>
   )
@@ -363,7 +368,11 @@ function InvoiceCard({ jc }: { jc: JobCardDetail }) {
 /** Read-only reference panel showing DMS's own service/job-card history for this vehicle's
  * chassis (GET /api/bapl-dms/service-history) - mirrors web's BaplServiceHistoryCard. Silently
  * shows nothing if the vehicle has no VIN/chassis on file, or DMS has never seen this
- * chassis; only a real DMS problem (502) surfaces as an error. */
+ * chassis; only a real DMS problem (502) surfaces as an error.
+ *
+ * 2026-09-28: no longer rendered from JobCardDetailScreen above (see that screen's "remove DMS
+ * Service History" doc comment) - left defined here, unused, same "kept, not deleted" convention
+ * as InvoiceCard/ClosureCard below. */
 function BaplServiceHistoryCard({ chassisNo, dealerCode }: { chassisNo?: string | null; dealerCode?: string | null }) {
   const [rows, setRows] = useState<BaplDmsJobCardHistory[] | null>(null)
   const [error, setError] = useState<string | null>(null)

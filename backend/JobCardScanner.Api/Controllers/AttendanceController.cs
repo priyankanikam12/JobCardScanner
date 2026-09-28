@@ -11,20 +11,47 @@ namespace JobCardScanner.Api.Controllers;
 /// <summary>
 /// 2026-09-25 ("give attendance page for all dealer ... give only this page for android and web").
 /// STANDARD/ASSUMED design - see Attendance.cs's class doc comment and README SECTION 98 before
-/// relying on this. Mirrors the existing dealer-scoping pattern used throughout JobCardsController
-/// (isOrgWideRole = CorporateAdmin/SystemAdmin see every dealer; everyone else is locked to their
-/// own _currentUser.DealerId) so this page behaves consistently with the rest of the app rather
-/// than introducing a new access-control convention.
+/// relying on this.
 ///
-/// THREE endpoints, matching the "all dealer" framing of your request:
+/// 2026-09-28 ACCESS-CONTROL REWORK ("only that login supervisor or technitian attendance shown
+/// his page ... for main dealer his under all location technitian supervisor all users attendance
+/// ... if this user miss then this main dealer can adjust this ... dont give access for unders
+/// users of dealer"): three-tier visibility, tightened from the original single-tier "any
+/// ServiceAdvisorUp+ login can see/mark their whole dealer's roster" design -
+///   1. Any logged-in staff member (Policies.Staff, the class-level floor) can see ONLY their own
+///      attendance - GET /api/attendance/me below. No roster, no other user's data, regardless of
+///      role - this is what satisfies "only that login ... attendance shown his page."
+///   2. "Main dealer" = Policies.WorkshopManagerUp (per your confirmed answer) - sees and can
+///      adjust every Technician/Supervisor's attendance across ALL locations under their own
+///      dealer (dealer-scoped, same as before) via DealersSummary/List/Mark/Summary below, now
+///      RE-GATED from Policies.ServiceAdvisorUp up to Policies.WorkshopManagerUp - this is the
+///      concrete fix for "dont give access for unders users of dealer": a ServiceAdvisor-level
+///      login (ASSUMPTION: this is what you mean by "Supervisor" - not yet confirmed, see README
+///      SECTION 118 - one-line change if wrong) no longer passes this policy at all, so it can only
+///      ever reach its OWN row via GET /api/attendance/me, never anyone else's.
+///   3. CorporateAdmin/SystemAdmin (isOrgWideRole, unchanged) still see across every dealer, not
+///      just one - same as before this rework, just now additionally gated behind
+///      WorkshopManagerUp too (both roles already pass a "...Up" policy check by construction).
+///
+/// Mark() upserting the SAME day's row is ALSO how "if this user miss then this main dealer can
+/// adjust this" is satisfied - no separate edit endpoint was needed, only the policy re-gating
+/// above (only WorkshopManagerUp+ can call it now).
+///
+/// FOUR endpoints, matching the "all dealer" framing of your original request, plus the new #5:
 ///   GET  /api/attendance/dealers-summary?date=   - one row per dealer with present/absent/etc.
 ///        counts for that day (the "all dealer" landing view). Org-wide roles see every dealer;
-///        a dealer-scoped user sees only their own (single row).
+///        a dealer-scoped user sees only their own (single row). WorkshopManagerUp+ only.
 ///   GET  /api/attendance?date=&dealerId=          - full staff roster for ONE dealer on that day,
-///        each row showing whether/how they're marked (drill-down from dealers-summary).
-///   POST /api/attendance/mark                     - upsert one staff member's attendance for a day.
+///        each row showing whether/how they're marked, plus their Location (drill-down from
+///        dealers-summary). WorkshopManagerUp+ only.
+///   POST /api/attendance/mark                     - upsert one staff member's attendance for a
+///        day - also how a main dealer adjusts/corrects a missed entry. WorkshopManagerUp+ only.
 ///   GET  /api/attendance/summary?date=&dealerId=  - same counts as dealers-summary but for one
 ///        dealer (used by the web/mobile page's header tile row after drilling in).
+///        WorkshopManagerUp+ only.
+///   GET  /api/attendance/me?date=                 - NEW 2026-09-28: any logged-in staff member's
+///        OWN attendance only, hard-scoped server-side to _currentUser.UserId regardless of any
+///        parameter - Policies.Staff (the lowest bar).
 ///
 /// NOT done here, flagged rather than guessed: no endpoint to EDIT/DELETE a past attendance row
 /// beyond re-POSTing Mark() (which just overwrites that day's record - there's no audit trail of
@@ -48,8 +75,9 @@ public class AttendanceController : ControllerBase
     }
 
     // ---------------- "All dealer" landing view: one row per dealer ----------------
+    // 2026-09-28: re-gated from ServiceAdvisorUp to WorkshopManagerUp - see class doc comment.
     [HttpGet("dealers-summary")]
-    [Authorize(Policy = Policies.ServiceAdvisorUp)]
+    [Authorize(Policy = Policies.WorkshopManagerUp)]
     public async Task<IActionResult> DealersSummary([FromQuery] DateTime? date)
     {
         var day = (date ?? DateTime.UtcNow).Date;
@@ -110,8 +138,13 @@ public class AttendanceController : ControllerBase
     }
 
     // ---------------- One dealer's staff roster + that day's marks (drill-down) ----------------
+    // 2026-09-28: re-gated from ServiceAdvisorUp to WorkshopManagerUp - see class doc comment. Also
+    // now returns each row's `location` - see Attendance.Location's doc comment. Deliberately still
+    // shows EVERY location under this dealer in one flat list (not grouped/filtered by location) -
+    // your request was "main dealer ... all location ... all users", i.e. everything at once; tell
+    // me if you'd rather this be filterable by a specific location too.
     [HttpGet]
-    [Authorize(Policy = Policies.ServiceAdvisorUp)]
+    [Authorize(Policy = Policies.WorkshopManagerUp)]
     public async Task<IActionResult> List([FromQuery] DateTime? date, [FromQuery] Guid? dealerId)
     {
         var day = (date ?? DateTime.UtcNow).Date;
@@ -122,7 +155,7 @@ public class AttendanceController : ControllerBase
         var staff = await _db.Users.AsNoTracking()
             .Where(u => u.Active && u.DealerId == effectiveDealerId)
             .OrderBy(u => u.Name)
-            .Select(u => new { u.Id, u.Name, u.Role })
+            .Select(u => new { u.Id, u.Name, u.Role, u.WorkLocationCodes })
             .ToListAsync();
         if (staff.Count == 0) return Ok(new { date = day, dealerId = effectiveDealerId, items = Array.Empty<object>() });
 
@@ -134,11 +167,16 @@ public class AttendanceController : ControllerBase
         var items = staff.Select(s =>
         {
             records.TryGetValue(s.Id, out var rec);
+            // Marked day's snapshot wins (what their location actually WAS that day); if not yet
+            // marked, fall back to their current live WorkLocationCodes so the main dealer can
+            // still see where to expect them before marking - see Attendance.Location's doc comment.
+            var location = rec?.Location ?? (s.WorkLocationCodes.Any() ? string.Join(", ", s.WorkLocationCodes) : null);
             return new
             {
                 employeeId = s.Id,
                 employeeName = s.Name,
                 role = s.Role.ToString(),
+                location,
                 status = rec?.Status.ToString(),
                 checkInTime = rec?.CheckInTime,
                 checkOutTime = rec?.CheckOutTime,
@@ -151,8 +189,12 @@ public class AttendanceController : ControllerBase
     }
 
     // ---------------- Mark / update one staff member's attendance for a day (upsert) ----------------
+    // 2026-09-28: re-gated from ServiceAdvisorUp to WorkshopManagerUp - see class doc comment. This
+    // same upsert (re-POST for a date that already has a row) is what satisfies "if this user miss
+    // then this main dealer can adjust this" - no separate edit endpoint needed, just this
+    // tightened policy restricting WHO can call it.
     [HttpPost("mark")]
-    [Authorize(Policy = Policies.ServiceAdvisorUp)]
+    [Authorize(Policy = Policies.WorkshopManagerUp)]
     public async Task<IActionResult> Mark(MarkAttendanceRequest req)
     {
         var isOrgWideRole = _currentUser.Role is StaffRole.CorporateAdmin or StaffRole.SystemAdmin;
@@ -178,6 +220,12 @@ public class AttendanceController : ControllerBase
             };
             _db.Attendance.Add(existing);
         }
+        // 2026-09-28: snapshot Location every time this is saved (not just on first creation) - a
+        // main dealer's adjustment should reflect the employee's CURRENT WorkLocationCodes at the
+        // time of the correction, same reasoning as EmployeeName/EmployeeRole being re-snapshotted
+        // isn't done for those (kept as the original mark's values) - but Location is more likely to
+        // need correcting itself as part of "adjust this", so it re-reads live each save.
+        existing.Location = employee.WorkLocationCodes.Any() ? string.Join(", ", employee.WorkLocationCodes) : null;
         existing.Status = req.Status;
         existing.CheckInTime = req.CheckInTime;
         existing.CheckOutTime = req.CheckOutTime;
@@ -200,8 +248,9 @@ public class AttendanceController : ControllerBase
     }
 
     // ---------------- Summary counts for one dealer on one day ----------------
+    // 2026-09-28: re-gated from ServiceAdvisorUp to WorkshopManagerUp - see class doc comment.
     [HttpGet("summary")]
-    [Authorize(Policy = Policies.ServiceAdvisorUp)]
+    [Authorize(Policy = Policies.WorkshopManagerUp)]
     public async Task<IActionResult> Summary([FromQuery] DateTime? date, [FromQuery] Guid? dealerId)
     {
         var day = (date ?? DateTime.UtcNow).Date;
@@ -297,6 +346,11 @@ public class AttendanceController : ControllerBase
         {
             existing.CheckInTime = timeOfDay;
             existing.Shift = shift;
+            // 2026-09-28: snapshot Location only on the actual check-in moment (same "first login
+            // of the day" gate as CheckInTime/Shift just above) - see Attendance.Location's doc
+            // comment. Read fresh here (not from the AsNoTracking() `user` read above, which is the
+            // same row) since WorkLocationCodes could in principle change between logins.
+            existing.Location = user.WorkLocationCodes.Any() ? string.Join(", ", user.WorkLocationCodes) : null;
         }
         existing.MarkedByUserId = employeeId;
         existing.MarkedAtUtc = DateTime.UtcNow;
@@ -363,6 +417,51 @@ public class AttendanceController : ControllerBase
             new { existing.EmployeeId, existing.AttendanceDate, existing.CheckOutTime });
 
         return Ok(new { existing.Id, checkOutTime = existing.CheckOutTime });
+    }
+
+    // ---------------- Self view: "my own attendance", nothing else (2026-09-28) ----------------
+    /// <summary>NEW - "only that login supervisor or technitian attendance shown his page". Any
+    /// logged-in staff member (Policies.Staff, the class-level floor - deliberately NOT
+    /// WorkshopManagerUp, since this must stay reachable by everyone) can call this, but it is
+    /// HARD-SCOPED server-side to _currentUser.UserId - there is no employeeId/dealerId parameter
+    /// at all, by design, so there is no way to point this at anyone else's data regardless of what
+    /// a caller sends. This is the one and only attendance view a Technician-table-backed user or a
+    /// Supervisor-level login gets; the roster/mark/summary endpoints above are WorkshopManagerUp+
+    /// only now (see class doc comment) and this endpoint is deliberately the sole substitute for
+    /// them at lower roles.
+    ///
+    /// Returns the last `days` calendar days (default 14, capped at 62 - about 2 months - so this
+    /// can't be turned into an unbounded history dump) up to and including `date` (default today),
+    /// newest first, so a Supervisor can see a short recent trail of their own check-in/out times,
+    /// not just a single day. ASSUMPTION: a 14-day default window - tell me if you want a different
+    /// default or an explicit date-range picker on the page instead.</summary>
+    [HttpGet("me")]
+    [Authorize(Policy = Policies.Staff)]
+    public async Task<IActionResult> Me([FromQuery] DateTime? date, [FromQuery] int? days)
+    {
+        var employeeId = _currentUser.UserId;
+        if (employeeId is null) return BadRequest(new { message = "No signed-in user." });
+
+        var toDay = (date ?? DateTime.UtcNow).Date;
+        var windowDays = days is > 0 and <= 62 ? days.Value : 14;
+        var fromDay = toDay.AddDays(-(windowDays - 1));
+
+        var records = await _db.Attendance.AsNoTracking()
+            .Where(a => a.EmployeeId == employeeId && a.AttendanceDate >= fromDay && a.AttendanceDate <= toDay)
+            .OrderByDescending(a => a.AttendanceDate)
+            .Select(a => new
+            {
+                date = a.AttendanceDate,
+                status = a.Status.ToString(),
+                a.Location,
+                checkInTime = a.CheckInTime,
+                checkOutTime = a.CheckOutTime,
+                shift = a.Shift.HasValue ? a.Shift.Value.ToString() : null,
+                remarks = a.Remarks,
+            })
+            .ToListAsync();
+
+        return Ok(new { fromDate = fromDay, toDate = toDay, items = records });
     }
 }
 

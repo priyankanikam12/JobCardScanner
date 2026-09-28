@@ -1,3 +1,4 @@
+// web\src\pages\staff\LabourMasterPage.tsx
 import { useEffect, useRef, useState } from 'react'
 import { staffApi } from '../../api/client'
 import type { LabourMasterImportResult, LabourMasterPartwise, LabourMasterWithoutPartwise } from '../../types'

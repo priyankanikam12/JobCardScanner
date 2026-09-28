@@ -21,6 +21,13 @@ import { RepairBillListScreen } from '../screens/RepairBillListScreen'
 // 2026-09-24 "that supervisor when login then he have access to create Tecnician that tab name
 // Technician Employee" - see TechnicianEmployeesScreen.tsx's own doc comment.
 import { TechnicianEmployeesScreen } from '../screens/TechnicianEmployeesScreen'
+// 2026-09-28 ("this page also add in android") - Android counterparts of web's Part Upload/
+// Labour Master sidebar pages, added the same round as DashboardScreen.tsx's two new
+// ActionCards - see each screen's own doc comment (PartUploadPage.tsx/LabourMasterPage.tsx web
+// pages they mirror, and the simplifications flagged there: no Excel/PDF export, chip-style
+// Location/Rate Type instead of a native dropdown, expo-document-picker for the file picker).
+import { PartUploadScreen } from '../screens/PartUploadScreen'
+import { LabourMasterScreen } from '../screens/LabourMasterScreen'
 import { colors } from '../theme/colors'
 
 /** Optional /jobcards-equivalent filters the Dashboard's KPI cards deep-link with - each name
@@ -51,6 +58,9 @@ export type RootStackParamList = {
   RepairBillCreate: { editBillId?: string } | undefined
   RepairBillList: undefined
   TechnicianEmployees: undefined
+  // 2026-09-28 - both screens take no params, same shape as ItemMaster/RepairBillList above.
+  PartUpload: undefined
+  LabourMaster: undefined
 }
 
 const Stack = createNativeStackNavigator<RootStackParamList>()
@@ -104,6 +114,9 @@ export function RootNavigator() {
           <Stack.Screen name="RepairBillList" component={RepairBillListScreen} options={{ title: 'Repair Bill List' }} />
           <Stack.Screen name="RepairBillCreate" component={RepairBillCreateScreen} options={{ title: 'Repair Bill' }} />
           <Stack.Screen name="TechnicianEmployees" component={TechnicianEmployeesScreen} options={{ title: 'Technician Employee' }} />
+          {/* 2026-09-28 ("this page also add in android") */}
+          <Stack.Screen name="PartUpload" component={PartUploadScreen} options={{ title: 'Part Upload' }} />
+          <Stack.Screen name="LabourMaster" component={LabourMasterScreen} options={{ title: 'Labour Master' }} />
         </Stack.Navigator>
       )}
     </NavigationContainer>

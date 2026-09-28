@@ -126,6 +126,13 @@ export function DashboardScreen({ navigation }: Props) {
           {/* 2026-09-23 - new list screen for bills already saved in JobCardScanner, split out of
              the Repair Bill create screen above. */}
           <ActionCard title="Repair Bill List" subtitle="Saved repair bills - view, edit, Save as Invoice" onPress={() => navigation.navigate('RepairBillList')} />
+          {/* 2026-09-28 ("this page also add in android") - Android counterparts of web's Part
+             Upload/Labour Master sidebar pages (PartUploadScreen.tsx/LabourMasterScreen.tsx, added
+             this same round). Route registration still needed in RootNavigator.tsx - see those two
+             screens' own doc comments for the exact two lines each needs; navigating here will
+             error until that's done. */}
+          <ActionCard title="Part Upload" subtitle="Upload Stock Summary Detail Report - own stock table" onPress={() => navigation.navigate('PartUpload')} />
+          <ActionCard title="Labour Master" subtitle="Import & manage labour rate cards (Partwise / Without Partwise)" onPress={() => navigation.navigate('LabourMaster')} />
           {/* 2026-09-24 - deliberately role-gated (unlike every other ActionCard on this screen,
              none of which check hasRole) - see TechnicianEmployeesScreen.tsx's own doc comment for
              why: this tab is the one access difference the new Supervisor role exists to create. */}

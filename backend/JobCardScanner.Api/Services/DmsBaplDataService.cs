@@ -1,4 +1,7 @@
+using JobCardScanner.Api.Data;
+using JobCardScanner.Api.Models;
 using Microsoft.Data.SqlClient;
+using Microsoft.EntityFrameworkCore;
 
 namespace JobCardScanner.Api.Services;
 
@@ -367,6 +370,23 @@ public interface IDmsBaplDataService
     /// BaplConnection/baplfinal - see DmsBaplDataVehicleSaleRow's doc comment. soldToFilter defaults
     /// to "Zomato" (set by the controller, same convention as GetRepairBillsAsync's partyNameFilter);
     /// pass null/empty for every buyer.
+    ///
+    /// 2026-09-28 ADDED: DMS_SaleBill.reg_number (the primary RegNo source since the 2026-09-25
+    /// migration) is blank on a real share of rows in production - and, per your 2026-09-28
+    /// screenshot, ALSO carries literal "TEMP####" dealer placeholders on many others (before a
+    /// real RTO registration is on record). Any row whose RegNo is blank OR a "TEMP" placeholder
+    /// (see IsPlaceholderRegNo) now gets ONE follow-up batched lookup against DMSBAPLDATA's OWN
+    /// dbo.DMS_ServiceHistory table (a different database - DMS_IOT_DATA, via
+    /// DMSBAPLDATAConnection, not BaplConnection), keyed by ChassisNo, and OVERWRITES the placeholder
+    /// with the real RegNo found there. A row whose RegNo is neither blank nor a TEMP placeholder is
+    /// left exactly as-is - this only ever replaces a value already known not to be real. See
+    /// GetRegNoByChassisFromServiceHistoryAsync's/IsPlaceholderRegNo's doc comments for the exact
+    /// matching rule and its open assumptions.
+    ///
+    /// 2026-09-28 ADDED (a THIRD, final layer): a manually-saved Reg No override
+    /// (VehicleSaleOverridesController, JobCardScannerDb's own VehicleSaleOverride table - see that
+    /// model's doc comment) is applied last and always wins, over both DMS_SaleBill's own
+    /// reg_number and the DMS_ServiceHistory fallback above, for any chassis that has one.
     /// </summary>
     Task<IReadOnlyList<DmsBaplDataVehicleSaleRow>> GetVehicleSalesAsync(string? soldToFilter, CancellationToken ct = default);
 
@@ -382,6 +402,16 @@ public interface IDmsBaplDataService
     /// searches every dealer, same "no scope = everything" convention as GetVehicleSalesAsync's
     /// soldToFilter. Returns the most recently created matching sale when more than one row
     /// matches, or null (not an exception) when nothing matches - an everyday result, not an error.
+    ///
+    /// 2026-09-28 ADDED ("in jobcard reg no. not serach according which report came in vehicle sale
+    /// that also fix"): DMS_SaleBill.reg_number is frequently a "TEMP####" placeholder, not the
+    /// vehicle's real registration number (SECTION 113's finding, on the Vehicle Sale page) - so
+    /// searching the wizard by a vehicle's ACTUAL reg no. (only on record in DMSBAPLDATA's
+    /// DMS_ServiceHistory once it's had a service visit) used to find nothing here. If the query
+    /// above finds no match, this now falls through to resolving a ChassisNo from
+    /// DMS_ServiceHistory by that same value (exact ChassisNo match, or normalized RegNo match),
+    /// then re-runs this same DMS_SaleBill lookup by that ChassisNo. Still returns null if neither
+    /// source has it - this only widens what counts as a match, it never removes the original path.
     /// </summary>
     Task<DmsBaplDataVehicleSaleRow?> LookupVehicleForWizardAsync(string value, string? dealerCode, CancellationToken ct = default);
 
@@ -390,6 +420,11 @@ public interface IDmsBaplDataService
     /// same BaplConnection dbo.DMS_SaleBill table as LookupVehicleForWizardAsync above - one row per
     /// distinct chassis, most recently sold first. Fewer than 2 characters returns an empty list
     /// without querying BaplConnection, same convention as SearchServiceHistoryVehiclesAsync below.
+    ///
+    /// 2026-09-28 ADDED: same DMS_ServiceHistory widening as LookupVehicleForWizardAsync above -
+    /// any ChassisNo DMS_ServiceHistory turns up for this query (by ChassisNo or RegNo) is ALSO
+    /// matched against DMS_SaleBill directly (in addition to DMS_SaleBill's own chassis_no/
+    /// reg_number LIKE match), so typing a vehicle's real reg no. surfaces it here too.
     /// </summary>
     Task<IReadOnlyList<DmsBaplDataVehicleSuggestion>> SearchVehiclesForWizardAsync(string? q, string? dealerCode, int take, CancellationToken ct = default);
 
@@ -419,11 +454,18 @@ public class DmsBaplDataService : IDmsBaplDataService
 {
     private readonly IConfiguration _config;
     private readonly ILogger<DmsBaplDataService> _logger;
+    // 2026-09-28 ADDED - JobCardScannerDb (this app's OWN database), needed only to read back
+    // manually-saved Reg No overrides (see GetVehicleSalesAsync's 2026-09-28 update and
+    // VehicleSaleOverride.cs's doc comment). Everything else in this class still only ever talks
+    // to ConnStr/BaplConnStr (DMSBAPLDATA/BaplConnection) - this is the one exception, and it's
+    // read-only here too (the actual write happens in VehicleSaleOverridesController, not here).
+    private readonly JobCardScannerDbContext _db;
 
-    public DmsBaplDataService(IConfiguration config, ILogger<DmsBaplDataService> logger)
+    public DmsBaplDataService(IConfiguration config, ILogger<DmsBaplDataService> logger, JobCardScannerDbContext db)
     {
         _config = config;
         _logger = logger;
+        _db = db;
     }
 
     private string ConnStr => _config.GetConnectionString("DMSBAPLDATAConnection")
@@ -823,12 +865,177 @@ public class DmsBaplDataService : IDmsBaplDataService
             throw new InvalidOperationException($"Could not read BaplConnection's vehicle sales (DMS_SaleBill/DMS_SaleBillCustomer): {ex.Message}", ex);
         }
 
+        // 2026-09-28 fallback - see this method's own doc comment on IDmsBaplDataService. Best-effort:
+        // if DMSBAPLDATA can't be reached, GetRegNoByChassisFromServiceHistoryAsync logs and returns
+        // empty rather than throwing, so a DMSBAPLDATA hiccup never breaks the page's BaplConnection
+        // data, which is already fetched successfully by this point.
+        //
+        // UPDATE 2026-09-28 (your screenshot of the real page): DMS_SaleBill.reg_number isn't simply
+        // blank on the affected rows - it holds a literal "TEMP####" placeholder (e.g. "TEMP4852" for
+        // chassis "...J014852" - the last 4 digits of the chassis no, a dealer-side placeholder
+        // entered before the vehicle's real RTO registration is on record). A blank-only check
+        // silently skipped every one of these. IsPlaceholderRegNo below now treats blank AND
+        // "TEMP"-prefixed values as needing the DMS_ServiceHistory lookup.
+        var missingRegNoChassis = rows
+            .Where(r => IsPlaceholderRegNo(r.RegNo) && !string.IsNullOrWhiteSpace(r.ChassisNo))
+            .Select(r => r.ChassisNo!)
+            .ToList();
+
+        if (missingRegNoChassis.Count > 0)
+        {
+            var regNoByChassis = await GetRegNoByChassisFromServiceHistoryAsync(missingRegNoChassis, ct);
+            if (regNoByChassis.Count > 0)
+            {
+                rows = rows.Select(r =>
+                    !IsPlaceholderRegNo(r.RegNo) || r.ChassisNo == null
+                        || !regNoByChassis.TryGetValue(r.ChassisNo, out var regNo) || string.IsNullOrWhiteSpace(regNo)
+                        ? r
+                        : r with { RegNo = regNo }
+                ).ToList();
+            }
+        }
+
+        // 2026-09-28 ("edit button ... reg no we can edit and that save in our jobcard db that
+        // will data reflect on ui"): manual Reg No corrections saved via
+        // POST /api/vehicle-sale-overrides (VehicleSaleOverridesController) into JobCardScannerDb -
+        // THIS APP'S OWN DATABASE, not DMSBAPLDATA/BaplConnection. This is the FINAL, highest-
+        // priority layer: a saved override always wins over both DMS_SaleBill's own reg_number and
+        // anything the DMS_ServiceHistory fallback above found, since a human explicitly corrected
+        // it.
+        //
+        // 2026-09-28 UPDATE (real-world fallout, same day: the whole Vehicle Sale page started
+        // failing with a misleading "Could not reach DMSBAPLDATA" error): this was originally NOT
+        // wrapped in try/catch, on the reasoning that a failure reading our OWN database is a real
+        // problem, not an external-system hiccup to quietly shrug off. In practice that meant the
+        // page broke ENTIRELY - and blamed the wrong system in the error message - the moment this
+        // brand-new table (dbo.VehicleSaleOverride, in JobCardScannerDb - see
+        // sql/2026-09-28_create_vehicle_sale_overrides_table.sql) or its DbSet line in
+        // JobCardScannerDbContext.cs wasn't in place yet. Now best-effort like the DMSBAPLDATA
+        // fallback above: logs a warning and simply skips the override layer (falls back to
+        // whatever DMS_SaleBill/DMS_ServiceHistory already resolved) if this table can't be read,
+        // instead of failing the whole request. Once the table exists and the DbSet is registered,
+        // this goes back to applying real overrides exactly as before - nothing else changes.
+        var chassisNumbers = rows
+            .Where(r => !string.IsNullOrWhiteSpace(r.ChassisNo))
+            .Select(r => r.ChassisNo!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (chassisNumbers.Count > 0)
+        {
+            try
+            {
+                var overrideRows = await _db.VehicleSaleOverrides
+                    .AsNoTracking()
+                    .Where(o => chassisNumbers.Contains(o.ChassisNo))
+                    .ToListAsync(ct);
+
+                if (overrideRows.Count > 0)
+                {
+                    var overrideRegNoByChassis = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var o in overrideRows) overrideRegNoByChassis[o.ChassisNo] = o.RegNo;
+
+                    rows = rows.Select(r =>
+                        r.ChassisNo != null && overrideRegNoByChassis.TryGetValue(r.ChassisNo, out var overrideRegNo) && !string.IsNullOrWhiteSpace(overrideRegNo)
+                            ? r with { RegNo = overrideRegNo }
+                            : r
+                    ).ToList();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not read JobCardScannerDb's dbo.VehicleSaleOverride table - has sql/2026-09-28_create_vehicle_sale_overrides_table.sql been run yet, and is the VehicleSaleOverrides DbSet added to JobCardScannerDbContext.cs? Skipping manual Reg No overrides for this request; DMS_SaleBill/DMS_ServiceHistory results are unaffected.");
+            }
+        }
+
         return rows;
+    }
+
+    /// <summary>
+    /// True for a RegNo that isn't a real registration number yet - blank, or a "TEMP####" dealer
+    /// placeholder (2026-09-28, confirmed from your screenshot: "TEMP4852"/"TEMP4848"/etc., matching
+    /// each row's chassis no.'s last 4 digits). A row like this is eligible for the
+    /// DMS_ServiceHistory RegNo lookup/override in GetVehicleSalesAsync; anything else is treated as
+    /// a real, already-correct registration and left untouched.
+    ///
+    /// ASSUMPTION, not yet confirmed by you: "TEMP" (case-insensitive) is the only placeholder
+    /// convention in use. If dealers also enter other placeholder patterns (e.g. all-zero numbers,
+    /// "PENDING", "NA"), tell me the pattern and I'll extend this check - guessing further patterns
+    /// from 3 sample rows isn't safe.
+    /// </summary>
+    private static bool IsPlaceholderRegNo(string? regNo) =>
+        string.IsNullOrWhiteSpace(regNo) || regNo.Trim().StartsWith("TEMP", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Best-effort RegNo-by-ChassisNo lookup against DMSBAPLDATA's dbo.DMS_ServiceHistory (DMS_IOT_DATA,
+    /// via DMSBAPLDATAConnection/ConnStr - NOT BaplConnection), used to fill/override Vehicle Sale
+    /// rows whose DMS_SaleBill.reg_number is a placeholder (see IsPlaceholderRegNo above). See
+    /// GetVehicleSalesAsync's doc comment for why.
+    ///
+    /// One chassis can have several DMS_ServiceHistory rows (repeat service visits); MAX(RegNo) is
+    /// taken as the representative value per chassis - same convention already used a few methods
+    /// below in SearchServiceHistoryVehiclesAsync ("these don't change visit-to-visit in practice").
+    /// ASSUMPTION, not yet confirmed by you: a chassis's RegNo doesn't change across its service
+    /// history. If a vehicle can genuinely be re-registered (new RegNo issued), MAX(RegNo) may pick
+    /// either value rather than the most recent one - tell me if you'd rather rank by MAX(JobDate)
+    /// per chassis instead (a small change) and I'll switch it.
+    ///
+    /// Batched by distinct ChassisNo in chunks of 500 (SQL Server's ~2100 parameter cap makes one
+    /// single IN-list unsafe once a Zomato-scoped result set runs into the thousands of rows) - same
+    /// "one follow-up query instead of one per row" shape as GetRepairBillsAsync's item lookup above,
+    /// just chunked since this list can be far larger than a typical bill/transfer id list.
+    /// </summary>
+    private async Task<Dictionary<string, string?>> GetRegNoByChassisFromServiceHistoryAsync(IReadOnlyCollection<string> chassisNumbers, CancellationToken ct)
+    {
+        var result = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        if (chassisNumbers.Count == 0) return result;
+
+        try
+        {
+            await using var conn = new SqlConnection(ConnStr);
+            await conn.OpenAsync(ct);
+
+            const int chunkSize = 500;
+            var distinct = chassisNumbers.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            for (var offset = 0; offset < distinct.Count; offset += chunkSize)
+            {
+                var chunk = distinct.Skip(offset).Take(chunkSize).ToList();
+                var inClause = string.Join(",", chunk.Select((_, i) => $"@c{i}"));
+                var sql = $@"
+                    SELECT ChassisNo, MAX(RegNo) AS RegNo
+                    FROM [dbo].[DMS_ServiceHistory]
+                    WHERE IsRowTotal = 0
+                      AND ChassisNo IN ({inClause})
+                      AND RegNo IS NOT NULL AND LTRIM(RTRIM(RegNo)) <> ''
+                    GROUP BY ChassisNo";
+
+                await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+                for (var i = 0; i < chunk.Count; i++) cmd.Parameters.AddWithValue($"@c{i}", chunk[i]);
+                await using var rdr = await cmd.ExecuteReaderAsync(ct);
+                while (await rdr.ReadAsync(ct))
+                {
+                    var chassis = rdr["ChassisNo"] as string;
+                    if (!string.IsNullOrWhiteSpace(chassis))
+                        result[chassis] = rdr["RegNo"] as string;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // Best-effort enrichment only, never the primary source - see this method's doc comment.
+            _logger.LogWarning(ex, "Could not look up RegNo by ChassisNo from DMSBAPLDATA's DMS_ServiceHistory - affected Vehicle Sale rows will keep a blank RegNo for this request.");
+        }
+
+        return result;
     }
 
     public async Task<DmsBaplDataVehicleSaleRow?> LookupVehicleForWizardAsync(string value, string? dealerCode, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(value)) return null;
+        var trimmed = value.Trim();
+        var valueNoSpaces = trimmed.Replace(" ", "").Replace("-", "");
+        DmsBaplDataVehicleSaleRow? hit = null;
+
         try
         {
             await using var conn = new SqlConnection(BaplConnStr);
@@ -849,23 +1056,188 @@ public class DmsBaplDataService : IDmsBaplDataService
                 ORDER BY sb.CreatedOn DESC, sb.Id DESC";
 
             await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
-            var trimmed = value.Trim();
             cmd.Parameters.AddWithValue("@dealerCode", string.IsNullOrWhiteSpace(dealerCode) ? DBNull.Value : dealerCode.Trim());
             cmd.Parameters.AddWithValue("@value", trimmed);
-            cmd.Parameters.AddWithValue("@valueNoSpaces", trimmed.Replace(" ", "").Replace("-", ""));
+            cmd.Parameters.AddWithValue("@valueNoSpaces", valueNoSpaces);
             await using var rdr = await cmd.ExecuteReaderAsync(ct);
-            return await rdr.ReadAsync(ct) ? MapVehicleSaleRow(rdr) : null;
+            if (await rdr.ReadAsync(ct)) hit = MapVehicleSaleRow(rdr);
         }
         catch (Exception ex)
         {
             throw new InvalidOperationException($"Could not look up the vehicle in BaplConnection (DMS_SaleBill/DMS_SaleBillCustomer): {ex.Message}", ex);
+        }
+
+        if (hit is null)
+        {
+            // 2026-09-28 fallback ("in jobcard reg no. not serach according which report came in
+            // vehicle sale that also fix") - see this method's doc comment / SECTION 113/115.
+            // DMS_SaleBill.reg_number is frequently a "TEMP####" placeholder, so a vehicle's REAL
+            // reg no. (only on record in DMSBAPLDATA's DMS_ServiceHistory once it's had a service
+            // visit) found nothing above. Resolve a ChassisNo from DMS_ServiceHistory by the same
+            // value, then re-run this same DMS_SaleBill lookup by that chassis no.
+            var chassisFromHistory = await FindChassisByServiceHistoryMatchAsync(trimmed, valueNoSpaces, ct);
+            if (chassisFromHistory is not null)
+            {
+                try
+                {
+                    await using var conn = new SqlConnection(BaplConnStr);
+                    await conn.OpenAsync(ct);
+
+                    var sql = $@"
+                        SELECT TOP 1 {VehicleSaleSelectColumns}
+                        {VehicleSaleFromJoin}
+                        WHERE (sb.IsDelete IS NULL OR sb.IsDelete = 0)
+                          AND (@dealerCode IS NULL OR sb.dealer_code = @dealerCode)
+                          AND LTRIM(RTRIM(sb.chassis_no)) = @chassis
+                        ORDER BY sb.CreatedOn DESC, sb.Id DESC";
+
+                    await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+                    cmd.Parameters.AddWithValue("@dealerCode", string.IsNullOrWhiteSpace(dealerCode) ? DBNull.Value : dealerCode.Trim());
+                    cmd.Parameters.AddWithValue("@chassis", chassisFromHistory);
+                    await using var rdr = await cmd.ExecuteReaderAsync(ct);
+                    if (await rdr.ReadAsync(ct)) hit = MapVehicleSaleRow(rdr);
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException($"Could not look up the vehicle in BaplConnection (DMS_SaleBill/DMS_SaleBillCustomer) by the chassis no. resolved from DMS_ServiceHistory: {ex.Message}", ex);
+                }
+            }
+        }
+
+        // 2026-09-28 ("Reg no. are shown different from now which we bind in Vehicle sale") - see
+        // ResolveDisplayRegNosAsync's doc comment: this makes the Wizard show the exact same Reg No
+        // the Vehicle Sale page would show for this same chassis (DMS_ServiceHistory fallback +
+        // any manually-saved override), instead of the raw, possibly-placeholder DMS_SaleBill value.
+        if (hit is not null && !string.IsNullOrWhiteSpace(hit.ChassisNo))
+        {
+            var displayRegNos = await ResolveDisplayRegNosAsync(new[] { (hit.ChassisNo!, hit.RegNo) }, ct);
+            if (displayRegNos.TryGetValue(hit.ChassisNo!, out var displayRegNo) && !string.IsNullOrWhiteSpace(displayRegNo))
+                hit = hit with { RegNo = displayRegNo };
+        }
+
+        return hit;
+    }
+
+    /// <summary>
+    /// Applies the SAME 3-layer Reg No resolution GetVehicleSalesAsync uses (placeholder detection
+    /// -> DMS_ServiceHistory fallback -> manually-saved JobCardScannerDb override, see that
+    /// method's 2026-09-28 doc comments) to an arbitrary set of (ChassisNo, RegNo) pairs.
+    ///
+    /// ADDED 2026-09-28 ("that page when i search chassis no. with that Reg no. are shown different
+    /// from now which we bind in Vehicle sale that chassis no. and that Reg no. shown"): SECTION 115
+    /// widened what the Wizard's chassis/reg-no search could MATCH (via DMS_ServiceHistory), but the
+    /// RegNo VALUE it then showed still came straight off DMS_SaleBill's own reg_number - never
+    /// enriched the way Vehicle Sale's own display is. That's exactly why the two pages could show
+    /// two different Reg Nos for the one chassis. LookupVehicleForWizardAsync/
+    /// SearchVehiclesForWizardAsync both call this now so the Wizard shows the identical Reg No the
+    /// Vehicle Sale page would, for the same chassis.
+    /// </summary>
+    private async Task<Dictionary<string, string?>> ResolveDisplayRegNosAsync(IReadOnlyCollection<(string ChassisNo, string? RegNo)> rows, CancellationToken ct)
+    {
+        var result = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        if (rows.Count == 0) return result;
+
+        var placeholderChassis = rows
+            .Where(r => IsPlaceholderRegNo(r.RegNo))
+            .Select(r => r.ChassisNo)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var serviceHistoryRegNos = placeholderChassis.Count > 0
+            ? await GetRegNoByChassisFromServiceHistoryAsync(placeholderChassis, ct)
+            : new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+
+        var allChassis = rows.Select(r => r.ChassisNo).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var overridesByChassis = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        // 2026-09-28 UPDATE: same reasoning/fix as GetVehicleSalesAsync's own override read above -
+        // best-effort, not a page-breaking failure, if JobCardScannerDb's VehicleSaleOverride table
+        // isn't provisioned yet.
+        try
+        {
+            var overrideRows = await _db.VehicleSaleOverrides.AsNoTracking().Where(o => allChassis.Contains(o.ChassisNo)).ToListAsync(ct);
+            foreach (var o in overrideRows) overridesByChassis[o.ChassisNo] = o.RegNo;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not read JobCardScannerDb's dbo.VehicleSaleOverride table for the Wizard's Reg No enrichment - has it been created yet (sql/2026-09-28_create_vehicle_sale_overrides_table.sql)? Continuing without manual overrides for this request.");
+        }
+
+        foreach (var r in rows)
+        {
+            var regNo = r.RegNo;
+            if (IsPlaceholderRegNo(regNo) && serviceHistoryRegNos.TryGetValue(r.ChassisNo, out var fromHistory) && !string.IsNullOrWhiteSpace(fromHistory))
+                regNo = fromHistory;
+            if (overridesByChassis.TryGetValue(r.ChassisNo, out var overrideRegNo) && !string.IsNullOrWhiteSpace(overrideRegNo))
+                regNo = overrideRegNo;
+            result[r.ChassisNo] = regNo;
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Resolves a ChassisNo from DMSBAPLDATA's dbo.DMS_ServiceHistory (DMS_IOT_DATA, via
+    /// DMSBAPLDATAConnection/ConnStr) by an exact ChassisNo match OR a normalized RegNo match - the
+    /// fallback LookupVehicleForWizardAsync/SearchVehiclesForWizardAsync use when a search value
+    /// matches nothing in BaplConnection's DMS_SaleBill directly (see SECTION 113: reg_number there
+    /// is frequently just a "TEMP####" placeholder, so a REAL reg no. the user types often only
+    /// exists in DMS_ServiceHistory). Most-recently-serviced match wins when more than one history
+    /// row matches. Best-effort: returns null (not an exception) if DMSBAPLDATA can't be reached -
+    /// the caller already knows how to report "not found" either way.
+    /// </summary>
+    private async Task<string?> FindChassisByServiceHistoryMatchAsync(string trimmedValue, string valueNoSpaces, CancellationToken ct)
+    {
+        try
+        {
+            await using var conn = new SqlConnection(ConnStr);
+            await conn.OpenAsync(ct);
+
+            const string sql = @"
+                SELECT TOP 1 ChassisNo
+                FROM [dbo].[DMS_ServiceHistory]
+                WHERE IsRowTotal = 0
+                  AND ChassisNo IS NOT NULL
+                  AND (LTRIM(RTRIM(ChassisNo)) = @value
+                       OR REPLACE(REPLACE(LTRIM(RTRIM(RegNo)), ' ', ''), '-', '') = @valueNoSpaces)
+                ORDER BY JobDate DESC";
+
+            await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+            cmd.Parameters.AddWithValue("@value", trimmedValue);
+            cmd.Parameters.AddWithValue("@valueNoSpaces", valueNoSpaces);
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            return await rdr.ReadAsync(ct) ? rdr["ChassisNo"] as string : null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not resolve a ChassisNo from DMSBAPLDATA's DMS_ServiceHistory for wizard search value - falling through to 'not found'.");
+            return null;
         }
     }
 
     public async Task<IReadOnlyList<DmsBaplDataVehicleSuggestion>> SearchVehiclesForWizardAsync(string? q, string? dealerCode, int take, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(q) || q.Trim().Length < 2) return Array.Empty<DmsBaplDataVehicleSuggestion>();
-        take = take is > 0 and <= 50 ? take : 20;
+        // 2026-09-28 ("too less shown shown all chassisno. for this location"): raised from
+        // <= 50 ? take : 20 - that silently reset ANY caller-supplied take above 50 back down to
+        // 20, which is what was actually capping this dealer's typeahead. The frontend's own
+        // pre-existing "Showing the first N matches" hint at vehicleSuggestions.length >= 100
+        // (JobCardWizardPage.tsx) implies 100 was always the intended cap - this now matches that,
+        // and JobCardsController.VehicleSuggestionsForWizard's own hardcoded call-site argument is
+        // raised to 100 in the same change so the two agree. FACT: the old 20 was confirmed via the
+        // real controller/service code, not guessed. ASSUMPTION/UNCONFIRMED: if
+        // bgauss.chhatarpur@gmail.com's login still shows fewer chassis than expected after this,
+        // that could be a separate dealer-code-scoping issue (DealerId -> BaplDmsDealerCode mapping)
+        // rather than this take-cap - flagged to the user, needs real data to confirm either way.
+        take = take is > 0 and <= 200 ? take : 100;
+        var trimmedQ = q.Trim();
+
+        // 2026-09-28 ("in jobcard reg no. not serach according which report came in vehicle sale
+        // that also fix") - see LookupVehicleForWizardAsync's doc comment / SECTION 115.
+        // DMS_SaleBill.reg_number is frequently a "TEMP####" placeholder, so typing a vehicle's
+        // REAL reg no. wouldn't match anything below on its own. Resolve any ChassisNo(s)
+        // DMS_ServiceHistory knows for this query FIRST, then let the DMS_SaleBill search below
+        // also match directly on those chassis numbers, in addition to its own chassis_no/
+        // reg_number LIKE match. Best-effort - an empty list here just means no extra matches, the
+        // original LIKE-based search still runs as before.
+        var chassisFromHistory = await FindChassisNumbersByServiceHistoryMatchAsync(trimmedQ, take, ct);
 
         var results = new List<DmsBaplDataVehicleSuggestion>();
         try
@@ -873,19 +1245,24 @@ public class DmsBaplDataService : IDmsBaplDataService
             await using var conn = new SqlConnection(BaplConnStr);
             await conn.OpenAsync(ct);
 
-            const string sql = @"
+            var chassisInClause = chassisFromHistory.Count > 0
+                ? " OR sb.chassis_no IN (" + string.Join(",", chassisFromHistory.Select((_, i) => $"@ch{i}")) + ")"
+                : "";
+
+            var sql = $@"
                 SELECT TOP (@take) sb.chassis_no, sb.reg_number, sb.Item_Modl, sb.InvoiceDate, sb.salebill_date, sb.CreatedOn
                 FROM [dbo].[DMS_SaleBill] sb
                 WHERE (sb.IsDelete IS NULL OR sb.IsDelete = 0)
                   AND (@dealerCode IS NULL OR sb.dealer_code = @dealerCode)
                   AND sb.chassis_no IS NOT NULL
-                  AND (sb.chassis_no LIKE @q OR sb.reg_number LIKE @q)
+                  AND (sb.chassis_no LIKE @q OR sb.reg_number LIKE @q{chassisInClause})
                 ORDER BY sb.CreatedOn DESC";
 
             await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
             cmd.Parameters.AddWithValue("@take", take);
             cmd.Parameters.AddWithValue("@dealerCode", string.IsNullOrWhiteSpace(dealerCode) ? DBNull.Value : dealerCode.Trim());
-            cmd.Parameters.AddWithValue("@q", $"%{q.Trim()}%");
+            cmd.Parameters.AddWithValue("@q", $"%{trimmedQ}%");
+            for (var i = 0; i < chassisFromHistory.Count; i++) cmd.Parameters.AddWithValue($"@ch{i}", chassisFromHistory[i]);
             await using var rdr = await cmd.ExecuteReaderAsync(ct);
             // DISTINCT by chassis in code, not SQL - the same chassis can have more than one
             // DMS_SaleBill row (e.g. a corrected/re-issued bill), and a typeahead only needs to
@@ -902,6 +1279,66 @@ public class DmsBaplDataService : IDmsBaplDataService
         catch (Exception ex)
         {
             throw new InvalidOperationException($"Could not search BaplConnection's vehicles for suggestions (DMS_SaleBill): {ex.Message}", ex);
+        }
+
+        // 2026-09-28 ("Reg no. are shown different from now which we bind in Vehicle sale"): the
+        // typeahead's own DMS_SaleBill query above only ever returns that table's raw reg_number
+        // (often a "TEMP####" placeholder - SECTION 113), and SECTION 115's chassis-matching
+        // widening never touched the VALUE shown for each suggestion, only which rows matched. Run
+        // every suggestion through the same 3-layer resolution (placeholder -> DMS_ServiceHistory ->
+        // this app's own VehicleSaleOverride) that GetVehicleSalesAsync/LookupVehicleForWizardAsync
+        // already use, so the Wizard's dropdown shows the identical Reg No the Vehicle Sale page
+        // shows for the same chassis - closing the gap this fix's earlier round left open.
+        if (results.Count > 0)
+        {
+            var displayRegNos = await ResolveDisplayRegNosAsync(
+                results.Select(r => (r.ChassisNo, r.RegNo)).ToList(), ct);
+            for (var i = 0; i < results.Count; i++)
+            {
+                if (displayRegNos.TryGetValue(results[i].ChassisNo, out var displayRegNo) && !string.IsNullOrWhiteSpace(displayRegNo))
+                    results[i] = results[i] with { RegNo = displayRegNo };
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Best-effort ChassisNo search against DMSBAPLDATA's dbo.DMS_ServiceHistory (DMS_IOT_DATA, via
+    /// DMSBAPLDATAConnection/ConnStr) by partial ChassisNo OR RegNo match - the typeahead-widening
+    /// half of SearchVehiclesForWizardAsync's 2026-09-28 fix (see that method's doc comment).
+    /// Capped at `take` distinct chassis numbers (no point resolving more than the typeahead itself
+    /// will ever show). Returns an empty list (not an exception) if DMSBAPLDATA can't be reached -
+    /// the caller's own DMS_SaleBill LIKE-match still runs regardless.
+    /// </summary>
+    private async Task<List<string>> FindChassisNumbersByServiceHistoryMatchAsync(string q, int take, CancellationToken ct)
+    {
+        var results = new List<string>();
+        try
+        {
+            await using var conn = new SqlConnection(ConnStr);
+            await conn.OpenAsync(ct);
+
+            const string sql = @"
+                SELECT DISTINCT TOP (@take) ChassisNo
+                FROM [dbo].[DMS_ServiceHistory]
+                WHERE IsRowTotal = 0
+                  AND ChassisNo IS NOT NULL
+                  AND (ChassisNo LIKE @q OR RegNo LIKE @q)";
+
+            await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+            cmd.Parameters.AddWithValue("@take", take);
+            cmd.Parameters.AddWithValue("@q", $"%{q}%");
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            while (await rdr.ReadAsync(ct))
+            {
+                var chassis = rdr["ChassisNo"] as string;
+                if (!string.IsNullOrWhiteSpace(chassis)) results.Add(chassis);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not search DMSBAPLDATA's DMS_ServiceHistory for wizard typeahead query '{Query}' - suggestions will only reflect BaplConnection's own chassis_no/reg_number match.", q);
         }
 
         return results;
