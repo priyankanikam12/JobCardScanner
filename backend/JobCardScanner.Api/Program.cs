@@ -133,13 +133,68 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy(Policies.PartsUserUp, p => RoleUp(p, "PartsUser", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
     // See Policies.PartsReadUp's doc comment - union of ServiceAdvisorUp + PartsUserUp's roles,
     // read-only Part Upload access for Repair Bill/Material Transfer's part picker.
-    options.AddPolicy(Policies.PartsReadUp, p => RoleUp(p, "ServiceAdvisor", "Supervisor", "PartsUser", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
+    //
+    // 2026-09-30 (SECTION 162, "real access lock" for Supervisor - see this file's own SECTION 162
+    // note further down for the full narrative): Supervisor REMOVED from this list. Confirmed safe
+    // - PartsReadUp is not used by JobCardsController or AttendanceController (the two features
+    // Supervisor keeps), only by PartUploadController.Get() (Stock Report - now locked out for
+    // Supervisor per this section) and, per its own doc comment, the Repair Bill/Material
+    // Transfer Item Code picker (both of those creation flows are also being locked out for
+    // Supervisor this section - see MaterialTransferDocsController/RepairBillDocsController's own
+    // policy reassignment below), so removing Supervisor here has no collateral effect on
+    // anything Supervisor is meant to keep.
+    options.AddPolicy(Policies.PartsReadUp, p => RoleUp(p, "ServiceAdvisor", "PartsUser", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
     options.AddPolicy(Policies.CashierUp, p => RoleUp(p, "Cashier", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
     options.AddPolicy(Policies.DealerAdminUp, p => RoleUp(p, "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
     options.AddPolicy(Policies.CorporateAdminUp, p => RoleUp(p, "CorporateAdmin", "SystemAdmin"));
     options.AddPolicy(Policies.SystemAdminOnly, p => RoleUp(p, "SystemAdmin"));
     // See Policies.SupervisorUp's own doc comment - deliberately excludes plain WorkshopManager.
-    options.AddPolicy(Policies.SupervisorUp, p => RoleUp(p, "Supervisor", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
+    //
+    // 2026-09-30 (SECTION 162) FLAG, not yet resolved: this policy's entire reason to exist was to
+    // give Supervisor (and DealerAdmin and up) access to Technician Employee that a plain
+    // WorkshopManager doesn't have. Supervisor is now being locked out of Technician Employee too
+    // (see App.tsx/StaffLayout.tsx changes this section), which would make this policy identical
+    // to DealerAdminUp (DealerAdmin, CorporateAdmin, SystemAdmin - Supervisor removed below).
+    // NOT deleted/merged into DealerAdminUp yet because I don't have
+    // TechnicianEmployeesController.cs in this session to confirm it's really the only caller of
+    // SupervisorUp before removing/renaming it - paste that file and I'll finish this cleanly
+    // (either retire this policy in favour of DealerAdminUp, or confirm another caller still needs
+    // the Supervisor-without-WorkshopManager distinction and leave it as its own policy with
+    // Supervisor removed, whichever the real file shows).
+    options.AddPolicy(Policies.SupervisorUp, p => RoleUp(p, "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
+    // 2026-09-30 (SECTION 162, "real access lock" for Supervisor - user confirmed: Supervisor
+    // logins should only be able to use Dashboard, Job Cards and Attendance; everything else
+    // Supervisor could previously reach must be genuinely blocked, not just hidden from the
+    // sidebar). FACT: ServiceAdvisorUp and WorkshopManagerUp above are SHARED policies - re-read
+    // directly from JobCardsController.cs and AttendanceController.cs this session, both of which
+    // gate several of their own actions with these same two policies, and Supervisor must KEEP
+    // those (Job Cards and Attendance are the two features being preserved). Stripping Supervisor
+    // out of ServiceAdvisorUp/WorkshopManagerUp directly would have also locked Supervisor out of
+    // Job Cards and Attendance, which is the opposite of what was asked. So instead of touching
+    // those two shared policies, two NEW policies are added below, identical to their originals
+    // minus Supervisor, for the controllers whose access should genuinely be revoked. Only the
+    // controllers already in this session (MaterialTransferDocsController.cs,
+    // RepairBillDocsController.cs) have been repointed at these new policies so far - see this
+    // section's own README entry for the full list of controllers still needed (LabourMaster,
+    // Item Master/Parts, Service History, Vehicle Sale, Reports, Technician Employees, Extended
+    // Battery Warranty Schemes, OEM Models/Warranties) to finish closing this off at the API level.
+    // Until those are repointed too, a Supervisor's existing token would still be ACCEPTED by
+    // those controllers' current ServiceAdvisorUp/WorkshopManagerUp policies if called directly
+    // (Swagger/Postman/a modified client) - the frontend route guards block normal in-app/URL
+    // navigation today, but this is not yet a complete server-side lock. Flagging this plainly
+    // rather than claiming the lock is finished.
+    // NOTE: using plain string literals ("ServiceAdvisorUpNoSupervisor"/"WorkshopManagerUpNoSupervisor")
+    // rather than new Policies.XxxNoSupervisor constants - I don't have your real Auth/Policies.cs
+    // (or wherever the Policies static class actually lives - you told me on 2026-09-29 there's no
+    // Auth/Policies.cs) in this session, so adding constants there risked a guess at that file's
+    // exact structure. AddPolicy's first argument and [Authorize(Policy = "...")] both just take a
+    // plain string, so this compiles and works identically either way. If you'd rather have real
+    // Policies.ServiceAdvisorUpNoSupervisor/WorkshopManagerUpNoSupervisor constants for consistency
+    // with every other policy name in this file, paste me the file that defines the Policies class
+    // and I'll add them there and switch these two literals over to it - purely cosmetic, not a
+    // behavior change.
+    options.AddPolicy("ServiceAdvisorUpNoSupervisor", p => RoleUp(p, "ServiceAdvisor", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
+    options.AddPolicy("WorkshopManagerUpNoSupervisor", p => RoleUp(p, "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
 });
 
 // ---------------------------------------------------------------------
@@ -301,16 +356,63 @@ if (app.Environment.IsDevelopment())
     // hand-edit tables.
     var wasCreated = await db.Database.EnsureCreatedAsync();
 
+    // NOTE: these two counts stay sequential (not Task.WhenAll) on purpose - a single
+    // JobCardScannerDbContext instance isn't thread-safe for concurrent commands ("A second
+    // operation was started on this context before a previous operation completed" if you try).
+    // This is a 2-query, same-process cost either way - not where this file's real startup-time
+    // win is (see the self-healing section below, which DOES run its blocks concurrently, each
+    // on its own DbContext/connection).
     var dealerCount = await db.Dealers.CountAsync();
     var userCount = await db.Users.CountAsync();
     Console.WriteLine($"[Startup] EnsureCreatedAsync created a new database: {wasCreated}. Current counts -> Dealers: {dealerCount}, Users: {userCount}.");
 }
 
-// ---------------------------------------------------------------------
-// SELF-HEALING COLUMN MIGRATIONS - runs every startup, every environment (not just Development,
-// unlike the EnsureCreatedAsync block above - this database is shared across every environment
-// this app has run in so far, and the whole point of this block is to stop relying on someone
-// remembering to run a .sql script by hand).
+// =======================================================================
+// SELF-HEALING SCHEMA CATCH-UP - 2026-10-01 CLEANUP ("clean program.cs coz takes many time to
+// start"): same 9 guarded, idempotent SQL blocks that were already here (every statement below is
+// byte-for-byte unchanged from before this cleanup - only HOW they're invoked changed), just
+// restructured so independent blocks run CONCURRENTLY instead of one-after-another.
+//
+// FACT: every block below was already its own `using var scope = app.Services.CreateScope();` +
+// its own JobCardScannerDbContext + its own try/catch, specifically so one block's failure can
+// never block another (see each block's own doc comment, preserved below). That per-block
+// isolation is exactly what also makes them safe to run concurrently: each has its own DbContext
+// (so its own SQL connection) and touches its own tables. Previously they ran one at a time -
+// 9 sequential network round-trips to your RDS/Azure SQL database on EVERY startup, in EVERY
+// environment (not just Development). On a remote database with any real network latency, 9
+// sequential round-trips is the single biggest startup-time cost in this file after the DB
+// connection itself - this is very likely the "takes many time to start" you're seeing, given the
+// log you pasted cut off right after the FIRST of these 9 blocks logged its success line.
+//
+// DEPENDENCY CHECK (so parallelizing doesn't break anything): I re-read all 9 blocks' SQL to find
+// any that touch a table only a DIFFERENT block creates.
+//   - RunOemModelCatchUpAsync (OemModels/OemModelWarranties) ALTERs
+//     dbo.ExtendedBatteryWarrantySchemes to add OemModelId - that table is CREATED by
+//     RunExtendedBatteryWarrantySchemeCatchUpAsync. On a database where that table doesn't exist
+//     yet, running these two at the same time could race (the ALTER could fire before the CREATE
+//     TABLE commits). So RunOemModelCatchUpAsync now explicitly runs AFTER
+//     RunExtendedBatteryWarrantySchemeCatchUpAsync, not concurrently with it.
+//   - RunPartSuggestionStatusTypeRepairAsync reads/ALTERs dbo.JobCardPartSuggestions.Status -
+//     that table is CREATED by RunBaplColumnsLabourWorkflowCatchUpAsync (the old "apply-all-
+//     pending-jobcardscannerdb-changes.sql" block). Same reasoning - kept sequential after it,
+//     not concurrent with it.
+//   - Every other block (column migrations, Material Transfer Labour, Technician Employee,
+//     Service Menu/Complaint/Prefix Master, Menu Access Override/Role Menu Mode) touches tables
+//     none of the others create or depend on - confirmed safe to run concurrently.
+// This is why the two "wave 2" blocks below are awaited AFTER wave 1 finishes, not inside the
+// same Task.WhenAll - on an already-provisioned database (yours - 30 dealers, 658 users) every
+// guard is already a no-op either way, so this ordering costs nothing extra there; it only
+// matters for a brand-new/empty database.
+//
+// Nothing about WHAT runs changed - same SQL text, same log messages, same per-block try/catch
+// (a caught exception is logged and swallowed exactly as before, never allowed to take down the
+// other blocks or the app). Only the scheduling changed.
+// =======================================================================
+
+// ---- wave 1 block: SELF-HEALING COLUMN MIGRATIONS - runs every startup, every environment (not
+// just Development, unlike the EnsureCreatedAsync block above - this database is shared across
+// every environment this app has run in so far, and the whole point of this block is to stop
+// relying on someone remembering to run a .sql script by hand).
 //
 // WHY THIS EXISTS: EnsureCreatedAsync() only creates schema on a brand-new empty database (see the
 // NOTE above it) - on an existing database it is a permanent no-op, so every column added to a
@@ -328,6 +430,7 @@ if (app.Environment.IsDevelopment())
 // why), so running this on every startup is safe and cheap - a few sub-millisecond metadata
 // lookups once the columns already exist, everywhere except the one real run that actually adds
 // them.
+async Task RunColumnMigrationsAsync()
 {
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
@@ -377,18 +480,18 @@ if (app.Environment.IsDevelopment())
     }
 }
 
-// ---------------------------------------------------------------------
-// SELF-HEALING SCHEMA CATCH-UP (2026-09-03) - folds EVERY previously-manual add-*.sql /
-// apply-all-pending-jobcardscannerdb-changes.sql / redefine-workflow-stages-to-7-steps.sql script
-// sitting at the repo root into one self-applying block, same reasoning as the column-migration
-// block above (and the exact same root cause it was written for): this project has no EF Core
-// migrations, so every schema/data change since the database was first created shipped as its own
-// loose .sql file the user had to remember to run by hand against the real RDS database. Several of
-// these were confirmed NOT actually applied yet (that's what caused the recurring part-suggestions
-// 500 the block above fixes) - rather than trust that every other loose script WAS run, this block
-// re-applies all of them here too. Every statement is guarded (IF NOT EXISTS / COL_LENGTH /
-// OBJECT_ID), copied from the already-idempotent source scripts, so this is safe and cheap to run
-// on every startup regardless of which of the original scripts were or weren't run by hand:
+// ---- wave 1 block: SELF-HEALING SCHEMA CATCH-UP (2026-09-03) - folds EVERY previously-manual
+// add-*.sql / apply-all-pending-jobcardscannerdb-changes.sql / redefine-workflow-stages-to-7-
+// steps.sql script sitting at the repo root into one self-applying block, same reasoning as the
+// column-migration block above (and the exact same root cause it was written for): this project
+// has no EF Core migrations, so every schema/data change since the database was first created
+// shipped as its own loose .sql file the user had to remember to run by hand against the real RDS
+// database. Several of these were confirmed NOT actually applied yet (that's what caused the
+// recurring part-suggestions 500 the block above fixes) - rather than trust that every other loose
+// script WAS run, this block re-applies all of them here too. Every statement is guarded (IF NOT
+// EXISTS / COL_LENGTH / OBJECT_ID), copied from the already-idempotent source scripts, so this is
+// safe and cheap to run on every startup regardless of which of the original scripts were or
+// weren't run by hand:
 //   - apply-all-pending-jobcardscannerdb-changes.sql (Dealers/Vehicles/JobCards/JobCardPhotos BAPL
 //     DMS columns, the JobCardPartSuggestions table + its own self-heal, the Invoices unique index)
 //   - add-jobcard-labour-suggestions-table.sql (the JobCardLabourSuggestions table itself - if this
@@ -404,7 +507,12 @@ if (app.Environment.IsDevelopment())
 // add-bapldms-jobcardheader-priority-column.sql target BAPLDMSvad (DMS's own database, a
 // separate connection this DbContext does not own) - those still need running by hand against that
 // database specifically if not already applied.
-// ---------------------------------------------------------------------
+//
+// NOTE (2026-10-01 cleanup): RunPartSuggestionStatusTypeRepairAsync and RunOemModelCatchUpAsync
+// (further below) both depend on something THIS block creates/owns - see the dependency note at
+// the top of this section - so this one is awaited in wave 1, and those two run afterward, not
+// concurrently with it.
+async Task RunBaplColumnsLabourWorkflowCatchUpAsync()
 {
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
@@ -616,14 +724,16 @@ if (app.Environment.IsDevelopment())
     }
 }
 
-// ---------------------------------------------------------------------
-// EXTENDED BATTERY WARRANTY SCHEME (2026-09-22) - "needs to create warenty table in jobcardscanner
-// db for this functionality and add this in our function". Own try/catch block, separate from the
-// one above, so a failure here (or in any future block) never blocks any other block from running -
-// same isolation convention already used throughout this file. See
+// ---- wave 1 block: EXTENDED BATTERY WARRANTY SCHEME (2026-09-22) - "needs to create warenty
+// table in jobcardscanner db for this functionality and add this in our function". Own try/catch
+// block, separate from the others, so a failure here (or in any other block) never blocks any
+// other block from running - same isolation convention already used throughout this file. See
 // Models/ExtendedBatteryWarrantySchemes.cs for the table's full field-by-field reasoning and
 // Models/RepairBillDocs.cs (RepairBillDocItem) for the two new nullable tag-only columns.
-// ---------------------------------------------------------------------
+//
+// NOTE (2026-10-01 cleanup): RunOemModelCatchUpAsync (further below) ALTERs the table this block
+// CREATEs, so it's awaited in wave 1 and RunOemModelCatchUpAsync runs after it, not concurrently.
+async Task RunExtendedBatteryWarrantySchemeCatchUpAsync()
 {
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
@@ -688,15 +798,15 @@ if (app.Environment.IsDevelopment())
     }
 }
 
-// ---------------------------------------------------------------------
-// OEM MODEL MASTER + OEM MODEL WARRANTY (2026-09-22) - "this wants to integrate for my
-// battery-warranty-schemes for link models for warrenty and this all table add in jobcard db that
-// all functionality need to craete in jc". Own try/catch block, separate from the one above, for
-// the same isolation reason as every other block in this file. See Models/OemModels.cs for the
-// full field-by-field reasoning (ported from the DMS reference's OemmodelMaster/
-// OemmodelWarranty tables) and Models/ExtendedBatteryWarrantySchemes.cs for the new OemModelId
-// column added there to link the two features together.
-// ---------------------------------------------------------------------
+// ---- wave 2 block (runs AFTER wave 1 - see dependency note above): OEM MODEL MASTER + OEM MODEL
+// WARRANTY (2026-09-22) - "this wants to integrate for my battery-warranty-schemes for link models
+// for warrenty and this all table add in jobcard db that all functionality need to craete in jc".
+// Own try/catch block, separate from the others, for the same isolation reason as every other
+// block in this file. See Models/OemModels.cs for the full field-by-field reasoning (ported from
+// the DMS reference's OemmodelMaster/OemmodelWarranty tables) and
+// Models/ExtendedBatteryWarrantySchemes.cs for the new OemModelId column added there to link the
+// two features together.
+async Task RunOemModelCatchUpAsync()
 {
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
@@ -765,22 +875,23 @@ if (app.Environment.IsDevelopment())
     }
 }
 
-// ---------------------------------------------------------------------
-// COLUMN TYPE-REPAIR (2026-09-03) - the IF OBJECT_ID(...)/COL_LENGTH(...) guards in the block
-// above (and the one before it) only detect a MISSING table/column - they cannot detect or fix a
-// column that already exists with the WRONG type. Confirmed live via a pasted server log: on this
-// database, JobCardPartSuggestions.Status is INT (not NVARCHAR(20) as the CREATE TABLE above and
-// the JobCardPartSuggestion C# model assume), so every "Add Suggestion" save under Part Suggestion
-// failed with "Conversion failed when converting the nvarchar value 'Paid' to data type int." -
-// the app always writes the string 'Paid' or 'U/W' into this column (see AddPartSuggestion's
-// req.Status check in JobCardsController.cs). This almost certainly happened because
-// JobCardPartSuggestions already existed - created earlier by a different ad hoc script with
-// Status typed as INT - before this app's own guarded CREATE TABLE ever ran, so IF OBJECT_ID(...)
-// IS NULL was already false and the correct NVARCHAR(20) definition was silently never applied.
-// This is a SEPARATE try/catch block (its own ExecuteSqlRawAsync call), not folded into the block
+// ---- wave 2 block (runs AFTER wave 1 - see dependency note above): COLUMN TYPE-REPAIR
+// (2026-09-03) - the IF OBJECT_ID(...)/COL_LENGTH(...) guards in the blocks above only detect a
+// MISSING table/column - they cannot detect or fix a column that already exists with the WRONG
+// type. Confirmed live via a pasted server log: on this database, JobCardPartSuggestions.Status is
+// INT (not NVARCHAR(20) as the CREATE TABLE above and the JobCardPartSuggestion C# model assume),
+// so every "Add Suggestion" save under Part Suggestion failed with "Conversion failed when
+// converting the nvarchar value 'Paid' to data type int." - the app always writes the string
+// 'Paid' or 'U/W' into this column (see AddPartSuggestion's req.Status check in
+// JobCardsController.cs). This almost certainly happened because JobCardPartSuggestions already
+// existed - created earlier by a different ad hoc script with Status typed as INT - before this
+// app's own guarded CREATE TABLE ever ran, so IF OBJECT_ID(...) IS NULL was already false and the
+// correct NVARCHAR(20) definition was silently never applied. This is a SEPARATE try/catch block
+// (its own ExecuteSqlRawAsync call), not folded into RunBaplColumnsLabourWorkflowCatchUpAsync
 // above, because a mid-batch error aborts every remaining statement in that same batch - a bug
 // here must not be able to prevent the BAPL-columns/Labour-table/workflow-stage statements above
 // it from applying.
+async Task RunPartSuggestionStatusTypeRepairAsync()
 {
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
@@ -839,17 +950,17 @@ if (app.Environment.IsDevelopment())
     }
 }
 
-// ---------------------------------------------------------------------
-// MATERIAL TRANSFER LABOUR (2026-09-22) - "which Rate Type * is Partwise from this we upload FOR
-// Part Code add Labour Code also that was wants to integrate in material transfer which in video
-// ... give proper code like vide functionality in mobile and for web both" - confirmed against the
-// mt-labour_add.mp4 recording of the real BGauss DMS (mydmsconnect.com/MtrlTranN.aspx): a "Labour"
-// button on the Material Transfer entry, scoped to the currently-picked Part Code, opens a "Part
-// wise Labour Detail" popup backed by Labour Master Partwise (DMSBAPLDATA's own
-// LabourMasterPartwise table - see LabourMasterController.cs's new by-part-code endpoint). Own
-// try/catch block for the same isolation reason as every other block in this file. See
-// MaterialTransferDocItem.ItemType/TechnicianId's own doc comments in Models/MaterialTransferDocs.cs.
-// ---------------------------------------------------------------------
+// ---- wave 1 block: MATERIAL TRANSFER LABOUR (2026-09-22) - "which Rate Type * is Partwise from
+// this we upload FOR Part Code add Labour Code also that was wants to integrate in material
+// transfer which in video ... give proper code like vide functionality in mobile and for web
+// both" - confirmed against the mt-labour_add.mp4 recording of the real BGauss DMS
+// (mydmsconnect.com/MtrlTranN.aspx): a "Labour" button on the Material Transfer entry, scoped to
+// the currently-picked Part Code, opens a "Part wise Labour Detail" popup backed by Labour Master
+// Partwise (DMSBAPLDATA's own LabourMasterPartwise table - see LabourMasterController.cs's new
+// by-part-code endpoint). Own try/catch block for the same isolation reason as every other block
+// in this file. See MaterialTransferDocItem.ItemType/TechnicianId's own doc comments in
+// Models/MaterialTransferDocs.cs.
+async Task RunMaterialTransferLabourCatchUpAsync()
 {
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
@@ -879,14 +990,13 @@ if (app.Environment.IsDevelopment())
     }
 }
 
-// ---------------------------------------------------------------------
-// TECHNICIAN EMPLOYEE (2026-09-24) - "this technician dont want to bid username and password for
-// that location wants to create technician" - the new login-less Technicians table (see
-// Models/Technicians.cs's own doc comment). Own try/catch block for the same isolation reason as
-// every other block in this file. NOTE: unrelated to MaterialTransferDocItems.TechnicianId just
-// above (a pre-existing, different feature that FKs to Users, not to this new table) - deliberately
-// not touched.
-// ---------------------------------------------------------------------
+// ---- wave 1 block: TECHNICIAN EMPLOYEE (2026-09-24) - "this technician dont want to bid username
+// and password for that location wants to create technician" - the new login-less Technicians
+// table (see Models/Technicians.cs's own doc comment). Own try/catch block for the same isolation
+// reason as every other block in this file. NOTE: unrelated to
+// MaterialTransferDocItems.TechnicianId above (a pre-existing, different feature that FKs to
+// Users, not to this new table) - deliberately not touched.
+async Task RunTechnicianEmployeeCatchUpAsync()
 {
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
@@ -917,6 +1027,198 @@ if (app.Environment.IsDevelopment())
         Console.WriteLine($"[Startup] WARNING: Technicians schema catch-up failed - {ex.Message}");
     }
 }
+
+// ---- wave 1 block: SERVICE MENU MASTER + COMPLAINT MASTER + PREFIX MASTER (2026-09-30, SECTION
+// 163) - "wants to create 1. service menu master 2. Complain master 3. Prefix Master". Own
+// try/catch block, same isolation convention as every other block in this file - a failure here
+// never blocks the app from starting or blocks any other schema block from running. See
+// Models/ServiceMenuMaster.cs, Models/ComplaintMaster.cs and Models/DocPrefixMaster.cs for full
+// field-by-field reasoning, including the flagged Assumption on Priority's data shape and the
+// flagged decision to keep the Prefix Master decoupled from the existing (unseen in this session)
+// JobCardNumberingService.
+async Task RunServiceMenuComplaintPrefixCatchUpAsync()
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
+    try
+    {
+        await db.Database.ExecuteSqlRawAsync(@"
+            IF OBJECT_ID('dbo.ServiceMenuMasters', 'U') IS NULL
+            BEGIN
+                CREATE TABLE dbo.ServiceMenuMasters (
+                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+                    JobTypeId INT NOT NULL,
+                    JobTypeName NVARCHAR(60) NOT NULL,
+                    ServiceHeadId INT NOT NULL,
+                    ServiceHeadName NVARCHAR(120) NOT NULL,
+                    PriorityValue NVARCHAR(10) NOT NULL,
+                    PriorityLabel NVARCHAR(30) NOT NULL,
+                    SortOrder INT NOT NULL DEFAULT (0),
+                    IsActive BIT NOT NULL DEFAULT (1),
+                    CreatedById UNIQUEIDENTIFIER NULL,
+                    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+                    UpdatedById UNIQUEIDENTIFIER NULL,
+                    UpdatedAt DATETIME2 NULL,
+                    CONSTRAINT FK_ServiceMenuMasters_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id),
+                    CONSTRAINT FK_ServiceMenuMasters_UpdatedBy FOREIGN KEY (UpdatedById) REFERENCES dbo.Users(Id)
+                );
+                CREATE UNIQUE INDEX IX_ServiceMenuMasters_JobType_ServiceHead_Priority ON dbo.ServiceMenuMasters(JobTypeId, ServiceHeadId, PriorityValue);
+            END
+
+            IF OBJECT_ID('dbo.ComplaintMasters', 'U') IS NULL
+            BEGIN
+                CREATE TABLE dbo.ComplaintMasters (
+                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+                    ComplaintText NVARCHAR(300) NOT NULL,
+                    SortOrder INT NOT NULL DEFAULT (0),
+                    IsActive BIT NOT NULL DEFAULT (1),
+                    CreatedById UNIQUEIDENTIFIER NULL,
+                    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+                    UpdatedById UNIQUEIDENTIFIER NULL,
+                    UpdatedAt DATETIME2 NULL,
+                    CONSTRAINT FK_ComplaintMasters_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id),
+                    CONSTRAINT FK_ComplaintMasters_UpdatedBy FOREIGN KEY (UpdatedById) REFERENCES dbo.Users(Id)
+                );
+            END
+
+            IF OBJECT_ID('dbo.DocPrefixMasters', 'U') IS NULL
+            BEGIN
+                CREATE TABLE dbo.DocPrefixMasters (
+                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+                    DocType NVARCHAR(10) NOT NULL,
+                    Prefix NVARCHAR(10) NOT NULL,
+                    IsActive BIT NOT NULL DEFAULT (1),
+                    CreatedById UNIQUEIDENTIFIER NULL,
+                    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+                    UpdatedById UNIQUEIDENTIFIER NULL,
+                    UpdatedAt DATETIME2 NULL,
+                    CONSTRAINT FK_DocPrefixMasters_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id),
+                    CONSTRAINT FK_DocPrefixMasters_UpdatedBy FOREIGN KEY (UpdatedById) REFERENCES dbo.Users(Id)
+                );
+                CREATE UNIQUE INDEX IX_DocPrefixMasters_DocType ON dbo.DocPrefixMasters(DocType);
+
+                -- Seed the 3 document types you named, using the exact prefixes from your example
+                -- (JC/26-25/0001, MT/26-25/0001, RB/26-25/0001). You can UPDATE these rows any time
+                -- via SQL - this INSERT only runs once, the first time the table is created.
+                INSERT INTO dbo.DocPrefixMasters (Id, DocType, Prefix, IsActive, CreatedAt) VALUES
+                    (NEWID(), 'JC', 'JC', 1, SYSUTCDATETIME()),
+                    (NEWID(), 'MT', 'MT', 1, SYSUTCDATETIME()),
+                    (NEWID(), 'RB', 'RB', 1, SYSUTCDATETIME());
+            END
+
+            IF OBJECT_ID('dbo.DocNumberSequences', 'U') IS NULL
+            BEGIN
+                CREATE TABLE dbo.DocNumberSequences (
+                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+                    DocType NVARCHAR(10) NOT NULL,
+                    FinancialYear NVARCHAR(10) NOT NULL,
+                    LastSequence INT NOT NULL DEFAULT (0),
+                    UpdatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+                );
+                CREATE UNIQUE INDEX IX_DocNumberSequences_DocType_FY ON dbo.DocNumberSequences(DocType, FinancialYear);
+            END
+        ");
+        Console.WriteLine("[Startup] Self-healing schema catch-up (ServiceMenuMasters + ComplaintMasters + DocPrefixMasters + DocNumberSequences tables) checked/applied.");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Startup] WARNING: ServiceMenuMaster/ComplaintMaster/DocPrefixMaster schema catch-up failed - {ex.Message}");
+    }
+}
+
+// ---- wave 1 block: MENU ACCESS OVERRIDE + ROLE MENU MODE (SECTION 173, 2026-09-30) - diagnosing
+// "Admin: Menu Access -> Save failed." on the live site (dms.bgauss.com, logged in as
+// SystemAdmin).
+//
+// FACT, confirmed by re-reading this whole file: Models/MenuAccessOverride.cs (SECTION 155,
+// 2026-09-29) and Models/RoleMenuMode.cs (SECTION 170, 2026-09-30) are the ONLY two tables added to
+// JobCardScannerDbContext this entire session that never got a guarded CREATE TABLE block here -
+// every other new table since (PartUploads, Technicians, ServiceMenuMasters, ComplaintMasters,
+// DocPrefixMasters, DocNumberSequences, ExtendedBatteryWarrantySchemes, OemModels, ...) has one.
+// db.Database.EnsureCreatedAsync() near the top of this file only creates schema for a brand-new,
+// completely empty database (see that block's own comment) - it does NOT retroactively add tables
+// to an already-existing database, which dms.bgauss.com clearly is. So on any environment where
+// these two tables were never created some other way, GET /api/menu-access and PUT /api/menu-access
+// (MenuAccessController.cs) would throw a raw SqlException ("Invalid object name
+// 'dbo.MenuAccessOverrides'"/'dbo.RoleMenuModes'") the first time either table is touched.
+//
+// INTERPRETATION, NOT CONFIRMED AS THE CAUSE: the screenshot you sent shows the page's GET load
+// working fine (every item listed, "EVERYONE" defaults) - if MenuAccessOverrides were missing on
+// dms.bgauss.com specifically, that GET would already be failing with its own "Could not load..."
+// banner, not just Save. So either that table already exists there (created some other way) and
+// only RoleMenuModes is missing - its own GET fails silently (fail-open, see MenuAccessPage.tsx's
+// load()), which would explain a Save-time failure with no earlier symptom - or the real cause of
+// THIS specific "Save failed." is something else entirely (e.g. the CorporateAdmin/SystemAdmin role
+// check in MenuAccessController.Put returning Forbid() with an empty body for this login). This
+// block fixes the CONFIRMED gap (both tables missing their self-healing catch-up, unlike every
+// sibling table) regardless - it's a safe, idempotent no-op if both already exist on
+// dms.bgauss.com, and protects every other/future environment (a staging reset, a DR restore, a
+// fresh install) from hitting this same silent gap. It does NOT by itself confirm or rule out
+// what's actually failing on dms.bgauss.com right now - see MenuAccessPage.tsx's own SECTION 173
+// fix (real HTTP status + backend message now shown in the error banner) for how to pin that down
+// next time Save is clicked there.
+async Task RunMenuAccessRoleModeCatchUpAsync()
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
+    try
+    {
+        await db.Database.ExecuteSqlRawAsync(@"
+            IF OBJECT_ID('dbo.MenuAccessOverrides', 'U') IS NULL
+            BEGIN
+                CREATE TABLE dbo.MenuAccessOverrides (
+                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+                    NavKey NVARCHAR(80) NOT NULL,
+                    RolesCsv NVARCHAR(400) NOT NULL DEFAULT (''),
+                    UpdatedBy NVARCHAR(200) NULL,
+                    UpdatedAtUtc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+                );
+                CREATE UNIQUE INDEX IX_MenuAccessOverrides_NavKey ON dbo.MenuAccessOverrides(NavKey);
+            END
+
+            IF OBJECT_ID('dbo.RoleMenuModes', 'U') IS NULL
+            BEGIN
+                CREATE TABLE dbo.RoleMenuModes (
+                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+                    Role NVARCHAR(40) NOT NULL,
+                    OnlyShowChecked BIT NOT NULL DEFAULT (0),
+                    UpdatedBy NVARCHAR(200) NULL,
+                    UpdatedAtUtc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+                );
+                CREATE UNIQUE INDEX IX_RoleMenuModes_Role ON dbo.RoleMenuModes(Role);
+            END
+        ");
+        Console.WriteLine("[Startup] Self-healing schema catch-up (MenuAccessOverrides + RoleMenuModes tables) checked/applied.");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Startup] WARNING: MenuAccessOverride/RoleMenuMode schema catch-up failed - {ex.Message}");
+    }
+}
+
+var selfHealStopwatch = Stopwatch.StartNew();
+
+// Wave 1: every block whose tables nothing else in wave 2 needs created first - see the
+// dependency note at the top of this section. Runs concurrently (Task.WhenAll), each on its own
+// scope/DbContext/connection, instead of one after another.
+await Task.WhenAll(
+    RunColumnMigrationsAsync(),
+    RunBaplColumnsLabourWorkflowCatchUpAsync(),
+    RunExtendedBatteryWarrantySchemeCatchUpAsync(),
+    RunMaterialTransferLabourCatchUpAsync(),
+    RunTechnicianEmployeeCatchUpAsync(),
+    RunServiceMenuComplaintPrefixCatchUpAsync(),
+    RunMenuAccessRoleModeCatchUpAsync());
+
+// Wave 2: depends on tables wave 1 just created (OemModels needs ExtendedBatteryWarrantySchemes;
+// the Status type-repair needs JobCardPartSuggestions) - also run concurrently with each other,
+// just after wave 1 instead of interleaved with it.
+await Task.WhenAll(
+    RunOemModelCatchUpAsync(),
+    RunPartSuggestionStatusTypeRepairAsync());
+
+selfHealStopwatch.Stop();
+Console.WriteLine($"[Startup] All self-healing schema checks complete in {selfHealStopwatch.ElapsedMilliseconds} ms (2 waves, was 9 sequential round-trips before this cleanup).");
 
 // Opens Swagger in the default browser automatically once Kestrel has actually started
 // listening. launchSettings.json's "launchBrowser"/"launchUrl": "swagger" ONLY takes effect when

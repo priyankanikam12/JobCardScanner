@@ -1,3 +1,4 @@
+// mobile\src\screens\LoginScreen.tsx
 import { useState, type ReactNode } from 'react'
 import {
   ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView,
@@ -7,6 +8,11 @@ import { useAuth } from '../auth/AuthContext'
 import { useStaffAuth } from '../auth/StaffAuthContext'
 import { dealerLogin, forgotDealerPassword, resetDealerPassword } from '../services/dealerAuthService'
 import { PasswordField } from '../components/PasswordField'
+// 2026-09-28 (SECTION 135) - "attendance page also fix ... why check in time not shown": wires
+// the self check-in call attendanceCheckin.ts's own doc comment always asked for but was never
+// actually connected (I never had this real LoginScreen.tsx before now). See handleDealerLogin()
+// below for where it fires and why.
+import { checkInAfterLogin } from '../services/attendanceCheckin'
 
 type Mode = 'dealer' | 'staff'
 type DealerStep = 'login' | 'forgot' | 'reset'
@@ -50,6 +56,15 @@ export function LoginScreen() {
     setSubmitting(true)
     try {
       await dealerLogin(email.trim(), password)
+      // 2026-09-28 (SECTION 135): self check-in, right after a successful sign-in - matches
+      // attendanceCheckin.ts's own doc comment ("call checkInAfterLogin() right after a
+      // successful sign-in completes (token stored, user profile loaded). Fire-and-forget is
+      // fine ... it never throws"). Deliberately NOT awaited so it can never delay showing the
+      // home screen, and deliberately placed here (right after dealerLogin() resolves, which is
+      // what actually writes the token to SecureStore) rather than after refresh() below, since
+      // apiClient's own request interceptor reads that token directly - it doesn't need
+      // StaffAuthContext's profile to have re-loaded yet.
+      checkInAfterLogin()
       // Tells StaffAuthContext to re-check SecureStore, which flips isAuthenticated to true and
       // - via RootNavigator - swaps this screen out for either ForceChangePasswordScreen (if this
       // is a first sign-in / admin-reset account) or the main app.

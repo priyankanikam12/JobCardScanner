@@ -170,7 +170,13 @@ public class AttendanceController : ControllerBase
             // Marked day's snapshot wins (what their location actually WAS that day); if not yet
             // marked, fall back to their current live WorkLocationCodes so the main dealer can
             // still see where to expect them before marking - see Attendance.Location's doc comment.
-            var location = rec?.Location ?? (s.WorkLocationCodes.Any() ? string.Join(", ", s.WorkLocationCodes) : null);
+            // 2026-09-28 FIX (SECTION 134): s.WorkLocationCodes.Any() on a NULL WorkLocationCodes
+            // (a plausible real state for any User row created before the 2026-09-17 Work Area
+            // feature existed, if the DB column allows NULL and the value converter doesn't
+            // coerce it to an empty list) throws a NullReferenceException here - this runs
+            // client-side (LINQ-to-Objects, after ToListAsync()), so any one such row is enough to
+            // 500 the WHOLE roster response, not just that row. Null-safe now via ?.Any() == true.
+            var location = rec?.Location ?? (s.WorkLocationCodes?.Any() == true ? string.Join(", ", s.WorkLocationCodes) : null);
             return new
             {
                 employeeId = s.Id,
@@ -225,7 +231,9 @@ public class AttendanceController : ControllerBase
         // time of the correction, same reasoning as EmployeeName/EmployeeRole being re-snapshotted
         // isn't done for those (kept as the original mark's values) - but Location is more likely to
         // need correcting itself as part of "adjust this", so it re-reads live each save.
-        existing.Location = employee.WorkLocationCodes.Any() ? string.Join(", ", employee.WorkLocationCodes) : null;
+        // 2026-09-28 FIX (SECTION 134): same null-WorkLocationCodes NullReferenceException risk as
+        // List() above - guarded the same way so Mark() can't 500 on the same kind of row.
+        existing.Location = employee.WorkLocationCodes?.Any() == true ? string.Join(", ", employee.WorkLocationCodes) : null;
         existing.Status = req.Status;
         existing.CheckInTime = req.CheckInTime;
         existing.CheckOutTime = req.CheckOutTime;
@@ -300,9 +308,24 @@ public class AttendanceController : ControllerBase
     ///   - IST is computed as a fixed UTC+5:30 offset rather than via the OS timezone database.
     ///     India has no DST, so this is safe, and it sidesteps "India Standard Time" (Windows) vs
     ///     "Asia/Kolkata" (IANA) time-zone-ID mismatches across hosts.
-    ///   - Shift 1 = 09:00-18:00, Shift 2 = 18:00-24:00, exactly as you described. A login BEFORE
-    ///     09:00 (not covered by your description) is counted as Shift 1 rather than rejected -
-    ///     tell me if an early arrival should be handled differently.
+    ///   - SUPERSEDED 2026-09-28 (SECTION 153, "in attendance only 1 shift 10 to 6"): the
+    ///     two-window design described just below no longer applies. There is now ONE shift,
+    ///     10:00-18:00 IST (8 hrs) - every check-in is recorded as Shift1 regardless of the actual
+    ///     login time (see the `shift` assignment a few lines down in CheckIn()). This does NOT
+    ///     reject/flag a login outside 10:00-18:00 - it still records the real check-in time
+    ///     whenever it happens; only the old time-of-day branching between two windows is gone.
+    ///     The CheckOut() midnight-crossing lookup and ComputeHoursWorked's rollover logic are left
+    ///     as-is - harmless even though a single 10:00-18:00 shift shouldn't normally cross
+    ///     midnight. Original SECTION 101/143 text kept below for history, no longer current:
+    ///   - Shift 1 = 09:00-18:00 (9 hrs). Shift 2 = 18:00-03:00 the NEXT calendar day (9 hrs) -
+    ///     CHANGED 2026-09-28 (SECTION 143, "1st shift 9 to 6 then 2nd shift after that 9 hr") from
+    ///     the original 18:00-24:00 (6 hrs) you'd described earlier - you confirmed Shift 2 should
+    ///     match Shift 1's 9-hour length. This only affects the WINDOW used for the hoursWorked
+    ///     calculation in Me() below and the CheckOut() midnight-crossing fix next to it - which
+    ///     shift a login falls into (the `shift` assignment a few lines down) doesn't need to
+    ///     change, since it only looks at whether the time-of-day is before/after 18:00 either way.
+    ///     A login BEFORE 09:00 (not covered by your description) is counted as Shift 1 rather than
+    ///     rejected - tell me if an early arrival should be handled differently.
     ///   - Logging in always sets Status to Present, even overriding a prior manual mark for today
     ///     (e.g. if a supervisor had already set OnLeave) - tell me if a manual mark should instead
     ///     take precedence and block this.
@@ -324,7 +347,18 @@ public class AttendanceController : ControllerBase
         var istNow = DateTime.UtcNow.AddHours(5).AddMinutes(30); // see doc comment above - fixed IST offset, no OS timezone lookup
         var day = istNow.Date;
         var timeOfDay = istNow.TimeOfDay;
-        var shift = timeOfDay >= TimeSpan.FromHours(18) ? AttendanceShift.Shift2 : AttendanceShift.Shift1;
+        // 2026-09-28 (SECTION 153, "in attendance only 1 shift 10 to 6"): single shift now,
+        // 10:00-18:00 IST (8 hrs) - replaces the two-window Shift1 (09:00-18:00) / Shift2
+        // (18:00-03:00 next day) split used since SECTION 101/143. Every check-in is recorded as
+        // Shift1 - the enum member itself is NOT renamed, only so old rows already saved with
+        // "Shift1"/"Shift2" in the database keep parsing correctly through the existing
+        // HasConversion<string>() mapping (SECTION 146/152); Shift2 is no longer assigned by
+        // anything. This does NOT reject or flag a check-in outside 10:00-18:00 - it still records
+        // the REAL time the person actually logs in, same as before; only the old time-of-day
+        // branching that picked between two windows is removed. FLAGGING, not assuming: if you
+        // also want a check-in outside 10:00-18:00 rejected, or marked "late"/"early", that is a
+        // different, not-yet-requested rule - tell me and I'll add it.
+        var shift = AttendanceShift.Shift1;
 
         var existing = await _db.Attendance.FirstOrDefaultAsync(a => a.EmployeeId == employeeId && a.AttendanceDate == day);
         if (existing is null)
@@ -350,7 +384,9 @@ public class AttendanceController : ControllerBase
             // of the day" gate as CheckInTime/Shift just above) - see Attendance.Location's doc
             // comment. Read fresh here (not from the AsNoTracking() `user` read above, which is the
             // same row) since WorkLocationCodes could in principle change between logins.
-            existing.Location = user.WorkLocationCodes.Any() ? string.Join(", ", user.WorkLocationCodes) : null;
+            // 2026-09-28 FIX (SECTION 134): same null-WorkLocationCodes guard as List()/Mark() above
+            // - CheckIn() has the identical risk on mobile self check-in.
+            existing.Location = user.WorkLocationCodes?.Any() == true ? string.Join(", ", user.WorkLocationCodes) : null;
         }
         existing.MarkedByUserId = employeeId;
         existing.MarkedAtUtc = DateTime.UtcNow;
@@ -382,12 +418,26 @@ public class AttendanceController : ControllerBase
         if (employeeId is null) return BadRequest(new { message = "No signed-in user." });
 
         var istNow = DateTime.UtcNow.AddHours(5).AddMinutes(30);
-        var day = istNow.Date;
+        var today = istNow.Date;
 
-        var existing = await _db.Attendance.FirstOrDefaultAsync(a => a.EmployeeId == employeeId && a.AttendanceDate == day);
+        // 2026-09-28 FIX (SECTION 143), surfaced by the Shift 2 change just above: Shift 2 now runs
+        // 18:00-03:00, crossing midnight, so a checkout after midnight can land on a DIFFERENT
+        // calendar date than the check-in that opened it (e.g. check in 22:00 Day 1, check out
+        // 02:00 Day 2). The original `a.AttendanceDate == day` lookup used `day = istNow.Date` -
+        // TODAY's date at the moment of checkout - which would miss that Day-1 row entirely and
+        // fall into the "no check-in on record" branch below, creating a second, check-in-less row
+        // for Day 2 instead of closing out the real one. Now looks for the most recent STILL-OPEN
+        // row (CheckOutTime == null) for this employee first, regardless of exact date, and only
+        // falls back to today's own row (original behavior, e.g. re-checking-out the same day) if
+        // none is open.
+        var existing = await _db.Attendance
+            .Where(a => a.EmployeeId == employeeId && a.CheckOutTime == null)
+            .OrderByDescending(a => a.AttendanceDate)
+            .FirstOrDefaultAsync()
+            ?? await _db.Attendance.FirstOrDefaultAsync(a => a.EmployeeId == employeeId && a.AttendanceDate == today);
         if (existing is null)
         {
-            // No check-in on record for today (e.g. CheckIn() failed silently earlier, or this
+            // No check-in on record at all (e.g. CheckIn() failed silently earlier, or this
             // account started using self check-in mid-day) - still record what we can rather than
             // erroring out.
             var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == employeeId);
@@ -402,7 +452,7 @@ public class AttendanceController : ControllerBase
                 EmployeeId = user.Id,
                 EmployeeName = user.Name,
                 EmployeeRole = user.Role.ToString(),
-                AttendanceDate = day,
+                AttendanceDate = today,
                 Status = AttendanceStatus.Present,
             };
             _db.Attendance.Add(existing);
@@ -434,7 +484,19 @@ public class AttendanceController : ControllerBase
     /// can't be turned into an unbounded history dump) up to and including `date` (default today),
     /// newest first, so a Supervisor can see a short recent trail of their own check-in/out times,
     /// not just a single day. ASSUMPTION: a 14-day default window - tell me if you want a different
-    /// default or an explicit date-range picker on the page instead.</summary>
+    /// default or an explicit date-range picker on the page instead.
+    ///
+    /// 2026-09-28 (SECTION 143, "after 9 hrs complete auto checkout and if extra hr that user
+    /// working then only maintain this hour ... that shown in page and maintain"): each row now
+    /// also carries `hoursWorked` - a DISPLAY-ONLY computed value (per your confirmed answer), not
+    /// a stored column. CheckOutTime in the database is still only ever set by the real
+    /// CheckOut()/Mark() calls above - nothing here writes it automatically. For today's row with
+    /// no checkout yet, hoursWorked is the LIVE elapsed time since CheckInTime (recomputed fresh on
+    /// every call to this endpoint) and is NOT capped at 9/8 hours - it just keeps growing the
+    /// longer they stay checked in, exactly as you confirmed ("keep tracking it, no cap"). For a
+    /// past day with no checkout ever recorded, hoursWorked is null (there's no way to know when
+    /// they actually left, so showing a frozen or made-up number would be worse than showing
+    /// nothing) - see ComputeHoursWorked below.</summary>
     [HttpGet("me")]
     [Authorize(Policy = Policies.Staff)]
     public async Task<IActionResult> Me([FromQuery] DateTime? date, [FromQuery] int? days)
@@ -449,19 +511,53 @@ public class AttendanceController : ControllerBase
         var records = await _db.Attendance.AsNoTracking()
             .Where(a => a.EmployeeId == employeeId && a.AttendanceDate >= fromDay && a.AttendanceDate <= toDay)
             .OrderByDescending(a => a.AttendanceDate)
-            .Select(a => new
-            {
-                date = a.AttendanceDate,
-                status = a.Status.ToString(),
-                a.Location,
-                checkInTime = a.CheckInTime,
-                checkOutTime = a.CheckOutTime,
-                shift = a.Shift.HasValue ? a.Shift.Value.ToString() : null,
-                remarks = a.Remarks,
-            })
             .ToListAsync();
 
-        return Ok(new { fromDate = fromDay, toDate = toDay, items = records });
+        var istNow = DateTime.UtcNow.AddHours(5).AddMinutes(30);
+        var items = records.Select(a => new
+        {
+            date = a.AttendanceDate,
+            status = a.Status.ToString(),
+            a.Location,
+            checkInTime = a.CheckInTime,
+            checkOutTime = a.CheckOutTime,
+            shift = a.Shift.HasValue ? a.Shift.Value.ToString() : null,
+            remarks = a.Remarks,
+            hoursWorked = ComputeHoursWorked(a, istNow),
+        });
+
+        return Ok(new { fromDate = fromDay, toDate = toDay, items });
+    }
+
+    /// <summary>2026-09-28 (SECTION 143) - shared "how many hours has this check-in run" calculation
+    /// used by Me()'s hoursWorked field. Combines AttendanceDate (the day the shift STARTED, i.e.
+    /// the day of check-in) with the TimeSpan-of-day CheckInTime/CheckOutTime to get real
+    /// DateTimes, so Shift 2's 18:00-03:00 window (crossing midnight - see CheckIn()'s doc comment)
+    /// is handled correctly: if CheckOutTime is numerically SMALLER than CheckInTime, it's rolled
+    /// onto the next calendar day rather than producing a negative/nonsensical duration. No upper
+    /// cap is applied anywhere here - a shift that runs long just returns a bigger number.</summary>
+    private static double? ComputeHoursWorked(Attendance a, DateTime istNow)
+    {
+        if (!a.CheckInTime.HasValue) return null;
+        var checkInDateTime = a.AttendanceDate + a.CheckInTime.Value;
+
+        DateTime endDateTime;
+        if (a.CheckOutTime.HasValue)
+        {
+            endDateTime = a.CheckOutTime.Value < a.CheckInTime.Value
+                ? a.AttendanceDate.AddDays(1) + a.CheckOutTime.Value
+                : a.AttendanceDate + a.CheckOutTime.Value;
+        }
+        else
+        {
+            // Still checked in, no checkout recorded - only give a "live" running total for TODAY's
+            // own row; a past day with a missing checkout is genuinely unknown, not zero.
+            if (a.AttendanceDate != istNow.Date) return null;
+            endDateTime = istNow;
+        }
+
+        var hours = (endDateTime - checkInDateTime).TotalHours;
+        return hours < 0 ? null : Math.Round(hours, 2); // defensive - should not happen given the above
     }
 }
 

@@ -5,7 +5,7 @@ import { useStaffAuth } from '../../auth/StaffAuthContext'
 import { PasswordInput } from '../../components/PasswordInput'
 import { StatusBadge } from '../../components/StatusBadge'
 import { WorkflowTimeline, type WorkflowTimelineHistoryEntry } from '../../components/WorkflowTimeline'
-import type { BaplDmsJobCardHistory, JobCardDetail, JobCardPhoto, JobCardsLabourCatalogRow, JobCardsPartsCatalogRow, StaffRole, Technician, WorkflowStage } from '../../types'
+import type { BaplDmsJobCardHistory, JobCardDetail, JobCardPhoto, JobCardsLabourCatalogRow, JobCardsPartsCatalogRow, RepairBillDoc, StaffRole, Technician, WorkflowStage } from '../../types'
 import { buildEstimatePrintHtml, buildJobCardPrintHtml } from '../../lib/jobCardPrintHtml'
 
 // Photo URLs come back from the API as a relative path (e.g. "/uploads/jobcard-photos/.../x.jpg" -
@@ -13,20 +13,34 @@ import { buildEstimatePrintHtml, buildJobCardPrintHtml } from '../../lib/jobCard
 const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL
 const photoSrc = (url: string) => (url.startsWith('http') ? url : `${API_BASE_URL}${url}`)
 
-// 2026-09-07: once the Estimates Amount Grand Total reaches this, Part Suggestion/Labour Suggestion
-// stop accepting new entries (existing suggestions still show/print/email fine) - see
-// ESTIMATE_TOTAL_LOCK_THRESHOLD's usage in JobCardDetailPage below. Per explicit request; not tied
-// to the manual Done/Edit lock on the Estimates Amount card itself, which stays independent of this.
-const ESTIMATE_TOTAL_LOCK_THRESHOLD = 2000
-
-/** Same Grand Total formula EstimatesCard/printEstimate already use (parts: mrp*qty, labour:
- * rate*qty) - pulled out here so JobCardDetailPage can gate Part/Labour Suggestion's add-forms on
- * it without duplicating the calculation a third time. */
-function calcEstimateGrandTotal(jc: JobCardDetail): number {
-  const partsTotal = jc.partSuggestions.reduce((sum, p) => sum + (p.mrp ?? 0) * (p.quantity ?? 1), 0)
-  const labourTotal = jc.labourSuggestions.reduce((sum, l) => sum + (l.rateAtSuggestion ?? 0) * (l.quantity ?? 1), 0)
-  return partsTotal + labourTotal
+// 2026-09-28 (SECTION 137) - "0301-A01-1025 exists in Item Master and Part Upload but search says
+// it does not exist": PartSuggestionCard's search fetch below used a blanket
+// `.catch(() => setAvailableParts([]))` - a REAL backend failure (e.g. the parts-catalog endpoint's
+// own 502 when BAPL's C_ItemMaster connection has a problem - see JobCardsController.PartsCatalog's
+// try/catch around SearchItemMasterAsync) looked EXACTLY like "zero parts matched your search",
+// which is how a genuine, real-part search could show "does not exist" even though the SQL itself
+// (WHERE ItemCode LIKE '%...%' - confirmed from your real IBaplDealerService.cs, no Status filter
+// at all, contradicting my earlier guess in SECTION 136 that Status='N' explained this - that guess
+// is now WITHDRAWN, this is the corrected diagnosis) would normally match it fine. Same
+// describeError pattern already used for Attendance (SECTION 125) - used here so a real failure
+// now says so explicitly instead of masquerading as "not found".
+function describeSearchError(err: unknown, fallback: string): string {
+  const e = err as { response?: { status?: number; data?: { message?: string } } }
+  const detail = e?.response?.data?.message
+  const status = e?.response?.status
+  if (detail) return `${fallback} (${detail})`
+  if (status) return `${fallback} (HTTP ${status})`
+  return `${fallback} (no response reached the server - check your connection)`
 }
+
+// 2026-10-01 REMOVED (per explicit request - "Remove the cap entirely"): the ₹2000 Grand Total
+// hard-stop that used to block Part Suggestion/Labour Suggestion from accepting new entries once
+// the Estimates Amount Grand Total reached ESTIMATE_TOTAL_LOCK_THRESHOLD has been taken out, along
+// with the calcEstimateGrandTotal(jc) helper that only existed to compute that gate (EstimatesCard
+// below computes its own displayed Grand Total inline from partRows/labourRows, unaffected by this
+// removal). There is now no maximum - Part/Labour Suggestion only locks on the manual Done/Edit
+// toggle on the Estimates Amount card (see EstimatesCard / `estimatesLocked` below), same as before
+// 2026-09-07.
 
 /** "Set/reset customer portal password" - the dealer/admin side of the new customer password
  * login (POST /api/customers/{id}/admin-reset-password), which runs alongside the customer's
@@ -177,6 +191,83 @@ function WorkflowHistoryGrid({ jc }: { jc: JobCardDetail }) {
   )
 }
 
+/** 2026-09-28 (SECTION 150, "in print click download invoioce download then it will not download
+ * why?"): builds the "Invoice" print option's HTML from THIS APP'S OWN Repair Bill data (a Billed
+ * RepairBillDoc - see this section's own diagnosis in printInvoice below for why the old
+ * DMS-sourced version always 404'd for a job billed through the new Repair Bill page). Not shared
+ * with lib/jobCardPrintHtml.ts (I don't have that file's source this session, so this is a new,
+ * self-contained function here instead of risking a guessed edit to a file I can't see) - same
+ * per-file-duplication convention this codebase already uses elsewhere (e.g. formatElapsedMs/IST
+ * formatters, duplicated between this file and the mobile screen rather than shared). A plain HTML
+ * document meant for a print-preview window (see printInvoice's own printWindow call below), not a
+ * server-generated PDF - "Save as PDF" from the browser's print dialog covers that, matching how
+ * this same menu's Estimate/JobCard print options already work. */
+function buildRepairBillInvoicePrintHtml(bill: RepairBillDoc, dealerName?: string, dealerCode?: string): string {
+  const rows = bill.items.map((it, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td>${it.itemType}</td>
+      <td>${it.itemCode}</td>
+      <td>${it.itemDescription}</td>
+      <td>${it.hsnCode ?? '-'}</td>
+      <td class="right">${it.qty}</td>
+      <td class="right">₹${Number(it.rate).toFixed(2)}</td>
+      <td>${!it.discountType || it.discountType === 'None' ? '-' : `${it.discountValue}${it.discountType === 'Percentage' ? '%' : ''}`}</td>
+      <td class="right">₹${Number(it.taxableAmount).toFixed(2)}</td>
+      <td class="right">₹${Number(it.cgstAmount).toFixed(2)}</td>
+      <td class="right">₹${Number(it.sgstAmount).toFixed(2)}</td>
+      <td class="right">₹${Number(it.igstAmount).toFixed(2)}</td>
+      <td class="right">₹${Number(it.totalAmount).toFixed(2)}</td>
+    </tr>`).join('')
+  const balance = Number(bill.totalAmount) - Number(bill.amountReceived)
+
+  return `<!doctype html><html><head><meta charset="utf-8" /><title>Invoice ${bill.billNumber}</title>
+<style>
+  body { font-family: Arial, sans-serif; padding: 24px; color: #111; }
+  h1 { font-size: 18px; margin: 0 0 2px; }
+  .muted { color: #555; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 11px; }
+  th, td { border: 1px solid #ccc; padding: 5px 6px; text-align: left; }
+  th { background: #f3f4f6; }
+  .right { text-align: right; }
+  .header-row { display: flex; justify-content: space-between; margin-bottom: 6px; }
+  .totals { margin-top: 14px; width: 320px; margin-left: auto; font-size: 13px; }
+  .totals div { display: flex; justify-content: space-between; padding: 3px 0; }
+  .totals .grand { font-weight: 700; border-top: 1px solid #333; margin-top: 4px; padding-top: 6px; }
+</style></head>
+<body>
+  <div class="header-row">
+    <div>
+      <h1>${dealerName ?? 'Repair Bill Invoice'}</h1>
+      <div class="muted">${dealerCode ?? ''}</div>
+    </div>
+    <div class="muted" style="text-align:right">
+      Bill No: <strong>${bill.billNumber}</strong><br/>
+      Date: ${bill.billDate ? new Date(bill.billDate).toLocaleDateString('en-IN') : '-'}<br/>
+      Status: ${bill.status}
+    </div>
+  </div>
+  <div class="muted">
+    Party: <strong>${bill.partyName}</strong> &nbsp; Reg No: ${bill.regNo ?? '-'} &nbsp; Chassis No: ${bill.chassisNo ?? '-'} &nbsp; Location: ${bill.location ?? '-'}
+    ${bill.jobCardNumber ? `<br/>Job No: ${bill.jobCardNumber}` : ''}
+  </div>
+  <table>
+    <thead><tr><th>Sr</th><th>Type</th><th>Code</th><th>Description</th><th>HSN</th><th class="right">Qty</th><th class="right">Rate</th><th>Discount</th><th class="right">Taxable</th><th class="right">CGST</th><th class="right">SGST</th><th class="right">IGST</th><th class="right">Total</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <div class="totals">
+    <div><span>Taxable Amount</span><span>₹${Number(bill.taxableAmount).toFixed(2)}</span></div>
+    <div><span>CGST</span><span>₹${Number(bill.cgstAmount).toFixed(2)}</span></div>
+    <div><span>SGST</span><span>₹${Number(bill.sgstAmount).toFixed(2)}</span></div>
+    <div><span>IGST</span><span>₹${Number(bill.igstAmount).toFixed(2)}</span></div>
+    <div class="grand"><span>Total Amount</span><span>₹${Number(bill.totalAmount).toFixed(2)}</span></div>
+    <div><span>Amount Received</span><span>₹${Number(bill.amountReceived).toFixed(2)}</span></div>
+    <div><span>Balance</span><span>₹${balance.toFixed(2)}</span></div>
+  </div>
+  ${bill.remarks ? `<div class="muted" style="margin-top:14px">Remarks: ${bill.remarks}</div>` : ''}
+</body></html>`
+}
+
 /** "Print" menu (2026-09-03) - replaces the separate standalone "Invoice" card that used to sit
  * further down the page (Download Invoice from DMS - see git history / InvoiceCard) with a single
  * dropdown next to the status badge, 3 options per explicit request:
@@ -187,11 +278,22 @@ function WorkflowHistoryGrid({ jc }: { jc: JobCardDetail }) {
  *                    lib/jobCardPrintHtml.ts), but filled from this job card's real saved data
  *                    (and its real Job No/Invoice No once known, instead of the wizard's "-"
  *                    placeholders).
- *   3. Invoice     - DMS's own repair bill PDF (GET /api/jobcards/{id}/invoice-pdf) - the
- *                    exact same source InvoiceCard used to download, opened in a new tab instead
- *                    of forced straight to disk so it can be reviewed/printed from the browser's
- *                    own PDF viewer. Same role gate InvoiceCard had (Cashier/DealerAdmin/
- *                    CorporateAdmin/SystemAdmin) - not everyone should be pulling repair bills.
+ *   3. Invoice     - CHANGED 2026-09-28 (SECTION 150, "in print click download invoioce download
+ *                    then it will not download why?"): used to fetch DMS's own repair bill PDF
+ *                    (GET /api/jobcards/{id}/invoice-pdf) - FACT, confirmed by re-reading that
+ *                    endpoint's own doc comment in JobCardsController.cs: it reads DMS's own
+ *                    RepairBillHeader/RepairBillDetail tables LIVE, which this app never writes to
+ *                    (repair bills you save from the Repair Bill page go into JobCardScanner's own
+ *                    RepairBillDocs table instead - see RepairBillDocsController.cs) - so that
+ *                    endpoint 404'd ("no repair bill in DMS") for every job billed through the new
+ *                    Repair Bill flow, which is why nothing downloaded. Per your confirmed answer,
+ *                    this now reads THIS APP'S OWN Billed Repair Bill for this job card instead
+ *                    (GET /api/repair-bill-docs?jobCardId=..., no DMS fallback) and renders it as a
+ *                    print-preview window (buildRepairBillInvoicePrintHtml above), same pattern as
+ *                    Estimate/JobCard print - not a server-generated PDF, since I don't have
+ *                    IInvoicePdfService's source to safely extend it (per your confirmed answer).
+ *                    Same role gate as before (Cashier/DealerAdmin/CorporateAdmin/SystemAdmin) -
+ *                    not everyone should be pulling repair bills.
  * Notices/errors from the Invoice option are surfaced through the same `setMsg` line the rest of
  * this page already uses for action feedback, rather than a second, separate message area. */
 function PrintMenu({ jc, hasRole, setMsg }: { jc: JobCardDetail; hasRole: (...roles: StaffRole[]) => boolean; setMsg: (m: string | null) => void }) {
@@ -304,32 +406,39 @@ function PrintMenu({ jc, hasRole, setMsg }: { jc: JobCardDetail; hasRole: (...ro
     }), 'Please allow popups to print the job card.')
   }
 
+  // 2026-09-28 (SECTION 150) - see this component's own doc comment above ("3. Invoice - CHANGED
+  // ...") for the full diagnosis. Keeps the exact same "open the window synchronously first, before
+  // any await" fix the 2026-09-03 comment below documents (still true and still needed - only the
+  // data source changed, not this popup-blocker workaround).
   const printInvoice = async () => {
     setOpen(false)
     setInvoiceBusy(true)
     setMsg(null)
-    // 2026-09-03 fix ("invoice not added/opened") - this used to call window.open(url, ...) only
-    // AFTER the `await staffApi.get(...)` below finished. Opening a new window/tab is only ever
-    // reliably allowed by the browser's popup blocker when it happens synchronously inside the
-    // click handler that started it - once an `await` has run, the browser no longer counts it as
-    // a direct response to the click, so this window.open call was getting silently blocked in
-    // some browsers even though `if (!win)` should have caught that (some browsers still hand back
-    // a non-null but effectively inert window object here). Opening the window FIRST, synchronously,
-    // then loading the PDF into it once the fetch finishes - same pattern printWindow above and the
-    // standalone InvoiceCard's own download() already use - sidesteps the whole issue.
-    const win = window.open('', '_blank')
+    // 2026-09-03 fix ("invoice not added/opened") - opening a new window/tab is only ever reliably
+    // allowed by the browser's popup blocker when it happens synchronously inside the click handler
+    // that started it - once an `await` has run, the browser no longer counts it as a direct
+    // response to the click. Opening the window FIRST, synchronously, then loading content into it
+    // once the fetch finishes - same pattern printWindow above uses - sidesteps the whole issue.
+    const win = window.open('', '_blank', 'width=900,height=650')
     if (!win) { setMsg('Please allow popups to view/print the invoice.'); setInvoiceBusy(false); return }
     win.document.write('<p style="font-family:sans-serif;padding:20px;color:#555;">Loading invoice…</p>')
     try {
-      const { data } = await staffApi.get(`/api/jobcards/${jc.id}/invoice-pdf`, { responseType: 'blob' })
-      const url = URL.createObjectURL(data as Blob)
-      win.location.href = url
-      setTimeout(() => URL.revokeObjectURL(url), 60_000)
-    } catch (err: unknown) {
+      const { data } = await staffApi.get<RepairBillDoc[]>('/api/repair-bill-docs', { params: { jobCardId: jc.id } })
+      const billed = data.find((b) => b.status === 'Billed')
+      if (!billed) {
+        win.close()
+        setMsg('No Repair Bill has been saved as Invoice for this job card yet.')
+        return
+      }
+      const html = buildRepairBillInvoicePrintHtml(billed, jc.dealer?.name, jc.dealer?.code)
+      win.document.open()
+      win.document.write(html)
+      win.document.close()
+      win.focus()
+      win.onload = () => win.print()
+    } catch {
       win.close()
-      const status = (err as { response?: { status?: number } })?.response?.status
-      if (status === 404) setMsg('No repair bill saved in DMS for this job yet.')
-      else setMsg('Could not open the invoice from DMS. Please try again.')
+      setMsg('Could not load the invoice for this job card. Please try again.')
     } finally {
       setInvoiceBusy(false)
     }
@@ -404,7 +513,9 @@ export function JobCardDetailPage() {
 
   if (!jc) return <p className="muted">Loading...</p>
 
-  const estimateGrandTotal = calcEstimateGrandTotal(jc)
+  // 2026-10-01: the parent-level estimateGrandTotal that used to gate Part/Labour Suggestion via
+  // ESTIMATE_TOTAL_LOCK_THRESHOLD has been removed along with that cap (see calcEstimateGrandTotal's
+  // doc comment above). EstimatesCard still computes its own Grand Total internally for display.
 
   const run = async (fn: () => Promise<unknown>, successMsg?: string) => {
     setBusy(true)
@@ -503,11 +614,11 @@ export function JobCardDetailPage() {
       {SHOW_QUALITY_CHECK_PANEL && hasRole('WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && <QcCard jc={jc} run={run} />}
       {/* Item 16: Part Suggestion, then Item 17: Labour Suggestion, then Item 15: Estimates Amount
          moves to AFTER Labour Suggestion (was before both). */}
-      {/* 2026-09-07: Part/Labour Suggestion's add-forms now also lock once the Grand Total hits
-         ESTIMATE_TOTAL_LOCK_THRESHOLD - independent of (and in addition to) the manual Done/Edit
-         lock, so EstimatesCard itself still only sees the manual `estimatesLocked` state below. */}
-      <PartSuggestionCard jc={jc} run={run} estimatesLocked={estimatesLocked} totalLockReached={estimateGrandTotal >= ESTIMATE_TOTAL_LOCK_THRESHOLD} />
-      <LabourSuggestionCard jc={jc} run={run} estimatesLocked={estimatesLocked} totalLockReached={estimateGrandTotal >= ESTIMATE_TOTAL_LOCK_THRESHOLD} />
+      {/* 2026-10-01: the ₹2000 Grand Total auto-lock on these two add-forms has been removed per
+         explicit request - no maximum any more. Only the manual Done/Edit `estimatesLocked` state
+         gates them now. */}
+      <PartSuggestionCard jc={jc} run={run} estimatesLocked={estimatesLocked} />
+      <LabourSuggestionCard jc={jc} run={run} estimatesLocked={estimatesLocked} />
       <EstimatesCard jc={jc} run={run} estimatesLocked={estimatesLocked} setEstimatesLocked={setEstimatesLocked} />
       {/* 2026-09-28 CHANGE ("remove DMS Service History" from both web and android): this card
          (DMS's own service/job-card history for this vehicle's chassis, GET /api/bapl-dms/
@@ -767,6 +878,35 @@ function UpdateWorkflowStageCard({
   const currentSeq = jc.currentStage?.seq ?? -1
   const repairCompletedStage = stages.find((s) => s.stageKey === 'repair_completed')
   const readyForDeliveryStage = stages.find((s) => s.stageKey === 'ready_for_delivery')
+  // 2026-09-28 (SECTION 145, then REVERTED same day - SECTION 147): a "Generate Invoice & Close Job
+  // Card" button briefly lived here, moving the job card straight to the terminal
+  // "invoice_generated" stage on a click. WITHDRAWN per your correction: "we cant close jobcards
+  // without repair ... save as proforma then save as invoice then this jobcard close" - closing is
+  // tied to your existing Repair Bill flow (Proforma -> Invoice save) elsewhere in the app, not a
+  // button on this page. See README SECTION 147.
+  //
+  // 2026-09-29 (SECTION 156, "not update stagw which i told befre Ready for Delivery / wants
+  // Invoice Generated stage and manually we can done stage of Invoice Generated") - REINSTATED,
+  // corrected: a manual "Mark Invoice Generated" button is back below, ADDITIVE to (not replacing)
+  // the automatic trigger SECTION 147/149 built into RepairBillDocsController.UpdateStatus (a
+  // linked Repair Bill saved as Invoice still auto-advances + auto-closes on its own, unchanged).
+  // "Repair Completed"/"Ready for Delivery" above are UNTOUCHED per your explicit "not update
+  // stage ... Ready for Delivery" instruction - same disabled-once-past pattern, same markStage().
+  //
+  // FLAGGED - please confirm this is what you want: this is the opposite of what SECTION 147
+  // withdrew ("we cant close jobcards without repair"). I'm implementing it because it's your most
+  // recent explicit instruction, but since RepairBillDocsController's generic ChangeStage() action
+  // (the same POST /api/jobcards/{id}/stage this button calls, via markStage()) closes the job card
+  // whenever a stage marked IsTerminal is reached, clicking this button WILL close the job card
+  // immediately - with no Repair Bill required at all, and no Invoice PDF necessarily on file. If
+  // you only meant "let us mark it manually when the repair bill was already generated/invoiced
+  // outside a saved Repair Bill row here" (e.g. a walk-in bill, or one entered directly in
+  // DMS/BAPL), this button does that correctly. If you meant something narrower - e.g. only enabled
+  // once a Repair Bill row for this job card already shows Status=Billed - tell me and I'll add
+  // that guard (the PrintMenu.printInvoice() function just below already fetches
+  // `/api/repair-bill-docs?jobCardId=...` and checks `b.status === 'Billed'`, so the same check is
+  // easy to reuse here).
+  const invoiceGeneratedStage = stages.find((s) => s.stageKey === 'invoice_generated')
   const markStage = (stage?: WorkflowStage) => {
     if (!stage) return Promise.resolve()
     return staffApi.post(`/api/jobcards/${jc.id}/stage`, { stageId: stage.id, notes: notes || null })
@@ -777,8 +917,12 @@ function UpdateWorkflowStageCard({
       <h3>Update Workflow Stage</h3>
       <p className="muted" style={{ marginTop: -6 }}>
         The stage above now advances automatically as work happens - parts/labour suggested, an
-        estimate drafted, a technician's first worklog started, an invoice generated. Use the two
-        buttons below only for the steps with no automatic trigger.
+        estimate drafted, a technician's first worklog started. Use the buttons below for the steps
+        with no automatic trigger. A linked Repair Bill saved as Invoice still auto-advances and
+        auto-closes this job card on its own (unchanged) - "Mark Invoice Generated" below is an
+        additional MANUAL way to reach that same stage, and closes the job card immediately when
+        clicked, with or without a Repair Bill on file. See this card's own SECTION 156 code comment
+        if you want that tightened to only work once a Repair Bill here already shows Billed.
       </p>
       {/* 2026-09-24 CHANGE ("before start required Assign Technician name update"): every stage
          change - the two manual buttons below AND every automatic trigger elsewhere on this page
@@ -828,6 +972,31 @@ function UpdateWorkflowStageCard({
             onClick={() => run(() => markStage(repairCompletedStage), 'Marked Repair Completed.')}
           >
             Mark Repair Completed
+          </button>
+        )}
+        {/* 2026-10-01 ("in Workflow Timeline after Repair Completed shift Invoice Generated after
+           this Ready for Delivery"): this button moved ahead of "Mark Ready for Delivery" below,
+           per explicit request, so the button ROW now reads Repair Completed -> Invoice Generated
+           -> Ready for Delivery. See this component's own doc comment above (just before
+           markStage) for the full history/interpretation flag on this button. Same disabled-once-
+           past pattern as the other two buttons; markStage() posts to the same generic
+           /api/jobcards/{id}/stage endpoint the automatic Repair-Bill-Billed trigger's
+           WorkflowStageAutomation call also feeds into, so a job card marked this way ends up in
+           an identical CurrentStage/StageHistory state either way.
+           NOTE - FLAGGED, not yet done: the read-only Workflow Timeline STEPPER further up this
+           page (<WorkflowTimeline stages={buildTimelineStages(stages)} .../>) is a separate
+           component from this button row, and its left-to-right order comes from the `stages`
+           array's own Seq values as seeded on the backend (GET /api/workflow-stages) - I don't have
+           that seed source (DbSeeder.cs or equivalent) or WorkflowTimeline.tsx's own rendering
+           logic in this session, so I have NOT reordered that stepper itself here, only this
+           action-button row. See my reply for what I need from you to also fix the stepper. */}
+        {invoiceGeneratedStage && (
+          <button
+            className="btn btn-sm btn-primary"
+            disabled={busy || currentSeq >= invoiceGeneratedStage.seq}
+            onClick={() => run(() => markStage(invoiceGeneratedStage), 'Marked Invoice Generated. Job card closed.')}
+          >
+            Mark Invoice Generated
           </button>
         )}
         {readyForDeliveryStage && (
@@ -994,7 +1163,26 @@ function QcCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<unknow
  * box. This toggle is plain client-side UI state (see JobCardDetailPage's `estimatesLocked`) - it
  * is NOT persisted to the backend, so it resets to unlocked on a fresh page load; nothing about
  * this changes what's actually saved (the parts/labour suggestions themselves still save
- * immediately as before). */
+ * immediately as before).
+ *
+ * 2026-10-01 ("after close Jobcard this done button remove"): once jc.status === 'Closed', the
+ * Done/Edit toggle itself is no longer rendered at all - a closed job card's estimate has nothing
+ * left to lock/unlock, so just the Grand Total shows.
+ *
+ * 2026-10-01 follow-up ("this jobcard closed still shown done button and Edit and send mail
+ * fuctionality hide this after close"): the email-estimate box (address field + Send Estimate
+ * button) is now ALSO hidden once closed - previously it stayed visible on a closed job card on
+ * the theory that mailing out the final estimate was still useful after closure; that was an
+ * unconfirmed Assumption and this instruction replaces it. Now: email box shows only while
+ * `estimatesLocked && !closed` (same "Done" lock as before, but closed always wins and hides it).
+ *
+ * NOTE on "closed": jc.status only becomes 'Closed' when a workflow stage flagged IsTerminal is
+ * reached (see backend JobCardsController.ChangeStage: `if (stage.IsTerminal && jc.Status !=
+ * Closed) jc.Status = Closed`). Today only "Invoice Generated" carries IsTerminal=true. If a job
+ * card looks finished to you but this card's Edit/Done + email box are still showing, it most
+ * likely means that job card's Status field isn't actually 'Closed' yet (it hasn't been moved to
+ * the Invoice Generated stage) - worth confirming on the specific job card via its status badge
+ * before assuming this code path isn't working. */
 function EstimatesCard({
   jc, estimatesLocked, setEstimatesLocked,
 }: {
@@ -1037,6 +1225,9 @@ function EstimatesCard({
   const partsTotal = partRows.reduce((sum, r) => sum + r.amount, 0)
   const labourTotal = labourRows.reduce((sum, r) => sum + r.amount, 0)
   const grandTotal = partsTotal + labourTotal
+  // 2026-10-01: a closed job card has nothing left to lock/unlock, so the Done/Edit toggle is
+  // hidden entirely below - see this component's doc comment.
+  const closed = jc.status === 'Closed'
 
   return (
     <div className="card">
@@ -1084,24 +1275,26 @@ function EstimatesCard({
       }}>
         <strong style={{ fontSize: 16 }}>Grand Total</strong>
         <strong style={{ fontSize: 18 }}>{money(grandTotal)}</strong>
-        {estimatesLocked ? (
-          <button
-            className="btn btn-sm"
-            onClick={() => { setEstimatesLocked(false); setEmailMsg(null) }}
-          >
-            Edit
-          </button>
-        ) : (
-          <button
-            className="btn btn-sm"
-            style={{ background: '#2563eb', color: '#fff', border: '1px solid #2563eb' }}
-            onClick={() => setEstimatesLocked(true)}
-          >
-            Done
-          </button>
+        {!closed && (
+          estimatesLocked ? (
+            <button
+              className="btn btn-sm"
+              onClick={() => { setEstimatesLocked(false); setEmailMsg(null) }}
+            >
+              Edit
+            </button>
+          ) : (
+            <button
+              className="btn btn-sm"
+              style={{ background: '#2563eb', color: '#fff', border: '1px solid #2563eb' }}
+              onClick={() => setEstimatesLocked(true)}
+            >
+              Done
+            </button>
+          )
         )}
       </div>
-      {estimatesLocked && (
+      {estimatesLocked && !closed && (
         <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <input
             type="email"
@@ -1136,13 +1329,17 @@ function EstimatesCard({
  * part gets its own Remove button (DELETE /api/jobcards/part-suggestions/{id}), instead of the old
  * Paid/U-W toggle being the only action available. Grid columns per spec: Sr no., Item Code,
  * Description, MRP, QTY, IssueType(Status). */
-function PartSuggestionCard({ jc, run, estimatesLocked, totalLockReached }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => void; estimatesLocked: boolean; totalLockReached: boolean }) {
+function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => void; estimatesLocked: boolean }) {
   const [availableParts, setAvailableParts] = useState<JobCardsPartsCatalogRow[]>([])
   const [search, setSearch] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [itemCode, setItemCode] = useState('')
   const [qty, setQty] = useState<number>(1)
   const [status, setStatus] = useState<'Paid' | 'U/W'>('Paid')
+  // 2026-09-28 (SECTION 137) - see describeSearchError's own doc comment above: distinguishes a
+  // real backend failure on this search from a genuine zero-match, instead of both looking
+  // identical ("does not exist").
+  const [searchError, setSearchError] = useState<string | null>(null)
 
   // 2026-09-28 fix ("search from select * from C_ItemMaster and 3/part-upload but still not
   // search why" - a real part, confirmed by you in both PartUploads and C_ItemMaster, still never
@@ -1160,12 +1357,24 @@ function PartSuggestionCard({ jc, run, estimatesLocked, totalLockReached }: { jc
   useEffect(() => {
     const handle = setTimeout(() => {
       const trimmed = search.trim()
-      if (trimmed.length === 0) { setAvailableParts([]); return }
+      if (trimmed.length === 0) { setAvailableParts([]); setSearchError(null); return }
       staffApi.get<JobCardsPartsCatalogRow[]>('/api/jobcards/parts-catalog', {
         params: { q: trimmed, ...(jc.baplServiceLocationCode ? { locationCode: jc.baplServiceLocationCode } : {}) },
       })
-        .then(({ data }) => setAvailableParts(data))
-        .catch(() => setAvailableParts([]))
+        .then(({ data }) => { setAvailableParts(data); setSearchError(null) })
+        .catch((err) => {
+          // 2026-09-28 (SECTION 137): was `.catch(() => setAvailableParts([]))` - a REAL backend
+          // failure here (e.g. this endpoint's own 502 when the BAPL C_ItemMaster connection has a
+          // problem) looked byte-for-byte identical to "your search text matched nothing", which
+          // is how a confirmed-real part ("0301-A01-1025", confirmed in both C_ItemMaster and
+          // PartUploads via your real SQL) could show "does not exist" even though
+          // IBaplDealerService.SearchItemMasterAsync's own WHERE clause (confirmed from your real
+          // pasted source - a plain `ItemCode LIKE @q`, no Status filter at all) should match it
+          // directly. Now shows the real HTTP status/message instead of silently pretending
+          // nothing matched, so the next time this happens you'll see exactly what failed.
+          setAvailableParts([])
+          setSearchError(describeSearchError(err, 'Search failed'))
+        })
     }, 300)
     return () => clearTimeout(handle)
   }, [search, jc.baplServiceLocationCode])
@@ -1252,14 +1461,17 @@ function PartSuggestionCard({ jc, run, estimatesLocked, totalLockReached }: { jc
       </table>
 
       {/* Estimates Amount "Done" hides this add-new-suggestion form (grid above stays visible) -
-         see EstimatesCard's doc comment for the full Done/Edit toggle. totalLockReached is a
-         separate, automatic lock once the Grand Total hits ESTIMATE_TOTAL_LOCK_THRESHOLD - see that
-         constant's doc comment in JobCardDetailPage. */}
-      {estimatesLocked || totalLockReached ? (
+         see EstimatesCard's doc comment for the full Done/Edit toggle. 2026-10-01: the separate
+         ₹2000 Grand Total auto-lock that used to apply here has been removed per explicit request -
+         this form now has no maximum and only respects the manual Done/Edit toggle, plus a closed
+         job card (jc.status === 'Closed') also hides it - estimatesLocked resets to false on every
+         fresh page load, and a closed job card's Done/Edit toggle is itself gone now (see
+         EstimatesCard), so without this a closed job card's add-forms would otherwise reopen. */}
+      {estimatesLocked || jc.status === 'Closed' ? (
         <p className="muted">
-          {estimatesLocked
-            ? 'Estimate is marked Done - click Edit on the Estimates Amount card below to add more parts.'
-            : `Grand Total has reached ₹${ESTIMATE_TOTAL_LOCK_THRESHOLD} - no more parts can be suggested on this estimate.`}
+          {jc.status === 'Closed'
+            ? 'Job card is closed - no more parts can be suggested.'
+            : 'Estimate is marked Done - click Edit on the Estimates Amount card below to add more parts.'}
         </p>
       ) : (
       <>
@@ -1302,14 +1514,16 @@ function PartSuggestionCard({ jc, run, estimatesLocked, totalLockReached }: { jc
               </ul>
             ) : (
               // Item 4: was silently blank when nothing matched - now says explicitly why, instead
-              // of looking like the search itself is broken.
+              // of looking like the search itself is broken. 2026-09-28 (SECTION 137): now branches
+              // on searchError - a real backend failure no longer shows the misleading "does not
+              // exist" text (see describeSearchError's own doc comment above for why that mattered).
               <div style={{
                 position: 'absolute', zIndex: 10, top: '100%', left: 0, right: 0, marginTop: 2,
                 background: 'var(--card-bg, #fff)', border: '1px solid var(--border)', borderRadius: 8,
                 padding: '8px 10px', boxShadow: '0 6px 18px rgba(0,0,0,.12)',
               }}>
-                <span className="muted" style={{ fontSize: 13 }}>
-                  {`Part number "${search.trim()}" does not exist in Item Master.`}
+                <span className={searchError ? 'error-text' : 'muted'} style={{ fontSize: 13 }}>
+                  {searchError ?? `Part number "${search.trim()}" does not exist in Item Master.`}
                 </span>
               </div>
             )
@@ -1445,7 +1659,7 @@ function PartPictureCell({
 // actually bills labour (paid work vs. work covered by the vehicle's warranty).
 const LABOUR_ISSUE_TYPES = ['Paid', 'U/W'] as const
 
-function LabourSuggestionCard({ jc, run, estimatesLocked, totalLockReached }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => void; estimatesLocked: boolean; totalLockReached: boolean }) {
+function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => void; estimatesLocked: boolean }) {
   const [rows, setRows] = useState<JobCardsLabourCatalogRow[]>([])
   const [q, setQ] = useState('')
   // Type-ahead dropdown state, mirroring PartSuggestionCard's search/pickPart pattern above -
@@ -1589,14 +1803,16 @@ function LabourSuggestionCard({ jc, run, estimatesLocked, totalLockReached }: { 
       </table>
 
       {/* Estimates Amount "Done" hides this add-new-suggestion form (grid above stays visible) -
-         see EstimatesCard's doc comment for the full Done/Edit toggle. totalLockReached is a
-         separate, automatic lock once the Grand Total hits ESTIMATE_TOTAL_LOCK_THRESHOLD - see that
-         constant's doc comment in JobCardDetailPage. */}
-      {estimatesLocked || totalLockReached ? (
+         see EstimatesCard's doc comment for the full Done/Edit toggle. 2026-10-01: the separate
+         ₹2000 Grand Total auto-lock that used to apply here has been removed per explicit request -
+         this form now has no maximum and only respects the manual Done/Edit toggle, plus a closed
+         job card (jc.status === 'Closed') also hides it - see PartSuggestionCard's matching
+         2026-10-01 doc comment above for why. */}
+      {estimatesLocked || jc.status === 'Closed' ? (
         <p className="muted">
-          {estimatesLocked
-            ? 'Estimate is marked Done - click Edit on the Estimates Amount card below to add more labour.'
-            : `Grand Total has reached ₹${ESTIMATE_TOTAL_LOCK_THRESHOLD} - no more labour can be suggested on this estimate.`}
+          {jc.status === 'Closed'
+            ? 'Job card is closed - no more labour can be suggested.'
+            : 'Estimate is marked Done - click Edit on the Estimates Amount card below to add more labour.'}
         </p>
       ) : (
       <>

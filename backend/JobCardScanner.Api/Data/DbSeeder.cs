@@ -49,9 +49,26 @@ public static class DbSeeder
         // ---------------- Default 7-stage workflow template (DealerId = null => applies to all
         // dealers) - see redefine-workflow-stages-to-7-steps.sql for the same redefinition applied
         // to an already-provisioned database (this seeder only ever runs once, against a brand-new
-        // empty database - see DbSeeder.SeedAsync's early-return above). "Invoice Generated" is the
-        // pipeline's terminal stage: reaching it now closes the job card immediately (see
-        // JobCardsController.ChangeStage's IsTerminal handling), no separate OTP confirmation step.
+        // empty database - see DbSeeder.SeedAsync's early-return above).
+        //
+        // 2026-10-01 ("in Workflow Timeline after Repair Completed shift Invoice Generated after
+        // this Ready for Delivery"): reordered per explicit request so invoice_generated (seq 6)
+        // now comes BEFORE ready_for_delivery (seq 7) - was the reverse. "Invoice Generated" is
+        // STILL the pipeline's terminal stage (IsTerminal stays on invoice_generated, not moved to
+        // ready_for_delivery) - reaching it still closes the job card immediately (see
+        // JobCardsController.ChangeStage's IsTerminal handling), per your explicit choice to keep
+        // it terminal and reorder anyway ("Keep Invoice Generated terminal, reorder anyway", chosen
+        // over moving the terminal flag to Ready for Delivery when I flagged the conflict).
+        //
+        // FLAGGED - this is a real behavior consequence, not just a label reorder: since marking
+        // Invoice Generated still closes the job card right away, Ready for Delivery (now seq 7,
+        // AFTER the terminal stage) can no longer be reached in the normal flow - the job card is
+        // already closed by the time a user would get to it. The "Mark Ready for Delivery" button
+        // on the Update Workflow Stage card will still exist and still work mechanically, but
+        // clicking it on a job card that already hit Invoice Generated has no real effect beyond
+        // recording that stage change, since the card is already closed. This only affects NEW
+        // databases seeded from this file - see the matching SQL note below for a database that's
+        // already provisioned (yours, in production).
         var stageDefs = new (string Key, string Label, string Icon, bool Terminal)[]
         {
             ("check_in", "Vehicle Check-In / Job Card Created", "car-front", false),
@@ -59,8 +76,8 @@ public static class DbSeeder
             ("part_suggestion", "Part Suggestion", "package", false),
             ("labour_suggestion", "Labour Suggestion", "tool", false),
             ("repair_completed", "Repair Completed", "circle-check", false),
-            ("ready_for_delivery", "Ready for Delivery", "flag", false),
             ("invoice_generated", "Invoice Generated", "receipt", true),
+            ("ready_for_delivery", "Ready for Delivery", "flag", false),
         };
         var stages = stageDefs.Select((s, i) => new WorkflowStage
         {

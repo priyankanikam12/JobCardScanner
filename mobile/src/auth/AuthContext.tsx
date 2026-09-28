@@ -1,9 +1,17 @@
+// mobile\src\auth\AuthContext.tsx
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import * as AuthSession from 'expo-auth-session'
 import * as SecureStore from 'expo-secure-store'
 import * as WebBrowser from 'expo-web-browser'
 import { apiClient, setAccessToken } from '../api/client'
 import type { CurrentUser } from '../types'
+// 2026-09-28 (SECTION 135) - "attendance page also fix ... why check in time not shown": wires
+// self check-in into the Azure AD sign-in success path too (see the response-handling effect
+// below) - mirrors the same fix just made to the Dealer/Workshop path in LoginScreen.tsx. See that
+// file's SECTION 135 comment and README SECTION 135 for the full reasoning, including why this is
+// only wired into the actual OAuth-redirect-success effect below and NOT the on-launch
+// restore-a-previously-saved-session effect above it (that one isn't a fresh "login").
+import { checkInAfterLogin } from '../services/attendanceCheckin'
 
 WebBrowser.maybeCompleteAuthSession()
 
@@ -134,6 +142,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         )
         await persistTokens(result)
         await loadProfile()
+        // 2026-09-28 (SECTION 135): self check-in, right after a successful Azure AD sign-in -
+        // this is the actual "login" moment for the Staff (Microsoft) tab, matching
+        // attendanceCheckin.ts's own doc comment (fire-and-forget, never throws). NOT added to the
+        // on-launch session-restore effect above - that one silently re-uses a still-valid token
+        // on cold start, which isn't the "when i login" event this was asked for.
+        checkInAfterLogin()
       } catch {
         setError('Sign-in failed. Please try again.')
       } finally {

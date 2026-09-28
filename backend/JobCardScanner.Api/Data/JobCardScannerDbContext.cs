@@ -49,6 +49,14 @@ public class JobCardScannerDbContext : DbContext
     // native, same as RepairBillDocs/MaterialTransferDocs above.
     public DbSet<PartUpload> PartUploads => Set<PartUpload>();
 
+    // 2026-09-29 (SECTION 155) - "sidebar menu acces provide page" - see
+    // Models/MenuAccessOverride.cs's own doc comment.
+    public DbSet<MenuAccessOverride> MenuAccessOverrides => Set<MenuAccessOverride>();
+
+    // 2026-09-30 (SECTION 170) - per-role "only show checked items" allow-list mode flag - see
+    // Models/RoleMenuMode.cs's own doc comment.
+    public DbSet<RoleMenuMode> RoleMenuModes => Set<RoleMenuMode>();
+
     // 2026-09-22 "create warenty table in jobcardscanner db" - see
     // Models/ExtendedBatteryWarrantySchemes.cs's own doc comment.
     public DbSet<ExtendedBatteryWarrantyScheme> ExtendedBatteryWarrantySchemes => Set<ExtendedBatteryWarrantyScheme>();
@@ -66,6 +74,14 @@ public class JobCardScannerDbContext : DbContext
     public DbSet<Counter> Counters => Set<Counter>();
     public DbSet<Attendance> Attendance { get; set; }
     public DbSet<VehicleSaleOverride> VehicleSaleOverrides => Set<VehicleSaleOverride>();
+
+    // 2026-09-30 (SECTION 163) - "service menu master / Complain master / Prefix Master" - see
+    // Models/ServiceMenuMaster.cs, Models/ComplaintMaster.cs and Models/DocPrefixMaster.cs for the
+    // full reasoning behind each table's shape.
+    public DbSet<ServiceMenuMaster> ServiceMenuMasters => Set<ServiceMenuMaster>();
+    public DbSet<ComplaintMaster> ComplaintMasters => Set<ComplaintMaster>();
+    public DbSet<DocPrefixMaster> DocPrefixMasters => Set<DocPrefixMaster>();
+    public DbSet<DocNumberSequence> DocNumberSequences => Set<DocNumberSequence>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -303,6 +319,18 @@ public class JobCardScannerDbContext : DbContext
             e.HasOne(x => x.Dealer).WithMany().HasForeignKey(x => x.DealerId);
         });
 
+        // ----- MenuAccessOverride (2026-09-29, SECTION 155, see Models/MenuAccessOverride.cs) -----
+        b.Entity<MenuAccessOverride>(e =>
+        {
+            e.HasIndex(x => x.NavKey).IsUnique();
+        });
+
+        // ----- RoleMenuMode (2026-09-30, SECTION 170, see Models/RoleMenuMode.cs) -----
+        b.Entity<RoleMenuMode>(e =>
+        {
+            e.HasIndex(x => x.Role).IsUnique();
+        });
+
         // ----- ExtendedBatteryWarrantyScheme (2026-09-22, see Models/ExtendedBatteryWarrantySchemes.cs) -----
         b.Entity<ExtendedBatteryWarrantyScheme>(e =>
         {
@@ -388,6 +416,22 @@ public class JobCardScannerDbContext : DbContext
                 .HasConversion<string>()
                 .HasMaxLength(20);
 
+            // 2026-09-28 (SECTION 146/152 - "Could not load the staff list for this dealer.
+            // (HTTP 500)"): THE FIX. This property was never mapped here at all, so EF Core fell
+            // back to its DEFAULT mapping for AttendanceShift (a plain int-backed enum) - an INT
+            // column. Your real database's Shift column is nvarchar(10) (confirmed from your own
+            // CREATE TABLE script), matching Status's text-based design right above - so every
+            // read of a row with Shift set threw InvalidCastException ("Unable to cast object of
+            // type 'System.String' to type 'System.Int32'") the moment AttendanceController.List()
+            // materialized it, which is exactly the HTTP 500 reported. Adding this mapping (the
+            // same shape as Status just above) fixes it - no ALTER TABLE needed, the column was
+            // always the right type; only this C# side mapping was missing. Existing data ("1",
+            // "2", or NULL) keeps working: EF's enum-to-string converter falls back to Enum.Parse,
+            // which resolves a plain numeric string to the matching enum member.
+            e.Property(x => x.Shift)
+                .HasConversion<string>()
+                .HasMaxLength(20);
+
             e.Property(x => x.Remarks)
                 .HasMaxLength(500);
 
@@ -405,6 +449,63 @@ public class JobCardScannerDbContext : DbContext
                 .WithMany()
                 .HasForeignKey(x => x.DealerId)
                 .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        // ----- ServiceMenuMaster / ComplaintMaster / DocPrefixMaster / DocNumberSequence
+        // (2026-09-30, SECTION 163, see Models/ServiceMenuMaster.cs, Models/ComplaintMaster.cs,
+        // Models/DocPrefixMaster.cs) -----
+        b.Entity<ServiceMenuMaster>(e =>
+        {
+            // One row per valid (Job Type, Service Head, Priority) leaf combination - see class
+            // doc comment. Not globally unique on just (JobTypeId, ServiceHeadId) since the same
+            // combination can legitimately appear once per selectable Priority.
+            e.HasIndex(x => new { x.JobTypeId, x.ServiceHeadId, x.PriorityValue }).IsUnique();
+            e.HasOne<User>().WithMany().HasForeignKey(x => x.CreatedById).OnDelete(DeleteBehavior.Restrict);
+            e.HasOne<User>().WithMany().HasForeignKey(x => x.UpdatedById).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        b.Entity<ComplaintMaster>(e =>
+        {
+            e.HasOne<User>().WithMany().HasForeignKey(x => x.CreatedById).OnDelete(DeleteBehavior.Restrict);
+            e.HasOne<User>().WithMany().HasForeignKey(x => x.UpdatedById).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        b.Entity<DocPrefixMaster>(e =>
+        {
+            e.HasIndex(x => x.DocType).IsUnique();
+            e.HasOne<User>().WithMany().HasForeignKey(x => x.CreatedById).OnDelete(DeleteBehavior.Restrict);
+            e.HasOne<User>().WithMany().HasForeignKey(x => x.UpdatedById).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        b.Entity<DocNumberSequence>(e =>
+        {
+            e.HasIndex(x => new { x.DocType, x.FinancialYear }).IsUnique();
+        });
+
+        // ----- VehicleSaleOverride (2026-09-28, see Models/VehicleSaleOverride.cs /
+        // sql/2026-09-28_create_vehicle_sale_overrides_table.sql) -----
+        //
+        // THE BUG behind "Could not save the Reg No - try again.": this entity had no
+        // b.Entity<VehicleSaleOverride>(...) block at all, so EF Core fell back to its default
+        // table-naming convention - which maps to the DbSet<T> PROPERTY name, not the class name.
+        // The property above is `DbSet<VehicleSaleOverride> VehicleSaleOverrides` (plural), so EF
+        // was querying/inserting against a table named "VehicleSaleOverrides" (plural) - but the
+        // SQL script that actually creates this table names it `dbo.VehicleSaleOverride`
+        // (SINGULAR, no trailing "s" - see that script's own CREATE TABLE statement). That mismatch
+        // means every read/write here threw "Invalid object name 'VehicleSaleOverrides'." as soon
+        // as the controller's very first `_db.VehicleSaleOverrides.FirstOrDefaultAsync(...)` ran -
+        // an unhandled 500 with no custom message body, which is exactly why the frontend fell
+        // through to its generic "Could not save the Reg No - try again." text.
+        //
+        // Fixed with an explicit .ToTable() pointing EF at the table name that was actually
+        // created, rather than renaming the real SQL table (safer - no ALTER TABLE/data-loss risk
+        // if you already ran that script). Also adds the unique index on ChassisNo to match the
+        // SQL script's own UQ_VehicleSaleOverride_ChassisNo constraint, so EF's model agrees with
+        // the real table shape like every other entity above.
+        b.Entity<VehicleSaleOverride>(e =>
+        {
+            e.ToTable("VehicleSaleOverride");
+            e.HasIndex(x => x.ChassisNo).IsUnique();
         });
     }
 }

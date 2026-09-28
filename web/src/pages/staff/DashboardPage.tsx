@@ -1,9 +1,10 @@
+// web\src\pages\staff\DashboardPage.tsx
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
-import { NAV_ITEMS } from '../../components/StaffLayout'
+import { NAV_ITEMS, useMenuAccess } from '../../components/StaffLayout'
 import type { CorporateDashboardData, CorporateDashboardFilters, DashboardKpis } from '../../types'
 
 // 2026-09-18 "in dashboardpage add this all page landing page linking" - every sidebar destination,
@@ -11,6 +12,15 @@ import type { CorporateDashboardData, CorporateDashboardFilters, DashboardKpis }
 // the 4 hand-picked shortcuts in ACTION_CARDS/CORPORATE_ACTION_CARDS below. Reuses StaffLayout's own
 // NAV_ITEMS (now exported) rather than a second hand-maintained list, so a page's role-gating can't
 // drift between the sidebar and this grid - Dashboard itself is excluded since you're already on it.
+//
+// SECTION 171 (2026-09-30) "i checkbox select from DealerAdmin only 3 page but all option shown in
+// sidebar as well on dashboard": this grid used to filter ALL_PAGES with a plain
+// `!n.roles || hasRole(...n.roles)` check - each item's hardcoded default `roles` only, completely
+// bypassing both the Menu Access per-item overrides and the SECTION 170 per-role allow-list mode.
+// So turning on "Only show checked items" for DealerAdmin and checking exactly 3 items correctly
+// hid everything else from the SIDEBAR, but this grid kept showing every page regardless. Fixed
+// below by filtering with the same useMenuAccess().isVisibleForCurrentRole (StaffLayout.tsx) the
+// sidebar itself now uses, instead of a second, drifted copy of the same check.
 const ALL_PAGES = NAV_ITEMS.filter((n) => n.to !== '/dashboard')
 
 /**
@@ -35,20 +45,36 @@ export function DashboardPage() {
 // (see .kpi-badge-action in global.css) - set on the three tiles that represent something waiting
 // on THIS dealer to act (parts to arrange, a customer approval to chase, a job stuck pending),
 // as opposed to the others which are just informational counts.
-const TILES: { key: keyof DashboardKpis; label: string; icon: string; to: string; actionNeeded?: boolean }[] = [
-  { key: 'vehiclesReceivedToday', label: 'Vehicles Received Today', icon: '🚗', to: '/jobcards?createdToday=true' },
-  { key: 'totalOpen', label: 'Open Job Cards', icon: '📋', to: '/jobcards?excludeClosed=true' },
-  { key: 'underService', label: 'Under Service', icon: '🔧', to: '/jobcards?stageKey=in_repair' },
-  { key: 'waitingForParts', label: 'Waiting for Parts', icon: '📦', to: '/jobcards?stageKey=part_suggestion', actionNeeded: true },
-  { key: 'waitingCustomerApproval', label: 'Waiting Customer Approval', icon: '⏳', to: '/jobcards?status=PendingCustomerApproval', actionNeeded: true },
-  { key: 'vehiclesReady', label: 'Vehicles Ready', icon: '🏁', to: '/jobcards?stageKey=ready_for_delivery' },
-  { key: 'vehiclesDeliveredToday', label: 'Vehicles Delivered', icon: '🚀', to: '/jobcards?deliveredToday=true' },
-  { key: 'pendingJobCards', label: 'Pending Job Cards', icon: '⏳', to: '/jobcards?pendingBucket=true', actionNeeded: true },
-  { key: 'warrantyJobsOpen', label: 'Warranty Jobs', icon: '🛡️', to: '/jobcards?warrantyOnly=true&excludeClosed=true' },
+//
+// 2026-09-28 ("WARRANTY JOBS this after 1 card add Stock cards in that total stock shown and when
+// click on that redirect on /part-upload page"): the Stock card itself is NOT in this array - it
+// isn't driven by DashboardKpis/GET /api/dashboard/kpis like every tile below (I don't have
+// DashboardController.cs in this session to add a server-computed field to that response), so it's
+// rendered as its own hand-coded tile right after this array maps out, using a client-side total
+// (GET /api/part-uploads, summed) instead - see DealerDashboard's stockQty state and the kpi-grid
+// render below for the full reasoning.
+//
+// 2026-09-29 (SECTION 157, "fix login wise jobcard open close for supervisor dont have any
+// jobcard then still shown main dealer count fix this"): `params` added to each tile - the exact
+// same filter object GET /api/jobcards (JobCardsController.List) already accepts for this. See
+// DealerDashboard's own scopedCounts doc comment below for why this is now needed for the tile's
+// NUMBER, not just its click-through `to` link (which already used the same filters, just encoded
+// as a URL query string instead of an object).
+const TILES: { key: keyof DashboardKpis; label: string; icon: string; to: string; params: Record<string, string | boolean>; actionNeeded?: boolean }[] = [
+  { key: 'vehiclesReceivedToday', label: 'Vehicles Received Today', icon: '🚗', to: '/jobcards?createdToday=true', params: { createdToday: true } },
+  { key: 'totalOpen', label: 'Open Job Cards', icon: '📋', to: '/jobcards?excludeClosed=true', params: { excludeClosed: true } },
+  { key: 'underService', label: 'Under Service', icon: '🔧', to: '/jobcards?stageKey=in_repair', params: { stageKey: 'in_repair' } },
+  { key: 'waitingForParts', label: 'Waiting for Parts', icon: '📦', to: '/jobcards?stageKey=part_suggestion', params: { stageKey: 'part_suggestion' }, actionNeeded: true },
+  { key: 'waitingCustomerApproval', label: 'Waiting Customer Approval', icon: '⏳', to: '/jobcards?status=PendingCustomerApproval', params: { status: 'PendingCustomerApproval' }, actionNeeded: true },
+  { key: 'vehiclesReady', label: 'Vehicles Ready', icon: '🏁', to: '/jobcards?stageKey=ready_for_delivery', params: { stageKey: 'ready_for_delivery' } },
+  { key: 'vehiclesDeliveredToday', label: 'Vehicles Delivered', icon: '🚀', to: '/jobcards?deliveredToday=true', params: { deliveredToday: true } },
+  { key: 'pendingJobCards', label: 'Pending Job Cards', icon: '⏳', to: '/jobcards?pendingBucket=true', params: { pendingBucket: true }, actionNeeded: true },
+  { key: 'warrantyJobsOpen', label: 'Warranty Jobs', icon: '🛡️', to: '/jobcards?warrantyOnly=true&excludeClosed=true', params: { warrantyOnly: true, excludeClosed: true } },
 ]
 
 function DealerDashboard() {
-  const { profile, hasRole } = useStaffAuth()
+  const { profile } = useStaffAuth()
+  const { isVisibleForCurrentRole } = useMenuAccess() // SECTION 171 - see ALL_PAGES' own doc comment above
   const navigate = useNavigate()
   const [kpis, setKpis] = useState<DashboardKpis | null>(null)
   const [loading, setLoading] = useState(true)
@@ -58,6 +84,88 @@ function DealerDashboard() {
       .get<DashboardKpis>('/api/dashboard/kpis')
       .then((res) => setKpis(res.data))
       .finally(() => setLoading(false))
+  }, [])
+
+  // 2026-09-29 (SECTION 157, "fix login wise jobcard open close for supervisor dont have any
+  // jobcard then still shown main dealer count fix this") - CONFIRMED root cause, re-reading
+  // backend/JobCardScanner.Api/Controllers/JobCardsController.cs's actual source this round: its
+  // List() action (GET /api/jobcards, used above by every "All Pages"/tile `to` link) already
+  // applies BOTH the signed-in user's own dealer AND their Work Area (`_currentUser.WorkLocationCodes`)
+  // scoping - "a user assigned to specific DMS workshop locations only sees job cards opened at one
+  // of THEIR locations" (that controller's own doc comment, confirmed word-for-word). GET
+  // /api/dashboard/kpis (DashboardController) - which is what kpis above actually comes from - is a
+  // DIFFERENT endpoint, and I don't have DashboardController.cs in this session to confirm it, but
+  // your report ("supervisor dont have any jobcard then still shown main dealer count") is exactly
+  // what you'd see if it computes every count across the WHOLE dealer without that same
+  // WorkLocationCodes filter - it very likely never got that scoping added when Work Area/
+  // WorkLocationCodes was built (2026-09-17, well after kpis' own dashboard existed).
+  //
+  // FIX APPLIED HERE (frontend-only - the durable fix is really adding the same WorkLocationCodes
+  // filter to DashboardController.Kpis itself, but I don't have that file this session): each of
+  // the 9 TILES above is now counted by calling the ALREADY-correctly-scoped GET /api/jobcards with
+  // that tile's own `params` (added to TILES above - the exact filters JobCardsController.List's
+  // own doc comment says reproduce each dashboard number), instead of trusting kpis[t.key] from the
+  // unscoped endpoint. Exactly the same idea already used for the Stock Qty tile below (a
+  // client-side count from an endpoint that's actually scoped correctly) - just applied to the
+  // other 9 tiles too, now that JobCardsController.cs's exact filter vocabulary is confirmed.
+  //
+  // KNOWN LIMIT (please read before relying on this for a very busy dealer): GET /api/jobcards caps
+  // results at 200 rows (`.Take(200)`, confirmed in its own source) and returns no separate
+  // total-count field, so a tile whose TRUE count exceeds 200 will under-report rather than show
+  // the real number. For a single Work Area's currently-open job cards this is very unlikely, but
+  // I'm flagging it rather than silently hiding the limitation.
+  //
+  // NOT FIXED by this change (still dealer-wide/unscoped, still come straight from kpis): Revenue
+  // (Paid Invoices), Avg. Service Time, Customer Satisfaction, and the "Job Cards by Status" chart
+  // further down this page - none of those are a simple job-card-count filter the way the 9 tiles
+  // are (revenue/turnaround/CSAT need real aggregation across Invoices/ratings, not a row count), so
+  // they can't be reproduced from GET /api/jobcards the same way. If a Supervisor seeing the whole
+  // dealer's Revenue/TAT/CSAT numbers is also a problem for you, say so and I'll flag exactly what's
+  // needed from DashboardController.cs to fix those at the real source too.
+  const [scopedCounts, setScopedCounts] = useState<Partial<Record<keyof DashboardKpis, number>> | null>(null)
+  useEffect(() => {
+    Promise.all(
+      TILES.map((t) =>
+        staffApi
+          .get<{ items: unknown[] }>('/api/jobcards', { params: t.params })
+          .then((res): [keyof DashboardKpis, number] => [t.key, res.data.items.length])
+          .catch((): [keyof DashboardKpis, number | undefined] => [t.key, undefined]),
+      ),
+    ).then((pairs) => {
+      const next: Partial<Record<keyof DashboardKpis, number>> = {}
+      pairs.forEach(([key, count]) => { if (count !== undefined) next[key] = count })
+      setScopedCounts(next)
+    })
+  }, [])
+
+  // 2026-09-28 ("add Stock cards in that total stock shown"): FACT, confirmed from your earlier
+  // answer - total stock = sum of Bal Qty. Computed client-side from GET /api/part-uploads (the
+  // exact same endpoint web/src/pages/staff/PartUploadPage.tsx and mobile's PartUploadScreen.tsx
+  // already use - see that screen's own doc comment for the endpoint list), called with no
+  // search/locationCode filter so it returns every PartUploads row across every location for this
+  // dealer, then summed here (balQty ?? 0 per row, so a null Bal Qty counts as 0 rather than
+  // breaking the total). NOT a DashboardController.cs field - I still don't have that controller
+  // in this session, so this is the client-side fallback SECTION 144 flagged as the alternative to
+  // a server-computed field, used now rather than continuing to block the whole card on a file
+  // request. stockError (not stockQty === null) distinguishes "still loading" from "the call
+  // failed" (e.g. a role without access to Part Upload data) - the tile shows "—" either way rather
+  // than a wrong number, but only the error case is worth telling apart in code for future
+  // debugging.
+  //
+  // 2026-09-29 (SECTION 157, then FIXED same day - SECTION 158): this WAS the same "Part Upload
+  // location scoping" gap as the 9 tiles above (GET /api/part-uploads wasn't WorkLocationCodes-
+  // scoped either) - now fixed at the real backend source once you pasted
+  // PartUploadController.cs/PartUploadService.cs (see backend/JobCardScanner.Api/Controllers/
+  // PartUploadController.cs's own SECTION 158 doc comment). No frontend change was needed here -
+  // this tile already just sums whatever GET /api/part-uploads returns, so it inherits the fix
+  // automatically once that backend change is deployed.
+  const [stockQty, setStockQty] = useState<number | null>(null)
+  const [stockError, setStockError] = useState(false)
+  useEffect(() => {
+    staffApi
+      .get<{ balQty: number | null }[]>('/api/part-uploads')
+      .then((res) => setStockQty(res.data.reduce((sum, r) => sum + (r.balQty ?? 0), 0)))
+      .catch(() => setStockError(true))
   }, [])
 
   if (loading) return <p className="muted">Loading dashboard...</p>
@@ -70,37 +178,54 @@ function DealerDashboard() {
         <p className="muted" style={{ margin: '4px 0 0' }}>Live workshop operations overview</p>
       </div>
 
-      {/* 2026-09-19 "remove 4 kpi cards from dashboard it will duplicate" - you clarified this
-          meant the top action-card row (New Job Card, Job Cards, Reports & Search, Employees):
-          removed outright, since "All Pages" right below already links to Job Cards, Reports &
-          Search and Employees, and New Job Card is one click away from the Job Cards page itself -
-          keeping both rows was showing the same destinations twice. */}
-      <div style={{ marginBottom: 8 }}>
+      {/* 2026-09-28 ("1st shown in web card VEHICLES RECEIVED TODAY to WARRANTY JOBS this cards
+          1st then shown below kpi cards of All Pages"): the KPI tile row (Vehicles Received Today
+          through Warranty Jobs) now renders FIRST, with "All Pages" moved below it - reordered
+          from the previous layout (All Pages first, KPI tiles second). Nothing inside either
+          section changed, only which one comes first on the page. */}
+      <div className="kpi-grid">
+        {TILES.map((t, i) => (
+          // Every tile is a Link to the /jobcards filter that reproduces its own number - see
+          // TILES' doc comment above for how each `to` matches DashboardController.Kpis' own
+          // computation. The NUMBER shown (SECTION 157) comes from scopedCounts (an already Work
+          // Area-scoped count via GET /api/jobcards), falling back to the old dealer-wide kpis
+          // value only if that one tile's own scoped fetch failed - see scopedCounts' own doc
+          // comment above for the full reasoning. Shows "…" while the scoped counts are still
+          // loading, rather than flashing the (possibly wrong, dealer-wide) kpis number first.
+          <Link key={t.key} to={t.to} className={`kpi kpi-a${(i % 6) + 1}`} style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
+            {t.actionNeeded && <span className="kpi-badge-action">Action Needed</span>}
+            <div className="kpi-icon">{t.icon}</div>
+            <div className="value">{scopedCounts === null ? '…' : scopedCounts[t.key] ?? (kpis[t.key] as number)}</div>
+            <div className="label">{t.label}</div>
+          </Link>
+        ))}
+        {/* 2026-09-28 ("WARRANTY JOBS this after 1 card add Stock cards ... redirect on
+           /part-upload page"): right after Warranty Jobs (TILES' own last entry), per your
+           confirmed route. See stockQty's own doc comment above for why this is a hand-coded tile
+           rather than another TILES entry. */}
+        <Link
+          to="/part-upload"
+          className={`kpi kpi-a${(TILES.length % 6) + 1}`}
+          style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}
+        >
+          <div className="kpi-icon">📦</div>
+          <div className="value">{stockError ? '—' : stockQty === null ? '…' : stockQty.toLocaleString('en-IN')}</div>
+          <div className="label">Stock Qty</div>
+        </Link>
+      </div>
+
+      <div style={{ marginBottom: 8, marginTop: 24 }}>
         <h3 style={{ marginBottom: 2 }}>All Pages</h3>
         <p className="muted" style={{ marginTop: 0 }}>Every page you have access to, in one place.</p>
       </div>
       <div className="action-card-grid">
-        {ALL_PAGES.filter((n) => !n.roles || hasRole(...n.roles)).map((n, i) => (
+        {ALL_PAGES.filter(isVisibleForCurrentRole).map((n, i) => (
           <Link key={n.to} to={n.to} className={`action-card aa-a${(i % 6) + 1}`}>
             <div className="action-card-icon">{n.icon}</div>
             <div>
               <div className="action-card-title">{n.label}</div>
               <div className="action-card-subtitle">{n.subtitle ?? n.label}</div>
             </div>
-          </Link>
-        ))}
-      </div>
-
-      <div className="kpi-grid">
-        {TILES.map((t, i) => (
-          // Every tile is a Link to the /jobcards filter that reproduces its own number - see
-          // TILES' doc comment above for how each `to` matches DashboardController.Kpis' own
-          // computation.
-          <Link key={t.key} to={t.to} className={`kpi kpi-a${(i % 6) + 1}`} style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
-            {t.actionNeeded && <span className="kpi-badge-action">Action Needed</span>}
-            <div className="kpi-icon">{t.icon}</div>
-            <div className="value">{kpis[t.key] as number}</div>
-            <div className="label">{t.label}</div>
           </Link>
         ))}
       </div>
@@ -183,7 +308,7 @@ const CORPORATE_ACTION_CARDS: { label: string; subtitle: string; icon: string; t
 ]
 
 function CorporateDashboard() {
-  const { hasRole } = useStaffAuth() // used by the "All Pages" grid's role filter below
+  const { isVisibleForCurrentRole } = useMenuAccess() // SECTION 171 - used by the "All Pages" grid's filter below
   const [filterOptions, setFilterOptions] = useState<CorporateDashboardFilters | null>(null)
   const [filters, setFilters] = useState<CorporateFilterState>(EMPTY_FILTERS)
   const [data, setData] = useState<CorporateDashboardData | null>(null)
@@ -232,11 +357,11 @@ function CorporateDashboard() {
         <p className="muted" style={{ marginTop: 0 }}>Every page you have access to, in one place.</p>
       </div>
       <div className="action-card-grid">
-        {/* No role filter needed here beyond what's already on ALL_PAGES itself - only
-           Corporate/System Admin ever render this component, and every restricted NAV_ITEMS entry
-           already includes both of those roles (see StaffLayout.tsx), so nothing here would ever
-           be hidden from this dashboard anyway. Filtered anyway for safety if that ever changes. */}
-        {ALL_PAGES.filter((n) => !n.roles || hasRole(...n.roles)).map((n, i) => (
+        {/* SECTION 171: now goes through the same isVisibleForCurrentRole check the sidebar and the
+           Dealer Dashboard's own grid use (see ALL_PAGES' doc comment above) - CorporateAdmin/
+           SystemAdmin are extremely unlikely to ever be put in "only show checked" allow-list mode,
+           but this keeps the three grids/sidebar from ever being able to drift apart again. */}
+        {ALL_PAGES.filter(isVisibleForCurrentRole).map((n, i) => (
           <Link key={n.to} to={n.to} className={`action-card aa-a${(i % 6) + 1}`}>
             <div className="action-card-icon">{n.icon}</div>
             <div>
@@ -390,4 +515,3 @@ function CorporateDashboard() {
     </div>
   )
 }
-

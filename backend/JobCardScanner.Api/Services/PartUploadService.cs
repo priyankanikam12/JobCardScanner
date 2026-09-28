@@ -13,6 +13,11 @@ namespace JobCardScanner.Api.Services;
 // (case/space/punctuation-insensitive header match, raw-numeric-first cell reads) for the same
 // reasons documented there, adapted from raw ADO.NET to EF Core since this table lives in
 // JobCardScannerDb, where every other *Docs table already has a DbContext.
+//
+// 2026-09-29 (SECTION 158, "still parts-upload in that that location data not shown ... no
+// worries to upload from that login if any login uploaded data shown that linked location"):
+// GetAsync gained `allowedLocations` - see its own doc comment below for the fix. Everything else
+// in this file is unchanged from what you pasted.
 // =====================================================================================
 
 public record PartUploadImportResult(int TotalDataRows, int Inserted, int Updated, int Unchanged, int SkippedBlank, IReadOnlyList<string> Warnings);
@@ -27,7 +32,7 @@ public record PartUploadUpdate(
 
 public interface IPartUploadService
 {
-    Task<IReadOnlyList<PartUpload>> GetAsync(Guid dealerId, string? locationCode, string? search, CancellationToken ct = default);
+    Task<IReadOnlyList<PartUpload>> GetAsync(Guid dealerId, string? locationCode, string? search, CancellationToken ct = default, IReadOnlyList<string>? allowedLocations = null);
     Task<PartUploadImportResult> ImportAsync(Stream excelStream, Guid dealerId, string locationCode, DateOnly reportDate, string fileName, string? actor, CancellationToken ct = default);
     Task<PartUpload?> UpdateAsync(Guid id, Guid dealerId, PartUploadUpdate update, CancellationToken ct = default);
     Task<bool> DeleteAsync(Guid id, Guid dealerId, CancellationToken ct = default);
@@ -42,11 +47,49 @@ public class PartUploadService : IPartUploadService
         _db = db;
     }
 
-    public async Task<IReadOnlyList<PartUpload>> GetAsync(Guid dealerId, string? locationCode, string? search, CancellationToken ct = default)
+    /// <summary>
+    /// 2026-09-29 (SECTION 158, "still parts-upload in that that location data not shown ... if
+    /// any login uploaded data shown that linked location"): new optional `allowedLocations` -
+    /// same "Work Area" (WorkLocationCodes) scoping JobCardsController.List already applies to Job
+    /// Cards ("a user assigned to specific DMS workshop locations only sees job cards opened at
+    /// one of THEIR locations" - that controller's own doc comment, and this mirrors it exactly:
+    /// null/empty = unrestricted, a no-op for every login before this feature shipped or for a
+    /// role like DealerAdmin whose own WorkLocationCodes is empty by convention). Applied ON TOP
+    /// OF (not instead of) the existing `locationCode` single-location filter param - so a
+    /// Supervisor whose own Work Area is, say, ["CUS0288W1"] can still narrow further to that one
+    /// location via the page's own Location dropdown (locationCode), but can no longer pass or be
+    /// served a DIFFERENT location's rows even by clearing that dropdown, the same way
+    /// WorkLocationCodes already can't be bypassed on the Job Cards list.
+    ///
+    /// 2026-09-29 CORRECTED - your real compile error (CS1503, JobCardsController.cs line 175,
+    /// "cannot convert from CancellationToken to IReadOnlyList&lt;string&gt;?"): I'd first added
+    /// `allowedLocations` as the 4th parameter, BEFORE `ct` - I didn't know it at the time, but
+    /// JobCardsController.cs already had its own EXISTING call to this exact method
+    /// (`_partUploads.GetAsync(dealerId, locationCode, null, HttpContext.RequestAborted)`, a plain
+    /// 4-positional-argument call, for its own Parts Catalog "Available Qty" computation), and
+    /// inserting a new parameter in the middle shifted its 4th argument (a CancellationToken) into
+    /// what was now the `allowedLocations` slot. FIXED by moving `allowedLocations` to the END of
+    /// the parameter list instead (after `ct`) - the old 4-argument call now binds exactly as it
+    /// did before (ct as argument 4, allowedLocations simply omitted/defaulted to null), so
+    /// JobCardsController.cs did NOT need to change at all. That call site doesn't need this new
+    /// parameter anyway - it already does its own equivalent WorkLocationCodes filtering in-memory
+    /// right after calling GetAsync (see its own `isLocationRestricted` block), so leaving
+    /// `allowedLocations` null there is correct, not a regression.
+    /// </summary>
+    public async Task<IReadOnlyList<PartUpload>> GetAsync(Guid dealerId, string? locationCode, string? search, CancellationToken ct = default, IReadOnlyList<string>? allowedLocations = null)
     {
         var query = _db.PartUploads.AsNoTracking().Where(p => p.DealerId == dealerId);
         if (!string.IsNullOrWhiteSpace(locationCode))
             query = query.Where(p => p.LocationCode == locationCode.Trim());
+        // 2026-09-29 (SECTION 158) - see this method's own doc comment above. PartUpload.LocationCode
+        // is a required, non-nullable column (unlike JobCard.BaplServiceLocationCode, which can be
+        // null), so no null-guard is needed before Contains() the way JobCardsController's own
+        // WorkLocationCodes filter needs one.
+        if (allowedLocations is { Count: > 0 })
+        {
+            var allowedLocationsList = allowedLocations.ToList(); // EF Core translates List<T>.Contains to SQL IN (...) reliably; IReadOnlyList<T> is not guaranteed to
+            query = query.Where(p => allowedLocationsList.Contains(p.LocationCode));
+        }
         if (!string.IsNullOrWhiteSpace(search))
         {
             var s = search.Trim();

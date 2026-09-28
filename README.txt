@@ -2085,3 +2085,204 @@ matching PartUploads.DealerId (38CBC463-A9A5-482F-9D63-C13CB44307CE in your dump
 FILES TOUCHED
   backend/JobCardScanner.Api/Controllers/JobCardsController.cs (PartsCatalog: DealerAdmin/
   CorporateAdmin/SystemAdmin now bypass Work Area location restriction)
+
+--------------------------------------------------------------------------------------------------
+SECTION 134 (2026-09-28) - Attendance staff list: "Could not load the staff list for this dealer.
+Try again. (HTTP 500)" - root cause found and fixed
+--------------------------------------------------------------------------------------------------
+YOUR REPORT: "attendance page also fix for both web and android Could not load the staff list for
+this dealer. Try again. (HTTP 500)"
+
+FACT: the "(HTTP 500)" in this message is SECTION 125's own describeError improvement working
+exactly as intended - it confirms this is a real backend exception on GET /api/attendance (the
+roster/List() endpoint), not a 401/403/404/network failure, which is what SECTION 125 asked you to
+help narrow down. I still don't have your real backend exception log/stack trace for this one, but
+re-reading AttendanceController.List() line by line against every OTHER endpoint in this file
+surfaced one concrete, reproducible bug:
+
+  var location = rec?.Location ?? (s.WorkLocationCodes.Any() ? string.Join(", ", s.WorkLocationCodes) : null);
+
+This line runs client-side (LINQ-to-Objects, inside .Select() after ToListAsync() has already
+pulled `staff` into memory) for EVERY user in the dealer's roster. If even ONE of those users has a
+NULL WorkLocationCodes on their row (plausible for any User created before the Work Area feature
+existed - see JobCardsController's own 2026-09-17 comment introducing it - if the underlying DB
+column allows NULL), `.Any()` on that null throws a NullReferenceException, and because this runs
+inside the same request that builds the whole `items` list, it 500s the ENTIRE roster response, not
+just that one row's location field. This matches your report precisely: DealersSummary (the
+landing "all dealer" view, which does NOT read WorkLocationCodes at all) is not what you reported
+broken - specifically the roster/staff-list is, and it's the only endpoint in this controller that
+reads WorkLocationCodes straight off the raw entity in a client-evaluated call like this.
+
+INTERPRETATION, flagged: I have NOT confirmed the WorkLocationCodes DB column actually contains
+NULL on any real row (no log/stack trace to prove it definitively) - this fix is evidence-driven
+(matches the reported symptom, the specific endpoint, and a real code-level NullReferenceException
+risk that exists regardless of whether it's the exact row causing today's 500), not a blind guess.
+If the roster still 500s after merging this, please paste the real backend exception/stack trace
+from your log (or the improved frontend error message.if it names a different exception) so I can
+pin down the actual cause instead of continuing to guess.
+
+FIXED, three identical null-guards applied (all three read Users.WorkLocationCodes the same
+unsafe way, so all three were fixed together rather than just the one you hit, to stop this from
+resurfacing on Mark() or mobile self check-in next):
+  1. List() (the staff roster - this is the one your screenshot/message points at) - line ~172.
+  2. Mark() (main dealer's upsert/correction) - line ~227.
+  3. CheckIn() (mobile self check-in) - line ~352.
+All three changed from `x.WorkLocationCodes.Any()` to `x.WorkLocationCodes?.Any() == true` - purely
+defensive, no behavior change for any row that already has a non-null WorkLocationCodes.
+
+WEB AND ANDROID: this is a single shared backend endpoint (GET /api/attendance) - both
+AttendancePage.tsx (web) and AttendanceScreen.tsx (mobile) call the same API, so this one backend
+fix covers both platforms; no frontend file needed changing for this.
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Controllers/AttendanceController.cs (List/Mark/CheckIn: null-safe
+  WorkLocationCodes.Any() checks)
+
+--------------------------------------------------------------------------------------------------
+SECTION 135 (2026-09-28) - Attendance: mobile self check-in/check-out actually wired into the real
+login/logout screens ("why check in time not shown?")
+--------------------------------------------------------------------------------------------------
+YOUR REPORT: screenshot of the web Attendance roster (DealerAdmin login) showing every staff row
+still unmarked (no Status selected, Check-in/Check-out columns blank) - "why check in time not
+shown?" You confirmed (via the clarifying question) staff already sign into the mobile app and
+expect that to auto-mark them Present with a check-in time.
+
+FACT: the Check-in/Check-out columns in web/src/pages/staff/AttendancePage.tsx only render an input
+once a row's Status is Present or Half Day (line ~402/412) - for an unmarked row (no Attendance
+record for today at all) they render nothing, which is exactly what your screenshot shows. That
+part of the web page is working as designed.
+
+ROOT CAUSE, now confirmed and fixed: mobile/src/services/attendanceCheckin.ts's checkInAfterLogin()/
+checkOutBeforeLogout() functions were written back in SECTION 101/102 (2026-09-26) specifically to
+be wired into your real mobile login/logout screens - but that file's own doc comment says plainly
+those screens were never provided in this session, so nothing ever actually called them. The
+Attendance backend endpoint (POST /api/attendance/check-in) was always correct; it just never got
+invoked, so no Attendance record was ever created for these staff, which is why the roster shows
+them as completely unmarked rather than Present-with-a-time.
+
+You then pasted the real mobile/src/screens/LoginScreen.tsx, mobile/src/auth/AuthContext.tsx, and
+mobile/src/auth/StaffAuthContext.tsx for the first time this session - fixed now that I can see the
+real sign-in/sign-out code:
+
+FIXED - self check-in wired into BOTH real login paths (LoginScreen.tsx has two tabs):
+  1. Dealer/Workshop tab (email/dealer-code + password) - mobile/src/screens/LoginScreen.tsx,
+     handleDealerLogin(): checkInAfterLogin() now fires (unawaited, fire-and-forget, matching
+     attendanceCheckin.ts's own instructions) right after `await dealerLogin(...)` succeeds - the
+     moment the token is actually written to SecureStore.
+  2. Staff (Microsoft) tab (Azure AD) - mobile/src/auth/AuthContext.tsx, the OAuth-redirect-success
+     effect: checkInAfterLogin() now fires right after `await loadProfile()` succeeds, i.e. the
+     actual sign-in completion for this path.
+  INTERPRETATION, flagged: check-in was deliberately NOT added to AuthContext.tsx's other effect -
+  the one that silently restores a still-valid session from SecureStore on app cold-start. That
+  isn't "when i login" (your original wording) so much as "the app was already logged in and I
+  reopened it" - firing check-in there too would re-mark Present (overriding an earlier manual
+  Absent/OnLeave mark - already a documented assumption, see SECTION 101) every time the app is
+  merely reopened, not just at an actual login. Tell me if you actually want that too.
+
+FIXED - self check-out wired into the ONE shared sign-out path:
+  mobile/src/auth/StaffAuthContext.tsx, signOut() (the unified function this file's own doc
+  comment says every other screen should call for either login path): checkOutBeforeLogout() now
+  awaits at the very start, before either the Dealer or Azure AD branch clears its token - matches
+  "before log out chek out need to do that will update" and attendanceCheckin.ts's own requirement
+  that this run before the token is cleared.
+  ASSUMPTION, flagged: this assumes every real "Log out" button in your app calls
+  useStaffAuth().signOut() (this function) and not useAuth().signOut() or dealerLogout() directly.
+  I don't have every screen in this app to confirm that - if you have a logout button that bypasses
+  this context, tell me which screen it's in and I'll wire the same call in there too.
+
+NOT covered by this fix, unchanged from before: Technicians (login-less, per your own
+JobCardScannerDbContext.cs comment) still can't self check-in/out - their attendance still has to
+go through the WorkshopManagerUp+ Mark() flow on the web/Android Attendance roster, same as before.
+
+FILES TOUCHED
+  mobile/src/screens/LoginScreen.tsx (Dealer/Workshop login: checkInAfterLogin() wired in)
+  mobile/src/auth/AuthContext.tsx (Azure AD login: checkInAfterLogin() wired in)
+  mobile/src/auth/StaffAuthContext.tsx (unified signOut(): checkOutBeforeLogout() wired in)
+
+--------------------------------------------------------------------------------------------------
+SECTION 136 (2026-09-28) - Job Card Part Suggestion: "0301-A01-1025 exists in Item Master AND Part
+Upload but search says it does not exist" - real bug found and fixed, plus a separate flagged item
+--------------------------------------------------------------------------------------------------
+YOUR REPORT: searching "0301-A01-1025" in Part Suggestion shows "Part number does not exist in
+Item Master" - you pasted the real SQL proving it exists in both C_ItemMaster (Id 1396) and
+PartUploads (BalQty 9 at CUS0288W1, this dealer).
+
+FACT, confirmed from the code (JobCardsController.PartsCatalog): unlike itemMasterRows (already
+narrowed server-side by SearchItemMasterAsync's own `q` handling), the Part-Upload-only fallback
+rows (built for exactly this situation - a part with real uploaded stock but no Item Master match)
+were NEVER filtered by `q` at all. `_partUploads.GetAsync(dealerId, locationCode, null, ct)`'s
+third parameter is always passed null - it's a PartNo lookup filter, not a free-text search - so
+this list was always either this dealer's entire not-in-Item-Master upload set (blank search) or,
+just as wrong, that exact same full set even with a specific search typed, since nothing compared
+it against what you'd actually typed. FIXED: same defensive re-filter pattern already used for
+LabourCatalog's own near-identical bug earlier this session - when `q` is non-blank, only rows
+whose ItemCode or Description actually contains it are kept now.
+
+SEPARATE ITEM, FLAGGED AS INTERPRETATION NOT FACT: your own pasted SQL shows C_ItemMaster's row for
+0301-A01-1025 has Status = 'N' and its ItemName literally says "Discontinue -Alt-22GE050020AS" -
+i.e. BAPL's own ERP catalog already marks this specific part discontinued, naming 22GE050020AS as
+its replacement. I don't have IBaplDealerService.SearchItemMasterAsync's own source this session to
+confirm it filters out Status<>'Y' items, but if it does (a common, reasonable ERP convention - you
+generally don't want a discontinued part suggested on a new job card), then Item Master search
+correctly not finding this ItemCode is intentional design, not a bug - the fix above is what
+ensures your real uploaded stock (BalQty 9) still surfaces through the Part Upload fallback instead
+of vanishing entirely just because the catalog no longer lists it as orderable.
+
+ACTION FOR YOU: please retest searching "0301-A01-1025" after merging this. If it still says "does
+not exist", paste IBaplDealerService.cs (specifically SearchItemMasterAsync) and I'll confirm the
+Status-filter theory instead of guessing further - that would be the next and, I believe, last
+piece needed to fully explain this.
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Controllers/JobCardsController.cs (PartsCatalog: partUploadOnlyRows
+  now filtered by `q` when present)
+
+--------------------------------------------------------------------------------------------------
+SECTION 137 (2026-09-28) - Part Suggestion search: SECTION 136's "Status='N' discontinued" theory
+WITHDRAWN (your real IBaplDealerService.cs disproves it) - real fix: stop masking backend failures
+as "does not exist"
+--------------------------------------------------------------------------------------------------
+CORRECTION, please read this first: SECTION 136 guessed that C_ItemMaster's Status='N' on
+0301-A01-1025 (and its ItemName literally saying "Discontinue -Alt-22GE050020AS") explained why
+Item Master search didn't find it, assuming SearchItemMasterAsync filters out inactive items. You
+then pasted the real IBaplDealerService.cs - SearchItemMasterAsync's actual SQL is:
+
+  WHERE (@q IS NULL OR ItemCode LIKE @q OR ItemName LIKE @q OR DisplayName LIKE @q)
+
+There is NO Status filter anywhere in this query. That guess was wrong - withdrawn. This plain
+`ItemCode LIKE '%0301-A01-1025%'` should match ItemCode = '0301-A01-1025' directly, so Item Master
+search SHOULD find this part and SECTION 136's partUploadOnlyRows fix likely wasn't even the actual
+cause of THIS specific report (it was still a real, separate bug worth fixing, confirmed straight
+from the code - just not proven to be this one).
+
+REVISED HYPOTHESIS, the honest reason this is a hypothesis and not a fact: since the SQL itself
+should match, the leading explanation left is that the request FAILED outright (e.g. a transient
+problem reaching baplfinal, the remote Azure SQL database this query hits over the network) rather
+than genuinely returning zero rows. FACT, confirmed by re-reading JobCardDetailPage.tsx: the
+frontend's fetch had `.catch(() => setAvailableParts([]))` - a real HTTP 502 (which
+JobCardsController.PartsCatalog explicitly returns when SearchItemMasterAsync throws) and a
+genuine, correct zero-match response looked BYTE-FOR-BYTE IDENTICAL on screen - both show "Part
+number ... does not exist in Item Master." There was no way to tell a real backend failure apart
+from an honest "no match" just by looking at the page.
+
+FIXED: PartSuggestionCard now tracks the real error (new describeSearchError helper, same pattern
+as Attendance's SECTION 125 describeError) and shows the actual HTTP status/message when the
+request fails, instead of the generic "does not exist" text - so if this happens again, you (and I)
+will see exactly what failed instead of a misleading "not found."
+
+ACTION FOR YOU: please retry searching "0301-A01-1025" now. Three possible outcomes: (1) it now
+finds the part correctly (a transient failure, now visible if it recurs) - nothing more to do; (2)
+it shows a specific error message this time (e.g. "Search failed (HTTP 502)" with a detail) - paste
+that exact message and I'll dig into why baplfinal is failing for this query specifically; (3) it
+still shows "does not exist" with NO error - that would mean the request genuinely succeeded with
+zero rows despite the SQL looking like it should match, which I can't currently explain and would
+need the raw DevTools Network response body to investigate further.
+
+NOT YET DONE: mobile's JobCardDetailScreen.tsx does not have this same debounced-search/"does not
+exist" pattern at all (grepped for it, not found) - Part Suggestion search there looks structured
+differently. Flagging rather than guessing at a mirror fix; tell me if Android hits the same "part
+not found" symptom and I'll look at that screen's actual search code.
+
+FILES TOUCHED
+  web/src/pages/staff/JobCardDetailPage.tsx (PartSuggestionCard: real search errors now shown,
+  new describeSearchError helper)

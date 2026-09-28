@@ -28,6 +28,14 @@ import { TechnicianEmployeesScreen } from '../screens/TechnicianEmployeesScreen'
 // Location/Rate Type instead of a native dropdown, expo-document-picker for the file picker).
 import { PartUploadScreen } from '../screens/PartUploadScreen'
 import { LabourMasterScreen } from '../screens/LabourMasterScreen'
+// 2026-09-28 FIX ("this page not linked in android?") - AttendanceScreen.tsx (built 2026-09-25)
+// was never registered here at all - no import, no RootStackParamList entry, no Stack.Screen, and
+// DashboardScreen.tsx had no ActionCard pointing to it either, so there was genuinely no way to
+// reach it on Android. Confirmed by re-reading this file - "Attendance" didn't appear anywhere in
+// it before this fix. Default import (not `{ AttendanceScreen }`) since that screen, unlike every
+// other one here, uses `export default function AttendanceScreen()` - left as-is rather than
+// changed, to keep this a minimal, targeted fix.
+import AttendanceScreen from '../screens/AttendanceScreen'
 import { colors } from '../theme/colors'
 
 /** Optional /jobcards-equivalent filters the Dashboard's KPI cards deep-link with - each name
@@ -61,6 +69,14 @@ export type RootStackParamList = {
   // 2026-09-28 - both screens take no params, same shape as ItemMaster/RepairBillList above.
   PartUpload: undefined
   LabourMaster: undefined
+  // 2026-09-28 FIX - see this file's own import comment above.
+  // SECTION 172 (2026-09-30) "Attendance only personal" - optional onlyMine param, set true by
+  // DashboardScreen.tsx's own Attendance card so it always opens straight to the "my own
+  // attendance" view instead of the manager dealer-roster view a WorkshopManager+ login would
+  // otherwise get - see AttendanceScreen.tsx's own SECTION 172 doc comment for the mechanics.
+  // Left optional (not required) so any other future entry point that omits it keeps today's
+  // existing server-decided (403 -> personal) behavior unchanged.
+  Attendance: { onlyMine?: boolean } | undefined
 }
 
 const Stack = createNativeStackNavigator<RootStackParamList>()
@@ -117,6 +133,8 @@ export function RootNavigator() {
           {/* 2026-09-28 ("this page also add in android") */}
           <Stack.Screen name="PartUpload" component={PartUploadScreen} options={{ title: 'Part Upload' }} />
           <Stack.Screen name="LabourMaster" component={LabourMasterScreen} options={{ title: 'Labour Master' }} />
+          {/* 2026-09-28 FIX ("this page not linked in android?") */}
+          <Stack.Screen name="Attendance" component={AttendanceScreen} options={{ title: 'Attendance' }} />
         </Stack.Navigator>
       )}
     </NavigationContainer>

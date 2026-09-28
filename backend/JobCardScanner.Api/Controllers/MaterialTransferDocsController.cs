@@ -16,10 +16,17 @@ namespace JobCardScanner.Api.Controllers;
 /// existing read-only IDmsBaplDataService rather than duplicating it). Backs the new "Material
 /// Transfer Bill" sidebar page - NOT a change to the existing read-only
 /// MaterialTransferPage.tsx/"Material Transfer Report" page.
+///
+/// 2026-09-30 (SECTION 162, "real access lock" for Supervisor - Supervisor should only be able to
+/// use Dashboard, Job Cards and Attendance): gate switched from Policies.ServiceAdvisorUp to the
+/// new "ServiceAdvisorUpNoSupervisor" policy (see Program.cs's AddAuthorization block). Confirmed
+/// safe to change here specifically: ServiceAdvisorUp is ALSO used by JobCardsController.cs (which
+/// Supervisor must keep), but this controller is unrelated to Job Cards, so narrowing THIS
+/// controller's own policy has no effect on that one.
 /// </summary>
 [ApiController]
 [Route("api/material-transfer-docs")]
-[Authorize(Policy = Policies.ServiceAdvisorUp)]
+[Authorize(Policy = "ServiceAdvisorUpNoSupervisor")]
 public class MaterialTransferDocsController : ControllerBase
 {
     private readonly JobCardScannerDbContext _db;

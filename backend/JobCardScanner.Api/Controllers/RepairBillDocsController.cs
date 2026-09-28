@@ -21,10 +21,18 @@ namespace JobCardScanner.Api.Controllers;
 /// read-only DMSBAPLDATA-synced DMS_RepairBill rows (via the already-built IDmsBaplDataService,
 /// reused as-is) into one array - each row tagged with its Source so the two are shown together
 /// without being conflated as if they were the same underlying record.
+///
+/// 2026-09-30 (SECTION 162, "real access lock" for Supervisor - Supervisor should only be able to
+/// use Dashboard, Job Cards and Attendance): class-level gate switched from
+/// Policies.ServiceAdvisorUp to the new "ServiceAdvisorUpNoSupervisor" policy (see Program.cs's
+/// AddAuthorization block) - same reasoning as MaterialTransferDocsController's identical change:
+/// ServiceAdvisorUp is shared with JobCardsController (which Supervisor keeps), but this controller
+/// is unrelated to Job Cards, so narrowing THIS controller's own policy doesn't touch that one. The
+/// separate SystemAdminOnly-gated action further down (Delete, line ~533) is untouched.
 /// </summary>
 [ApiController]
 [Route("api/repair-bill-docs")]
-[Authorize(Policy = Policies.ServiceAdvisorUp)]
+[Authorize(Policy = "ServiceAdvisorUpNoSupervisor")]
 public class RepairBillDocsController : ControllerBase
 {
     private readonly JobCardScannerDbContext _db;
@@ -54,11 +62,24 @@ public class RepairBillDocsController : ControllerBase
     /// reference's own list query excludes IsDelete rows too). Search filters mirror the reference
     /// GetAllRepairBillList's own filter set (DealerCode/LocationCode are implicit here - already
     /// scoped to the signed-in user's dealer - so only BillNo/RegNo/ChassisNo/DateFrom/DateTo are
-    /// exposed). For the combined DMSBAPLDATA + JobCardScannerDb view, use /combined below.</summary>
+    /// exposed). For the combined DMSBAPLDATA + JobCardScannerDb view, use /combined below.
+    ///
+    /// 2026-09-28 (SECTION 150, "in print click download invoioce download then it will not
+    /// download why?"): added `jobCardId` - lets a caller ask "does THIS job card have a Repair
+    /// Bill here" directly, instead of pulling every bill for the dealer and filtering client-side.
+    /// Added specifically for the Job Card Detail page/screen's Print menu's new "Invoice" option
+    /// (see JobCardDetailPage.tsx/JobCardDetailScreen.tsx's own PrintMenu.printInvoice) - the old
+    /// version of that option read DMS's own invoice-pdf endpoint
+    /// (JobCardsController.InvoicePdf), which always 404s for a job whose repair bill was saved
+    /// through THIS controller instead (this app never writes bills back to DMS - see this
+    /// controller's own top-of-file doc comment). Also now Includes JobCard, so ToRow's own
+    /// JobCardNumber projection (previously always null from this action - JobCard was never
+    /// loaded here, only Get()/Combined() below ever Included it) actually returns a value.</summary>
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] string? billNo = null, [FromQuery] string? regNo = null,
-        [FromQuery] string? chassisNo = null, [FromQuery] DateOnly? dateFrom = null, [FromQuery] DateOnly? dateTo = null)
+        [FromQuery] string? chassisNo = null, [FromQuery] DateOnly? dateFrom = null, [FromQuery] DateOnly? dateTo = null,
+        [FromQuery] Guid? jobCardId = null)
     {
         var dealerId = _currentUser.DealerId;
         if (dealerId is null) return Forbid();
@@ -71,8 +92,9 @@ public class RepairBillDocsController : ControllerBase
         if (!string.IsNullOrWhiteSpace(chassisNo)) query = query.Where(r => r.ChassisNo != null && r.ChassisNo.Contains(chassisNo));
         if (dateFrom is not null) query = query.Where(r => r.BillDate >= dateFrom);
         if (dateTo is not null) query = query.Where(r => r.BillDate <= dateTo);
+        if (jobCardId is not null) query = query.Where(r => r.JobCardId == jobCardId);
 
-        var bills = await query.Include(r => r.Items).OrderByDescending(r => r.CreatedAt).ToListAsync();
+        var bills = await query.Include(r => r.Items).Include(r => r.JobCard).OrderByDescending(r => r.CreatedAt).ToListAsync();
 
         return Ok(bills.Select(ToRow));
     }
@@ -555,6 +577,59 @@ public class RepairBillDocsController : ControllerBase
         var bill = await _db.RepairBillDocs.FirstOrDefaultAsync(r => r.Id == id && r.DealerId == dealerId);
         if (bill is null) return NotFound();
         bill.Status = status;
+
+        // 2026-09-28 (SECTION 147, "when i click Generate Invoice ... we cant close jobcards
+        // without repair ... save as proforma then save as invoice then this jobcard close"):
+        // WITHDRAWS the SECTION 145 manual "Generate Invoice & Close Job Card" button (removed
+        // from both apps this same section) in favour of THIS being the real close trigger - the
+        // moment a bill linked to a job card is marked Billed (this app's own "Invoice" step, per
+        // your wording), close that job card and advance it to the workflow's terminal
+        // "invoice_generated" stage.
+        //
+        // CORRECTED same day (SECTION 149, "after repair bill also jobcrad not shown closed" -
+        // your real report that SECTION 147's first version of this fix did not actually close the
+        // job card): that first version relied only on WorkflowStageAutomation.AdvanceIfAheadAsync
+        // to set JobCard.Status -> Closed, inferred from a doc comment on
+        // JobCardsController.SyncClosedFromDmsAsync (its own DMS-closed sync sets Status/ClosedAt/
+        // ActualDeliveryAt EXPLICITLY, itself, before ALSO calling AdvanceIfAheadAsync for the
+        // stage/StageHistory side) - I do not have WorkflowStageAutomation.cs's actual source in
+        // this session to confirm whether AdvanceIfAheadAsync closes the job card on its own, and
+        // your real-world result shows it evidently does not (or at least not reliably). FIXED by
+        // no longer depending on that assumption: this now sets jc.Status/ClosedAt/ActualDeliveryAt
+        // EXPLICITLY itself, mirroring ChangeStage()'s own `if (stage.IsTerminal && jc.Status !=
+        // JobCardStatus.Closed) {...}` logic and SyncClosedFromDmsAsync's identical pattern exactly
+        // - AdvanceIfAheadAsync is still called afterwards, now purely for the
+        // CurrentStage/StageHistory side (which SECTION 147's report didn't say was broken, only
+        // that the job card wasn't "shown closed" - the stage advance may have been working while
+        // Status silently wasn't). Never re-closes an already-closed job card (guarded by
+        // `jc.Status != JobCardStatus.Closed`, same guard ChangeStage() uses) or overwrites an
+        // earlier ActualDeliveryAt (`??=`).
+        //
+        // This also IS the "can't close jobcards without repair" rule you stated: since SECTION 147
+        // removed every other way to reach "invoice_generated" from either app's UI, a job card can
+        // now only close by a Repair Bill actually being saved as Invoice here. FLAGGED, not acted
+        // on (out of scope for this request, but real): the OTP-based Closure flow
+        // (InitiateClosureOtp/VerifyClosureOtp on JobCardsController) is still live on the backend
+        // even though its UI card is hidden - it could still close a job card without a repair bill
+        // if called directly. Tell me if you want that endpoint blocked/removed too.
+        //
+        // A bill with no JobCardId (not linked to any job card - e.g. a walk-in/party bill) or a
+        // status other than Billed leaves the job card untouched, same as before this change.
+        if (status == RepairBillDocStatus.Billed && bill.JobCardId is not null)
+        {
+            var jc = await _db.JobCards.FirstOrDefaultAsync(j => j.Id == bill.JobCardId.Value);
+            if (jc is not null)
+            {
+                if (jc.Status != JobCardStatus.Closed)
+                {
+                    jc.Status = JobCardStatus.Closed;
+                    jc.ClosedAt = DateTime.UtcNow;
+                    jc.ActualDeliveryAt ??= DateTime.UtcNow;
+                }
+                await WorkflowStageAutomation.AdvanceIfAheadAsync(_db, jc, "invoice_generated", _currentUser.UserId, "Auto-advanced: repair bill saved as Invoice.");
+            }
+        }
+
         await _db.SaveChangesAsync();
         await _audit.LogAsync("RepairBillDoc.StatusChange", "RepairBillDoc", bill.Id.ToString(), new { bill.Status });
         return Ok(ToRow(bill));

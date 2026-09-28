@@ -391,6 +391,25 @@ public interface IDmsBaplDataService
     Task<IReadOnlyList<DmsBaplDataVehicleSaleRow>> GetVehicleSalesAsync(string? soldToFilter, CancellationToken ct = default);
 
     /// <summary>
+    /// 2026-10-01 ADDED ("with location this data not match" - a Dombivli dealer's logged-in user
+    /// was shown a Delhi dealer's Zomato sale row): same query as the method above, PLUS dealer
+    /// scoping - FACT, confirmed by reading this file's own GetVehicleSalesAsync SQL above: it has
+    /// NO dealer_code filter at all, unlike LookupVehicleForWizardAsync/SearchVehiclesForWizardAsync
+    /// just below in this same file, which both already scope by `(@dealerCode IS NULL OR
+    /// sb.dealer_code = @dealerCode)`. This overload applies that exact same, already-proven
+    /// pattern to the Vehicle Sale LIST endpoint too - dealerCode null still means "every dealer"
+    /// (same convention as the other two methods), so this is purely additive: the original 2-arg
+    /// overload above is UNCHANGED and still delegates here with dealerCode: null, so nothing that
+    /// already calls it breaks.
+    ///
+    /// NOT WIRED IN YET: I don't have DmsBaplDataController.cs (the file behind GET
+    /// /api/dms-bapl-data/vehicle-sales), so I can't safely edit the one place that would actually
+    /// call this new overload with the logged-in user's dealer code instead of the old unscoped one
+    /// - see the chat message delivering this file for exactly what to search your solution for.
+    /// </summary>
+    Task<IReadOnlyList<DmsBaplDataVehicleSaleRow>> GetVehicleSalesAsync(string? soldToFilter, string? dealerCode, CancellationToken ct = default);
+
+    /// <summary>
     /// Looks up ONE vehicle by chassis no. or registration no. from BaplConnection's
     /// dbo.DMS_SaleBill (+ dbo.DMS_SaleBillCustomer for the buyer) - the Job Card Wizard's
     /// chassis/reg-no search (2026-09-25: "worklocation chassis no and reg no use from vehicle sale
@@ -838,7 +857,13 @@ public class DmsBaplDataService : IDmsBaplDataService
         rdr["CreatedOn"] as DateTime?,
         rdr["ModifiedOn"] as DateTime?);
 
-    public async Task<IReadOnlyList<DmsBaplDataVehicleSaleRow>> GetVehicleSalesAsync(string? soldToFilter, CancellationToken ct = default)
+    // 2026-10-01: unchanged signature, kept for any existing caller - delegates to the dealer-aware
+    // overload below with dealerCode: null (same "null = every dealer" behavior this method always
+    // had, so this is not a behavior change for whatever already calls this exact overload).
+    public Task<IReadOnlyList<DmsBaplDataVehicleSaleRow>> GetVehicleSalesAsync(string? soldToFilter, CancellationToken ct = default) =>
+        GetVehicleSalesAsync(soldToFilter, dealerCode: null, ct);
+
+    public async Task<IReadOnlyList<DmsBaplDataVehicleSaleRow>> GetVehicleSalesAsync(string? soldToFilter, string? dealerCode, CancellationToken ct = default)
     {
         var rows = new List<DmsBaplDataVehicleSaleRow>();
 
@@ -847,15 +872,21 @@ public class DmsBaplDataService : IDmsBaplDataService
             await using var conn = new SqlConnection(BaplConnStr);
             await conn.OpenAsync(ct);
 
+            // 2026-10-01 ADDED: dealer scoping, mirroring LookupVehicleForWizardAsync/
+            // SearchVehiclesForWizardAsync's existing `(@dealerCode IS NULL OR sb.dealer_code =
+            // @dealerCode)` pattern below in this same file - see this method's interface doc
+            // comment for why (cross-dealer data was visible without this).
             var sql = $@"
                 SELECT {VehicleSaleSelectColumns}
                 {VehicleSaleFromJoin}
                 WHERE (sb.IsDelete IS NULL OR sb.IsDelete = 0)
                   AND (@soldTo IS NULL OR c.first_name LIKE @soldTo)
+                  AND (@dealerCode IS NULL OR sb.dealer_code = @dealerCode)
                 ORDER BY sb.CreatedOn DESC, sb.Id DESC";
 
             await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
             cmd.Parameters.AddWithValue("@soldTo", string.IsNullOrWhiteSpace(soldToFilter) ? DBNull.Value : $"%{soldToFilter.Trim()}%");
+            cmd.Parameters.AddWithValue("@dealerCode", string.IsNullOrWhiteSpace(dealerCode) ? DBNull.Value : dealerCode.Trim());
             await using var rdr = await cmd.ExecuteReaderAsync(ct);
             while (await rdr.ReadAsync(ct))
                 rows.Add(MapVehicleSaleRow(rdr));

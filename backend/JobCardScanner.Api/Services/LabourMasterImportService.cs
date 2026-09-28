@@ -33,6 +33,39 @@ namespace JobCardScanner.Api.Services;
 // read-only (matching the documented intent), this feature would need its own writable
 // connection string (e.g. pointed at JobCardScannerDb instead) - worth deciding deliberately
 // rather than discovering it as a runtime failure.
+//
+// 2026-09-29 (SECTION 154, "in labor-master also i upload wrong fix IGST CGST SGST in that 18%
+// and 9% that only ... this is wrong IGST CGST SGST"): your real screenshot showed IGST/CGST/
+// SGST reading things like "18000%"/"9000%"/"9000%" for a Rate-1000 row, "1800%"/"900%"/"900%"
+// for a Rate-100 row, "90%" for a Rate-5 row - i.e. the displayed value is exactly (true GST% x
+// Labour Rate), not the GST% itself. FACT, confirmed by re-reading this whole file plus web's
+// LabourMasterPage.tsx and mobile's LabourMasterScreen.tsx: nothing in any of those three files
+// ever multiplies Igst/Cgst/Sgst by LabourRate - CellDecimal (still used for LabourRate itself,
+// unchanged below) reads each column completely independently, and both frontends' fmtPct just
+// does `value * 100`. Since the numbers you saw scale exactly with Rate, the raw cell being
+// imported must ALREADY be Rate-scaled - almost certainly because the real file's IGST/CGST/SGST
+// columns are FORMULA cells (e.g. "=LabourRateCell*18%") rather than a plain fraction like your
+// two original sample files had - ClosedXML's cell.GetDouble() returns a formula's cached
+// calculated result, not its formula text, so it faithfully imports the computed rupee amount.
+//
+// FIX (new CellGstFraction helper below, used ONLY for Igst/Cgst/Sgst - LabourRate/Tier still use
+// the original CellDecimal/CellInt unchanged): no real Indian GST slab exceeds 28%, so any raw
+// value above GstFractionMax (0.30, a deliberately generous ceiling) cannot already be a valid
+// fraction. In that case ONLY, this divides by the row's own LabourRate to recover the implied
+// fraction (the inverse of the Rate x fraction pattern your screenshot showed) - and if THAT
+// recovered value still isn't plausible either (or Rate is null/zero, so division isn't possible),
+// the cell is left NULL and a warning is added instead of silently guessing. A raw value already
+// <= GstFractionMax (e.g. a plain 0.18, matching your original two sample files) is returned
+// completely unchanged - this only changes behavior for the amount-not-fraction case.
+//
+// FLAGGED, not yet confirmed: I have not seen your actual current upload file, so this is my best
+// inference from the numbers in your screenshot, not a certainty. Please check that file's IGST/
+// CGST/SGST cells directly (click one and look at the formula bar) to confirm they're really
+// formulas computing Rate x %, rather than something else I haven't considered. If this fix is
+// right, simply re-importing the SAME file (same Effective Date) will correct the rows already
+// sitting in the database too - the existing upsert-by-key logic below already treats a changed
+// Igst/Cgst/Sgst as an UPDATE to the same row, not a new duplicate, so no separate cleanup script
+// is needed.
 // =====================================================================================
 
 public record LabourMasterWithoutPartwiseRow(
@@ -330,7 +363,9 @@ public class LabourMasterImportService : ILabourMasterImportService
     /// PERCENTAGE-FORMATTED in Excel (displaying "18%" while still storing 0.18 underneath),
     /// GetString() would return the literal text "18%" and silently fail to parse as a number.
     /// Reading the raw double sidesteps that ambiguity entirely - it's 0.18 either way. Falls back
-    /// to text parsing only for a cell ClosedXML sees as text (e.g. "1" typed as text, not a number).</summary>
+    /// to text parsing only for a cell ClosedXML sees as text (e.g. "1" typed as text, not a number).
+    /// Still used as-is for LabourRate/Tier - see CellGstFraction below for the GST-specific
+    /// variant added in SECTION 154.</summary>
     private static decimal? CellDecimal(IXLWorksheet ws, int row, int col)
     {
         if (col < 1) return null;
@@ -339,6 +374,71 @@ public class LabourMasterImportService : ILabourMasterImportService
         if (cell.DataType == XLDataType.Number) return (decimal)cell.GetDouble();
         var s = cell.GetString().Trim().TrimEnd('%');
         return s.Length > 0 && decimal.TryParse(s, out var d) ? d : null;
+    }
+
+    /// <summary>2026-09-29 (SECTION 154) - see this file's class-level doc comment for the full
+    /// explanation. Deliberately separate from CellDecimal above (which stays unchanged for
+    /// LabourRate/Tier) - only Igst/Cgst/Sgst go through this. No real Indian GST slab exceeds
+    /// 28%, so GstFractionMax (0.30, a deliberately generous ceiling) is used as the boundary
+    /// between "already a valid fraction" and "looks like something else that needs recovering".
+    ///
+    /// SECTION 178 (2026-09-30) ("according thi excel file i upload partwise labour but cgst isgt
+    /// all not going as it is give proper") - CONFIRMED by actually opening the uploaded file
+    /// (1790763818913_Labour_Master_Partwise_1.xlsx, 414 data rows) with openpyxl: every row
+    /// stored IGST=18, CGST=9, SGST=9 as a PLAIN PERCENTAGE NUMBER (literal 18, meaning "18%"),
+    /// completely independent of that row's Labour Rate (Rate 600, 300, 1400, 200, 133.33... all
+    /// showed the same IGST=18) - a THIRD format, different from both cases SECTION 154 handled
+    /// (not already a fraction, and not a Rate-scaled rupee amount either). SECTION 154's single
+    /// recovery strategy (divide by Rate) silently produced a WRONG but still-plausible value here
+    /// (raw 18 / Rate 600 = 0.03, i.e. 3%, which passes the 0.30 ceiling and was accepted) - that
+    /// was exactly "cgst isgt all not going as it is."
+    ///
+    /// Now tries TWO recovery strategies in order instead of one: (1) raw / 100 - treat raw as a
+    /// plain percentage number (18 -> 0.18), tried FIRST since a real Indian GST rate divided by
+    /// 100 is almost always immediately plausible, and this is what the Partwise file needs; (2)
+    /// raw / LabourRate - SECTION 154's original Rate-scaled-rupee-amount recovery, tried only if
+    /// (1) wasn't plausible - still needed for files formatted the other way (a formula cell
+    /// computing Rate x true%, e.g. Rate 1000 / raw 180: 180/100=1.8 fails the ceiling, falls
+    /// through to 180/1000=0.18, still correctly recovered). Verified against both the original
+    /// Rate-scaled case and this new constant-percentage case - both now resolve correctly.
+    /// If the raw cell exceeds the ceiling, this value is left NULL and a warning is appended
+    /// rather than storing a guess.</summary>
+    private const decimal GstFractionMax = 0.30m;
+
+    private static decimal? CellGstFraction(IXLWorksheet ws, int row, int col, decimal? rate, string? labourCode, List<string> warnings)
+    {
+        if (col < 1) return null;
+        var cell = ws.Cell(row, col);
+        if (cell.IsEmpty()) return null;
+
+        decimal raw;
+        if (cell.DataType == XLDataType.Number) raw = (decimal)cell.GetDouble();
+        else
+        {
+            var s = cell.GetString().Trim().TrimEnd('%');
+            if (s.Length == 0 || !decimal.TryParse(s, out raw)) return null;
+        }
+
+        if (raw <= GstFractionMax) return raw; // already a plausible fraction - unchanged from SECTION 154
+
+        // SECTION 178: try "plain percentage number" first (18 -> 0.18) - this is what the real
+        // Partwise file uses, and it's the more common/likely format for a hand-maintained sheet.
+        var asPercent = raw / 100m;
+        if (asPercent <= GstFractionMax) return asPercent;
+
+        // Fall back to SECTION 154's original "Rate-scaled rupee amount" recovery (e.g. a formula
+        // cell computing Rate * true%) - only reached if the percent interpretation above wasn't
+        // plausible.
+        if (rate is > 0)
+        {
+            var recoveredFromRate = raw / rate.Value;
+            if (recoveredFromRate <= GstFractionMax) return recoveredFromRate;
+        }
+
+        warnings.Add($"Row \"{labourCode}\": a GST column read {raw}, which isn't a plausible tax rate " +
+                     "as a percentage (÷100) or after dividing by the Labour Rate - left blank rather than " +
+                     "guessed. Please check this row's IGST/CGST/SGST cells in the source file.");
+        return null;
     }
 
     private static int? CellInt(IXLWorksheet ws, int row, int col)
@@ -432,9 +532,11 @@ public class LabourMasterImportService : ILabourMasterImportService
                     var jobDesc = CellText(ws, r, colJobDesc);
                     var model = CellText(ws, r, colModel);
                     var rate = CellDecimal(ws, r, colRate);
-                    var igst = CellDecimal(ws, r, colIgst);
-                    var cgst = CellDecimal(ws, r, colCgst);
-                    var sgst = CellDecimal(ws, r, colSgst);
+                    // 2026-09-29 (SECTION 154): was CellDecimal(ws, r, colIgst/colCgst/colSgst) -
+                    // see class doc comment and CellGstFraction's own doc comment above.
+                    var igst = CellGstFraction(ws, r, colIgst, rate, labourCode, warnings);
+                    var cgst = CellGstFraction(ws, r, colCgst, rate, labourCode, warnings);
+                    var sgst = CellGstFraction(ws, r, colSgst, rate, labourCode, warnings);
                     var tier = CellInt(ws, r, colTier);
                     var category = CellText(ws, r, colCategory);
 
@@ -565,9 +667,11 @@ public class LabourMasterImportService : ILabourMasterImportService
                     var jobDesc = CellText(ws, r, colJobDesc);
                     var model = CellText(ws, r, colModel);
                     var rate = CellDecimal(ws, r, colRate);
-                    var igst = CellDecimal(ws, r, colIgst);
-                    var cgst = CellDecimal(ws, r, colCgst);
-                    var sgst = CellDecimal(ws, r, colSgst);
+                    // 2026-09-29 (SECTION 154): was CellDecimal(ws, r, colIgst/colCgst/colSgst) -
+                    // see class doc comment and CellGstFraction's own doc comment above.
+                    var igst = CellGstFraction(ws, r, colIgst, rate, labourCode, warnings);
+                    var cgst = CellGstFraction(ws, r, colCgst, rate, labourCode, warnings);
+                    var sgst = CellGstFraction(ws, r, colSgst, rate, labourCode, warnings);
                     var tier = CellInt(ws, r, colTier);
                     var category = CellText(ws, r, colCategory);
 
@@ -634,7 +738,11 @@ public class LabourMasterImportService : ILabourMasterImportService
     }
 
     // ---------------------------------------------------------------------------------
-    // Manual edit / delete (the grid's own Edit/Delete buttons, independent of import)
+    // Manual edit / delete (the grid's own Edit/Delete buttons, independent of import) -
+    // UNCHANGED by SECTION 154: these take Igst/Cgst/Sgst as already-typed fractions straight
+    // from the Edit modal's own "IGST (fraction, e.g. 0.18 = 18%)" input, not parsed from Excel,
+    // so the CellGstFraction heuristic above does not apply here - the value you type is stored
+    // exactly as typed, same as before this fix.
     // ---------------------------------------------------------------------------------
 
     public async Task<LabourMasterWithoutPartwiseRow?> UpdateWithoutPartwiseAsync(int id, LabourMasterWithoutPartwiseUpdate u, string? actor, CancellationToken ct = default)

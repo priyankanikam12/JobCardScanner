@@ -164,8 +164,18 @@ function mapVsrRow(dataRow: unknown[], get: ReturnType<typeof makeRowGetter>, in
  *
  * 2026-09-18 additions:
  *  - The "Sold To" search box is gone from view per your request ("Sold To zomato hide this") -
- *    the page still only ever asks DMSBAPLDATA for Zomato's sales (soldTo stays hardcoded below),
- *    just without a visible, editable field for it. A plain Refresh button re-runs that same query.
+ *    the page originally still only ever asked DMSBAPLDATA for Zomato's sales (soldTo stayed
+ *    hardcoded), just without a visible, editable field for it.
+ *
+ * 2026-09-30 CHANGE ("remove condition soldto = zomato all data show"): the Sold To=Zomato filter
+ * is REMOVED - this page now asks DMSBAPLDATA for every vehicle sale, not just Zomato's. The
+ * "Sold To" column (and its value in the search/export) is unaffected - it still shows whatever
+ * DMSBAPLDATA returns per row, it's just no longer used to filter the query itself. A plain
+ * Refresh button re-runs the same (now unfiltered) query. NOT CONFIRMED: I don't have
+ * DmsBaplDataController.cs/DmsBaplDataService.cs in this session, so whether GET
+ * /api/dms-bapl-data/vehicle-sales actually returns everything when soldTo is omitted (vs.
+ * erroring, vs. defaulting to something else server-side) is unverified - flag it if Refresh
+ * starts failing or still only shows Zomato after this deploys.
  *  - "Import Vehicle Sale Report" reads a real DMS/ERP report export (see mapVsrRow's doc
  *    comment above) entirely in the browser and SWAPS the page over to showing that file's rows
  *    instead of DMSBAPLDATA's - not a bulk filter over the DMSBAPLDATA results like Repair Bill/
@@ -195,16 +205,16 @@ function mapVsrRow(dataRow: unknown[], get: ReturnType<typeof makeRowGetter>, in
  *    new route - say so if you specifically want a dedicated edit page/URL instead.
  */
 export function VehicleSalePage() {
-  const soldTo = 'Zomato' // no longer a visible/editable field - see this component's doc comment
   const [sales, setSales] = useState<DmsBaplDataVehicleSale[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<number | null>(null)
   // 2026-09-25 ("add search option"): a client-side filter over whatever's currently loaded
   // (DMSBAPLDATA's results, or an imported report - same "everything downstream reads from
-  // effectiveSales" convention this page already uses below). Not a new server call/param - the
-  // Sold To=Zomato query itself is unchanged, this just narrows what's already on screen. Matches
-  // across the same fields the on-screen table + report export show, case-insensitive substring.
+  // effectiveSales" convention this page already uses below). Not a new server call/param - it
+  // just narrows what's already on screen (see SECTION 181 above: the underlying DMSBAPLDATA
+  // query itself is unfiltered now, not Sold To=Zomato any more). Matches across the same fields
+  // the on-screen table + report export show, case-insensitive substring.
   const [query, setQuery] = useState('')
 
   const [importedRows, setImportedRows] = useState<DmsBaplDataVehicleSale[] | null>(null)
@@ -225,7 +235,7 @@ export function VehicleSalePage() {
     setImportedRows(null) // a fresh DMSBAPLDATA refresh drops any imported report currently shown
     setImportedFileName(null)
     staffApi
-      .get<DmsBaplDataVehicleSale[]>('/api/dms-bapl-data/vehicle-sales', { params: { soldTo } })
+      .get<DmsBaplDataVehicleSale[]>('/api/dms-bapl-data/vehicle-sales')
       .then((r) => setSales(r.data))
       .catch((err) => {
         setSales([])
@@ -339,7 +349,7 @@ export function VehicleSalePage() {
       <p className="muted">
         {importedRows
           ? <>Showing {total} rows imported from <strong>{importedFileName}</strong> - not from DMSBAPLDATA.</>
-          : <>Synced vehicle sale data from DMSBAPLDATA (Sold To: Zomato). Read-only - this app never writes to DMSBAPLDATA.</>}
+          : <>Synced vehicle sale data from DMSBAPLDATA. Read-only - this app never writes to DMSBAPLDATA.</>}
         {' '}Click a row for the full details. Use the ✎ next to Reg No to correct it by hand.
       </p>
 
@@ -377,7 +387,7 @@ export function VehicleSalePage() {
           }}
         />
         {importing && <span className="muted">Parsing file - large reports (50,000+ rows) can take several seconds…</span>}
-        <button type="button" className="btn btn-sm" onClick={search} disabled={loading} title="Re-fetch from DMSBAPLDATA (Sold To: Zomato)">
+        <button type="button" className="btn btn-sm" onClick={search} disabled={loading} title="Re-fetch from DMSBAPLDATA">
           {loading ? 'Loading…' : '↻ Refresh'}
         </button>
         {importedRows && (
@@ -444,7 +454,16 @@ export function VehicleSalePage() {
                             className="btn btn-sm"
                             title="Correct this Reg No"
                             style={{ border: 'none', background: 'transparent', padding: '0 4px' }}
-                            onClick={() => { setEditingChassisNo(s.chassisNo); setEditRegNoValue(s.regNo ?? ''); setOverrideError(null) }}
+                            // 2026-09-28 FIX - your real compiler error (TS2345: "Argument of type
+                            // 'string | null | undefined' is not assignable to parameter of type
+                            // 'SetStateAction<string | null>'"): DmsBaplDataVehicleSale.chassisNo is
+                            // typed as `string | null | undefined`, one notch wider than
+                            // editingChassisNo's own `useState<string | null>` above - the `?? null`
+                            // here collapses `undefined` down to `null` so it fits that type. This
+                            // is inside the `!!s.chassisNo &&` guard just above, so this line only
+                            // ever runs when chassisNo is already truthy anyway - purely a type-level
+                            // fix, no behavior change.
+                            onClick={() => { setEditingChassisNo(s.chassisNo ?? null); setEditRegNoValue(s.regNo ?? ''); setOverrideError(null) }}
                           >
                             ✎
                           </button>
@@ -494,7 +513,7 @@ export function VehicleSalePage() {
               <tr><td colSpan={10} className="muted" style={{ textAlign: 'center', padding: 16 }}>
                 {query.trim()
                   ? <>No vehicle sales match "{query.trim()}".</>
-                  : <>No vehicle sales found{!importedRows ? ` for "${soldTo}"` : ''}.</>}
+                  : <>No vehicle sales found.</>}
               </td></tr>
             )}
           </tbody>

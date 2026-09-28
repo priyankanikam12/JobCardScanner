@@ -22,6 +22,16 @@ import type { JobSearchResult } from '../types'
  * already have a Material Transfer saved against them - i.e. literally "material transferred job
  * cards history" - instead of every job card. Every other caller (this page's plain "Search Job"
  * button, and MaterialTransferCreatePage.tsx's own Job Search) omits the prop and is unaffected.
+ *
+ * SECTION 168 (2026-09-30) "in mt and rb only open jobcard shown..only 1 is open means inprogreass
+ * other already close after that shown" - the plain "Search Job" use (onlyWithMaterialTransfer
+ * false/omitted) now also sends `excludeClosed=true` on the same GET /api/jobcards/search call,
+ * which JobCardsController.Search already supported since SECTION 153 but no caller had ever set.
+ * This hides Closed and Cancelled job cards from the results grid - only open/in-progress ones show
+ * - so this modal can no longer be used to pick an already-closed job card for a new Material
+ * Transfer or Repair Bill. Deliberately NOT sent when onlyWithMaterialTransfer is true (the "MT
+ * History" grid-button mode): a completed Material Transfer is still valid history even after its
+ * job card later closes, so that view keeps showing closed-job transfers exactly as before.
  */
 type Props = {
   onSelect: (job: JobSearchResult) => void
@@ -60,6 +70,9 @@ export function JobSearchModal({ onSelect, onClose, onlyWithMaterialTransfer = f
           regNo: regNo || undefined,
           chassisNo: chassisNo || undefined,
           onlyWithMaterialTransfer: onlyWithMaterialTransfer || undefined,
+          // SECTION 168 - only exclude Closed/Cancelled job cards for the plain "Search Job" use;
+          // the MT History grid-button mode (onlyWithMaterialTransfer=true) keeps showing them.
+          excludeClosed: onlyWithMaterialTransfer ? undefined : true,
         },
       })
       .then(({ data }) => { setRows(data); setSearched(true) })
@@ -167,3 +180,4 @@ export function JobSearchModal({ onSelect, onClose, onlyWithMaterialTransfer = f
     </div>
   )
 }
+

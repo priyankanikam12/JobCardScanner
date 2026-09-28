@@ -4,23 +4,51 @@ import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
 import type {
   BaplDealerResolveResult, BaplDmsDealer, BaplDmsVehicleLookup, BaplDmsVehicleSuggestion, BaplDmsWorkshop,
-  Customer, Dealer, JobCardPriority, JobCardSource, PhotoStage, ServiceType, Vehicle,
+  Customer, Dealer, JobCardSource, PhotoStage, ServiceType, Vehicle,
 } from '../../types'
 import { VEHICLE_MODELS, variantsForModel } from '../../data/vehicleCatalog'
-import {
-  COMPLAINTS, JOB_SOURCES, JOB_TYPES, SERVICE_HEADS, SERVICE_TYPES, serviceHeadsForJobType,
-} from '../../data/serviceCatalog'
+import { JOB_SOURCES, SERVICE_TYPES } from '../../data/serviceCatalog'
 import { buildJobCardPrintHtml } from '../../lib/jobCardPrintHtml'
 
 const STEPS = ['Customer', 'Vehicle', 'Service Details', 'Review & Create']
 
-// 2026-09-25 ("Priority * option 1, 2, 3..OTHER"): displayed as 1/2/3, still backed by the same
-// Normal/High/Urgent values JobCardPriority already posts as - see the Priority <select>'s own
-// doc comment further down for why "Other" isn't wired up yet. Shared between the picker and the
-// Review step's summary so both show the same label for the same value.
-const PRIORITY_OPTIONS: [JobCardPriority, string][] = [['Normal', '1'], ['High', '2'], ['Urgent', '3']]
-function priorityLabel(value: JobCardPriority): string {
-  return PRIORITY_OPTIONS.find(([v]) => v === value)?.[1] ?? value
+// SECTION 169 (2026-09-30) "bind this 3 dropdown dependancy from master" - Job Type/Service Head/
+// Priority are no longer read from the hardcoded web/src/data/serviceCatalog.ts (JOB_TYPES/
+// SERVICE_HEADS/serviceHeadsForJobType, and the old independent PRIORITY_OPTIONS fixed 3-item
+// dropdown below) - all three now come from GET /api/service-menu-master, a single flat table of
+// (JobTypeId/Name, ServiceHeadId/Name, PriorityValue, PriorityLabel, SortOrder) rows maintained on
+// the new Service Menu Master admin page (SECTION 163/166). See ServiceMenuMaster.cs's class doc
+// comment for the full reasoning and the confirmed PriorityValue/PriorityLabel field-shape
+// decision this relies on: PriorityLabel (e.g. "Normal"/"High"/"Urgent") is what gets POSTED as
+// this page's own `priority` state/POST /api/jobcards field (must match JobCardPriority's real
+// enum names), while PriorityValue (e.g. "1"/"2"/"3") is only the short code shown in the
+// dropdown - exactly mirroring the old PRIORITY_OPTIONS tuple's [posted value, displayed label]
+// shape, just sourced from the master table instead of a fixed array. COMPLAINTS is similarly
+// replaced by GET /api/complaint-master (see the Complaint button grid further down).
+interface ServiceMenuRow {
+  id: string
+  jobTypeId: number
+  jobTypeName: string
+  serviceHeadId: number
+  serviceHeadName: string
+  priorityValue: string
+  priorityLabel: string
+  sortOrder: number
+}
+interface ComplaintMasterRow {
+  id: string
+  complaintText: string
+}
+/** First-seen-wins de-dup, preserving whatever order `items` is already sorted in - used to turn
+ * the flat ServiceMenuRow list into the three cascading dropdowns' distinct option sets. */
+function dedupeBy<T, K>(items: T[], keyFn: (item: T) => K): T[] {
+  const seen = new Set<K>()
+  const out: T[] = []
+  for (const item of items) {
+    const k = keyFn(item)
+    if (!seen.has(k)) { seen.add(k); out.push(item) }
+  }
+  return out
 }
 
 /** Red "*" marker for required-field labels (2026-09-03 - "all required feild are red star"),
@@ -184,6 +212,11 @@ export function JobCardWizardPage() {
   // cleared as soon as one is picked or the box is emptied.
   const [vehicleSuggestions, setVehicleSuggestions] = useState<BaplDmsVehicleSuggestion[]>([])
   const [showVehicleSuggestions, setShowVehicleSuggestions] = useState(false)
+  // 2026-10-01 ("global search in jobcardwizards page chassisno. wise not search global that also
+  // add"): true whenever the suggestions currently shown came from the cross-dealer fallback
+  // below, not the normal dealer-scoped query - drives the "showing results from every dealer"
+  // banner in the dropdown so it's clear these rows aren't this workshop's own stock.
+  const [suggestionsAreGlobal, setSuggestionsAreGlobal] = useState(false)
   // Global (cross-dealer) chassis/reg-no search - offered as a fallback right on the "not found"
   // flag when a dealer-scoped lookup 404s, mirroring DMS's own Angular "Search Chassis Across
   // All Dealers" popup (ebw-invoice component). GET /api/bapl-dms/vehicle-lookup already supports
@@ -203,12 +236,37 @@ export function JobCardWizardPage() {
   // the signed-in dealer's own DMS code for that display comparison when the picker list hasn't
   // loaded this dealer's row yet.
   const vehicleSearchDealerCode = dealers.find((d) => d.id === effectiveDealerId)?.baplDmsDealerCode ?? profile?.dealerBaplDmsCode ?? undefined
+
+  // 2026-10-01 ("global search in jobcardwizards page chassisno. wise not search global that also
+  // add"): the live-typing typeahead used to ONLY ever query this dealer's own stock
+  // (dealerId: effectiveDealerId) and show nothing at all when it found no matches - so a chassis
+  // sold by a different dealer never appeared while typing, even though the Enter/Search button
+  // flow a few lines below (lookupByChassisOrReg -> 404 -> showGlobalSearchOffer ->
+  // searchGlobalChassis) already had a working cross-dealer fallback. This mirrors that same
+  // fallback into the typeahead: if the dealer-scoped query comes back empty AND a dealer is
+  // actually selected (an empty effectiveDealerId already means "unscoped", so there's nothing to
+  // fall back from), it re-queries with no dealerId at all (every dealer) and shows those instead,
+  // flagged via suggestionsAreGlobal so the dropdown can label them. No backend change needed -
+  // GET /api/jobcards/vehicle-suggestions already treats an omitted dealerId as unscoped, the same
+  // way /vehicle-lookup does (see JobCardsController.VehicleSuggestionsForWizard's doc comment).
   useEffect(() => {
-    if (!showVehicleSuggestions || chassisOrRegQ.trim().length < 2) { setVehicleSuggestions([]); return }
+    if (!showVehicleSuggestions || chassisOrRegQ.trim().length < 2) { setVehicleSuggestions([]); setSuggestionsAreGlobal(false); return }
+    const q = chassisOrRegQ.trim()
     const handle = setTimeout(() => {
-      staffApi.get<BaplDmsVehicleSuggestion[]>('/api/jobcards/vehicle-suggestions', { params: { q: chassisOrRegQ.trim(), dealerId: effectiveDealerId || undefined } })
-        .then(({ data }) => setVehicleSuggestions(data))
-        .catch(() => setVehicleSuggestions([]))
+      staffApi.get<BaplDmsVehicleSuggestion[]>('/api/jobcards/vehicle-suggestions', { params: { q, dealerId: effectiveDealerId || undefined } })
+        .then(({ data }) => {
+          if (data.length > 0 || !effectiveDealerId) {
+            setVehicleSuggestions(data)
+            setSuggestionsAreGlobal(false)
+            return
+          }
+          // Dealer-scoped search came back empty and there IS a dealer to fall back from -
+          // re-run unscoped (every dealer), same as the Search-button flow's global offer.
+          staffApi.get<BaplDmsVehicleSuggestion[]>('/api/jobcards/vehicle-suggestions', { params: { q } })
+            .then(({ data: globalData }) => { setVehicleSuggestions(globalData); setSuggestionsAreGlobal(globalData.length > 0) })
+            .catch(() => { setVehicleSuggestions([]); setSuggestionsAreGlobal(false) })
+        })
+        .catch(() => { setVehicleSuggestions([]); setSuggestionsAreGlobal(false) })
     }, 300)
     return () => clearTimeout(handle)
   }, [chassisOrRegQ, showVehicleSuggestions, effectiveDealerId])
@@ -220,6 +278,25 @@ export function JobCardWizardPage() {
   const customerFieldsLocked = !!baplVehicleHit && !unlockCustomerFields
   const vehicleFieldsLocked = !!baplVehicleHit && !unlockVehicleFields
 
+  // SECTION 182 (2026-09-30) "Email City Address State..that not fetch why fix this" - `state`
+  // was completely missing from this mapping before: name/mobile/city/email/address all had a
+  // line here, `state` did not, even though newCustomer has a `state` field (used at step 0's
+  // State input and posted to POST /api/customers). That's a confirmed bug - State could never
+  // show anything, regardless of what DMS actually returned, purely because nothing ever wrote
+  // into it. Added below.
+  //
+  // CONFIRMED 2026-10-01: `data.customerState` on BaplDmsVehicleLookup is real - it's in
+  // web/src/types/index.ts already (`customerState? : string | null`), and your own
+  // `select * from DMS_SaleBillCustomer where Id='81863'` dump proved the upstream State column
+  // genuinely has data ('KARNATAKA') for the exact customer you screenshotted. So on web this was
+  // always a correct mapping - the earlier "not fetched" report traced back to this same line
+  // simply never existing until SECTION 182 above added it, not to a bad field name.
+  //
+  // SEPARATE, NOT FIXED HERE: if Email/City/Address are themselves coming back blank from DMS (as
+  // your screenshot showed), that's not something this function can fix - it's a backend query
+  // issue (whatever builds BaplDmsVehicleLookup isn't populating those fields, even though it
+  // clearly IS resolving Name/Mobile from somewhere, per your screenshot). I don't have that
+  // backend file this session - see my reply for what I need to fix that part.
   const applyVehicleHit = (data: BaplDmsVehicleLookup) => {
     setBaplVehicleHit(data)
     setNewCustomer((c) => ({
@@ -229,6 +306,7 @@ export function JobCardWizardPage() {
       city: data.customerCity || c.city,
       email: data.customerEmail || c.email,
       address: data.customerAddress || c.address,
+      state: data.customerState || c.state,
       // Item 3: ChassisDetails.SaleDate is what gated this fetch in the first place (a null one
       // never reaches here - see the alert above) - show it back in the Sale Date field instead
       // of leaving it blank for the user to re-type. DMS returns a full datetime (e.g.
@@ -297,7 +375,11 @@ export function JobCardWizardPage() {
   /** "Search across all dealers" - re-runs the exact same lookup with dealerCode omitted, so a
    * chassis/reg no. sold by a DIFFERENT dealer still turns up instead of silently reading as
    * "doesn't exist anywhere". Mirrors DMS's own Angular ebw-invoice component's
-   * searchGlobalChassis()/applyGlobalChassisResult() pair. */
+   * searchGlobalChassis()/applyGlobalChassisResult() pair. Covers reg no. the same as chassis no. -
+   * `value` is whatever was typed into the single Chassis no. / Reg No. box, and
+   * GET /api/jobcards/vehicle-lookup resolves it against either column server-side either way (see
+   * JobCardsController.VehicleLookupForWizard's doc comment) - no separate "global reg no. search"
+   * path is needed. */
   const searchGlobalChassis = async () => {
     const value = chassisOrRegQ.trim()
     if (!value) return
@@ -330,6 +412,32 @@ export function JobCardWizardPage() {
     setVehicleLookupError(null)
     setShowGlobalSearchOffer(false)
     setGlobalHit(null)
+  }
+
+  /** Picking a global (cross-dealer) suggestion from the typeahead dropdown: same as picking a
+   * normal dealer-scoped one (fills the box and runs the full lookup), except the lookup itself
+   * must also go unscoped (no dealerId), or a suggestion found by the global fallback above would
+   * immediately 404 again against lookupByChassisOrReg's own dealer-scoped call. Reuses the same
+   * open-job-card / not-sold guards as lookupByChassisOrReg/applyGlobalHit rather than duplicating
+   * them differently. */
+  const selectGlobalSuggestion = (chassisNo: string) => {
+    setChassisOrRegQ(chassisNo)
+    setShowVehicleSuggestions(false)
+    setVehicleSuggestions([])
+    setVehicleLookupError(null)
+    setVehicleLookupLoading(true)
+    staffApi.get<BaplDmsVehicleLookup>('/api/jobcards/vehicle-lookup', { params: { value: chassisNo } })
+      .then(({ data }) => {
+        if (data.openJobCardNumber) {
+          const status = data.openJobCardStatus ? ` (status: ${data.openJobCardStatus})` : ''
+          setOpenJobCardNotice(`This chassis already has an open job card here: ${data.openJobCardNumber}${status}. It must be closed before this chassis can be used for a new job card.`)
+          return
+        }
+        if (!data.saleDate) { setVehicleNotSoldNotice('This Vehicle not sold'); return }
+        applyVehicleHit(data)
+      })
+      .catch(() => setVehicleLookupError(`"${chassisNo}" wasn't found in Vehicle Sale.`))
+      .finally(() => setVehicleLookupLoading(false))
   }
 
   // Step 2: vehicle
@@ -392,7 +500,11 @@ export function JobCardWizardPage() {
   // Step 3: service details
   const [serviceType, setServiceType] = useState<ServiceType>('PaidService')
   const [source, setSource] = useState<JobCardSource>('WalkIn')
-  const [priority, setPriority] = useState<JobCardPriority>('Normal')
+  // SECTION 169 - starts blank now (was a fixed 'Normal' default) since the valid Priority values
+  // themselves depend on which Job Type + Service Head are picked - see the master-data block
+  // below. Holds whatever string the matching ServiceMenuMaster row's PriorityLabel is, which is
+  // expected to already be one of JobCardPriority's real enum names.
+  const [priority, setPriority] = useState('')
   const [batteryLevel, setBatteryLevel] = useState<number | ''>('')
   const [expectedDeliveryAt, setExpectedDeliveryAt] = useState(nowForDatetimeLocalInput)
   const [consentNotes, setConsentNotes] = useState('')
@@ -418,20 +530,41 @@ export function JobCardWizardPage() {
   // state stays (still posted to POST /api/jobcards, just always empty now) since removing it
   // would touch the submit payload's shape for no benefit.
 
-  // 2026-09-25 ("Job Type * hardcoded in dropdown ... Service Head *, Service Type * ... all
-  // harcoded with dependancy like previous"): Job Type/Service Head/Service Type are no longer
-  // fetched live from DMS - they're a fixed local catalog (web/src/data/serviceCatalog.ts,
-  // transcribed from/dictated as your own real Job Type/Service Head/Service Type data).
-  // serviceHeadOptions below is derived straight from the selected id, same cascade shape as
-  // before (Job Type narrows Service Head) - just resolved locally instead of via
-  // GET /api/bapl-dms/service-heads/{id}, so there's no fetch error state to show any more.
-  // Service Type itself is no longer shown as a field at all (see the removed picker further
-  // down), so there's no serviceTypeOptions here any more either - selectedServiceTypeId is kept
-  // only because JobCardsController.Create's payload still has a slot for it (always null now).
+  // SECTION 169 (2026-09-30) "bind this 3 dropdown dependancy from master" - Job Type/Service
+  // Head/Priority are now read from GET /api/service-menu-master (see the import block's doc
+  // comment above for the full reasoning). serviceMenuRows is the raw flat table; jobTypeOptions/
+  // serviceHeadOptions/priorityOptionsForSelection below derive each cascading dropdown's distinct
+  // option set from it. Service Type itself is still not shown as a field at all (unchanged from
+  // 2026-09-25) - selectedServiceTypeId is kept only because JobCardsController.Create's payload
+  // still has a slot for it (always null now).
   const [selectedJobTypeId, setSelectedJobTypeId] = useState<number | null>(null)
   const [selectedServiceHeadId, setSelectedServiceHeadId] = useState<number | null>(null)
   const [selectedServiceTypeId, setSelectedServiceTypeId] = useState<number | null>(null)
-  const serviceHeadOptions = serviceHeadsForJobType(selectedJobTypeId)
+  const [serviceMenuRows, setServiceMenuRows] = useState<ServiceMenuRow[]>([])
+  const [serviceMenuError, setServiceMenuError] = useState<string | null>(null)
+  const [complaintOptions, setComplaintOptions] = useState<ComplaintMasterRow[]>([])
+
+  useEffect(() => {
+    staffApi.get<ServiceMenuRow[]>('/api/service-menu-master')
+      .then(({ data }) => setServiceMenuRows(data))
+      .catch(() => setServiceMenuError('Could not load Job Type / Service Head / Priority options from Service Menu Master.'))
+    staffApi.get<ComplaintMasterRow[]>('/api/complaint-master')
+      .then(({ data }) => setComplaintOptions(data))
+      .catch(() => setComplaintOptions([]))
+  }, [])
+
+  const sortedServiceMenuRows = [...serviceMenuRows].sort((a, b) => a.sortOrder - b.sortOrder)
+  const jobTypeOptions = dedupeBy(sortedServiceMenuRows, (r) => r.jobTypeId)
+    .map((r) => ({ id: r.jobTypeId, name: r.jobTypeName }))
+  const serviceHeadOptions = dedupeBy(sortedServiceMenuRows.filter((r) => r.jobTypeId === selectedJobTypeId), (r) => r.serviceHeadId)
+    .map((r) => ({ id: r.serviceHeadId, name: r.serviceHeadName }))
+  // value = PriorityLabel (posted as this page's `priority` state - must match JobCardPriority's
+  // real enum names), label = PriorityValue (the short code shown in the dropdown) - see the
+  // import block's doc comment for why these are the right way round.
+  const priorityOptionsForSelection = dedupeBy(
+    sortedServiceMenuRows.filter((r) => r.jobTypeId === selectedJobTypeId && r.serviceHeadId === selectedServiceHeadId),
+    (r) => r.priorityLabel,
+  ).map((r) => ({ value: r.priorityLabel, label: r.priorityValue }))
 
   const [workshops, setWorkshops] = useState<BaplDmsWorkshop[]>([])
   const [selectedWorkshopLocCode, setSelectedWorkshopLocCode] = useState('')
@@ -460,9 +593,10 @@ export function JobCardWizardPage() {
   // Technician/Source were dropped from here since their pickers are gone (Service Location is
   // still auto-filled internally, just not required from the user any more since there's nothing
   // left for them to pick). Manual Job No. was already optional. Expected delivery and Complaints
-  // stay required per the 2026-09-03 request.
+  // stay required per the 2026-09-03 request. SECTION 169: Priority is now also required - it's a
+  // real master-driven dropdown again, not an always-populated 'Normal' default.
   const serviceDetailsValid = !!(
-    selectedJobTypeId && selectedServiceHeadId && expectedDeliveryAt && complaints.length > 0
+    selectedJobTypeId && selectedServiceHeadId && priority && expectedDeliveryAt && complaints.length > 0
   )
 
   useEffect(() => {
@@ -527,39 +661,55 @@ export function JobCardWizardPage() {
     }
   }, [baplVehicleHit, workshops])
 
-  // 2026-09-25: resolved locally against JOB_TYPES/serviceHeadsForJobType now (no more
-  // GET /api/bapl-dms/service-heads/{id} fetch) - same cascade reset behavior as before, just
-  // synchronous. NEW per your instruction ("for 1. Accidental dependancy wants Accidental direct
-  // select in Service Head bi defualt Accidental dont give option Select Service head"): when the
-  // picked Job Type has exactly ONE Service Head (Accidental -> Accidental, Running Repair ->
-  // Running Repair - see serviceCatalog.ts), that Service Head is auto-selected immediately
-  // instead of showing a "Select service head…" placeholder. A Job Type with more than one Service
-  // Head (Major -> M1/M2, Minor -> D1/D2) still shows the picker as before.
+  /** Priority options for a given (Job Type, Service Head) pair, straight off serviceMenuRows -
+   * same de-dup used by priorityOptionsForSelection above, just parameterised so both onChange
+   * handlers below can compute "what should Priority auto-select to now" before React re-renders
+   * priorityOptionsForSelection itself. */
+  const priorityOptionsFor = (jobTypeId: number | null, serviceHeadId: number | null) =>
+    dedupeBy(
+      sortedServiceMenuRows.filter((r) => r.jobTypeId === jobTypeId && r.serviceHeadId === serviceHeadId),
+      (r) => r.priorityLabel,
+    ).map((r) => ({ value: r.priorityLabel, label: r.priorityValue }))
+
+  // SECTION 169 - resolved against the new Service Menu Master table (GET /api/service-menu-master,
+  // see serviceMenuRows/jobTypeOptions/serviceHeadOptions above) instead of JOB_TYPES/
+  // serviceHeadsForJobType. Same cascade reset/auto-select behavior as before: when the picked Job
+  // Type has exactly ONE Service Head, that Service Head is auto-selected immediately instead of
+  // showing a "Select service head…" placeholder - and now Priority follows the same rule one level
+  // deeper: if the resulting (Job Type, Service Head) pair has exactly one Priority row, Priority
+  // auto-selects too; otherwise it's cleared for the user to pick.
   const onJobTypeChange = (value: string) => {
     const id = value ? Number(value) : null
     setSelectedJobTypeId(id)
-    const name = JOB_TYPES.find((j) => j.id === id)?.name ?? ''
+    const name = jobTypeOptions.find((j) => j.id === id)?.name ?? ''
     setBaplJobType(name)
     // JobCardScanner's own ServiceType is derived from the Job Type picked here rather than shown
     // as a separate dropdown - see mapBaplJobTypeToServiceType's doc comment above.
     if (name) setServiceType(mapBaplJobTypeToServiceType(name))
-    const heads = serviceHeadsForJobType(id)
-    setSelectedServiceHeadId(heads.length === 1 ? heads[0].id : null)
+    const heads = dedupeBy(sortedServiceMenuRows.filter((r) => r.jobTypeId === id), (r) => r.serviceHeadId)
+      .map((r) => ({ id: r.serviceHeadId, name: r.serviceHeadName }))
+    const newHeadId = heads.length === 1 ? heads[0].id : null
+    setSelectedServiceHeadId(newHeadId)
     setSelectedServiceTypeId(null)
+    const prios = priorityOptionsFor(id, newHeadId)
+    setPriority(prios.length === 1 ? prios[0].value : '')
   }
 
-  // 2026-09-25: resolved locally against SERVICE_HEADS now (no more
-  // GET /api/bapl-dms/service-types/{id} fetch - Service Type itself is no longer a field on this
-  // step at all, see the removed picker further down).
+  // SECTION 169 - resolved against the new master table now (Service Type itself is still not a
+  // field on this step at all, see the removed picker further down). Priority auto-selects/clears
+  // the same way onJobTypeChange above does, one level deeper.
   const onServiceHeadChange = (value: string) => {
     const id = value ? Number(value) : null
     setSelectedServiceHeadId(id)
     setSelectedServiceTypeId(null)
+    const prios = priorityOptionsFor(selectedJobTypeId, id)
+    setPriority(prios.length === 1 ? prios[0].value : '')
   }
 
-  // 2026-09-25: toggle-button multi-select against the fixed COMPLAINTS list - clicking an
-  // already-added complaint's button removes it again (same as the Remove button in the list
-  // below), so the buttons double as an at-a-glance "what's picked" view.
+  // 2026-09-25: toggle-button multi-select, now against the Complaint Master list (SECTION 169 -
+  // GET /api/complaint-master, see complaintOptions above; was the fixed COMPLAINTS array) -
+  // clicking an already-added complaint's button removes it again (same as the Remove button in
+  // the list below), so the buttons double as an at-a-glance "what's picked" view.
   const toggleComplaint = (name: string) => {
     setComplaints((prev) => (prev.includes(name) ? prev.filter((c) => c !== name) : [...prev, name]))
   }
@@ -711,7 +861,7 @@ export function JobCardWizardPage() {
         // writing this job card into DMS's own database (see JobCardsController.Create).
         baplJobTypeId: selectedJobTypeId,
         baplServiceHeadId: selectedServiceHeadId,
-        baplServiceHeadName: SERVICE_HEADS.find((h) => h.id === selectedServiceHeadId)?.name ?? null,
+        baplServiceHeadName: serviceHeadOptions.find((h) => h.id === selectedServiceHeadId)?.name ?? null,
         baplServiceTypeId: selectedServiceTypeId,
         baplServiceTypeName: SERVICE_TYPES.find((t) => t.id === selectedServiceTypeId)?.name ?? null,
         baplServiceLocationCode: selectedWorkshopLocCode || null,
@@ -774,7 +924,7 @@ export function JobCardWizardPage() {
       jobinDate: new Date().toISOString(),
       jobtype: baplJobType,
       jobsource: JOB_SOURCES.find((s) => s.id === selectedJobSourceId)?.name,
-      serviceHead: SERVICE_HEADS.find((h) => h.id === selectedServiceHeadId)?.name,
+      serviceHead: serviceHeadOptions.find((h) => h.id === selectedServiceHeadId)?.name,
       serviceType: SERVICE_TYPES.find((t) => t.id === selectedServiceTypeId)?.name,
       estdelDate: expectedDeliveryAt,
       vehiclekms: vehicle?.odometer,
@@ -883,7 +1033,7 @@ export function JobCardWizardPage() {
                 onFocus={() => setShowVehicleSuggestions(true)}
                 onBlur={() => setTimeout(() => setShowVehicleSuggestions(false), 150)}
                 onKeyDown={(e) => e.key === 'Enter' && lookupByChassisOrReg()}
-                placeholder="Chassis no. / RegNo. (e.g. P6)"
+                placeholder="Chassis no. or registration no. (e.g. P6)"
                 autoComplete="off"
               />
               <button className="btn" onClick={() => lookupByChassisOrReg()} disabled={vehicleLookupLoading || !chassisOrRegQ.trim()}>
@@ -896,13 +1046,30 @@ export function JobCardWizardPage() {
                 background: 'var(--card-bg, #fff)', border: '1px solid var(--border)', borderRadius: 8,
                 maxHeight: 220, overflowY: 'auto', listStyle: 'none', padding: 4, boxShadow: '0 6px 18px rgba(0,0,0,.12)',
               }}>
+                {/* 2026-10-01 ("global search in jobcardwizards page chassisno. wise not search
+                   global that also add"): shown only when the rows below came from the cross-dealer
+                   fallback (suggestionsAreGlobal - see the typeahead useEffect above), so it's
+                   clear these aren't this workshop's own stock before picking one. */}
+                {suggestionsAreGlobal && (
+                  <li style={{ padding: '6px 8px', fontSize: 12, color: '#1e3a5f', background: '#eef6ff', borderRadius: 6, marginBottom: 2 }}>
+                    🔎 No matches for this dealer — showing results from every dealer.
+                  </li>
+                )}
                 {vehicleSuggestions.map((s) => (
                   <li key={s.chassisNo}>
                     <button
                       type="button"
                       className="btn btn-sm"
                       style={{ width: '100%', textAlign: 'left', border: 'none', background: 'transparent', padding: '6px 8px' }}
-                      onMouseDown={(e) => { e.preventDefault(); setChassisOrRegQ(s.chassisNo); lookupByChassisOrReg(s.chassisNo) }}
+                      /* KNOWN NUANCE: a global (cross-dealer) suggestion is applied via
+                         selectGlobalSuggestion (an unscoped lookup, so it doesn't immediately
+                         404 against this dealer again), while a normal dealer-scoped suggestion
+                         still goes through lookupByChassisOrReg as before - same open-job-card/
+                         not-sold guards either way. */
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        if (suggestionsAreGlobal) { selectGlobalSuggestion(s.chassisNo) } else { setChassisOrRegQ(s.chassisNo); lookupByChassisOrReg(s.chassisNo) }
+                      }}
                     >
                       <strong>{s.chassisNo}</strong>{s.regNo ? ` · ${s.regNo}` : ''}{s.modelName ? ` — ${s.modelName}` : ''}
                       {/* Item (a): show Sale Date on every suggestion row, not just after a full
@@ -1214,16 +1381,20 @@ export function JobCardWizardPage() {
             <div className="form-row">
               <div className="field">
                 <label>Job Type<Req /></label>
+                {/* SECTION 169: sourced from GET /api/service-menu-master now (was the hardcoded
+                   JOB_TYPES array) - see jobTypeOptions above. */}
                 <select value={selectedJobTypeId ?? ''} onChange={(e) => onJobTypeChange(e.target.value)}>
                   <option value="">Select job type…</option>
-                  {JOB_TYPES.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  {jobTypeOptions.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                 </select>
+                {serviceMenuError && <p className="error-text" style={{ margin: '4px 0 0' }}>{serviceMenuError}</p>}
               </div>
               <div className="field">
                 <label>Service Head<Req /></label>
                 {/* 2026-09-25: auto-selected and shown read-only when the Job Type has exactly one
                    Service Head (see onJobTypeChange above) - still an editable dropdown when there's
-                   a real choice (Major -> M1/M2, Minor -> D1/D2). */}
+                   a real choice. SECTION 169: options now come from the master table
+                   (serviceHeadOptions), same auto-select behavior unchanged. */}
                 {selectedJobTypeId && serviceHeadOptions.length === 1 ? (
                   <input value={serviceHeadOptions[0].name} disabled readOnly />
                 ) : (
@@ -1235,20 +1406,31 @@ export function JobCardWizardPage() {
               </div>
               <div className="field">
                 <label>Priority<Req /></label>
-                {/* 2026-09-25 ("Priority * option 1, 2, 3..OTHER"): displayed as 1/2/3 per your
-                   request, but still POSTS the same Normal/High/Urgent values the backend's
-                   JobCardPriority field already expects (see POST /api/jobcards below) - relabeling
-                   only, not a new value set. "Other" is NOT implemented: JobCardPriority looks like
-                   a fixed enum (JobCardsController.AssignJobCard does `req.Priority.Value` on it),
-                   and posting an arbitrary 4th value to a strict enum field would very likely fail
-                   server-side model binding and break Create Job Card entirely - tell me the
-                   backend's actual JobCardPriority definition (or that it now takes free text) and
-                   I'll wire up a real "Other" option safely. */}
-                <select value={priority} onChange={(e) => setPriority(e.target.value as JobCardPriority)}>
-                  {PRIORITY_OPTIONS.map(([value, label]) => (
-                    <option key={value} value={value}>{label}</option>
-                  ))}
-                </select>
+                {/* SECTION 169 (2026-09-30) "bind this 3 dropdown dependancy from master": Priority
+                   is now a true 3rd level of the same cascade, sourced from the (Job Type, Service
+                   Head)-filtered priorityOptionsForSelection - was a completely independent fixed
+                   3-item PRIORITY_OPTIONS dropdown before. Auto-selected and shown read-only when
+                   the combination has exactly one Priority row (same pattern as Service Head just
+                   above); still POSTS the master row's PriorityLabel (must match JobCardPriority's
+                   real enum names) while displaying its PriorityValue (the short "1"/"2"/"3"-style
+                   code) - see the import block's doc comment and ServiceMenuMaster.cs for the full
+                   PriorityValue/PriorityLabel reasoning. */}
+                {selectedServiceHeadId && priorityOptionsForSelection.length === 1 ? (
+                  <input value={priorityOptionsForSelection[0].label} disabled readOnly />
+                ) : (
+                  <select value={priority} disabled={!selectedServiceHeadId} onChange={(e) => setPriority(e.target.value)}>
+                    <option value="">
+                      {!selectedServiceHeadId
+                        ? 'Select a service head first'
+                        : priorityOptionsForSelection.length
+                          ? 'Select priority…'
+                          : 'No priority set up for this Service Head'}
+                    </option>
+                    {priorityOptionsForSelection.map((p) => (
+                      <option key={p.value} value={p.value}>{p.label}</option>
+                    ))}
+                  </select>
+                )}
               </div>
             </div>
             <div className="form-row" style={{ marginBottom: 0 }}>
@@ -1259,7 +1441,7 @@ export function JobCardWizardPage() {
                  unchanged) rather than left for the user to pick. Shown read-only so it's still
                  visible which workshop Supervisor/Technician below are scoped to. */}
               <div className="field">
-                <label>Service Location</label>
+                <label>Service Location (workshop)</label>
                 <input value={baplServiceLocation || (effectiveDealerId ? 'Resolving…' : 'Select a dealer first')} disabled readOnly />
               </div>
               <div className="field">
@@ -1299,23 +1481,23 @@ export function JobCardWizardPage() {
 
           <div className="field">
             <label>Complaint<Req /></label>
-            {/* 2026-09-25: toggle-button multi-select against the fixed COMPLAINTS list (see
-               serviceCatalog.ts, all 8 real complaints - no genuine "top 5" ranking data exists),
-               plus a manual free-text entry alongside it. Click a button again (or Remove below)
-               to un-pick it. */}
+            {/* SECTION 169 (2026-09-30): toggle-button multi-select against the Complaint Master
+               table now (GET /api/complaint-master, see complaintOptions above - was the fixed
+               COMPLAINTS array from serviceCatalog.ts), plus a manual free-text entry alongside it.
+               Click a button again (or Remove below) to un-pick it. */}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
-              {COMPLAINTS.map((c) => {
-                const picked = complaints.includes(c.name)
+              {complaintOptions.map((c) => {
+                const picked = complaints.includes(c.complaintText)
                 return (
                   <button
                     key={c.id}
                     type="button"
                     className="btn btn-sm"
                     aria-pressed={picked}
-                    onClick={() => toggleComplaint(c.name)}
+                    onClick={() => toggleComplaint(c.complaintText)}
                     style={picked ? { background: '#2563eb', color: '#fff', border: '1px solid #2563eb' } : undefined}
                   >
-                    {c.name}
+                    {c.complaintText}
                   </button>
                 )
               })}
@@ -1385,13 +1567,18 @@ export function JobCardWizardPage() {
             <strong>Vehicle</strong> — <strong>Model:</strong> {vehicle.model} {vehicle.variant} &nbsp; <strong>Reg No.:</strong> {vehicle.regNo || '-'}
             {' '}&nbsp; <strong>KM:</strong> {vehicle.odometer} &nbsp; <strong>Job No.:</strong> {baplManualJobNo || '-'}
           </p>
-          <p><strong>Service:</strong> {baplJobType || serviceType} via {JOB_SOURCES.find((s) => s.id === selectedJobSourceId)?.name || source}, priority {priorityLabel(priority)}</p>
+          {/* SECTION 169: priority display now looks up the master row's short code (PriorityValue)
+             matching whatever was posted (PriorityLabel) - was priorityLabel(priority) against the
+             old fixed PRIORITY_OPTIONS tuple. Falls back to the raw posted value if, e.g., the
+             Job Type/Service Head selection has since changed underneath (shouldn't happen within
+             one wizard session, but this avoids showing a blank). */}
+          <p><strong>Service:</strong> {baplJobType || serviceType} via {JOB_SOURCES.find((s) => s.id === selectedJobSourceId)?.name || source}, priority {priorityOptionsForSelection.find((p) => p.value === priority)?.label ?? priority}</p>
           <p><strong>Complaints:</strong> {complaints.join('; ') || 'None recorded'}</p>
           {(baplJobType || baplServiceLocation || baplSupervisorName || baplTechnicianName || baplManualJobNo) && (
             <p>
               <strong>DMS fields:</strong>{' '}
               {baplJobType && <><strong>Job Type:</strong> {baplJobType}. </>}
-              {SERVICE_HEADS.find((h) => h.id === selectedServiceHeadId)?.name && <><strong>Service Head:</strong> {SERVICE_HEADS.find((h) => h.id === selectedServiceHeadId)?.name}. </>}
+              {serviceHeadOptions.find((h) => h.id === selectedServiceHeadId)?.name && <><strong>Service Head:</strong> {serviceHeadOptions.find((h) => h.id === selectedServiceHeadId)?.name}. </>}
               {SERVICE_TYPES.find((t) => t.id === selectedServiceTypeId)?.name && <><strong>Service Type:</strong> {SERVICE_TYPES.find((t) => t.id === selectedServiceTypeId)?.name}. </>}
               {baplServiceLocation && <><strong>Location:</strong> {baplServiceLocation}. </>}
               {baplSupervisorName && <><strong>Supervisor:</strong> {baplSupervisorName}. </>}

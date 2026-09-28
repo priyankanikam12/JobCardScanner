@@ -81,6 +81,23 @@ interface ImportResult {
   warnings: string[]
 }
 
+// 2026-09-28 ("i create 1 user supervisor in the its not laod thatr 1 loaction Could not load
+// uploaded part data. why in parts-upload"): every catch below used to show a fixed generic string
+// regardless of the real cause, discarding the real HTTP status and this app's own `{ message }`
+// error body - the exact same blind-spot already hit (and fixed) on the web Attendance page and
+// elsewhere this session. Now appended in parentheses so the on-screen text itself says why (401 vs
+// 403 vs 404 vs 500 vs a genuine network drop all look different) instead of needing another
+// screenshot/log round-trip to find out - this is what's needed to actually diagnose the
+// location-restricted Supervisor's load failure being reported here.
+function describeError(err: unknown, fallback: string): string {
+  const e = err as { response?: { status?: number; data?: { message?: string } } }
+  const detail = e?.response?.data?.message
+  const status = e?.response?.status
+  if (detail) return `${fallback} (${detail})`
+  if (status) return `${fallback} (HTTP ${status})`
+  return `${fallback} (no response reached the server - check your connection)`
+}
+
 const PAGE_SIZE = 25
 
 export function PartUploadScreen() {
@@ -122,7 +139,7 @@ export function PartUploadScreen() {
     apiClient
       .get<PartUploadRow[]>('/api/part-uploads', { params: { search: search || undefined, locationCode: filterLocation || undefined } })
       .then((res: any) => { setRows(res.data); setPage(0) })
-      .catch((err: any) => setError(err?.response?.data?.message ?? 'Could not load uploaded part data.'))
+      .catch((err: unknown) => setError(describeError(err, 'Could not load uploaded part data.')))
       .finally(() => setLoading(false))
   }
 
@@ -159,7 +176,7 @@ export function PartUploadScreen() {
     apiClient
       .post<ImportResult>('/api/part-uploads/import', form, { headers: { 'Content-Type': 'multipart/form-data' } })
       .then((res: any) => { setImportResult(res.data); load() })
-      .catch((err: any) => setImportError(err?.response?.data?.message ?? 'Import failed - check the file and try again.'))
+      .catch((err: unknown) => setImportError(describeError(err, 'Import failed - check the file and try again.')))
       .finally(() => setImporting(false))
   }
 
@@ -173,7 +190,7 @@ export function PartUploadScreen() {
           apiClient
             .delete(`/api/part-uploads/${row.id}`)
             .then(load)
-            .catch((err: any) => Alert.alert('Delete failed', err?.response?.data?.message ?? 'Delete failed.')),
+            .catch((err: unknown) => Alert.alert('Delete failed', describeError(err, 'Delete failed.'))),
       },
     ])
   }
@@ -197,7 +214,7 @@ export function PartUploadScreen() {
         itemType: editing.itemType,
       })
       .then(() => { setEditing(null); load() })
-      .catch((err: any) => Alert.alert('Save failed', err?.response?.data?.message ?? 'Save failed.'))
+      .catch((err: unknown) => Alert.alert('Save failed', describeError(err, 'Save failed.')))
       .finally(() => setSavingEdit(false))
   }
 

@@ -38,6 +38,19 @@
  * falls back to a small read-only "my own attendance" list (GET /api/attendance/me) instead. Same
  * reasoning as the web page for why this is decided by the server's actual response rather than a
  * guessed profile.role field.
+ *
+ * SECTION 172 (2026-09-30) "in dashboardpage in android show only menu ... 6. Attendance only
+ * personal" - DashboardScreen.tsx's Attendance card now passes route param { onlyMine: true },
+ * read below via `route.params?.onlyMine`. When set, loadDealers below is short-circuited entirely
+ * (no GET /api/attendance/dealers-summary call at all, manager or not) and this screen goes
+ * straight to the same read-only "my own attendance" branch a 403 would otherwise produce - so a
+ * WorkshopManager+ login opening Attendance FROM THE DASHBOARD always sees only their own record,
+ * never the dealer-wide staff roster/marking view. The full manager flow itself is UNCHANGED and
+ * still reachable exactly as before for any other entry point that navigates here without the
+ * param (there is none registered elsewhere in RootNavigator.tsx today, but this keeps the
+ * distinction real rather than deleting the manager code path outright, in case a future
+ * "Mark Staff Attendance" entry point is added back later - see AttendanceScreen's own admin-side
+ * marking UI further down, all still intact).
  */
 import { useEffect, useState, useCallback } from 'react'
 import {
@@ -50,10 +63,14 @@ import {
   StyleSheet,
   RefreshControl,
 } from 'react-native'
+import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 // FIXED 2026-09-26 - real named export confirmed from your mobile/src/api/client.ts.
 import { apiClient } from '../api/client'
 // GUESS - still unconfirmed, see file doc comment above.
 import { useAuth } from '../auth/AuthContext'
+import type { RootStackParamList } from '../navigation/RootNavigator'
+
+type Props = NativeStackScreenProps<RootStackParamList, 'Attendance'>
 
 type AttendanceStatus = 'Present' | 'Absent' | 'HalfDay' | 'OnLeave'
 
@@ -95,6 +112,22 @@ interface MyAttendanceRow {
   checkOutTime: string | null
   shift: string | null
   remarks: string | null
+  // 2026-09-28 (SECTION 143, "after 9 hrs complete auto checkout ... that shown in page and
+  // maintain") - mirrors web/src/pages/staff/AttendancePage.tsx's own same-day fix. DISPLAY-ONLY,
+  // computed fresh by AttendanceController.Me() on every call - CheckOutTime in the database is
+  // still only ever set by a real check-out/mark, never auto-written here. For today's still-open
+  // row this is the live elapsed hours since check-in (uncapped, per your confirmed answer); for a
+  // past day with no checkout ever recorded it's null.
+  hoursWorked: number | null
+}
+
+/** Formats hoursWorked (e.g. 9.25) as "9h 15m" - same format as the web page uses. */
+function formatHoursWorked(hours: number | null): string {
+  if (hours == null) return '-'
+  const totalMinutes = Math.round(hours * 60)
+  const h = Math.floor(totalMinutes / 60)
+  const m = totalMinutes % 60
+  return h > 0 ? `${h}h ${m}m` : `${m}m`
 }
 
 function todayIso(): string {
@@ -124,9 +157,11 @@ function describeError(err: unknown, fallback: string): string {
   return `${fallback} (no response reached the server - check your connection)`
 }
 
-export default function AttendanceScreen() {
+export default function AttendanceScreen({ route }: Props) {
   const { profile } = useAuth()
   const isOrgWide = !profile?.dealerId
+  // SECTION 172 - see this file's own doc comment above.
+  const onlyMine = route.params?.onlyMine ?? false
 
   const [date] = useState(todayIso())
   // Date picking kept to "today" only for this first version - a real date picker needs an Expo
@@ -151,6 +186,13 @@ export default function AttendanceScreen() {
   const [myError, setMyError] = useState<string | null>(null)
 
   const loadDealers = useCallback(() => {
+    // SECTION 172 - onlyMine skips the manager check entirely, so this screen goes straight to
+    // the personal-only branch below (isManager === false) without ever calling
+    // dealers-summary - see this file's own doc comment above.
+    if (onlyMine) {
+      setIsManager(false)
+      return
+    }
     setDealersLoading(true)
     setDealersError(null)
     apiClient
@@ -173,7 +215,7 @@ export default function AttendanceScreen() {
       })
       .finally(() => setDealersLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [date])
+  }, [date, onlyMine])
 
   useEffect(() => {
     loadDealers()
@@ -273,6 +315,11 @@ export default function AttendanceScreen() {
               <Text style={styles.muted}>{item.status ?? 'Not marked'}{item.location ? ` - ${item.location}` : ''}</Text>
               <Text style={styles.muted}>
                 In: {item.checkInTime ?? '-'}  Out: {item.checkOutTime ?? '-'}
+              </Text>
+              {/* 2026-09-28 (SECTION 143) - see MyAttendanceRow's own doc comment above. */}
+              <Text style={styles.muted}>
+                Hours: {formatHoursWorked(item.hoursWorked)}
+                {item.checkInTime && !item.checkOutTime && item.date.slice(0, 10) === date ? ' (ongoing)' : ''}
               </Text>
             </View>
           )}

@@ -1,3 +1,4 @@
+// mobile\src\screens\JobCardWizardScreen.tsx
 import { useEffect, useState } from 'react'
 import {
   ActivityIndicator, Alert, Image, Platform, ScrollView, StyleSheet, Text,
@@ -18,9 +19,9 @@ import { PickerField, type PickerOption } from '../components/PickerField'
 import { VEHICLE_MODELS, variantsForModel } from '../data/vehicleCatalog'
 import { buildJobCardPrintHtml } from '../utils/printJobCard'
 import type {
-  BaplDealerResolveResult, BaplDmsComplaint, BaplDmsDealer, BaplDmsJobSource, BaplDmsJobType,
-  BaplDmsServiceHead, BaplDmsServiceType, BaplDmsVehicleLookup, BaplDmsVehicleSuggestion, BaplDmsWorkshop,
-  Customer, Dealer, JobCardPriority, JobCardSource, PhotoStage, ServiceType, SupervisorOption, Technician, Vehicle,
+  BaplDealerResolveResult, BaplDmsDealer, BaplDmsJobSource,
+  BaplDmsServiceType, BaplDmsVehicleLookup, BaplDmsVehicleSuggestion, BaplDmsWorkshop,
+  Customer, Dealer, JobCardSource, PhotoStage, ServiceType, SupervisorOption, Technician, Vehicle,
 } from '../types'
 import type { RootStackParamList } from '../navigation/RootNavigator'
 import { colors } from '../theme/colors'
@@ -28,6 +29,40 @@ import { colors } from '../theme/colors'
 type Props = NativeStackScreenProps<RootStackParamList, 'JobCardWizard'>
 
 const STEPS = ['Customer', 'Vehicle', 'Service Details', 'Review & Create']
+
+// SECTION 169 (2026-09-30) "bind this 3 dropdown dependancy from master" - Job Type/Service Head/
+// Priority and Complaints are no longer live-fetched from BAPL DMS (/api/bapl-dms/job-types,
+// /api/bapl-dms/service-heads/{id}, /api/bapl-dms/complaints) - all four now come from the new
+// Service Menu Master / Complaint Master tables (SECTION 163/166), mirroring web's own SECTION 169
+// rewire (JobCardWizardPage.tsx) exactly, including the PriorityValue/PriorityLabel field-shape
+// decision - see that file's own doc comment and ServiceMenuMaster.cs's class doc comment for the
+// full reasoning. Service Type and Job Source are UNCHANGED (still live BAPL DMS fetches) - only
+// Job Type/Service Head/Priority/Complaints were in scope for this ask.
+interface ServiceMenuRow {
+  id: string
+  jobTypeId: number
+  jobTypeName: string
+  serviceHeadId: number
+  serviceHeadName: string
+  priorityValue: string
+  priorityLabel: string
+  sortOrder: number
+}
+interface ComplaintMasterRow {
+  id: string
+  complaintText: string
+}
+/** First-seen-wins de-dup, preserving whatever order `items` is already sorted in - see web's
+ * identical helper (JobCardWizardPage.tsx) for the full reasoning. */
+function dedupeBy<T, K>(items: T[], keyFn: (item: T) => K): T[] {
+  const seen = new Set<K>()
+  const out: T[] = []
+  for (const item of items) {
+    const k = keyFn(item)
+    if (!seen.has(k)) { seen.add(k); out.push(item) }
+  }
+  return out
+}
 
 const IST_TIME_ZONE = 'Asia/Kolkata'
 
@@ -165,25 +200,48 @@ export function JobCardWizardScreen({ navigation }: Props) {
   const [globalHit, setGlobalHit] = useState<BaplDmsVehicleLookup | null>(null)
   const [globalSearchNotFound, setGlobalSearchNotFound] = useState(false)
 
-  // Scopes chassis/reg-no search to the dealer this job card is being created for - mirrors web's
-  // JobCardWizardPage.tsx same computation. See AuthController.Me's DealerBaplDmsCode doc comment.
+  // SECTION 169 (2026-09-30) "when i serach Reg No. like web not serach fix this" - FACT that was
+  // the root cause: this screen was still calling the OLD /api/bapl-dms/vehicle-suggestions and
+  // /api/bapl-dms/vehicle-lookup endpoints, scoped by a BAPL DMS dealer CODE
+  // (vehicleSearchDealerCode below) - web moved off these on 2026-09-24/25 onto the newer, local-
+  // only /api/jobcards/vehicle-suggestions and /api/jobcards/vehicle-lookup, scoped by dealerId (a
+  // Guid), which resolve the BAPL code themselves server-side (see
+  // JobCardsController.VehicleLookupForWizard's doc comment). This screen was never migrated, so it
+  // was hitting a DIFFERENT, older endpoint pair than web the whole time - not the same endpoint
+  // with a platform-specific bug. Chassis No. searches happened to still turn up matches (both
+  // endpoint generations index chassis numbers similarly), but Registration No. lookups behaved
+  // differently between the two implementations, which is what you saw as "Chassis works, Reg No.
+  // doesn't". Fixed by repointing both calls below at the same endpoints web uses, with the same
+  // dealerId param. vehicleSearchDealerCode is kept only as a DISPLAY value now (the "registered to
+  // dealer X, not this workshop" hint below), exactly mirroring web's own comment on this.
   const vehicleSearchDealerCode = dealers.find((d) => d.id === effectiveDealerId)?.baplDmsDealerCode ?? profile?.dealerBaplDmsCode ?? undefined
 
   useEffect(() => {
     if (!showVehicleSuggestions || chassisOrRegQ.trim().length < 2) { setVehicleSuggestions([]); return }
     const handle = setTimeout(() => {
-      apiClient.get<BaplDmsVehicleSuggestion[]>('/api/bapl-dms/vehicle-suggestions', { params: { q: chassisOrRegQ.trim(), dealerCode: vehicleSearchDealerCode } })
+      apiClient.get<BaplDmsVehicleSuggestion[]>('/api/jobcards/vehicle-suggestions', { params: { q: chassisOrRegQ.trim(), dealerId: effectiveDealerId || undefined } })
         .then(({ data }) => setVehicleSuggestions(data))
         .catch(() => setVehicleSuggestions([]))
     }, 300)
     return () => clearTimeout(handle)
-  }, [chassisOrRegQ, showVehicleSuggestions, vehicleSearchDealerCode])
+  }, [chassisOrRegQ, showVehicleSuggestions, effectiveDealerId])
 
   const [unlockCustomerFields, setUnlockCustomerFields] = useState(false)
   const [unlockVehicleFields, setUnlockVehicleFields] = useState(false)
   const customerFieldsLocked = !!baplVehicleHit && !unlockCustomerFields
   const vehicleFieldsLocked = !!baplVehicleHit && !unlockVehicleFields
 
+  // 2026-10-01: State was missing from this mapping entirely - the DMS lookup response was
+  // never read for it, so newCustomer.state stayed '' no matter what the source data had, even
+  // though the State <Field> below is already wired to it. Confirmed via your own
+  // `select * from DMS_SaleBillCustomer where Id='81863'` dump (State='KARNATAKA' for the exact
+  // customer in your screenshot) that the upstream data is genuinely present - this was a pure
+  // frontend mapping gap, not a missing-data issue. Same bug, same fix already applied earlier to
+  // web's JobCardWizardPage.tsx (there under "SECTION 182"). NOTE: `data.customerState` is inferred
+  // by the same naming convention as every other field here (customerName/customerCity/...); it is
+  // NOT independently verified against mobile's own types.ts (not present in this sandbox) - if the
+  // real field is named differently this will surface as a TypeScript compile error on this line,
+  // not a silent failure, so it's safe to ship and verify.
   const applyVehicleHit = (data: BaplDmsVehicleLookup) => {
     setBaplVehicleHit(data)
     setNewCustomer((c) => ({
@@ -193,6 +251,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
       city: data.customerCity || c.city,
       email: data.customerEmail || c.email,
       address: data.customerAddress || c.address,
+      state: data.customerState || c.state,
       saleDate: data.saleDate ? data.saleDate.split('T')[0] : c.saleDate,
     }))
   }
@@ -213,13 +272,15 @@ export function JobCardWizardScreen({ navigation }: Props) {
     setGlobalHit(null)
     setGlobalSearchNotFound(false)
     try {
-      const { data } = await apiClient.get<BaplDmsVehicleLookup>('/api/bapl-dms/vehicle-lookup', { params: { value, dealerCode: vehicleSearchDealerCode } })
-      // This chassis already has an open job card somewhere - refuse to auto-fill/proceed with it,
-      // and say exactly where so staff know where to go close it first. Matches web's same check.
+      const { data } = await apiClient.get<BaplDmsVehicleLookup>('/api/jobcards/vehicle-lookup', { params: { value, dealerId: effectiveDealerId || undefined } })
+      // This chassis already has an open job card here in JobCardScanner - always "here" now (no
+      // live DMS signal for this any more since DMS write-back was removed - see
+      // JobCardsController.VehicleLookupForWizard's doc comment) - refuse to auto-fill/proceed with
+      // it, and say which job card so staff know where to go close it first. Matches web's same
+      // (now simplified, no more openJobCardSource branch) check.
       if (data.openJobCardNumber) {
-        const where = data.openJobCardSource === 'bapl-dms' ? 'in DMS' : 'here'
         const status = data.openJobCardStatus ? ` (status: ${data.openJobCardStatus})` : ''
-        const message = `This chassis already has an open job card ${where}: ${data.openJobCardNumber}${status}. It must be closed before this chassis can be used for a new job card.`
+        const message = `This chassis already has an open job card here: ${data.openJobCardNumber}${status}. It must be closed before this chassis can be used for a new job card.`
         setOpenJobCardNotice(message)
         Alert.alert('Chassis already checked in', message)
         return
@@ -236,15 +297,15 @@ export function JobCardWizardScreen({ navigation }: Props) {
     } catch (err: unknown) {
       const response = (err as { response?: { status?: number; data?: { message?: string } } })?.response
       if (response?.status === 404) {
-        setVehicleLookupError(`"${value}" wasn't found in DMS for this dealer.`)
+        setVehicleLookupError(`"${value}" wasn't found in Vehicle Sale for this dealer.`)
         // Offer the cross-dealer fallback right on the "not found" flag, instead of only letting
         // the user give up and add the vehicle manually - see the state block above for why this
         // needs no new backend endpoint.
         setShowGlobalSearchOffer(true)
       } else {
         setVehicleLookupError(response?.data?.message
-          ? `DMS error: ${response.data.message}`
-          : 'Could not reach DMS right now - add the customer/vehicle manually below.')
+          ? `Vehicle Sale error: ${response.data.message}`
+          : 'Could not reach Vehicle Sale right now - add the customer/vehicle manually below.')
       }
     } finally {
       setVehicleLookupLoading(false)
@@ -262,7 +323,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
     setGlobalSearchNotFound(false)
     setGlobalHit(null)
     try {
-      const { data } = await apiClient.get<BaplDmsVehicleLookup>('/api/bapl-dms/vehicle-lookup', { params: { value } })
+      const { data } = await apiClient.get<BaplDmsVehicleLookup>('/api/jobcards/vehicle-lookup', { params: { value } })
       setGlobalHit(data)
     } catch {
       setGlobalSearchNotFound(true)
@@ -273,11 +334,11 @@ export function JobCardWizardScreen({ navigation }: Props) {
 
   const applyGlobalHit = () => {
     if (!globalHit) return
-    // Same open-job-card block as the dealer-scoped lookup above.
+    // Same open-job-card block as the dealer-scoped lookup above - always "here" now, see that
+    // lookup's own comment.
     if (globalHit.openJobCardNumber) {
-      const where = globalHit.openJobCardSource === 'bapl-dms' ? 'in DMS' : 'here'
       const status = globalHit.openJobCardStatus ? ` (status: ${globalHit.openJobCardStatus})` : ''
-      const message = `This chassis already has an open job card ${where}: ${globalHit.openJobCardNumber}${status}. It must be closed before this chassis can be used for a new job card.`
+      const message = `This chassis already has an open job card here: ${globalHit.openJobCardNumber}${status}. It must be closed before this chassis can be used for a new job card.`
       setOpenJobCardNotice(message)
       Alert.alert('Chassis already checked in', message)
       setShowGlobalSearchOffer(false)
@@ -329,7 +390,10 @@ export function JobCardWizardScreen({ navigation }: Props) {
   // ---- Step 2: service details ----
   const [serviceType, setServiceType] = useState<ServiceType>('PaidService')
   const [source, setSource] = useState<JobCardSource>('WalkIn')
-  const [priority, setPriority] = useState<JobCardPriority>('Normal')
+  // SECTION 169 - starts blank now (was a fixed 'Normal' default), same reasoning as web: valid
+  // Priority values depend on which Job Type + Service Head are picked - see the master-data block
+  // below.
+  const [priority, setPriority] = useState('')
   const [batteryLevel, setBatteryLevel] = useState('')
   const [expectedDeliveryAt, setExpectedDeliveryAt] = useState<Date>(() => new Date())
   const [consentNotes, setConsentNotes] = useState('')
@@ -351,8 +415,11 @@ export function JobCardWizardScreen({ navigation }: Props) {
   const [supervisorOptions, setSupervisorOptions] = useState<SupervisorOption[]>([])
   const [technicianOptions, setTechnicianOptions] = useState<Technician[]>([])
 
-  const [jobTypes, setJobTypes] = useState<BaplDmsJobType[]>([])
-  const [serviceHeads, setServiceHeads] = useState<BaplDmsServiceHead[]>([])
+  // SECTION 169 - serviceMenuRows is the raw GET /api/service-menu-master table; jobTypes/
+  // serviceHeads below are DERIVED from it (not their own fetched state any more) but keep the same
+  // {id, name} shape and variable names the rest of this file already reads (submit(), print
+  // preview, JSX) so those call sites don't need to change.
+  const [serviceMenuRows, setServiceMenuRows] = useState<ServiceMenuRow[]>([])
   const [serviceTypes, setServiceTypes] = useState<BaplDmsServiceType[]>([])
   const [selectedJobTypeId, setSelectedJobTypeId] = useState<number | null>(null)
   const [selectedServiceHeadId, setSelectedServiceHeadId] = useState<number | null>(null)
@@ -362,7 +429,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
   const [workshops, setWorkshops] = useState<BaplDmsWorkshop[]>([])
   const [selectedWorkshopLocCode, setSelectedWorkshopLocCode] = useState('')
 
-  const [complaintOptions, setComplaintOptions] = useState<BaplDmsComplaint[]>([])
+  const [complaintOptions, setComplaintOptions] = useState<ComplaintMasterRow[]>([])
   const [selectedComplaintId, setSelectedComplaintId] = useState('')
 
   const [jobSources, setJobSources] = useState<BaplDmsJobSource[]>([])
@@ -375,24 +442,48 @@ export function JobCardWizardScreen({ navigation }: Props) {
   // datetime-local input (which the user can clear to empty), this screen's date picker always
   // holds a real Date (defaults to "now" and can only be changed to another real date/time, never
   // cleared) - so there's nothing to actually enforce there, but the label still gets the same red
-  // * for visual consistency with web.
+  // * for visual consistency with web. SECTION 169: priority is now also required (it's a real
+  // master-driven dropdown again, not an always-populated 'Normal' default).
   const serviceDetailsValid = !!(
-    selectedJobTypeId && selectedServiceHeadId && selectedServiceTypeId &&
+    selectedJobTypeId && selectedServiceHeadId && selectedServiceTypeId && priority &&
     selectedWorkshopLocCode && baplSupervisorName.trim() && baplTechnicianName.trim() &&
     selectedJobSourceId && complaints.length > 0
   )
 
+  // SECTION 169 - Job Type/Service Head/Priority and Complaints now come from the new master
+  // tables (was /api/bapl-dms/job-types and /api/bapl-dms/complaints). Job Source is unchanged.
   useEffect(() => {
-    apiClient.get<BaplDmsJobType[]>('/api/bapl-dms/job-types')
-      .then(({ data }) => setJobTypes(data))
-      .catch(() => setBaplMastersError("Could not load DMS's Job Type list - Service Details will only capture JobCardScanner's own fields."))
-    apiClient.get<BaplDmsComplaint[]>('/api/bapl-dms/complaints')
+    apiClient.get<ServiceMenuRow[]>('/api/service-menu-master')
+      .then(({ data }) => setServiceMenuRows(data))
+      .catch(() => setBaplMastersError('Could not load Job Type / Service Head / Priority options from Service Menu Master - Service Details will only capture JobCardScanner\'s own fields.'))
+    apiClient.get<ComplaintMasterRow[]>('/api/complaint-master')
       .then(({ data }) => setComplaintOptions(data))
       .catch(() => setComplaintOptions([]))
     apiClient.get<BaplDmsJobSource[]>('/api/bapl-dms/job-sources')
       .then(({ data }) => setJobSources(data))
       .catch(() => setJobSources([]))
   }, [])
+
+  const sortedServiceMenuRows = [...serviceMenuRows].sort((a, b) => a.sortOrder - b.sortOrder)
+  const jobTypes = dedupeBy(sortedServiceMenuRows, (r) => r.jobTypeId)
+    .map((r) => ({ id: r.jobTypeId, name: r.jobTypeName }))
+  const serviceHeads = dedupeBy(sortedServiceMenuRows.filter((r) => r.jobTypeId === selectedJobTypeId), (r) => r.serviceHeadId)
+    .map((r) => ({ id: r.serviceHeadId, name: r.serviceHeadName }))
+  // value = PriorityLabel (posted as this screen's `priority` state), label = PriorityValue (the
+  // short code shown in the picker) - see the import block's doc comment / web's identical
+  // reasoning for why these are the right way round.
+  const priorityOptionsForSelection = dedupeBy(
+    sortedServiceMenuRows.filter((r) => r.jobTypeId === selectedJobTypeId && r.serviceHeadId === selectedServiceHeadId),
+    (r) => r.priorityLabel,
+  ).map((r) => ({ value: r.priorityLabel, label: r.priorityValue }))
+  /** Same de-dup as priorityOptionsForSelection above, parameterised so onJobTypeChange/
+   * onServiceHeadChange can compute Priority's next auto-selected value before this render's
+   * priorityOptionsForSelection reflects the new selection. */
+  const priorityOptionsFor = (jobTypeId: number | null, serviceHeadId: number | null) =>
+    dedupeBy(
+      sortedServiceMenuRows.filter((r) => r.jobTypeId === jobTypeId && r.serviceHeadId === serviceHeadId),
+      (r) => r.priorityLabel,
+    ).map((r) => ({ value: r.priorityLabel, label: r.priorityValue }))
 
   useEffect(() => {
     setSelectedWorkshopLocCode('')
@@ -451,20 +542,31 @@ export function JobCardWizardScreen({ navigation }: Props) {
     }
   }, [baplVehicleHit, workshops])
 
+  // SECTION 169 - resolved against the new Service Menu Master table now (was a live
+  // GET /api/bapl-dms/service-heads/{id} fetch) - serviceHeads is a derived const (see above), so
+  // there's no more setServiceHeads([])/fetch here, just a synchronous lookup, same as web. NEW,
+  // matching web's own auto-select convention: when the picked Job Type has exactly one Service
+  // Head, it's auto-selected immediately instead of leaving "Select service head…" for the user to
+  // pick - and Priority follows the same rule one level deeper (auto-selects when the resulting
+  // Job Type + Service Head pair has exactly one Priority row).
   const onJobTypeChange = (value: string) => {
     const id = value ? Number(value) : null
     setSelectedJobTypeId(id)
     const name = jobTypes.find((j) => j.id === id)?.name ?? ''
     setBaplJobType(name)
     if (name) setServiceType(mapBaplJobTypeToServiceType(name))
-    setSelectedServiceHeadId(null)
-    setServiceHeads([])
+    const heads = dedupeBy(sortedServiceMenuRows.filter((r) => r.jobTypeId === id), (r) => r.serviceHeadId)
+      .map((r) => ({ id: r.serviceHeadId, name: r.serviceHeadName }))
+    const newHeadId = heads.length === 1 ? heads[0].id : null
+    setSelectedServiceHeadId(newHeadId)
     setSelectedServiceTypeId(null)
     setServiceTypes([])
-    if (id == null) return
-    apiClient.get<BaplDmsServiceHead[]>(`/api/bapl-dms/service-heads/${id}`)
-      .then(({ data }) => setServiceHeads(data))
-      .catch(() => setServiceHeads([]))
+    const prios = priorityOptionsFor(id, newHeadId)
+    setPriority(prios.length === 1 ? prios[0].value : '')
+    if (newHeadId == null) return
+    apiClient.get<BaplDmsServiceType[]>(`/api/bapl-dms/service-types/${newHeadId}`)
+      .then(({ data }) => setServiceTypes(data))
+      .catch(() => setServiceTypes([]))
   }
 
   const onJobSourceChange = (value: string) => {
@@ -474,11 +576,15 @@ export function JobCardWizardScreen({ navigation }: Props) {
     if (name) setSource(mapBaplJobSourceToSource(name))
   }
 
+  // SECTION 169 - Priority auto-selects/clears the same way onJobTypeChange above does, one level
+  // deeper. Service Type's own live fetch (GET /api/bapl-dms/service-types/{id}) is unchanged.
   const onServiceHeadChange = (value: string) => {
     const id = value ? Number(value) : null
     setSelectedServiceHeadId(id)
     setSelectedServiceTypeId(null)
     setServiceTypes([])
+    const prios = priorityOptionsFor(selectedJobTypeId, id)
+    setPriority(prios.length === 1 ? prios[0].value : '')
     if (id == null) return
     apiClient.get<BaplDmsServiceType[]>(`/api/bapl-dms/service-types/${id}`)
       .then(({ data }) => setServiceTypes(data))
@@ -492,9 +598,9 @@ export function JobCardWizardScreen({ navigation }: Props) {
 
   const addComplaintFromDropdown = () => {
     if (!selectedComplaintId) return
-    const picked = complaintOptions.find((c) => String(c.id) === selectedComplaintId)
+    const picked = complaintOptions.find((c) => c.id === selectedComplaintId)
     if (!picked) return
-    if (!complaints.includes(picked.name)) setComplaints((prev) => [...prev, picked.name])
+    if (!complaints.includes(picked.complaintText)) setComplaints((prev) => [...prev, picked.complaintText])
     setSelectedComplaintId('')
   }
   const removeComplaint = (name: string) => setComplaints((prev) => prev.filter((c) => c !== name))
@@ -814,8 +920,12 @@ export function JobCardWizardScreen({ navigation }: Props) {
   const supervisorPickOptions: PickerOption[] = supervisorOptions.map((s) => ({ label: s.name, value: s.name }))
   const technicianPickOptions: PickerOption[] = technicianOptions.map((t) => ({ label: t.name, value: t.name }))
   const jobSourceOptions: PickerOption[] = jobSources.map((s) => ({ label: s.name, value: String(s.id) }))
-  const complaintPickOptions: PickerOption[] = complaintOptions.map((c) => ({ label: c.name, value: String(c.id) }))
-  const priorityOptions: PickerOption[] = (['1', '2', '3'] as unknown as JobCardPriority[]).map((p) => ({ label: p, value: p }))
+  const complaintPickOptions: PickerOption[] = complaintOptions.map((c) => ({ label: c.complaintText, value: c.id }))
+  // SECTION 169: sourced from the (Job Type, Service Head)-filtered priorityOptionsForSelection now
+  // (was a completely independent fixed 3-item '1'/'2'/'3' array) - label = short code
+  // (PriorityValue), value = what actually gets POSTED (PriorityLabel) - see the import block's
+  // doc comment.
+  const priorityOptions: PickerOption[] = priorityOptionsForSelection.map((p) => ({ label: p.label, value: p.value }))
   const dealerOptions: PickerOption[] = dealers.map((d) => ({ label: `${d.name} (${d.code})`, value: d.id }))
 
   return (
@@ -1099,7 +1209,18 @@ export function JobCardWizardScreen({ navigation }: Props) {
             <PickerField label="Job Type *" value={selectedJobTypeId != null ? String(selectedJobTypeId) : ''} options={jobTypes.map((jobType) => ({ label: jobType.name, value: String(jobType.id) }))} onChange={onJobTypeChange} />
             <PickerField label="Service Head *" value={selectedServiceHeadId != null ? String(selectedServiceHeadId) : ''} options={serviceHeadOptions} disabled={!selectedJobTypeId} placeholder={selectedJobTypeId ? 'Select service head…' : 'Select a job type first'} onChange={onServiceHeadChange} />
             {/* <PickerField label="Service Type *" value={selectedServiceTypeId != null ? String(selectedServiceTypeId) : ''} options={serviceTypeOptions} disabled={!selectedServiceHeadId} placeholder={selectedServiceHeadId ? 'Select service type…' : 'Select a service head first'} onChange={(v) => setSelectedServiceTypeId(v ? Number(v) : null)} /> */}
-            <PickerField label="Priority *" value={priority} options={priorityOptions} onChange={(v) => setPriority(v as JobCardPriority)} />
+            <PickerField
+              label="Priority *"
+              value={priority}
+              options={priorityOptions}
+              disabled={!selectedServiceHeadId}
+              placeholder={
+                !selectedServiceHeadId
+                  ? 'Select a service head first'
+                  : priorityOptionsForSelection.length ? 'Select priority…' : 'No priority set up for this Service Head'
+              }
+              onChange={setPriority}
+            />
             <PickerField label="Service Location (workshop) *" value={selectedWorkshopLocCode} options={workshopOptions} disabled={!effectiveDealerId} placeholder={workshops.length ? 'Select workshop…' : 'No workshops found for this dealer yet'} onChange={onWorkshopChange} />
             {/* 2026-09-24 CHANGE (mirrors web): Supervisor/Technician are now dropdowns scoped to
                the Service Location above, fed from Admin -> Employees (Designation: Supervisor)
@@ -1178,7 +1299,12 @@ export function JobCardWizardScreen({ navigation }: Props) {
           <Text style={styles.h3}>Review</Text>
           <Text style={styles.reviewLine}><Text style={styles.bold}>Customer</Text> — Name: {customer.name}  Mobile: {customer.mobile}  State: {customer.state || '-'}  City: {customer.city || '-'}</Text>
           <Text style={styles.reviewLine}><Text style={styles.bold}>Vehicle</Text> — Model: {vehicle.model} {vehicle.variant}  Reg No.: {vehicle.regNo || '-'}  KM: {vehicle.odometer}  Job No.: {baplManualJobNo || '-'}</Text>
-          <Text style={styles.reviewLine}><Text style={styles.bold}>Service:</Text> {baplJobType || serviceType} via {jobSources.find((s) => s.id === selectedJobSourceId)?.name || source}, priority {priority}</Text>
+          {/* SECTION 169: was a raw `priority` display (which itself used to hold '1'/'2'/'3'
+             directly, mislabeled as JobCardPriority via an `as unknown` cast - see priorityOptions'
+             own doc comment above). `priority` now correctly holds the real posted enum value
+             (PriorityLabel, e.g. "Normal"), so this looks up the matching master row's short code
+             (PriorityValue) for display, same as web. */}
+          <Text style={styles.reviewLine}><Text style={styles.bold}>Service:</Text> {baplJobType || serviceType} via {jobSources.find((s) => s.id === selectedJobSourceId)?.name || source}, priority {priorityOptionsForSelection.find((p) => p.value === priority)?.label ?? priority}</Text>
           <Text style={styles.reviewLine}><Text style={styles.bold}>Complaints:</Text> {complaints.join('; ') || 'None recorded'}</Text>
 
           {!createdJobCard && (

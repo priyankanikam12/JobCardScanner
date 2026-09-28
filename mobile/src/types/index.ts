@@ -1,3 +1,4 @@
+// mobile/src/types/index.ts
 // Mirrors backend/JobCardScanner.Api/Models enums/DTOs (see web/src/types/index.ts for the fuller
 // web copy - kept in sync with it by hand since there's no shared package between the two apps).
 
@@ -168,6 +169,14 @@ export interface BaplDmsVehicleLookup {
   openJobCardSource?: 'local' | 'bapl-dms' | null
   openJobCardStatus?: string | null
   customerAddress?: string | null
+  // 2026-10-01 ("DMS_SaleBillCustomer have State already have not not fetched why fix this
+  // properly"): added to match web/src/types/index.ts's own BaplDmsVehicleLookup (which already
+  // had this field - the TypeScript build error "Property 'customerState' does not exist" proved
+  // mobile's copy of this interface was simply never kept in sync with web's for this one field).
+  // Confirmed real upstream data for it via your own `select * from DMS_SaleBillCustomer where
+  // Id='81863'` dump (State='KARNATAKA'). Placed in the same position web's copy has it (right
+  // after customerAddress, before customerEmail) purely to keep the two files diffable by eye.
+  customerState?: string | null
   customerEmail?: string | null
   // Battery Details fields sourced from DMS's ChassisBatteryDetails table.
   batteryChemical?: string | null

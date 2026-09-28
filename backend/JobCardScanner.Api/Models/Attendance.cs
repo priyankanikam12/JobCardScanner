@@ -101,11 +101,17 @@ public enum AttendanceStatus
     OnLeave = 4,
 }
 
-/// <summary>2026-09-26 ("1st shift 9 am to 6pm 1st shift and then 6 pm to 12 2nd shift") - exactly
+/// <summary>2026-09-26 ("1st shift 9 am to 6pm 1st shift and then 6 pm to 12 2nd shift") - originally
 /// the two windows you described. See AttendanceController.CheckIn() for how a login moment maps
-/// to one of these, including the one edge case you didn't specify (a login before 9am).</summary>
+/// to one of these, including the one edge case you didn't specify (a login before 9am).
+///
+/// SUPERSEDED 2026-09-28 (SECTION 153, "in attendance only 1 shift 10 to 6"): simplified to ONE
+/// shift, 10:00-18:00 IST (8 hrs). Shift2 is kept (not deleted) only so any attendance rows
+/// already saved with it in the database keep parsing correctly through the existing
+/// HasConversion&lt;string&gt;() mapping (SECTION 146/152) - nothing writes Shift2 anymore; every
+/// new check-in from CheckIn() is recorded as Shift1.</summary>
 public enum AttendanceShift
 {
-    Shift1 = 1, // 09:00-18:00 IST
-    Shift2 = 2, // 18:00-00:00 IST
+    Shift1 = 1, // 2026-09-28: now the ONLY shift CheckIn() assigns - 10:00-18:00 IST
+    Shift2 = 2, // legacy only, no longer assigned - was 18:00-00:00 IST
 }

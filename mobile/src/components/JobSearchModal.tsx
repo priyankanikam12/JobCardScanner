@@ -25,6 +25,13 @@ import type { JobSearchResult } from '../types'
  * (JobCardsController.Search's own new param) so this picker only lists job cards that already
  * have a Material Transfer saved. Every other caller (this screen's own plain "Search" button, and
  * MaterialTransferCreateScreen.tsx's) omits it and is unaffected.
+ *
+ * SECTION 168 (2026-09-30) "in mt and rb only open jobcard shown..only 1 is open means inprogreass
+ * other already close after that shown" - same fix as web/src/components/JobSearchModal.tsx: the
+ * plain picker use (onlyWithMaterialTransfer false/omitted) now also sends `excludeClosed=true` on
+ * the same GET call, so Closed/Cancelled job cards no longer show here either. Left OFF for the "MT
+ * History" grid-button mode (onlyWithMaterialTransfer=true) for the same reason as web - a completed
+ * transfer is still valid history after its job card closes.
  */
 export function JobSearchModal({
   visible, onSelect, onClose, onlyWithMaterialTransfer = false, title,
@@ -44,7 +51,15 @@ export function JobSearchModal({
     const handle = setTimeout(() => {
       setLoading(true)
       apiClient
-        .get<JobSearchResult[]>('/api/jobcards/search', { params: { q: q || undefined, onlyWithMaterialTransfer: onlyWithMaterialTransfer || undefined } })
+        .get<JobSearchResult[]>('/api/jobcards/search', {
+          params: {
+            q: q || undefined,
+            onlyWithMaterialTransfer: onlyWithMaterialTransfer || undefined,
+            // SECTION 168 - see class doc comment: hide Closed/Cancelled job cards for the plain
+            // picker use; the MT History mode (onlyWithMaterialTransfer=true) keeps showing them.
+            excludeClosed: onlyWithMaterialTransfer ? undefined : true,
+          },
+        })
         .then(({ data }) => setResults(data))
         .catch(() => setResults([]))
         .finally(() => setLoading(false))

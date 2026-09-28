@@ -1,3 +1,4 @@
+// mobile\src\screens\DashboardScreen.tsx
 import { useEffect, useState } from 'react'
 import { ActivityIndicator, Image, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
@@ -47,7 +48,10 @@ const TILES: { key: keyof DashboardKpis; label: string; icon: string; to: JobCar
 ]
 
 export function DashboardScreen({ navigation }: Props) {
-  const { profile, hasRole } = useStaffAuth()
+  // SECTION 172 (2026-09-30) - hasRole is no longer used here: Technician Employee (the one card
+  // that read it, to gate Supervisor+) was removed from this screen's Actions list per your "show
+  // only menu 1-6" request - see the Actions block below.
+  const { profile } = useStaffAuth()
   const [kpis, setKpis] = useState<DashboardKpis | null>(null)
   const [refreshing, setRefreshing] = useState(false)
 
@@ -57,6 +61,142 @@ export function DashboardScreen({ navigation }: Props) {
   }
 
   useEffect(load, [])
+
+  // 2026-09-29 (SECTION 157, "fix login wise jobcard open close for supervisor dont have any
+  // jobcard then still shown main dealer count fix this") - same bug, same fix, as web's
+  // DashboardPage.tsx (see that file's own SECTION 157 doc comment for the full root-cause
+  // writeup): GET /api/dashboard/kpis counts every tile DEALER-WIDE, not scoped to this login's own
+  // Work Area (WorkLocationCodes) the way GET /api/jobcards (JobCardsController.List, its actual
+  // source re-read this round) already is - confirmed real, not a guess, from that controller's own
+  // doc comment: "a user assigned to specific DMS workshop locations only sees job cards opened at
+  // one of THEIR locations". A Supervisor whose Work Area has zero matching job cards was still
+  // seeing the whole dealer's numbers on these 9 tiles because they came from the unscoped endpoint.
+  //
+  // FIX: each TILES entry's own `to` object is ALREADY the exact shape GET /api/jobcards needs as
+  // its query params (createdToday/excludeClosed/stageKey/status/deliveredToday/pendingBucket/
+  // warrantyOnly - the same names, reused as-is below for BOTH navigation.navigate AND this count
+  // fetch), so no new filter mapping was needed on this screen, unlike web where a separate
+  // `params` field had to be added alongside the URL-string `to`.
+  //
+  // ASSUMPTION (flagging, since I don't have mobile/src/api/client.ts in this session to confirm
+  // apiClient's exact method signature): apiClient.get(url, { params }) works the same way
+  // staffApi.get(url, { params }) already does on web (both axios-style clients) - CorporateDashboard
+  // on web already calls staffApi.get(..., { params: {...} }) this same way, so this mirrors an
+  // already-working pattern, just on the mobile client instead. If apiClient's `params` option
+  // doesn't exist or is named differently, this call will need a small adjustment - tell me what
+  // VS Code/the Android build reports and I'll fix it directly.
+  //
+  // KNOWN LIMIT, same as web: GET /api/jobcards caps at 200 rows with no total-count field, so a
+  // tile whose true count exceeds 200 will under-report - unlikely for one Work Area's open job
+  // cards, but flagging it rather than hiding it.
+  //
+  // NOT FIXED by this change (still dealer-wide, unscoped, still straight from kpis): Revenue (Paid
+  // Invoices), Avg. Service Time, Customer Satisfaction, and the Job Cards by Status bars further
+  // down this screen - see web DashboardPage.tsx's identical note for why those four can't be
+  // reproduced from a simple job-card-count filter.
+  const [scopedCounts, setScopedCounts] = useState<Partial<Record<keyof DashboardKpis, number>> | null>(null)
+  useEffect(() => {
+    Promise.all(
+      TILES.map((t) =>
+        apiClient
+          .get<{ items: unknown[] }>('/api/jobcards', { params: t.to })
+          .then((r): [keyof DashboardKpis, number] => [t.key, r.data.items.length])
+          .catch((): [keyof DashboardKpis, number | undefined] => [t.key, undefined]),
+      ),
+    ).then((pairs) => {
+      const next: Partial<Record<keyof DashboardKpis, number>> = {}
+      pairs.forEach(([key, count]) => { if (count !== undefined) next[key] = count })
+      setScopedCounts(next)
+    })
+  }, [])
+
+  // 2026-09-28 ("Stock cards in that total stock shown ... in android also") - mirrors web's
+  // DealerDashboard exactly, see that file's own stockQty doc comment for the full reasoning: no
+  // DashboardController.cs in this session to add a server field, so this sums GET /api/part-uploads
+  // (balQty ?? 0 per row, all locations for this dealer) client-side instead. stockError only
+  // distinguishes "still loading" from "the call failed" for future debugging - the tile shows "—"
+  // either way rather than a wrong number.
+  //
+  // 2026-09-29 (SECTION 157, then FIXED same day - SECTION 158) - same "Part Upload location
+  // scoping" gap flagged on web, now fixed at the real backend source (GET /api/part-uploads is
+  // now WorkLocationCodes-scoped - see PartUploadController.cs's own SECTION 158 doc comment). No
+  // change needed on this screen - it already just sums whatever that endpoint returns.
+  const [stockQty, setStockQty] = useState<number | null>(null)
+  const [stockError, setStockError] = useState(false)
+  useEffect(() => {
+    apiClient
+      .get<{ balQty: number | null }[]>('/api/part-uploads')
+      .then((r) => setStockQty(r.data.reduce((sum, row) => sum + (row.balQty ?? 0), 0)))
+      .catch(() => setStockError(true))
+  }, [])
+
+  // 2026-09-30 (SECTION 164, "...give alert menu assigned sucessfully for web and mobile give
+  // thus" - read as: the Admin: Menu Access feature (web/src/pages/admin/MenuAccessPage.tsx,
+  // Models/MenuAccessOverride.cs) should also actually affect this screen, not just web's sidebar,
+  // which is the only place it did anything before this change): this screen's own "menu" is this
+  // ActionCard list below - there's no separate drawer/sidebar component on Android - so each
+  // ActionCard that has a web-sidebar equivalent is now hidden the same way web's NAV_ITEMS are,
+  // reading the SAME GET /api/menu-access overrides web's StaffLayout.tsx reads.
+  //
+  // NAV KEYS below are hand-matched to web/src/components/StaffLayout.tsx's own navKeyOf(to)
+  // output for the corresponding sidebar route (e.g. '/item-master' -> 'item-master') - so ONE
+  // Admin: Menu Access row controls both platforms at once. "Repair Bill List" has NO web sidebar
+  // equivalent (that item is commented out of web's own NAV_ITEMS_BASE - never shipped there), so
+  // it is NOT wired to any key here and stays exactly as visible as it always was - there is
+  // nothing to restrict it from on the Admin: Menu Access page today. "+ New Job Card" is tied to
+  // the same 'jobcards' key as "Job Cards" (there's no separate web sidebar entry just for
+  // creating one - it's reached from within the Job Cards page itself).
+  //
+  // DEFAULT (no override saved for a key): every ActionCard below keeps showing to every role,
+  // exactly as before this change - this only ever NARROWS visibility once an admin actually saves
+  // a restriction naming that key, same fail-open convention as web's own effectiveRoles(). This
+  // was a deliberate choice: mobile never had web's hardcoded default `roles` floors to begin with
+  // (see this screen's own pre-existing notes on Attendance/Item Master etc. never being
+  // role-gated here), and introducing new DEFAULT restrictions nobody asked for risks hiding a
+  // page some role could already reach - only Menu Access's explicit, opt-in overrides apply.
+  const [menuOverrides, setMenuOverrides] = useState<Record<string, string[]>>({})
+  // SECTION 170 (2026-09-30) "only give 3 sidebar menu acess only in sidebar this 3 option" -
+  // mirrors web's StaffLayout.tsx own SECTION 170 addition exactly, see that file's doc comment
+  // for the full design (Models/RoleMenuMode.cs). true = this login's own role is in "only show
+  // checked" allow-list mode.
+  const [roleModes, setRoleModes] = useState<Record<string, boolean>>({})
+  useEffect(() => {
+    apiClient
+      .get<{ navKey: string; roles: string[] }[]>('/api/menu-access')
+      .then((r) => {
+        const map: Record<string, string[]> = {}
+        r.data.forEach((row) => { map[row.navKey] = row.roles })
+        setMenuOverrides(map)
+      })
+      .catch(() => {
+        // Fail-open - see doc comment above. An endpoint hiccup never hides this screen's own menu.
+      })
+    apiClient
+      .get<{ role: string; onlyShowChecked: boolean }[]>('/api/menu-access/role-modes')
+      .then((r) => {
+        const map: Record<string, boolean> = {}
+        r.data.forEach((row) => { map[row.role] = row.onlyShowChecked })
+        setRoleModes(map)
+      })
+      .catch(() => {
+        // Fail-open (mode stays false) - same reasoning as the overrides fetch above.
+      })
+  }, [])
+
+  /** true = show this ActionCard. SECTION 170: when this login's own role is in "only show
+   * checked" allow-list mode, the logic INVERTS - hidden unless an explicit, non-empty override
+   * for navKey lists this role (no override at all no longer means "everyone" for that role).
+   * Otherwise, unchanged from before: no override saved for navKey -> always true; an override
+   * that exists but is empty also means "everyone"; only a non-empty override that excludes this
+   * login's own role hides it. */
+  const menuVisible = (navKey: string): boolean => {
+    const override = menuOverrides[navKey]
+    if (profile?.role && roleModes[profile.role]) {
+      return !!override && override.length > 0 && override.includes(profile.role)
+    }
+    if (override === undefined || override.length === 0) return true
+    return !!profile?.role && override.includes(profile.role)
+  }
 
   return (
     <View style={styles.screen}>
@@ -83,11 +223,22 @@ export function DashboardScreen({ navigation }: Props) {
                   key={t.key}
                   icon={t.icon}
                   label={t.label}
-                  value={kpis[t.key] as number}
+                  value={scopedCounts === null ? '…' : scopedCounts[t.key] ?? (kpis[t.key] as number)}
                   accent={ACCENTS[i % ACCENTS.length]}
                   onPress={() => navigation.navigate('JobCardsList', t.to)}
                 />
               ))}
+              {/* 2026-09-28 ("WARRANTY JOBS this after 1 card add Stock cards ... redirect on
+                 /part-upload page ... in android also"): right after Warranty Jobs (TILES' own
+                 last entry), per your confirmed route (PartUpload - same screen name Part Upload's
+                 own ActionCard below already navigates to). */}
+              <Kpi
+                icon="📦"
+                label="Stock Qty"
+                value={stockError ? '—' : stockQty === null ? '…' : stockQty.toLocaleString('en-IN')}
+                accent={ACCENTS[TILES.length % ACCENTS.length]}
+                onPress={() => navigation.navigate('PartUpload')}
+              />
             </View>
 
             <View style={styles.grid}>
@@ -115,29 +266,51 @@ export function DashboardScreen({ navigation }: Props) {
         )}
 
         <View style={styles.actions}>
-          <ActionCard title="+ New Job Card" subtitle="Start a new vehicle check-in" onPress={() => navigation.navigate('JobCardWizard')} />
-          <ActionCard title="Job Cards" subtitle="View & update assigned job cards" onPress={() => navigation.navigate('JobCardsList')} />
-          {/* <ActionCard title="Parts Catalog" subtitle="Search spare parts" onPress={() => navigation.navigate('Parts')} /> */}
-          {/* 2026-09-21 ("add changes in android also"): Android counterparts of web's Item
-             Master/Material Transfer Bill/Repair Bill sidebar pages. */}
-          <ActionCard title="Item Master" subtitle="BAPL item catalog - Dealer Price & GST% (baplfinal)" onPress={() => navigation.navigate('ItemMaster')} />
-          <ActionCard title="Material Transfer Bill" subtitle="Create & view material transfers" onPress={() => navigation.navigate('MaterialTransferCreate')} />
-          <ActionCard title="Repair Bill" subtitle="Create a repair bill" onPress={() => navigation.navigate('RepairBillCreate')} />
-          {/* 2026-09-23 - new list screen for bills already saved in JobCardScanner, split out of
-             the Repair Bill create screen above. */}
-          <ActionCard title="Repair Bill List" subtitle="Saved repair bills - view, edit, Save as Invoice" onPress={() => navigation.navigate('RepairBillList')} />
-          {/* 2026-09-28 ("this page also add in android") - Android counterparts of web's Part
-             Upload/Labour Master sidebar pages (PartUploadScreen.tsx/LabourMasterScreen.tsx, added
-             this same round). Route registration still needed in RootNavigator.tsx - see those two
-             screens' own doc comments for the exact two lines each needs; navigating here will
-             error until that's done. */}
-          <ActionCard title="Part Upload" subtitle="Upload Stock Summary Detail Report - own stock table" onPress={() => navigation.navigate('PartUpload')} />
-          <ActionCard title="Labour Master" subtitle="Import & manage labour rate cards (Partwise / Without Partwise)" onPress={() => navigation.navigate('LabourMaster')} />
-          {/* 2026-09-24 - deliberately role-gated (unlike every other ActionCard on this screen,
-             none of which check hasRole) - see TechnicianEmployeesScreen.tsx's own doc comment for
-             why: this tab is the one access difference the new Supervisor role exists to create. */}
-          {hasRole('Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
-            <ActionCard title="Technician Employee" subtitle="Login-less technician roster for Job Card dropdowns" onPress={() => navigation.navigate('TechnicianEmployees')} />
+          {/* SECTION 172 (2026-09-30) "in dashboardpage in android show only menu 1. Job Cards
+             2. Labour Master 3. Stock Report 4. Material Transfer Bill 5. Repair Bill 6.
+             Attendance only personal and according which changes done in web add in android" -
+             this Actions list is now exactly these 6 cards, in this order, replacing the previous
+             9-card list. REMOVED from here:
+               - "+ New Job Card" (was a separate card sharing the 'jobcards' key with "Job Cards"
+                 below) - not in your list. Job Cards below is now the only entry point into that
+                 flow from this screen; if JobCardsListScreen.tsx has no "add" affordance of its
+                 own, quick-create from the Dashboard is gone until one's added there - flagging
+                 since I don't have that screen's source this session to confirm either way.
+               - Item Master and Technician Employee - both still live, un-commented entries on
+                 web's own sidebar (StaffLayout.tsx NAV_ITEMS_BASE), so this removal is
+                 Android-only, per your explicit list, not a mirror of a web change.
+               - "Repair Bill List" - this one DOES mirror a real web change: web's own
+                 NAV_ITEMS_BASE already has '/repair-bill-list' (and '/material-transfer-list')
+                 commented out of its sidebar, so dropping it here brings Android back in line with
+                 what web currently shows, per "according which changes done in web add in
+                 android".
+             Every remaining card still goes through menuVisible() - same SECTION 155/164/170 Menu
+             Access gating as before. Trimming this fixed list doesn't touch backend permissions
+             for the removed items - Item Master/Technician Employee's own routes/APIs are
+             unchanged, they're just no longer offered a shortcut from this screen. */}
+          {menuVisible('jobcards') && (
+            <ActionCard title="Job Cards" subtitle="View & update assigned job cards" onPress={() => navigation.navigate('JobCardsList')} />
+          )}
+          {menuVisible('labour-master') && (
+            <ActionCard title="Labour Master" subtitle="Import & manage labour rate cards (Partwise / Without Partwise)" onPress={() => navigation.navigate('LabourMaster')} />
+          )}
+          {menuVisible('part-upload') && (
+            <ActionCard title="Stock Report" subtitle="Stock Summary Detail Report - own stock table" onPress={() => navigation.navigate('PartUpload')} />
+          )}
+          {menuVisible('material-transfer-bill') && (
+            <ActionCard title="Material Transfer Bill" subtitle="Create & view material transfers" onPress={() => navigation.navigate('MaterialTransferCreate')} />
+          )}
+          {menuVisible('repair-bill-new') && (
+            <ActionCard title="Repair Bill" subtitle="Create a repair bill" onPress={() => navigation.navigate('RepairBillCreate')} />
+          )}
+          {/* "Attendance only personal" - this card now always opens straight to the read-only
+             "my own attendance" view, even for a WorkshopManager+ login that would otherwise get
+             the full dealer staff roster/marking view - see AttendanceScreen.tsx's own SECTION 172
+             doc comment and RootNavigator.tsx's Attendance param type for the mechanics
+             (route param { onlyMine: true }). The full manager flow itself is untouched, just no
+             longer reachable from this particular card. */}
+          {menuVisible('attendance') && (
+            <ActionCard title="Attendance" subtitle="Mark your own attendance" onPress={() => navigation.navigate('Attendance', { onlyMine: true })} />
           )}
         </View>
       </ScrollView>

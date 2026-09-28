@@ -169,7 +169,7 @@ export function PartUploadPage() {
 
   return (
     <div>
-      <h2>Part Upload</h2>
+      <h2>Item Master</h2>
       <p className="muted">
         Upload a Stock Summary Detail Report (.xlsx) to build a searchable parts stock table here -
         saved into JobCardScanner's own database, scoped to your dealer. Re-uploading a newer report

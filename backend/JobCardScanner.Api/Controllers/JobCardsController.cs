@@ -224,6 +224,41 @@ public class JobCardsController : ControllerBase
                     // Item Master rows.
                     AvailableQty: (int)(availableQtyByCode.TryGetValue(u.PartNo, out var puQty) ? puQty : 0m)))
                 .ToList();
+
+            // 2026-09-28 FIX ("which i search that will exactly item available then why this
+            // shown and excat serach give" - your real 0301-A01-1025 example, confirmed by you in
+            // both C_ItemMaster and PartUploads): unlike itemMasterRows above (already narrowed
+            // server-side by SearchItemMasterAsync's own `q` handling), partUploadOnlyRows was
+            // never filtered by `q` at all - GetAsync's third parameter (always passed null here)
+            // is a PartNo lookup filter, not a free-text search, so this list was always either
+            // this dealer's ENTIRE not-in-Item-Master upload set (when q was blank) or - just as
+            // wrong - that same full set even when you HAD typed a specific search, with nothing
+            // here ever comparing it against what you actually typed. FIXED: same defensive
+            // re-filter pattern already used for LabourCatalog's own near-identical bug (see that
+            // method's 2026-09-28 doc comment above) - when `q` is non-blank, keep only rows whose
+            // ItemCode or Description actually contains it.
+            //
+            // SEPARATE, FLAGGED - INTERPRETATION not FACT (I don't have IBaplDealerService.
+            // SearchItemMasterAsync's own source this session to confirm): your real C_ItemMaster
+            // row for 0301-A01-1025 has Status = 'N' and its own ItemName literally says
+            // "Discontinue -Alt-22GE050020AS" - i.e. BAPL's own catalog already marks this part
+            // discontinued, pointing to 22GE050020AS as its replacement. If SearchItemMasterAsync
+            // filters out inactive/Status<>'Y' items (a common, reasonable ERP convention - you
+            // generally don't want a discontinued part suggested on a new job card), then Item
+            // Master search correctly NOT finding "0301-A01-1025" is by design, not a bug - the
+            // fix above is what makes sure your actual uploaded stock for it (BalQty 9 at
+            // CUS0288W1, per your real PartUploads row) still surfaces via the Part Upload
+            // fallback instead of disappearing entirely. If it still doesn't show after this,
+            // paste IBaplDealerService.cs (specifically SearchItemMasterAsync) and I'll confirm
+            // instead of guessing further.
+            if (!string.IsNullOrWhiteSpace(q))
+            {
+                var needle = q.Trim();
+                partUploadOnlyRows = partUploadOnlyRows
+                    .Where(r => r.ItemCode.Contains(needle, StringComparison.OrdinalIgnoreCase)
+                        || (r.Description != null && r.Description.Contains(needle, StringComparison.OrdinalIgnoreCase)))
+                    .ToList();
+            }
         }
 
         // 2026-09-28 ("in that qty show if there is no qty then show 0 ... order where qty are
@@ -474,11 +509,33 @@ public class JobCardsController : ControllerBase
     /// duplicate rows for a job with more than one Material Transfer doc). Default false leaves
     /// every existing caller (the plain "Search Job" modal on this page and on Material Transfer
     /// Bill) returning every job card, unchanged.
+    ///
+    /// 2026-09-28 (SECTION 153, "in web\...\MaterialTransferCreatePage.tsx and
+    /// web\...\RepairBillCreatePage.tsx for android also in that which we jobcard search in that
+    /// only open jobcard show in that search jobcard dont show closed job card"): new optional
+    /// `excludeClosed` param, same name/convention as List()'s own KPI-deep-link parameter of the
+    /// same name. Default FALSE - deliberately NOT flipped on by default here, because this same
+    /// endpoint is also used by the `onlyWithMaterialTransfer` "material transferred job cards
+    /// history" grid button just above, which most likely SHOULD still be able to show a Material
+    /// Transfer against a job that has since been closed (a completed transfer doesn't stop being
+    /// history just because the job closed afterwards) - defaulting this on for everyone would risk
+    /// silently breaking that other feature. Matches Closed AND Cancelled, same two statuses List's
+    /// excludeClosed already treats as "not open" - not just Closed alone - since a Cancelled job
+    /// card shouldn't be pickable for a brand-new Repair Bill/Material Transfer either.
+    ///
+    /// NOT WIRED IN YET on the frontend: I don't have your real MaterialTransferCreatePage.tsx,
+    /// RepairBillCreatePage.tsx, or their Android/mobile equivalents in this session (only this
+    /// backend controller), so nothing calls this with excludeClosed=true yet. Once you paste those
+    /// files (or tell me their Job Search call sites), the fix is a one-line query-param addition
+    /// in each: add `excludeClosed: true` to the GET /api/jobcards/search params used specifically
+    /// by the "create new" Job Search modal - leave any OTHER call to this same endpoint (e.g. a
+    /// history/lookup view) without it, so closed job cards stay searchable there.
     /// </summary>
     [HttpGet("search")]
     public async Task<IActionResult> Search(
         [FromQuery] DateOnly? dateFrom, [FromQuery] DateOnly? dateTo, [FromQuery] string? jobNo,
-        [FromQuery] string? regNo, [FromQuery] string? chassisNo, [FromQuery] bool onlyWithMaterialTransfer = false)
+        [FromQuery] string? regNo, [FromQuery] string? chassisNo, [FromQuery] bool onlyWithMaterialTransfer = false,
+        [FromQuery] bool excludeClosed = false)
     {
         var isOrgWideRole = _currentUser.Role is StaffRole.CorporateAdmin or StaffRole.SystemAdmin;
         var query = _db.JobCards.AsNoTracking()
@@ -500,6 +557,8 @@ public class JobCardsController : ControllerBase
         if (!string.IsNullOrWhiteSpace(regNo)) query = query.Where(j => j.Vehicle!.RegNo != null && j.Vehicle.RegNo.Contains(regNo));
         if (!string.IsNullOrWhiteSpace(chassisNo)) query = query.Where(j => j.Vehicle!.Vin != null && j.Vehicle.Vin.Contains(chassisNo));
         if (onlyWithMaterialTransfer) query = query.Where(j => _db.MaterialTransferDocs.Any(m => m.JobCardId == j.Id));
+        // 2026-09-28 (SECTION 153) - see the method doc comment above.
+        if (excludeClosed) query = query.Where(j => j.Status != JobCardStatus.Closed && j.Status != JobCardStatus.Cancelled);
 
         var rows = await query.OrderByDescending(j => j.CreatedAt).Take(100).ToListAsync();
 
@@ -610,6 +669,34 @@ public class JobCardsController : ControllerBase
     /// fromMailbox doc comment for the one real caveat (an Exchange Application Access Policy, if
     /// the tenant has one, could still restrict which mailboxes this app is allowed to send "as" -
     /// that would surface here as the 502 below, not a silent failure).
+    ///
+    /// SECTION 175 (2026-09-30) REVERT ("now fix from oat@bgauss.com mail going and in cc that
+    /// dealer using sending and for which this sending that bind"): the 2026-09-24 change above
+    /// (_currentUser.Email as sender) is exactly what caused an ErrorInvalidUser failure - a staff
+    /// account's login email happened to be a personal Gmail address, which Microsoft Graph can
+    /// never send "as" (no Azure setting fixes that). Reverted to a fixed sender, oat@bgauss.com,
+    /// regardless of who clicks "Send Estimate" - plus a CC of every ACTIVE DealerAdmin user on
+    /// this job card's own dealer. FACT/ASSUMPTION flagged: assumes Models/User.cs's Email
+    /// property is named exactly `Email` - every other place in this controller (_currentUser.Email
+    /// above) already relies on that same name, so this isn't a fresh guess; a wrong name here
+    /// would surface as one CS1061 compile error, not a silent bug.
+    /// INTERPRETATION, not confirmed: "the DealerAdmin" (singular) could mean exactly one person
+    /// is expected - this CCs EVERY active DealerAdmin found for the dealer (zero, one, or more).
+    /// Tell me if you want exactly one specific person instead.
+    /// BLOCKED, NOT DONE YET: IEmailClient.SendAsync's signature (SendAsync(to, subject, htmlBody,
+    /// attachment, fromMailbox, ct) - 5 args, no CC param) has no CC slot today. I don't have
+    /// Services/Integrations/IEmailClient.cs or GraphEmailClient.cs this session to add one, so the
+    /// CC list below is resolved and logged but NOT actually attached to the outgoing email yet -
+    /// see the TODO at the SendAsync call. Send me those two files to finish the wiring.
+    /// If a dealer has no active DealerAdmin at all, no CC is added and the email still sends to
+    /// the customer normally - this never blocks the send.
+    ///
+    /// SECTION 177 (2026-09-30) ("thank u daealer name"): the email body was repeating
+    /// {jc.JobCardNumber} in the "contact your dealer" line (copy-paste slip) and printing the
+    /// literal placeholder text "DealerName" in the signature - both replaced with the job card's
+    /// real Dealer.Name (FACT - confirmed via this same controller's Detail() action further down,
+    /// which already projects j.Dealer.Name), falling back to "your dealer" if Dealer is somehow
+    /// null so the signature is never blank.
     /// </summary>
     [HttpPost("{id:guid}/estimates/email")]
     public async Task<IActionResult> EmailEstimate(Guid id, EmailEstimateRequest req)
@@ -617,8 +704,16 @@ public class JobCardsController : ControllerBase
         if (string.IsNullOrWhiteSpace(req.Email) || !req.Email.Contains('@'))
             return BadRequest(new { message = "Enter a valid email address." });
 
+        // DealerName added to this projection (SECTION 177) alongside DealerId (SECTION 175) - used
+        // in the email body below instead of the literal "DealerName" placeholder text.
         var jc = await _db.JobCards.AsNoTracking().Where(j => j.Id == id)
-            .Select(j => new { j.JobCardNumber, CustomerName = j.Customer != null ? j.Customer.Name : null })
+            .Select(j => new
+            {
+                j.JobCardNumber,
+                j.DealerId,
+                DealerName = j.Dealer != null ? j.Dealer.Name : null,
+                CustomerName = j.Customer != null ? j.Customer.Name : null,
+            })
             .FirstOrDefaultAsync();
         if (jc is null) return NotFound();
 
@@ -634,19 +729,41 @@ public class JobCardsController : ControllerBase
         }
         if (pdf is null) return NotFound();
 
+        var dealerDisplayName = string.IsNullOrWhiteSpace(jc.DealerName) ? "your dealer" : jc.DealerName;
+
         var subject = $"Estimate for Job Card {jc.JobCardNumber}";
         var htmlBody =
             $"<p>Dear {jc.CustomerName ?? "Customer"},</p>" +
             $"<p>Please find attached the estimate for your job card <strong>{jc.JobCardNumber}</strong>.</p>" +
-            "<p>Thank you,<br/>JobCardScanner</p>";
+            // SECTION 177 fix: was repeating {jc.JobCardNumber} here (copy-paste from the line
+            // above) - now shows the actual dealer name.
+            $"<p>If any query please contact your dealer <strong>{dealerDisplayName}</strong>.</p>" +
+            // SECTION 177 fix: was the literal text "DealerName" - now the real dealer's name,
+            // falling back to "your dealer" (never a blank signature) if Dealer is somehow null.
+            $"<p>Thank you,<br/>{dealerDisplayName}</p>";
         var attachment = new EmailAttachment($"estimate-{jc.JobCardNumber}.pdf", "application/pdf", pdf);
 
-        // 2026-09-07: IEmailClient.SendAsync now returns the real failure reason (EmailSendResult.
-        // Error) instead of a bare bool, so this message no longer just points at "check your
-        // config somewhere" - it says exactly what Graph (or the token endpoint) rejected, e.g.
-        // "SenderMailbox isn't a licensed Exchange Online mailbox" (404) vs. "Mail.Send not
-        // consented" (403) vs. a bad ClientSecret at the token step.
-        var emailResult = await _email.SendAsync(req.Email, subject, htmlBody, attachment, _currentUser.Email, HttpContext.RequestAborted);
+        // SECTION 175 (2026-09-30), change 1: fixed sender, not _currentUser.Email any more -
+        // see this method's doc comment for why.
+        const string fromMailbox = "oat@bgauss.com";
+
+        // SECTION 175 (2026-09-30), change 2: dealer CC lookup - resolved and logged below, but
+        // still blocked on IEmailClient/GraphEmailClient.cs for the actual CC wiring - see this
+        // method's doc comment.
+        var dealerAdminEmails = await _db.Users.AsNoTracking()
+            .Where(u => u.DealerId == jc.DealerId && u.Role == StaffRole.DealerAdmin && u.Active)
+            .Select(u => u.Email)
+            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .ToListAsync();
+
+        if (dealerAdminEmails.Count == 0)
+            _logger.LogInformation("EmailEstimate: no active DealerAdmin found for dealer {DealerId} (job card {JobCardId}) - sending with no CC.", jc.DealerId, id);
+        else
+            _logger.LogInformation("EmailEstimate: would CC {Emails} for dealer {DealerId} (job card {JobCardId}) - not yet wired into the Graph call, see this method's doc comment.", string.Join(", ", dealerAdminEmails), jc.DealerId, id);
+
+        // TODO (blocked - see this method's doc comment): once IEmailClient.SendAsync accepts a
+        // CC list, change this call to pass dealerAdminEmails through too.
+        var emailResult = await _email.SendAsync(req.Email, subject, htmlBody, attachment, fromMailbox, HttpContext.RequestAborted);
         if (!emailResult.Success)
             return StatusCode(502, new { message = $"Could not send the email: {emailResult.Error ?? "unknown error"}" });
 
@@ -1576,10 +1693,58 @@ public class JobCardsController : ControllerBase
             }
         }
 
+        // 2026-10-01 ("why not shown already closeed previously") - vehiclePrevKms was never set
+        // by this endpoint at all (confirmed by reading this method - there was no such field
+        // anywhere above). hit (DmsBaplDataVehicleSaleRow) is sourced from DMS_SaleBill - an
+        // invoice row, not a service-history row - so DMS itself has no "previous odometer" concept
+        // to offer here; that's a real gap in the Vehicle Sale data source, not something this
+        // endpoint was dropping. CONFIRMED via your own screenshot: chassis P6DSVFMSPBB003855 / reg
+        // DL3EV9375 already has a CLOSED job card in JobCardScanner's own DB (JC/288/26-27/0023)
+        // that recorded Odometer: 16429 km at check-in. Vehicle.Odometer is kept at the running max
+        // of every job card's OdometerAtCheckIn for that vehicle (see
+        // `vehicle.Odometer = Math.Max(vehicle.Odometer, req.OdometerAtCheckIn)` in Create above),
+        // so it's already this vehicle's correct last-known KM regardless of whether DMS tracks one
+        // - falling back to it here needs no DMS-side change. Matched by VIN only (not scoped to
+        // dealerId/open-vs-closed the way the openJobCardNumber check above is), since a vehicle's
+        // own odometer history belongs to the vehicle, not to any one job card's status or dealer.
+        // No frontend change needed either - web's JobCardWizardPage.tsx and mobile's
+        // JobCardWizardScreen.tsx both already read `baplVehicleHit?.vehiclePrevKms ?? null` and
+        // render "(Previous: X km)"/"Previous Km: X" the moment this field is non-null.
+        int? vehiclePrevKms = null;
+        if (!string.IsNullOrWhiteSpace(hit.ChassisNo))
+        {
+            var localVehicle = await _db.Vehicles.AsNoTracking()
+                .Where(v => v.Vin == hit.ChassisNo)
+                .Select(v => new { v.Odometer })
+                .FirstOrDefaultAsync();
+            if (localVehicle is not null) vehiclePrevKms = (int)localVehicle.Odometer;
+        }
+
+        // 2026-10-01 ("When we change reg no, against this chassis no. then for jobcard search
+        // chassiswise give priority 1st for VehicleSaleOverride") - a hand-corrected Reg No saved
+        // via the Vehicle Sale page's inline edit (VehicleSaleOverridesController.Save, keyed by
+        // ChassisNo - see VehicleSaleOverride.cs) was only ever being read back on the Vehicle Sale
+        // page itself (DmsBaplDataService.GetVehicleSalesAsync's own override layer) - this wizard
+        // lookup is a SEPARATE code path (LookupVehicleForWizardAsync, not GetVehicleSalesAsync)
+        // and was still returning hit.RegNo (DMS's own, uncorrected value) here with no override
+        // applied at all. Mirrors that same "override wins, DMS is the fallback" priority here, so
+        // a corrected Reg No is what gets shown/pre-filled/saved onto the new job card's vehicle,
+        // not DMS's stale value - consistent with the Vehicle Sale page. Same table this endpoint
+        // already queries for vehiclePrevKms just above, so no new dependency.
+        string? registerNo = hit.RegNo;
+        if (!string.IsNullOrWhiteSpace(hit.ChassisNo))
+        {
+            var overrideRegNo = await _db.VehicleSaleOverrides.AsNoTracking()
+                .Where(o => o.ChassisNo == hit.ChassisNo)
+                .Select(o => o.RegNo)
+                .FirstOrDefaultAsync();
+            if (!string.IsNullOrWhiteSpace(overrideRegNo)) registerNo = overrideRegNo;
+        }
+
         return Ok(new
         {
             chassisNo = hit.ChassisNo,
-            registerNo = hit.RegNo,
+            registerNo,
             modelName = hit.ItemModel ?? hit.Oemmodel,
             locationCode = hit.LocCode,
             dealerCode = hit.DealerCode,
@@ -1597,6 +1762,7 @@ public class JobCardsController : ControllerBase
             customerEmail = hit.PartyEmail,
             customerCity = hit.City,
             customerAddress = string.Join(", ", new[] { hit.Address1, hit.Address2 }.Where(s => !string.IsNullOrWhiteSpace(s))),
+            vehiclePrevKms,
             openJobCardNumber,
             openJobCardSource = openJobCardNumber != null ? "local" : null,
             openJobCardStatus,

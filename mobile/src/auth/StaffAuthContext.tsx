@@ -1,9 +1,22 @@
+// mobile\src\auth\StaffAuthContext.tsx
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { useAuth as useAzureAuth } from './AuthContext'
 import { getDealerSession, type DealerSession } from './dealerSession'
 import { dealerLogout } from '../services/dealerAuthService'
 import { apiClient, setDealerToken } from '../api/client'
 import type { CurrentUser, StaffRole } from '../types'
+// 2026-09-28 (SECTION 135) - "attendance page also fix ... why check in time not shown": this
+// unified signOut() below is the ONE sign-out path every other screen is meant to call (per this
+// file's own doc comment, mirroring web's staffApi interceptor not caring which token it attaches)
+// covering BOTH the Dealer/Workshop and Azure AD login paths - so wiring checkOutBeforeLogout() in
+// here, once, at the very start (per attendanceCheckin.ts's own doc comment: "at the VERY START of
+// your sign-out handler, before you clear the auth token"), covers self check-out for both without
+// needing to touch AuthContext.tsx's or dealerAuthService's own lower-level sign-out functions.
+// ASSUMPTION, flagged: this assumes every real logout button in the app calls useStaffAuth().
+// signOut() (this function) rather than calling useAuth().signOut() or dealerLogout() directly -
+// I don't have every screen in this app to confirm that; if you have a logout button that bypasses
+// this context, tell me which screen and I'll wire the same call in there too.
+import { checkOutBeforeLogout } from '../services/attendanceCheckin'
 
 /**
  * Unified staff auth - mirrors web/src/auth/StaffAuthContext.tsx. Staff have two independent
@@ -128,6 +141,11 @@ export function StaffAuthProvider({ children }: { children: ReactNode }) {
   }
 
   const signOut = async () => {
+    // 2026-09-28 (SECTION 135): self check-out, BEFORE either branch below clears the auth token -
+    // "before log out chek out need to do that will update", and attendanceCheckin.ts's own doc
+    // comment requires this call to happen before the token is cleared (the request needs the
+    // still-valid token) and to never block logout (it swallows its own errors - see that file).
+    await checkOutBeforeLogout()
     if (dealerSession) {
       await dealerLogout()
       setDealerSessionState(null)

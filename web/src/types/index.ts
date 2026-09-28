@@ -1,5 +1,21 @@
+// web\src\types\index.ts
 // Shared TypeScript types mirroring the backend's C# enums/DTOs (see backend/JobCardScanner.Api/Models).
 
+// 2026-10-01 ("Captain / Technician / Vice Captain ... this role also add"): added 'Captain' and
+// 'ViceCaptain' below, per explicit request, so MenuAccessPage.tsx's ALL_ROLES (and anywhere else
+// in the web app that references StaffRole) type-checks with these two included. NAMING -
+// Interpretation/Assumption, not confirmed: your screenshot showed "Vice Captain" with a space (as
+// Designation-dropdown display text), but every other role here is a single PascalCase word with
+// no space - used 'ViceCaptain' to match. Tell me if the real backend enum value is spelled
+// differently and I'll fix it here (a one-line change).
+//
+// FLAGGED - this alone does not make Captain/Vice Captain real, working login roles. This file is
+// a FRONTEND MIRROR of the backend's real StaffRole C# enum (see this file's own header comment) -
+// I still don't have that backend enum or Auth/Policies.cs in this session. Until those are
+// updated too (and the backend actually issues/accepts these roles at login), a user can't really
+// log in as Captain/Vice Captain - this file only stops the frontend from refusing to compile when
+// those two strings are used. Please send backend/JobCardScanner.Api/Models (wherever StaffRole is
+// defined) and Auth/Policies.cs so I can wire this through end-to-end.
 export type StaffRole =
   | 'ServiceAdvisor'
   | 'WorkshopManager'
@@ -10,6 +26,8 @@ export type StaffRole =
   | 'DealerAdmin'
   | 'CorporateAdmin'
   | 'SystemAdmin'
+  | 'Captain'
+  | 'ViceCaptain'
 
 export type JobCardStatus =
   | 'Open'
@@ -137,6 +155,7 @@ export interface BaplDmsVehicleLookup {
   // Best-effort LedgerMaster.Address/Email - see BaplDmsVehicleRow's doc comment in
   // BaplDmsService.cs on why these two specifically are not guaranteed to be populated.
   customerAddress?: string | null
+  customerState? : string | null
   customerEmail?: string | null
   // Battery Details panel fields the print preview previously had nowhere to source (see
   // BaplDmsService.LookupVehicleAsync's ChassisBatteryDetails enrichment) - now read straight from
