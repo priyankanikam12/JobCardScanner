@@ -44,6 +44,7 @@ function navKeyOf(to: string): string {
   return to.replace(/^\//, '').replace(/\//g, '-')
 }
 
+<<<<<<< HEAD
 // 2026-09-30 (SECTION 162, "real access lock" for Supervisor - confirmed explicitly: Supervisor
 // logins should ONLY see/use Dashboard, Job Cards and Attendance, not just have those 3 pinned to
 // the top with everything else still reachable). Every `roles` array below that used to include
@@ -52,6 +53,8 @@ function navKeyOf(to: string): string {
 // route-guard changes (and that file's top-of-block note) for the full narrative, the residual
 // backend-policy gap for pages whose controller I don't have this session, and the flagged
 // assumption about this being the complete StaffRole list.
+=======
+>>>>>>> 60d0a05 (Added disccused changes)
 const NAV_ITEMS_BASE: Omit<NavItem, 'key'>[] = [
   { to: '/dashboard', label: 'Dashboard', icon: '▦' },
   { to: '/jobcards', label: 'Job Cards', icon: '📋', subtitle: 'View and manage all job cards' },
@@ -142,6 +145,7 @@ const NAV_ITEMS_BASE: Omit<NavItem, 'key'>[] = [
 
 export const NAV_ITEMS: NavItem[] = NAV_ITEMS_BASE.map((item) => ({ ...item, key: navKeyOf(item.to) }))
 
+<<<<<<< HEAD
 /**
  * SECTION 171 (2026-09-30) - "i checkbox select from DealerAdmin only 3 page but all option shown
  * in sidebar as well on dashboard". Root cause: DashboardPage.tsx's own "All Pages" grid was
@@ -260,6 +264,8 @@ export function useMenuAccess() {
   return { isVisibleForCurrentRole }
 }
 
+=======
+>>>>>>> 60d0a05 (Added disccused changes)
 /** Item 5: "add a back button at the start/top of every page". A single button in the topbar,
  * shown on every staff page except the Dashboard (nothing to go "back" to from the app's own
  * home) - resolves to that page's logical parent rather than raw browser history, so it behaves
@@ -318,12 +324,48 @@ export function StaffLayout() {
     closeSidebar()
   }, [location.pathname])
 
+<<<<<<< HEAD
   // SECTION 171 (2026-09-30): the override-fetch + effectiveRoles + isVisibleForCurrentRole logic
   // that used to live here (SECTION 155/164/170) now lives in the exported useMenuAccess() hook
   // above, so DashboardPage.tsx's "All Pages" grid can share it instead of drifting out of sync -
   // see that hook's own doc comment for the full history. No behavior change for the sidebar
   // itself: same fetch, same re-fetch-on-navigation dependency, same fail-open fallback.
   const { isVisibleForCurrentRole } = useMenuAccess()
+=======
+  // 2026-09-29 (SECTION 155, "sidebar menu acces provide page") - per-nav-item role OVERRIDES set
+  // via the new Admin: Menu Access page, layered on top of NAV_ITEMS' own hardcoded `roles`
+  // defaults (see NavItem.key's doc comment and Models/MenuAccessOverride.cs). Keyed by
+  // NavItem.key -> the roles allowed to see it (an empty array here means "everyone", matching
+  // the override table's own convention). menuOverrides starts as an empty object, which means
+  // "no overrides loaded/saved yet" for EVERY item - effectiveRoles below correctly falls back to
+  // each item's own default `roles` in that state, so this fetch failing (or being slow) never
+  // hides the sidebar; it only ever narrows/widens it once real overrides come back.
+  const [menuOverrides, setMenuOverrides] = useState<Record<string, string[]>>({})
+  useEffect(() => {
+    staffApi
+      .get<{ navKey: string; roles: string[] }[]>('/api/menu-access')
+      .then((res) => {
+        const map: Record<string, string[]> = {}
+        res.data.forEach((row) => { map[row.navKey] = row.roles })
+        setMenuOverrides(map)
+      })
+      .catch(() => {
+        // Fail-open to each item's shipped default roles - never let this one endpoint being
+        // down/slow take the whole sidebar with it.
+      })
+  }, [])
+
+  /** undefined = every staff role can see this item (matches NAV_ITEMS' own `roles` convention).
+   * An override entry that exists but is an EMPTY array also means "everyone" (explicitly cleared
+   * by an admin on the Menu Access page) - only a NON-empty override narrows to those roles. No
+   * entry at all for this item's key means no override has been saved, so the item's own
+   * hardcoded default `roles` still applies exactly as before this feature existed. */
+  const effectiveRoles = (item: NavItem): StaffRole[] | undefined => {
+    const override = menuOverrides[item.key]
+    if (override === undefined) return item.roles
+    return override.length > 0 ? (override as StaffRole[]) : undefined
+  }
+>>>>>>> 60d0a05 (Added disccused changes)
 
   // Profile menu (topbar): click-to-open, click-anywhere-else-to-close.
   const [profileOpen, setProfileOpen] = useState(false)

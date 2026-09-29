@@ -1,3 +1,4 @@
+// web\src\pages\staff\JobCardWizardPage.tsx
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { staffApi } from '../../api/client'

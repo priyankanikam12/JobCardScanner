@@ -53,10 +53,13 @@ public class JobCardScannerDbContext : DbContext
     // Models/MenuAccessOverride.cs's own doc comment.
     public DbSet<MenuAccessOverride> MenuAccessOverrides => Set<MenuAccessOverride>();
 
+<<<<<<< HEAD
     // 2026-09-30 (SECTION 170) - per-role "only show checked items" allow-list mode flag - see
     // Models/RoleMenuMode.cs's own doc comment.
     public DbSet<RoleMenuMode> RoleMenuModes => Set<RoleMenuMode>();
 
+=======
+>>>>>>> 60d0a05 (Added disccused changes)
     // 2026-09-22 "create warenty table in jobcardscanner db" - see
     // Models/ExtendedBatteryWarrantySchemes.cs's own doc comment.
     public DbSet<ExtendedBatteryWarrantyScheme> ExtendedBatteryWarrantySchemes => Set<ExtendedBatteryWarrantyScheme>();

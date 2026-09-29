@@ -1008,6 +1008,21 @@ function UpdateWorkflowStageCard({
             Mark Ready for Delivery
           </button>
         )}
+        {/* 2026-09-29 (SECTION 156) - see this component's own doc comment above (just before
+           markStage) for the full history/interpretation flag on this button. Same disabled-once-
+           past pattern as the two buttons above; markStage() posts to the same generic
+           /api/jobcards/{id}/stage endpoint the automatic Repair-Bill-Billed trigger's
+           WorkflowStageAutomation call also feeds into, so a job card marked this way ends up in
+           an identical CurrentStage/StageHistory state either way. */}
+        {invoiceGeneratedStage && (
+          <button
+            className="btn btn-sm btn-primary"
+            disabled={busy || currentSeq >= invoiceGeneratedStage.seq}
+            onClick={() => run(() => markStage(invoiceGeneratedStage), 'Marked Invoice Generated. Job card closed.')}
+          >
+            Mark Invoice Generated
+          </button>
+        )}
       </div>
     </div>
   )

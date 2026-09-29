@@ -1,3 +1,4 @@
+// web\src\pages\staff\EmployeesPage.tsx
 import { Fragment, useEffect, useState } from 'react'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'

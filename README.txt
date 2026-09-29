@@ -2805,3 +2805,466 @@ above does not depend on the answer.
 FILES TOUCHED
   backend/JobCardScanner.Api/Controllers/RepairBillDocsController.cs (UpdateStatus: explicit
     Status/ClosedAt/ActualDeliveryAt set added before the existing AdvanceIfAheadAsync call)
+
+--------------------------------------------------------------------------------------------------
+SECTION 150 (2026-09-28) - Print menu's "Invoice" option didn't download - now prints THIS APP'S
+OWN Repair Bill (once saved as Invoice), not DMS's.
+--------------------------------------------------------------------------------------------------
+YOUR REQUEST (verbatim): "in print click download invoioce download then it will not download
+why?" - followed by AskUserQuestion answers: platform = "on both web and android"; symptom =
+"redirect on same page invoice not craeted"; source = "This app's own Repair Bill (Recommended)";
+format = "Print-preview window (Recommended)".
+
+FACT (confirmed from JobCardsController.InvoicePdf's own doc comment, already in this codebase):
+GET /api/jobcards/{id}/invoice-pdf renders DMS's own repair bill (RepairBillHeader/RepairBillDetail,
+read LIVE from DMS) into a PDF. This app never writes to DMS (org-wide "never writes to DMS" rule,
+confirmed throughout this whole session). Since SECTION 91-ish (RepairBillDocsController/
+RepairBillCreatePage.tsx), Repair Bills are saved natively into this app's OWN RepairBillDocs table
+instead - so for any job billed through that flow, DMS has no matching repair bill row, and
+InvoicePdf 404s every time. That is the root cause: the Print menu's "Invoice" option was still
+wired to the OLD DMS-reading endpoint, which is why nothing ever downloaded once the app switched
+to its own native Repair Bill flow.
+
+FIX - the "Invoice" option in both PrintMenu components (web + mobile) no longer calls
+/api/jobcards/{id}/invoice-pdf at all. It now calls GET /api/repair-bill-docs?jobCardId={id} (this
+app's own native data), finds the row with status === 'Billed' (i.e. actually saved as Invoice, not
+just Proforma), and renders it through a new buildRepairBillInvoicePrintHtml(bill, dealerName,
+dealerCode) function - a plain HTML/CSS invoice layout (header, party/vehicle line, line-items
+table, tax/total/balance summary) built from RepairBillDoc's own real fields, no server-side PDF
+generation involved (per your "Print-preview window" choice). If no Billed repair bill exists yet
+for that job card, a clear message is shown ("No Repair Bill has been saved as Invoice for this job
+card yet.") instead of a silent failure.
+  - Web: opens the SAME synchronous window.open()-first pattern already used by the 2026-09-03
+    popup-blocker fix (open blank window synchronously on click, show "Loading invoice…", THEN do
+    the async fetch and write the real HTML into it, then win.print()) - preserved as-is, only the
+    data source and rendered HTML changed.
+  - Mobile: switched from the old fetch-PDF-bytes -> write to a local file -> Print.printAsync({uri})
+    chain to a direct Print.printAsync({ html }) call - matching how Estimate/JobCard print already
+    work on this same screen, and simpler now that there's no PDF file to stage.
+  - Backend: RepairBillDocsController.List() gained a new `jobCardId` query filter (needed so the
+    Print menu can look up "this job card's repair bill" directly) plus a missing
+    .Include(r => r.JobCard) - without it, ToRow's JobCardNumber projection silently returned null
+    from this endpoint even though JobCardId itself was fine (Get()/Combined() already had this
+    Include; List() alone was missing it).
+
+ASSUMPTION, flagged: if a job card has more than one Billed repair bill (e.g. a Proforma was
+cancelled and a second one billed later), this takes the FIRST Billed match the API returns
+(newest-first, per List()'s existing OrderByDescending(r => r.CreatedAt)) - tell me if you want a
+different selection rule (e.g. explicitly the latest, or let the user pick when there's more than
+one).
+
+NOT done here, flagged rather than guessed: this does not touch/remove JobCardsController.InvoicePdf
+itself or the old standalone "Download Invoice from DMS" card still mentioned in this file's own
+doc comments elsewhere in the codebase - only the Print menu's own Invoice option was rewired. Tell
+me if that old DMS-PDF path should be removed entirely too.
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Controllers/RepairBillDocsController.cs (List: added jobCardId filter
+    param + .Include(r => r.JobCard))
+  web/src/pages/staff/JobCardDetailPage.tsx (added RepairBillDoc type import; new
+    buildRepairBillInvoicePrintHtml function; rewrote printInvoice() inside PrintMenu; updated
+    PrintMenu's doc comment)
+  mobile/src/screens/JobCardDetailScreen.tsx (same three changes, Android)
+
+--------------------------------------------------------------------------------------------------
+NOT YET FIXED (open item, re-reported) - Attendance HTTP 500 "Could not load the staff list for
+this dealer" - SECTION 146's diagnosed root cause (Attendance.Shift missing
+.HasConversion<string>() in JobCardScannerDbContext.cs) still needs to be applied to your real
+DbContext.cs. You reported the SAME error again on 2026-09-28 ("Could not load the staff list for
+this dealer. Try again. (HTTP 500) fix on both web and android this attendance") without saying
+whether the 3-line fix from SECTION 146 was added yet or pasting a fresh stack trace - see the chat
+response for what's needed to move this forward (either confirm the fix was applied and share the
+new error, or apply it and retest). No new file changes made for this in SECTION 150 since I don't
+want to re-diagnose blind against a fix I already gave that was never confirmed.
+
+--------------------------------------------------------------------------------------------------
+SECTION 151 (2026-09-28) - Part Upload: "Could not load uploaded part data" for a new
+location-restricted Supervisor - diagnostic fix only, root cause NOT yet confirmed.
+--------------------------------------------------------------------------------------------------
+YOUR REPORT (verbatim): "i create 1 user supervisor in the its not laod thatr 1 loaction Could not
+load uploaded part data. why in parts-upload" - read as: a newly created Supervisor user, assigned
+to one Work Area location, gets "Could not load uploaded part data." on the Part Upload page.
+
+NOT YET DIAGNOSED - no file changes made to backend/JobCardScanner.Api/Controllers/
+PartUploadController.cs this round, and here is exactly why: that controller was pasted into this
+session once (SECTION 129, for the location-scoping fix on JobCardsController.PartsCatalog, a
+DIFFERENT endpoint), but its full source is not available in this session's current context to
+re-inspect or safely edit now. I won't guess at a fix for a file I can't currently see.
+
+CANDIDATE explanation (NOT CONFIRMED, flagged as a hypothesis only): mobile's PartUploadScreen.tsx
+catch handler was, until this fix, showing a hard-coded fallback string ("Could not load uploaded
+part data.") for EVERY failure - a genuine 500, a 403, a 401, or even a dropped network request all
+looked identical on screen. This is the exact same blind-spot already hit and fixed three times this
+session on the Attendance page (SECTIONs 125/134/146), where the true cause each time was a NULL
+WorkLocationCodes on a User row (or a related Shift-enum mapping issue) tripping either a
+NullReferenceException or InvalidCastException server-side. SECTION 129's own notes confirm
+PartUploadController.cs reuses the SAME `_currentUser.WorkLocationCodes` location-scoping pattern
+that caused those Attendance failures - so a null/misshapen WorkLocationCodes on this brand-new
+Supervisor account is my leading suspicion, but I have NOT confirmed it against real evidence this
+round.
+
+FIXED (diagnostic only): mobile/src/screens/PartUploadScreen.tsx's 4 error-catch handlers (load,
+import, delete, save) all used to discard the real HTTP status and this app's own `{ message: ... }`
+error body, same blind-spot as above. Added a shared `describeError()` helper (identical pattern to
+web/src/pages/staff/AttendancePage.tsx's own SECTION 125 fix) and wired all 4 catches through it, so
+the NEXT time this fires, the on-screen text itself will say the real HTTP status/detail (e.g.
+"(HTTP 500)" or "(HTTP 403)" or the controller's own message) instead of the generic fallback text -
+no more guessing which of the several possible causes this actually is.
+
+STILL NEEDED FROM YOU to actually fix this:
+  1. Confirm platform - is this on web (PartUploadPage.tsx, not staged/edited this round - I don't
+     have its current source to check for the same blind-spot there), Android (fixed above), or
+     both?
+  2. Retest on Android with this build and tell me the new on-screen text (it will now include the
+     real HTTP status/detail in parentheses).
+  3. If you have backend console access, paste the real stack trace for this request the moment it
+     fails - same as what cracked SECTION 146's Attendance bug.
+  4. If you can, paste the current real backend/JobCardScanner.Api/Controllers/
+     PartUploadController.cs so I can check it against the same WorkLocationCodes-null pattern
+     directly instead of guessing.
+
+FILES TOUCHED
+  mobile/src/screens/PartUploadScreen.tsx (added describeError() helper; load/import/delete/save
+    catch handlers now surface real HTTP status/detail instead of a fixed generic string)
+
+--------------------------------------------------------------------------------------------------
+SECTION 152 (2026-09-28) - Attendance HTTP 500 - CONFIRMED and FIXED: Attendance.Shift's missing
+EF Core string conversion (root cause first identified in SECTION 146, now confirmed via your real
+CREATE TABLE script and fixed directly in the full DbContext.cs you pasted).
+--------------------------------------------------------------------------------------------------
+YOUR EVIDENCE (verbatim, real files): the real CREATE TABLE [dbo].[Attendance] script, confirming
+`[Shift] [nvarchar](10) NULL` - and your complete real JobCardScannerDbContext.cs (this session's
+first time seeing the WHOLE file, not fragments).
+
+FACT, now fully confirmed (previously only INTERPRETED in SECTION 146): the Attendance table's
+Shift column is genuinely nvarchar(10) in your real database - text, matching Status's own
+text-based design. The Attendance entity block in your real DbContext.cs had a mapping for every
+other property (EmployeeName, EmployeeRole, Status.HasConversion<string>(), Remarks, the two User
+FKs, the Dealer FK) EXCEPT Shift - it was never mapped at all, so EF Core fell back to its default
+mapping for AttendanceShift (a plain int-backed C# enum): an INT column. Reading any row with Shift
+set therefore threw `InvalidCastException: Unable to cast object of type 'System.String' to type
+'System.Int32'` the moment AttendanceController.List() materialized it - the exact HTTP 500 reported
+repeatedly since SECTION 125.
+
+FIXED: added the missing mapping to the Attendance entity block in
+backend/JobCardScanner.Api/Data/JobCardScannerDbContext.cs, right after Status:
+    e.Property(x => x.Shift)
+        .HasConversion<string>()
+        .HasMaxLength(20);
+No ALTER TABLE needed - the column was always the right type (nvarchar(10)); only the C# side
+mapping was missing. Existing data ("1", "2", or NULL) keeps working as-is: EF's enum-to-string
+converter falls back to Enum.Parse, which resolves a plain numeric string to the matching enum
+member (AttendanceShift.Shift1 = 1, etc.).
+
+This is the first time this session has had your COMPLETE real DbContext.cs (previously only
+fragments), so this is staged as a full file rather than a paste-in instruction. Please rebuild and
+restart the backend, then retest Attendance's staff-list load on both web and Android (it's the one
+shared endpoint behind both).
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Data/JobCardScannerDbContext.cs (new - added, Attendance entity block:
+    added the missing Shift -> HasConversion<string>().HasMaxLength(20) mapping)
+
+--------------------------------------------------------------------------------------------------
+SECTION 153 (2026-09-28) - Your big combined message: 3 concrete fixes done + PDF format findings
++ an important note on what got lost when this session's context was compacted (~10-item backlog).
+--------------------------------------------------------------------------------------------------
+CONTEXT - please read this part first: your last message bundled roughly ten separate asks plus
+several real pasted files (InvoicePdfService.cs, EmployeesPage.tsx, PartUploadPage.tsx web,
+attendanceCheckin.ts web, the two reference invoice PDFs, plus screenshots). Midway through, this
+session's conversation history had to be compacted (summarized) to keep going - and the SUMMARY
+that survived did not carry the full text of three of those pasted files (PartUploadPage.tsx web,
+InvoicePdfService.cs, EmployeesPage.tsx - only short excerpts of each). I checked everywhere this
+session keeps files (the delivered-zip staging folder, your uploads) and confirmed those three are
+genuinely not available to me any more, along with a few others this backlog needs. Rather than
+guess at their content (which would risk writing code against fields/logic that don't actually
+exist in your real files - exactly what the org rules here say never to do), I've done everything
+below that I COULD do with what's actually in hand, and I'm listing exactly what needs re-pasting
+for the rest. Sorry for the extra step - nothing was lost through any fault of yours.
+
+DONE THIS SECTION (3 fixes, all backed by files I actually have):
+
+1) Attendance simplified to ONE shift, 10:00-18:00 IST (8 hrs) - "in attendance only 1 shift 10 to
+   6". Replaces the old two-window Shift1 (09:00-18:00) / Shift2 (18:00-03:00 next day) design.
+   FACT: AttendanceController.CheckIn() no longer branches on time-of-day to pick a shift - every
+   check-in is now recorded as Shift1. The Shift2 enum member is kept (not deleted) purely so any
+   attendance rows already saved with it in your real database keep reading back correctly through
+   the HasConversion<string>() mapping from SECTION 146/152 - nothing writes Shift2 any more.
+   INTERPRETATION, flagged: this does NOT reject or flag a check-in that happens outside 10:00-18:00
+   - it still records whatever time someone actually logs in at, same as before; only the two-window
+   classification is gone. If you also want an outside-hours login rejected or marked "late", that's
+   a different rule I have not added - tell me and I will.
+   "make proper ui" - I checked both AttendancePage.tsx (web) and AttendanceScreen.tsx (mobile):
+   neither has a Shift1/Shift2 SELECTOR to simplify - they only display the Shift value read-only in
+   a column, which will now simply always read "Shift1". I did not change anything else in either
+   UI file because "make proper ui" doesn't tell me what specifically looks wrong today - screenshot
+   or describe what you want different (spacing, colors, a missing field, mobile layout breaking,
+   etc.) and I'll fix that specifically.
+
+2) "Repair Completed" hidden from mobile/src/screens/JobCardDetailScreen.tsx once passed - "when
+   repaill bill generate invoice then Repair Completed but dont shown in ui". FACT: the button
+   already existed and was already DISABLED (greyed out) once the job card's stage passed
+   repair_completed - including via RepairBillDocsController.UpdateStatus's existing auto-advance to
+   invoice_generated when a Repair Bill is saved as Invoice (SECTION 147/149) - but it stayed
+   visible, just unclickable. Now it's hidden entirely in that situation instead of shown-disabled.
+   "Ready for Delivery" is UNCHANGED on purpose - per your own words, that stays a manual step you do
+   yourself after the invoice flow via this same "Update Workflow Stage" card.
+   NOTE: this was requested for mobile only ("hide from mobile\...\JobCardDetailScreen.tsx") - I did
+   not touch the web equivalent (web/src/pages/staff/JobCardDetailPage.tsx). Tell me if you want the
+   same hide-when-past-stage behavior there too.
+
+3) Backend half of "only open jobcard show in search, dont show closed" - GET /api/jobcards/search
+   (the shared Job Search endpoint behind BOTH the Repair Bill and Material Transfer "create new"
+   pages, web and Android alike - confirmed from its own doc comment, one endpoint serves all four
+   places) now accepts a new optional `excludeClosed=true` query parameter. When set, it excludes
+   both Closed AND Cancelled job cards (not just Closed) - matching the same "not open" definition
+   List()'s own excludeClosed filter already uses elsewhere in this file, on the reasoning that a
+   Cancelled job card shouldn't be pickable for a brand-new Repair Bill/Material Transfer either.
+   Defaulted to FALSE (nothing changes for any existing caller) rather than flipped on globally,
+   because this exact endpoint is ALSO used by the separate "material transferred job cards history"
+   grid button (onlyWithMaterialTransfer=true, SECTION 137ish) - that history view most likely
+   SHOULD keep showing a transfer against a job that's since been closed, so defaulting exclude-on
+   for everyone risked silently breaking that different feature.
+   NOT WIRED IN YET - see "FILES I NEED" below. This backend change alone does nothing until the
+   four create-page files (web MaterialTransferCreatePage.tsx/RepairBillCreatePage.tsx + their
+   Android equivalents) add `excludeClosed: true` to their own Job Search calls specifically (a
+   one-line params addition each) - I don't have any of those four files in this session.
+
+CONFIRMED, NO CODE CHANGE NEEDED - Job Cards LIST page location scoping ("in jobcards list also only
+that user created data shown ... only this location"): I re-read JobCardsController.List() in full.
+FACT: it already filters by _currentUser.WorkLocationCodes on top of the dealer filter (dated
+2026-09-17 in its own doc comment, from the original Employees/Work Area feature) - a user with a
+non-empty WorkLocationCodes only ever sees job cards whose BaplServiceLocationCode is in that list;
+empty means unrestricted. This already matches what you described. INTERPRETATION: if you're
+actually seeing job cards from OTHER locations on a real login right now despite this code, the most
+likely explanation is the SAME one under investigation for the Part Upload 403 below - a browser/app
+session holding a JWT token issued before that user's Work Area was assigned or last changed, since
+WorkLocationCodes (like app_role) is only baked into the token at sign-in time, not re-read live per
+request. Please retest this the same way as the Part Upload 403 - full sign-out, sign back in - and
+tell me what you see; if it's still wrong after a clean login, that's real evidence of an actual bug
+here, not a stale token, and I'll dig further with that in hand.
+
+TWO REFERENCE PDFs - now actually opened and read (I had them on file but had not looked yet):
+
+  "1790615005170_JobCardInvoice_1.pdf" - FACT: despite the filename, this is NOT a tax invoice or a
+  money document at all. It's a two-page "JOB CARD" intake/PDI print form: Job Details (Job Type,
+  Job Source, Service Head/Type, Est. Delivery, Delivery Time, Supervisor, Technician, Vehicle Kms,
+  Manual Job No), Customer Details (Name/Address/City & Pin/State/GST No/Mobile/Alt. Mobile), Vehicle
+  Details (Chassis No, Battery No, Charger No, Controller No, Register No, Model, OEM Model, Colour,
+  Sale Date, Insurance Exp.), Battery Details (Make, Serial No(s), Voltage at Full Charge OCV/CCV,
+  Voltage at Discharge, Capacity AH, Motor Drawing No, Controller No/Make, Battery Chemical, Battery
+  Capacity in kWh), a Customer Voice & Complaints table, Observation/Supervisor Comment/Remarks, and
+  three signature lines (Technician/Supervisor-Advisor/Customer) - plus a second page, a separate
+  "GATE PASS" slip (Customer Name, Job Date, Job No, Vehicle No, Chassis No, two more signature
+  lines). This is a genuinely DIFFERENT document from the GST Tax Invoice your InvoicePdfService.cs
+  already builds - it's the printable job-intake/PDI form, not a bill. Building this as a new print
+  template needs your real JobCard/Vehicle model fields (chassis no, battery no/make/serial, charger
+  no, controller no, OCV/CCV/discharge voltage, capacity AH/kWh, motor drawing no, battery chemical,
+  insurance exp., etc.) confirmed against your actual Models/JobCard.cs and Models/Vehicle.cs (and
+  wherever battery/controller data actually lives - possibly DmsBaplDataService, which I do have, but
+  I haven't confirmed it exposes all of these specific fields yet) before I invent a single line of
+  this template - I will NOT guess field names/sources for a customer-facing printed document.
+
+  "1790615049465_RepairBillInvoice.pdf" - FACT: this is a "GST TAX INVOICE" - dealer header with
+  GSTIN, Customer Details panel, Vehicle Details panel (Job No/Invoice No/Chassis No/Registration
+  No/Motor No/Model/Color/Job Type/Job Source/Technician), a Sr/Code/Description/HSN/Qty/Rate/
+  Discount/Taxable/IGST/Net Amount line-items table, Amount In Words, Part Total/Labour Total/
+  Invoice Total, an HSN Summary (Taxable Value/SGST/CGST/IGST rate+amount per HSN code), Remarks, and
+  two signature lines (Customer/Authorized Signatory). INTERPRETATION, not yet confirmed against your
+  real file: from what I reviewed of InvoicePdfService.cs's BuildInvoicePdfAsync/
+  BuildInvoicePdfFromDmsAsync methods earlier in this session, this layout looks like it ALREADY
+  closely matches what that service builds - same panels, same HSN Summary, same Amount In Words via
+  Indian numbering. If that holds up once I can re-look at the real file, the Repair Bill invoice
+  FORMAT itself may need little to no change - the actual remaining work is likely just wiring a
+  "download invoice" option onto RepairBillListPage.tsx (web) and RepairBillListScreen.tsx (mobile,
+  not yet confirmed to exist) using this already-built PDF, not redesigning the PDF. I can't confirm
+  this without InvoicePdfService.cs's real current content and those two list-page files in hand.
+
+FILES I NEED RE-PASTED before I can safely continue the rest of your list (each is real production
+code/business logic - writing any of it from memory after compaction would mean guessing at fields
+and rules that may not match your actual system, which I won't do):
+  1. backend/JobCardScanner.Api/Services/InvoicePdfService.cs - to confirm the RepairBill invoice
+     format match above, and as the likely home for a new "Job Card" print template.
+  2. backend/JobCardScanner.Api/Models/JobCard.cs and Models/Vehicle.cs (and wherever
+     battery/controller fields actually live, if not on those two) - needed before I can build the
+     JobCardInvoice/Gate-Pass print template with real, confirmed field names.
+  3. web/src/pages/staff/PartUploadPage.tsx - to port the same describeError() HTTP-status fix
+     already done on the mobile PartUploadScreen.tsx (SECTION 151), and to re-check the Supervisor
+     location-scoping question against the real current code.
+  4. web/src/pages/staff/EmployeesPage.tsx - to add the Work Area location(s) to the navbar profile
+     popup and design the role-based sidebar menu visibility page.
+  5. web/src/pages/staff/MaterialTransferCreatePage.tsx and RepairBillCreatePage.tsx, plus their
+     Android/mobile equivalents (4 files total) - to wire excludeClosed=true (from fix #3 above)
+     into their Job Search calls.
+  6. web/src/pages/staff/RepairBillListPage.tsx and mobile/src/screens/RepairBillListScreen.tsx (if
+     it exists) - to add the "download RepairBill invoice" option.
+  7. Whatever file renders the navbar/profile popup that currently shows Email/Mobile/Dealer/
+     Sign-in method (not seen yet this session at all) - to add Work Area there.
+  8. Whatever file renders the sidebar/menu (not seen yet this session) - for the role-based
+     visibility feature.
+  9. Your real StaffAuthContext.tsx / login page on web (not mobile - I have the mobile one) - to
+     wire the already-written web/src/services/attendanceCheckin.ts in (it's staged, unused, flagged
+     in its own doc comment as not wired in).
+
+STILL AWAITING YOUR CONFIRMATION on two earlier items, unrelated to the above:
+  - SECTION 152's Attendance HTTP 500 fix (the missing Shift EF Core mapping) - have you rebuilt and
+    retested the staff-list load on web/Android yet?
+  - The Part Upload 403 Forbidden - have you done the full sign-out/sign-in retest, and confirmed in
+    Admin -> Users that "ravi"'s Role is genuinely saved as Supervisor? Both were asked right before
+    your big combined message arrived and I don't have an answer yet - this also affects the Job
+    Cards list location-scoping question above, since I suspect the same stale-token cause.
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Controllers/AttendanceController.cs (single-shift 10:00-18:00 -
+    CheckIn() no longer branches on time-of-day; doc comments updated, old two-window text kept for
+    history)
+  backend/JobCardScanner.Api/Models/Attendance.cs (AttendanceShift enum doc comment updated to match
+    - Shift2 kept only for backward-compatible reads of old data)
+  mobile/src/screens/JobCardDetailScreen.tsx ("Mark Repair Completed" button now hidden, not just
+    disabled, once the job card's stage has passed repair_completed)
+  backend/JobCardScanner.Api/Controllers/JobCardsController.cs (Search() gained optional
+    excludeClosed=true param, excluding Closed + Cancelled job cards - not yet called by any
+    frontend, since those files aren't in this session)
+
+--------------------------------------------------------------------------------------------------
+SECTION 154 (2026-09-29) - Labour Master IGST/CGST/SGST fixed at import time (best-evidence fix,
+please verify) + status on Attendance access-control and Part Upload (still open, no code bug found)
+--------------------------------------------------------------------------------------------------
+1) LABOUR MASTER FIXED - "in labor-master also i upload wrong fix IGST CGST SGST ... this is
+   wrong". You pasted the real LabourMasterController.cs and LabourMasterImportService.cs. FACT,
+   confirmed by re-reading both plus web's LabourMasterPage.tsx and mobile's LabourMasterScreen.tsx
+   line by line: none of the four files ever multiplied Igst/Cgst/Sgst by LabourRate anywhere - the
+   import read each GST column independently off its own Excel cell, and both frontends' fmtPct
+   just does `value * 100`. Since your screenshot's numbers scaled exactly with Rate (18x for IGST
+   on every row), the raw cell being imported must have ALREADY been Rate-scaled - most likely
+   because your real file's IGST/CGST/SGST columns are FORMULA cells (e.g. "=RateCell*18%")
+   computing a rupee amount, not the plain fraction (0.18) your original two sample files had -
+   ClosedXML reads a formula cell's cached calculated result, not its formula text.
+
+   FIX APPLIED in backend/JobCardScanner.Api/Services/LabourMasterImportService.cs: new
+   CellGstFraction() helper, used ONLY for the Igst/Cgst/Sgst columns (LabourRate/Tier still use
+   the original CellDecimal/CellInt, unchanged). No real Indian GST slab exceeds 28%, so any raw
+   cell value above 0.30 (GstFractionMax, a deliberately generous ceiling) cannot already be a
+   valid fraction - in that case only, it divides by that row's own LabourRate to recover the
+   implied fraction (the inverse of the Rate x fraction pattern your screenshot showed). If the
+   recovered value STILL isn't plausible, or Rate is null/zero so division isn't possible, the
+   cell is left blank and a warning is added to the Import result instead of silently guessing - so
+   a genuinely bad row surfaces to you rather than storing an invented number.
+
+   INTERPRETATION, flagged - I have NOT seen your actual current upload file, so this is my best
+   inference from the numbers in your screenshot, not a confirmed certainty. Please open that real
+   .xlsx and click into an IGST/CGST/SGST cell for a row like "PLPRUV1N0001" - check the formula
+   bar. If it shows something like "=G2*18%" (a formula referencing the Rate cell), this fix is
+   confirmed correct. If it shows something else I haven't considered, tell me and I'll adjust.
+
+   FIXING THE ROWS ALREADY IN THE DATABASE: you don't need a separate cleanup script - just
+   re-import the SAME Excel file (same Effective Date) once this fix is deployed. The existing
+   upsert-by-key logic in this file already treats a changed Igst/Cgst/Sgst as an UPDATE to the
+   same row (matched on LabourCode+Model+Tier / PartCode+LabourCode+Model+Tier), not a new
+   duplicate - so the already-wrong rows will correct themselves on re-import.
+
+   Manual Edit/Delete via the grid's own buttons is UNCHANGED - that path takes Igst/Cgst/Sgst as
+   an already-typed fraction straight from the Edit modal's own "IGST (fraction, e.g. 0.18 = 18%)"
+   field, not parsed from Excel, so this heuristic doesn't apply there.
+
+2) ATTENDANCE - your new screenshot (Supervisor login "R" seeing the full "Marking attendance for
+   this dealer" roster table) - re-confirmed this is consistent with an OLD, not-yet-rebuilt
+   backend, not a new bug. FACT: AttendancePage.tsx decides Manager view vs. Self view purely by
+   whether GET /api/attendance/dealers-summary returns 200 or 403 from the SERVER - it doesn't
+   guess from a role field. Since your Supervisor login is seeing the roster, the backend is still
+   returning 200 for that call, meaning it's still running WITHOUT the WorkshopManagerUp re-gating
+   already delivered in AttendanceController.cs (and re-confirmed present in the copy I just edited
+   for SECTION 153's single-shift change). No new code change made here - still waiting to hear
+   whether you've rebuilt/restarted the backend with that file and retested with a full sign-out/
+   sign-in. Once that's genuinely running, a Supervisor/Mechanic login should automatically fall
+   through to the small "your own last 14 days only" self view, which - being hard-scoped server-
+   side to that one user's own row - inherently satisfies "only his personal" and "only his own
+   assigned location's data", no further change needed there.
+
+3) PART UPLOAD - the JobCardScannerDbContext.cs PartUpload mapping fragment you pasted is IDENTICAL
+   to what's already in the file I have staged - confirmed no discrepancy, but also no new lead.
+   This remains the same open 403/location-scoping thread from before. Still need: (a) confirmation
+   you've done the full sign-out/sign-in retest, (b) confirmation in Admin -> Users that this
+   account's Role is genuinely saved as Supervisor, and ideally (c) the actual JWT claims from a
+   fresh login (DevTools -> Application -> wherever this app stores its token, or paste the decoded
+   payload from jwt.io) if it's still failing after (a) and (b) - that would let us stop guessing
+   from the outside and see exactly what app_role/app_work_locations the token actually carries.
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Services/LabourMasterImportService.cs (new CellGstFraction() helper;
+    ImportWithoutPartwiseAsync/ImportPartwiseAsync now use it for Igst/Cgst/Sgst instead of the
+    plain CellDecimal; manual Update*/Delete* paths unchanged)
+
+--------------------------------------------------------------------------------------------------
+SECTION 155 (2026-09-29) - "Admin: Menu Access" page built (role-based sidebar visibility) + Work
+Area added to the navbar profile popup. Part Upload location-scoping still needs 2 files.
+--------------------------------------------------------------------------------------------------
+You pasted the real mobile/src/navigation/RootNavigator.tsx and web/src/components/StaffLayout.tsx
+- the second one is THE file that actually defines the sidebar (NAV_ITEMS, with each item's
+`roles` array) and the navbar profile popup - both first-time-seen this session. That unblocked
+two of the still-open items from SECTION 153's big list:
+
+1) NEW: "Admin: Menu Access" page - "for sidebar menu acces provide page make foe which role
+   which menu wants to shown a every where". Built end to end:
+   - backend/JobCardScanner.Api/Models/MenuAccessOverride.cs (new) - one row per sidebar item
+     (NavKey), a comma-joined list of allowed StaffRole names (empty = everyone).
+   - backend/JobCardScanner.Api/Controllers/MenuAccessController.cs (new) - GET /api/menu-access
+     (any signed-in staff member - every login's own sidebar needs to read this), PUT
+     /api/menu-access (CorporateAdmin/SystemAdmin only, checked the same way
+     AttendanceController.cs already checks org-wide roles - I don't have your real Policies.cs's
+     full RoleUp definitions in this session to reference a named policy constant with confidence).
+   - backend/JobCardScanner.Api/Data/JobCardScannerDbContext.cs - DbSet + entity mapping added.
+   - sql/2026-09-29_create_menu_access_overrides_table.sql (new) - run this once against
+     JobCardScannerDb before deploying.
+   - web/src/pages/admin/MenuAccessPage.tsx (new) - one row per NAV_ITEMS entry (imported straight
+     from StaffLayout.tsx, so it can never drift out of sync with what pages actually exist), a
+     "Restrict to specific roles" toggle per row, and checkboxes for every StaffRole name that has
+     actually appeared in this codebase this session (ServiceAdvisor, Technician, PartsUser,
+     Cashier, Supervisor, WorkshopManager, DealerAdmin, CorporateAdmin, SystemAdmin - confirmed via
+     NAV_ITEMS' own arrays plus LabourMasterController.cs's doc comment). If you have a role name
+     that's never shown up anywhere I've seen, tell me and I'll add its checkbox.
+   - web/src/components/StaffLayout.tsx - NavItem gained a `key` field (auto-derived from `to`,
+     e.g. "/part-upload" -> "part-upload"), added as its own new "Admin: Menu Access" NAV_ITEMS
+     entry (HQ-only, same floor as Admin: Users/Admin: Workflow), and the sidebar's own filter now
+     checks a saved override first before falling back to each item's shipped default `roles` - so
+     an empty/not-yet-loaded override table behaves EXACTLY as before this feature existed.
+
+   STILL NEEDED FROM YOU - I don't have web/src/App.tsx (your router) in this session, so I could
+   not add the actual <Route path="/admin/menu-access" ...> line myself with confidence in the
+   exact RequireRole wrapper syntax your app uses (StaffLayout.tsx's own comments confirm a
+   RequireRole component exists there, guarding Admin: Users/Admin: Workflow the same way this new
+   page needs). Please paste App.tsx (or just the routes around /admin/users and /admin/workflow)
+   and I'll wire the one line in directly, rather than guess at a prop signature I can't verify.
+   MOBILE: this page is intentionally web-only - your real RootNavigator.tsx (just pasted) has NO
+   screens at all for Admin: Users or Admin: Workflow either, so HQ-only admin pages appear to be a
+   web-only pattern in this app already; I followed that rather than inventing a mobile screen for
+   a feature that has no mobile precedent.
+
+2) NAVBAR PROFILE POPUP - "which location assign ... not shown in all page" (from SECTION 153) -
+   added a "Work Area" row to StaffLayout.tsx's profile dropdown, right after Dealer, sourced from
+   `profile?.workLocationCodes` (the same field name PartUploadPage.tsx's own Location dropdown was
+   already confirmed to use earlier this session) - only shown when non-empty, same as the existing
+   optional Mobile row. FLAGGED: I don't have your real StaffAuthContext.tsx in this session to
+   double check that field's exact name/shape on the `profile` object - if your build says it
+   doesn't exist, tell me the real name and it's a one-line fix.
+
+3) PART UPLOAD LOCATION SCOPING - "still parts-upload in that that location data not shown ...
+   if any login uploaded data shown that linked location" - I now understand this as a real,
+   confirmed-needed fix (not just the earlier stale-token theory): GET /api/part-uploads should be
+   scoped server-side to the caller's own WorkLocationCodes, the exact same pattern already used in
+   JobCardsController.List()/Search() (`_currentUser.WorkLocationCodes`, "empty = unrestricted").
+   I know exactly what this fix looks like structurally - I just don't have
+   backend/JobCardScanner.Api/Controllers/PartUploadController.cs or
+   Services/PartUploadService.cs in THIS session (they were reviewed earlier but that was before
+   this segment's context got compacted, and only short excerpts survived). Please re-paste both
+   and I'll apply the WorkLocationCodes filter directly, matching the Job Cards convention exactly.
+
+FILES TOUCHED
+  backend/JobCardScanner.Api/Models/MenuAccessOverride.cs (new)
+  backend/JobCardScanner.Api/Controllers/MenuAccessController.cs (new)
+  backend/JobCardScanner.Api/Data/JobCardScannerDbContext.cs (DbSet + entity mapping for
+    MenuAccessOverride added)
+  sql/2026-09-29_create_menu_access_overrides_table.sql (new)
+  web/src/pages/admin/MenuAccessPage.tsx (new)
+  web/src/components/StaffLayout.tsx (NavItem.key added, new Admin: Menu Access nav entry, sidebar
+    filter now checks saved overrides first, Work Area row added to the profile dropdown)
