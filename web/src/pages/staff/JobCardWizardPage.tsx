@@ -1,4 +1,3 @@
-// web\src\pages\staff\JobCardWizardPage.tsx
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { staffApi } from '../../api/client'
@@ -1015,7 +1014,7 @@ export function JobCardWizardPage() {
               )}
             </div>
           )}
-          <h3>Registered customer Details</h3>
+          <h3>(Registered customer Details)</h3>
           {/* "Search by mobile number or name" commented out per your request - chassis/reg no.
              search (below) is now the only way to look up a customer here. */}
           {/* <div className="field">
