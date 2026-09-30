@@ -1,3 +1,4 @@
+// mobile\src\screens\LabourMasterScreen.tsx
 import { useEffect, useState } from 'react'
 import {
   ActivityIndicator,
@@ -210,11 +211,9 @@ export function LabourMasterScreen() {
           </Pressable>
           {importError && <Text style={styles.errorText}>{importError}</Text>}
           {importResult && (
-            <Text style={styles.successText}>
-              Imported {importResult.totalDataRows} row{importResult.totalDataRows === 1 ? '' : 's'}: {importResult.inserted} new,{' '}
-              {importResult.updated} updated, {importResult.unchanged} unchanged
-              {importResult.skippedBlank > 0 ? `, ${importResult.skippedBlank} blank row(s) skipped` : ''}.
-            </Text>
+            <p className="jcs-info-text" style={{ margin: 0, padding: '10px 12px', borderRadius: 8, background: '#ecfdf3', color: '#065f46', fontSize: 13 }}>
+              File uploaded successfully.
+            </p>
           )}
         </View>
 

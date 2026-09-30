@@ -131,7 +131,7 @@ export function RootNavigator() {
           <Stack.Screen name="RepairBillCreate" component={RepairBillCreateScreen} options={{ title: 'Repair Bill' }} />
           <Stack.Screen name="TechnicianEmployees" component={TechnicianEmployeesScreen} options={{ title: 'Technician Employee' }} />
           {/* 2026-09-28 ("this page also add in android") */}
-          <Stack.Screen name="PartUpload" component={PartUploadScreen} options={{ title: 'Part Upload' }} />
+          <Stack.Screen name="PartUpload" component={PartUploadScreen} options={{ title: 'Stock Report' }} />
           <Stack.Screen name="LabourMaster" component={LabourMasterScreen} options={{ title: 'Labour Master' }} />
           {/* 2026-09-28 FIX ("this page not linked in android?") */}
           <Stack.Screen name="Attendance" component={AttendanceScreen} options={{ title: 'Attendance' }} />

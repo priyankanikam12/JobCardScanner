@@ -1,3 +1,4 @@
+// mobile\src\screens\JobCardDetailScreen.tsx
 import { useEffect, useState } from 'react'
 import {
   ActivityIndicator, Alert, Image, Linking, Modal, Pressable, ScrollView, StyleSheet, Text,

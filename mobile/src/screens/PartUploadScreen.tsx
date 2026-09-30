@@ -1,3 +1,4 @@
+// mobile\src\screens\PartUploadScreen.tsx
 import { useEffect, useState } from 'react'
 import {
   ActivityIndicator,
