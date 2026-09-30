@@ -276,7 +276,7 @@ function resolveBackTarget(pathname: string): string | null {
  * tier, so the avatar/pill stay meaningful at a glance instead of a rainbow of one-off hues. */
 function roleTier(role?: StaffRole): 'admin' | 'manager' | 'staff' {
   if (role === 'CorporateAdmin' || role === 'SystemAdmin' || role === 'DealerAdmin') return 'admin'
-  if (role === 'WorkshopManager' || role === 'Supervisor') return 'manager'
+  if (role === 'WorkshopManager' || role === 'Supervisor' ) return 'manager'
   return 'staff'
 }
 

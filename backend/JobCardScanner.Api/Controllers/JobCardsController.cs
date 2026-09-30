@@ -770,6 +770,7 @@ public class JobCardsController : ControllerBase
         return Ok(new { message = $"Estimate emailed to {req.Email}." });
     }
 
+
     // ---------------- Job Card Opening Wizard: finalize ----------------
     [HttpPost]
     [Authorize(Policy = Policies.ServiceAdvisorUp)]

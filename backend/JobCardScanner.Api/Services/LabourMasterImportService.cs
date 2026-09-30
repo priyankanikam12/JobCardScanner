@@ -419,7 +419,6 @@ public class LabourMasterImportService : ILabourMasterImportService
             if (s.Length == 0 || !decimal.TryParse(s, out raw)) return null;
         }
 
-<<<<<<< HEAD
         if (raw <= GstFractionMax) return raw; // already a plausible fraction - unchanged from SECTION 154
 
         // SECTION 178: try "plain percentage number" first (18 -> 0.18) - this is what the real
@@ -439,23 +438,9 @@ public class LabourMasterImportService : ILabourMasterImportService
         warnings.Add($"Row \"{labourCode}\": a GST column read {raw}, which isn't a plausible tax rate " +
                      "as a percentage (÷100) or after dividing by the Labour Rate - left blank rather than " +
                      "guessed. Please check this row's IGST/CGST/SGST cells in the source file.");
-=======
-        if (raw <= GstFractionMax) return raw; // already a plausible fraction - unchanged from before this fix
-
-        // Looks like a Rate-scaled rupee amount rather than a plain fraction (e.g. a formula cell
-        // computing Rate * true% instead of just storing true%) - try to recover the fraction.
-        if (rate is > 0)
-        {
-            var recovered = raw / rate.Value;
-            if (recovered <= GstFractionMax) return recovered;
-        }
-
-        warnings.Add($"Row \"{labourCode}\": a GST column read {raw}, which isn't a plausible tax rate " +
-                     "even after dividing by the Labour Rate - left blank rather than guessed. Please check " +
-                     "this row's IGST/CGST/SGST cells in the source file.");
->>>>>>> 60d0a05 (Added disccused changes)
         return null;
     }
+
 
     private static int? CellInt(IXLWorksheet ws, int row, int col)
     {

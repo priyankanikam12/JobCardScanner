@@ -63,7 +63,7 @@ const INDIA_STATES = [
   'West Bengal',
 ]
 
-const DESIGNATIONS = ['Supervisor', 'Mechanic'] as const
+const DESIGNATIONS = ['Captain', 'Technician', 'Vice Captain'] as const
 type Designation = typeof DESIGNATIONS[number]
 
 const emptyEmployeeForm = {
@@ -234,12 +234,6 @@ export function EmployeesPage() {
 
       <div className="card">
         <h3>{employeeForm.id ? 'Edit Employee' : 'Add Employee'}</h3>
-        <p className="muted">
-          Creates a local (Dealer / Workshop Login) sign-in, scoped to the Work Area location(s)
-          picked below - assigning locations means this person only sees and can create job cards,
-          material transfers, and repair bills at those locations, everywhere in the app. Leaving
-          Work Area empty means unrestricted (sees everything their Role/Dealer would anyway).
-        </p>
         <div className="form-row">
           <div className="field"><label>Employee Name</label><input value={employeeForm.name} onChange={(e) => setEmployeeForm({ ...employeeForm, name: e.target.value })} /></div>
           <div className="field">

@@ -210,12 +210,7 @@ export function LabourMasterPage() {
         {importError && <p className="error-text">{importError}</p>}
         {importResult && (
           <p className="jcs-info-text" style={{ margin: 0, padding: '10px 12px', borderRadius: 8, background: '#ecfdf3', color: '#065f46', fontSize: 13 }}>
-            Imported {importResult.totalDataRows} row{importResult.totalDataRows === 1 ? '' : 's'}:{' '}
-            {importResult.inserted} new, {importResult.updated} updated, {importResult.unchanged} unchanged (no duplicates added)
-            {importResult.skippedBlank > 0 ? `, ${importResult.skippedBlank} blank row(s) skipped` : ''}.
-            {importResult.warnings.length > 0 && (
-              <> {importResult.warnings.map((w, i) => <span key={i}> {w}</span>)}</>
-            )}
+            File uploaded successfully.
           </p>
         )}
       </div>
