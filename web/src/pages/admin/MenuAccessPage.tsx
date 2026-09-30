@@ -393,12 +393,12 @@ export function MenuAccessPage() {
         <div className="card" style={{ marginTop: 16 }}>
           <h3 style={{ marginTop: 0 }}>Role Sidebar Mode</h3>
           <p className="muted" style={{ marginTop: -4 }}>
-            Off (default): Dealer Admin sees every page above unless you've restricted it away. On: Dealer Admin sees
-            ONLY the pages above where you've checked "DealerAdmin" - everything else, including any new page added
-            later, stays hidden until you check it too.
+            Off (default): this role sees every page above unless you've restricted it away. On: this role sees
+            ONLY the pages above where you've checked it - everything else, including any new page added later,
+            stays hidden until you check it too.
           </p>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 20px' }}>
-            {ROLE_SIDEBAR_MODE_ROLES.map((role) => (
+            {ALL_ROLES.map((role) => (
               <label key={role} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <input type="checkbox" checked={!!roleModes[role]} onChange={() => toggleRoleMode(role)} />
                 {role} <span className="muted">{roleModes[role] ? '(only checked items)' : '(everyone by default)'}</span>
