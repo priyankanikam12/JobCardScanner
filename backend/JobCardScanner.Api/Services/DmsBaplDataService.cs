@@ -771,10 +771,28 @@ public class DmsBaplDataService : IDmsBaplDataService
         c.first_name AS CustFirstName, c.email_id, c.mobile, c.Address1, c.Address2,
         c.City, c.State";
 
+    // 2026-10-01 FIX ("when we global search its not take customer deatils after its available in
+    // db"): this was `ON c.Id = sb.CustId`. You confirmed directly against BaplConnection, twice
+    // now across this session (chassis P6DEC12CPDG015169 just now, chassis for Id='81863' earlier
+    // for the State fix) - both times `select * from DMS_SaleBillCustomer where Id=<the SALE
+    // BILL's own Id>` returned the correct, real customer row, while this sale bill's OWN
+    // `CustId` column (47608 for the P6DEC12CPDG015169 row) pointed at a DIFFERENT id than the
+    // one that actually matched (47550, the sale bill's own Id). So `CustId` is not a reliable
+    // FK into DMS_SaleBillCustomer - the real 1:1 key is DMS_SaleBillCustomer.Id =
+    // DMS_SaleBill.Id. This join feeds GetVehicleSalesAsync (Vehicle Sale page),
+    // LookupVehicleForWizardAsync and SearchVehiclesForWizardAsync equally (see this constant's
+    // own doc comment above), so this one change fixes customer details (Name/Mobile/Email/City/
+    // Address/State - all confirmed sourced from c.first_name/mobile/email_id/City/Address1/State)
+    // everywhere this join is used, not just the Job Card wizard's global search where you
+    // happened to spot it. NOTE: this was previously only verified to "look right" for chassis
+    // that happened to still resolve some customer row via CustId by coincidence - any chassis
+    // whose CustId didn't happen to match a real row (or matched the WRONG row) was silently
+    // wrong before this fix, not just blank, which is worth a spot-check across a few more
+    // chassis after this deploys.
     private const string VehicleSaleFromJoin = @"
         FROM [dbo].[DMS_SaleBill] sb
         LEFT JOIN [dbo].[DMS_SaleBillCustomer] c
-            ON c.Id = sb.CustId AND (c.IsDelete IS NULL OR c.IsDelete = 0)";
+            ON c.Id = sb.Id AND (c.IsDelete IS NULL OR c.IsDelete = 0)";
 
     // Maps one row of VehicleSaleSelectColumns/VehicleSaleFromJoin's result set - see
     // DmsBaplDataVehicleSaleRow's own doc comment for which fields have no source column on
@@ -1135,6 +1153,50 @@ public class DmsBaplDataService : IDmsBaplDataService
             }
         }
 
+        // 2026-10-01 ("i update this reg no. with chassis but its not search in global after its
+        // save") - CONFIRMED gap: a manually-saved VehicleSaleOverride (JobCardScannerDb's own
+        // table, written from the Vehicle Sale page's inline Reg No edit) was only ever being used
+        // to decide what Reg No to DISPLAY once a vehicle was already found (see
+        // ResolveDisplayRegNosAsync below) - it was never checked as a way to FIND the vehicle in
+        // the first place. So typing the exact Reg No you'd just saved as an override (here,
+        // "DL3SGK2326" for chassis "P6DSVFMSPBE007995") matched nothing, because DMS_SaleBill's own
+        // reg_number column for that row was never changed - only this app's own override table
+        // was. Same reasoning as the DMS_ServiceHistory fallback just above: if the direct
+        // DMS_SaleBill/DMS_ServiceHistory search still hasn't found anything, check whether the
+        // typed value matches a saved override's Reg No (normalized the same way reg_number
+        // comparisons already are - spaces/hyphens stripped, case-insensitive), and if so, search
+        // DMS_SaleBill by that override's ChassisNo instead.
+        if (hit is null)
+        {
+            var chassisFromOverride = await FindChassisByOverrideRegNoMatchAsync(valueNoSpaces, ct);
+            if (chassisFromOverride is not null)
+            {
+                try
+                {
+                    await using var conn = new SqlConnection(BaplConnStr);
+                    await conn.OpenAsync(ct);
+
+                    var sql = $@"
+                        SELECT TOP 1 {VehicleSaleSelectColumns}
+                        {VehicleSaleFromJoin}
+                        WHERE (sb.IsDelete IS NULL OR sb.IsDelete = 0)
+                          AND (@dealerCode IS NULL OR sb.dealer_code = @dealerCode)
+                          AND LTRIM(RTRIM(sb.chassis_no)) = @chassis
+                        ORDER BY sb.CreatedOn DESC, sb.Id DESC";
+
+                    await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+                    cmd.Parameters.AddWithValue("@dealerCode", string.IsNullOrWhiteSpace(dealerCode) ? DBNull.Value : dealerCode.Trim());
+                    cmd.Parameters.AddWithValue("@chassis", chassisFromOverride);
+                    await using var rdr = await cmd.ExecuteReaderAsync(ct);
+                    if (await rdr.ReadAsync(ct)) hit = MapVehicleSaleRow(rdr);
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException($"Could not look up the vehicle in BaplConnection (DMS_SaleBill/DMS_SaleBillCustomer) by the chassis no. resolved from a saved VehicleSaleOverride: {ex.Message}", ex);
+                }
+            }
+        }
+
         // 2026-09-28 ("Reg no. are shown different from now which we bind in Vehicle sale") - see
         // ResolveDisplayRegNosAsync's doc comment: this makes the Wizard show the exact same Reg No
         // the Vehicle Sale page would show for this same chassis (DMS_ServiceHistory fallback +
@@ -1239,6 +1301,39 @@ public class DmsBaplDataService : IDmsBaplDataService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Could not resolve a ChassisNo from DMSBAPLDATA's DMS_ServiceHistory for wizard search value - falling through to 'not found'.");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 2026-10-01 ("i update this reg no. with chassis but its not search in global after its
+    /// save"): resolves a ChassisNo from THIS APP'S OWN dbo.VehicleSaleOverride table (JobCardScannerDb,
+    /// via EF Core's _db - not DMSBAPLDATA/BaplConnection, which this table deliberately never
+    /// touches, see VehicleSaleOverride.cs's own doc comment) by a normalized RegNo match. Mirrors
+    /// FindChassisByServiceHistoryMatchAsync immediately above: a best-effort fallback
+    /// LookupVehicleForWizardAsync uses when a search value matches nothing in BaplConnection's
+    /// DMS_SaleBill directly or in DMSBAPLDATA's DMS_ServiceHistory - i.e. when the only place the
+    /// typed Reg No exists is a manually-saved override (from the Vehicle Sale page's inline Reg No
+    /// edit). Before this fallback existed, a saved override was only ever used to decide what Reg
+    /// No to DISPLAY once a vehicle was already found some other way (see
+    /// ResolveDisplayRegNosAsync below) - never as an input to finding the vehicle in the first
+    /// place, which is exactly the gap this fixes. Best-effort: returns null (not an exception) if
+    /// JobCardScannerDb's VehicleSaleOverride table can't be read - the caller already knows how to
+    /// report "not found" either way.
+    /// </summary>
+    private async Task<string?> FindChassisByOverrideRegNoMatchAsync(string valueNoSpaces, CancellationToken ct)
+    {
+        try
+        {
+            return await _db.VehicleSaleOverrides
+                .AsNoTracking()
+                .Where(o => o.RegNo.Replace(" ", "").Replace("-", "").ToUpper() == valueNoSpaces.ToUpper())
+                .Select(o => o.ChassisNo)
+                .FirstOrDefaultAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not read JobCardScannerDb's dbo.VehicleSaleOverride table while resolving a ChassisNo for wizard search value - falling through to 'not found'.");
             return null;
         }
     }

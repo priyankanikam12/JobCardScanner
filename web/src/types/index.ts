@@ -634,6 +634,18 @@ export interface CurrentUser {
    * is actually allowed to use - server-side enforcement (JobCardsController, DmsBaplDataController)
    * is the real gate; this is just so the UI doesn't offer a choice it will only reject. */
   workLocationCodes: string[]
+  /** 2026-10-01 ("still not shown his designation is captain"): User.Designation (free-text job
+   * title, e.g. "Captain", "Mechanic" - separate from Role, see EmployeesPage.tsx's DESIGNATIONS
+   * doc comment), added here so StaffLayout.tsx's topbar badge can show Captain/ViceCaptain users'
+   * actual Designation instead of their real (different) backend Role - see that file's
+   * badgeLabel() doc comment for the full reasoning.
+   *
+   * FACT: adding this field here is only HALF the fix. GET /api/auth/me (AuthController.Me, per
+   * this interface's own existing dealerBaplDmsCode/dealerState comments just above) has to
+   * actually select User.Designation into its response too, or this will just always come back
+   * undefined at runtime - exactly what was happening before this field even existed. I don't
+   * have AuthController.cs in this session to make that half of the change - still needed. */
+  designation?: string | null
 }
 
 // ==================== Technician Employee (2026-09-24) ====================

@@ -1457,7 +1457,7 @@ export function RepairBillCreatePage() {
           </span>
         </div>
 
-        <div style={{ marginTop: 14 }}>
+        {/* <div style={{ marginTop: 14 }}>
           <button className="btn btn-sm" onClick={() => setShowInsurance((v) => !v)}>{showInsurance ? '− Hide' : '+ Add'} Insurance / Discount / Payment Details</button>
         </div>
         {showInsurance && (
@@ -1505,7 +1505,7 @@ export function RepairBillCreatePage() {
               </div>
             </div>
           </>
-        )}
+        )} */}
 
         <div style={{ marginTop: 14, display: 'flex', gap: 8, alignItems: 'center' }}>
           {/* 2026-09-22: relabelled from "Save Repair Bill" - creating a NEW bill always saves it

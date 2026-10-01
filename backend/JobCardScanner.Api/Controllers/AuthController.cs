@@ -64,6 +64,15 @@ public class AuthController : ControllerBase
             user.AvatarColor,
             user.LastLoginAt,
             AuthType = user.AuthType.ToString(),
+            // 2026-10-01 ("still not shown his designation is captain"): the second half of the
+            // CurrentUser.designation fix - web/src/types/index.ts already declares this field on
+            // the frontend, but it was always coming back undefined because this endpoint never
+            // selected it. StaffLayout.tsx's topbar badge reads it to show Captain/ViceCaptain
+            // users' actual Designation instead of their real (different) underlying Role - see
+            // that file's badgeLabel() doc comment. user.Designation is the same free-text field
+            // EmployeesPage.tsx's Designation dropdown already writes (separate from Role, see
+            // that page's own DESIGNATIONS doc comment).
+            user.Designation,
             // 2026-09-18: the Job Card wizard's "Service Location (workshop)" dropdown (and the
             // equivalent picker on Material Transfer) was listing EVERY workshop for the user's
             // dealer, even for an Employee scoped to just one or a few Work Area locations - the

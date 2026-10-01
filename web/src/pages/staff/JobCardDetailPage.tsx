@@ -552,14 +552,14 @@ export function JobCardDetailPage() {
           <h3>Customer & Vehicle</h3>
           <p><strong>{jc.customer?.name}</strong><br />{jc.customer?.mobile}</p>
           <p>{jc.vehicle?.model} {jc.vehicle?.variant}<br />Reg: {jc.vehicle?.regNo} | Odometer: {jc.odometerAtCheckIn} km</p>
-          <p className="muted">Tracking link: /track/{jc.trackingToken}</p>
+          {/* <p className="muted">Tracking link: /track/{jc.trackingToken}</p> */}
           {jc.customer && hasRole('WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
             <CustomerPasswordResetButton customerId={jc.customer.id} customerName={jc.customer.name} />
           )}
           {(jc.baplJobType || jc.baplServiceLocation || jc.baplSupervisorName || jc.baplTechnicianName || jc.baplManualJobNo) && (
             <p className="muted" style={{ marginTop: 8 }}>
               <span style={{ background: '#1c64f2', color: '#fff', fontSize: 11, fontWeight: 600, padding: '1px 6px', borderRadius: 999, marginRight: 6 }}>
-                DMS
+                Details
               </span>
               {[
                 jc.baplJobType && `Job Type: ${jc.baplJobType}`,
@@ -915,15 +915,6 @@ function UpdateWorkflowStageCard({
   return (
     <div className="card">
       <h3>Update Workflow Stage</h3>
-      <p className="muted" style={{ marginTop: -6 }}>
-        The stage above now advances automatically as work happens - parts/labour suggested, an
-        estimate drafted, a technician's first worklog started. Use the buttons below for the steps
-        with no automatic trigger. A linked Repair Bill saved as Invoice still auto-advances and
-        auto-closes this job card on its own (unchanged) - "Mark Invoice Generated" below is an
-        additional MANUAL way to reach that same stage, and closes the job card immediately when
-        clicked, with or without a Repair Bill on file. See this card's own SECTION 156 code comment
-        if you want that tightened to only work once a Repair Bill here already shows Billed.
-      </p>
       {/* 2026-09-24 CHANGE ("before start required Assign Technician name update"): every stage
          change - the two manual buttons below AND every automatic trigger elsewhere on this page
          (worklog start, part/labour suggestion) - is now refused with a 400 until a Technician is

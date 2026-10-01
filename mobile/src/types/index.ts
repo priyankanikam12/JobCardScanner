@@ -2,6 +2,20 @@
 // Mirrors backend/JobCardScanner.Api/Models enums/DTOs (see web/src/types/index.ts for the fuller
 // web copy - kept in sync with it by hand since there's no shared package between the two apps).
 
+// 2026-10-01 ("Captain / Technician / Vice Captain ... this role also add"): added 'Captain' and
+// 'ViceCaptain' below, mirroring web/src/types/index.ts's own StaffRole addition of the same date
+// (same two values, same NAMING caveat - your screenshot showed "Vice Captain" with a space, every
+// other role here is single PascalCase with no space, so 'ViceCaptain' was used to match; tell me
+// if the real backend enum value is spelled differently).
+//
+// FLAGGED - same caveat as web's copy: this alone does not make Captain/Vice Captain real, working
+// login roles. This file is a FRONTEND MIRROR of the backend's real StaffRole C# enum - the actual
+// backend enum (backend/JobCardScanner.Api/Models/MasterData.cs, StaffRole) still only has the 9
+// original values (confirmed via that file's own paste this session) - Captain/ViceCaptain are NOT
+// in it yet. Until the backend enum and Auth/Policies.cs are updated too, a user can't actually log
+// in as Captain/Vice Captain on mobile either - this just stops mobile's TypeScript build from
+// refusing to compile once these two strings are used somewhere (e.g. mirroring web's Employees/
+// Designation picker here).
 export type StaffRole =
   | 'ServiceAdvisor'
   | 'WorkshopManager'
@@ -12,6 +26,8 @@ export type StaffRole =
   | 'DealerAdmin'
   | 'CorporateAdmin'
   | 'SystemAdmin'
+  | 'Captain'
+  | 'ViceCaptain'
 
 export type JobCardStatus =
   | 'Open'
