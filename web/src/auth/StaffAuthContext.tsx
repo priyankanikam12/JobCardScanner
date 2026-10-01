@@ -35,6 +35,27 @@ const ROLE_RANK: Record<StaffRole, number> = {
   DealerAdmin: 3,
   CorporateAdmin: 4,
   SystemAdmin: 5,
+  // 2026-10-01 (TS2739, "Record<StaffRole, number>" missing Captain/ViceCaptain - the web
+  // StaffRole TypeScript type gained these two Designation-driven pseudo-roles earlier this
+  // session, so this Record literal has to cover them too or it won't compile).
+  //
+  // ASSUMPTION, flagged - this is a conservative placeholder, not a confirmed business decision:
+  // rank 1, the SAME tier as ServiceAdvisor/Technician/PartsUser/Cashier. Deliberately NOT >= 3 -
+  // only ranks 3+ get the "Up" semantics below (hasRole() lets DealerAdmin/CorporateAdmin/
+  // SystemAdmin act as any lower role in their scope) - guessing a higher rank here could
+  // silently hand Captain/ViceCaptain admin-tier "act as any lower role" access with no actual
+  // policy decision behind it, which would be a real security mistake if wrong. FACT (confirmed
+  // via UsersController.cs's RoleForDesignation, pasted earlier this session): Captain/ViceCaptain
+  // have NO defined real backend Role or Auth/Policies.cs policy of their own at all today - their
+  // actual server-side permissions ride entirely on whatever (arbitrary, leftover) real Role they
+  // happen to carry, completely separate from this ROLE_RANK entry. This value only affects
+  // frontend-side hasRole()/"Up" checks that compare against the STRING 'Captain'/'ViceCaptain'
+  // directly (there are none yet, since nothing in this codebase currently does that) - it does
+  // NOT retroactively give Captain/ViceCaptain any new real access anywhere. Tell me the intended
+  // rank once the bigger Designation->Role/policy decision (still open, see UsersController.cs/
+  // Auth/Policies.cs discussion) is made, and I'll update this to match.
+  Captain: 1,
+  ViceCaptain: 1,
 }
 
 const StaffAuthContext = createContext<StaffAuthValue | undefined>(undefined)
