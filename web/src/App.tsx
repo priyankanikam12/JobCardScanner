@@ -363,7 +363,7 @@ export default function App() {
         <Route
           path="/admin/users"
           element={
-            <RequireRole roles={['CorporateAdmin', 'SystemAdmin']}>
+            <RequireRole roles={['ServiceAdvisor', 'Technician', 'PartsUser', 'Cashier', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin','Captain','ViceCaptain']}>
               <AdminUsersPage />
             </RequireRole>
           }

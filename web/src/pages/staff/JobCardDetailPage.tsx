@@ -1010,10 +1010,17 @@ function UpdateWorkflowStageCard({
         )}
         {/* 2026-09-29 (SECTION 156) - see this component's own doc comment above (just before
            markStage) for the full history/interpretation flag on this button. Same disabled-once-
-           past pattern as the two buttons above; markStage() posts to the same generic
+           past pattern as the other two buttons; markStage() posts to the same generic
            /api/jobcards/{id}/stage endpoint the automatic Repair-Bill-Billed trigger's
            WorkflowStageAutomation call also feeds into, so a job card marked this way ends up in
-           an identical CurrentStage/StageHistory state either way. */}
+           an identical CurrentStage/StageHistory state either way.
+           NOTE - FLAGGED, not yet done: the read-only Workflow Timeline STEPPER further up this
+           page (<WorkflowTimeline stages={buildTimelineStages(stages)} .../>) is a separate
+           component from this button row, and its left-to-right order comes from the `stages`
+           array's own Seq values as seeded on the backend (GET /api/workflow-stages) - I don't have
+           that seed source (DbSeeder.cs or equivalent) or WorkflowTimeline.tsx's own rendering
+           logic in this session, so I have NOT reordered that stepper itself here, only this
+           action-button row. See my reply for what I need from you to also fix the stepper. */}
         {invoiceGeneratedStage && (
           <button
             className="btn btn-sm btn-primary"
@@ -1021,6 +1028,15 @@ function UpdateWorkflowStageCard({
             onClick={() => run(() => markStage(invoiceGeneratedStage), 'Marked Invoice Generated. Job card closed.')}
           >
             Mark Invoice Generated
+          </button>
+        )}
+        {readyForDeliveryStage && (
+          <button
+            className="btn btn-sm btn-primary"
+            disabled={busy || currentSeq >= readyForDeliveryStage.seq}
+            onClick={() => run(() => markStage(readyForDeliveryStage), 'Marked Ready for Delivery.')}
+          >
+            Mark Ready for Delivery
           </button>
         )}
       </div>
