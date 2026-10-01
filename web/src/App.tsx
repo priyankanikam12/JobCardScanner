@@ -90,7 +90,7 @@ export default function App() {
       <Route
         path="/attendance"
         element={
-          <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+          <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
             <AttendancePage />
           </RequireRole>
         }
@@ -136,7 +136,7 @@ export default function App() {
         <Route
           path="/service-history"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <ServiceHistoryPage />
             </RequireRole>
           }
@@ -144,7 +144,7 @@ export default function App() {
         <Route
           path="/labour-master"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <LabourMasterPage />
             </RequireRole>
           }
@@ -152,7 +152,7 @@ export default function App() {
         <Route
           path="/vehicle-sale"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <VehicleSalePage />
             </RequireRole>
           }
@@ -160,7 +160,7 @@ export default function App() {
         <Route
           path="/parts"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <PartsPage />
             </RequireRole>
           }
@@ -172,7 +172,7 @@ export default function App() {
         <Route
           path="/part-upload"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <PartUploadPage />
             </RequireRole>
           }
@@ -185,7 +185,7 @@ export default function App() {
         <Route
           path="/item-master"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <ItemMasterPage />
             </RequireRole>
           }
@@ -202,7 +202,7 @@ export default function App() {
         <Route
           path="/material-transfer-bill"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <MaterialTransferCreatePage />
             </RequireRole>
           }
@@ -214,7 +214,7 @@ export default function App() {
         <Route
           path="/material-transfer-list"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <MaterialTransferListPage />
             </RequireRole>
           }
@@ -222,7 +222,7 @@ export default function App() {
         <Route
           path="/material-transfer"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <MaterialTransferPage />
             </RequireRole>
           }
@@ -233,7 +233,7 @@ export default function App() {
         <Route
           path="/repair-bill-new"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <RepairBillCreatePage />
             </RequireRole>
           }
@@ -244,7 +244,7 @@ export default function App() {
         <Route
           path="/repair-bill-list"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <RepairBillListPage />
             </RequireRole>
           }
@@ -252,7 +252,7 @@ export default function App() {
         <Route
           path="/repair-bill"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <RepairBillPage />
             </RequireRole>
           }
@@ -265,7 +265,7 @@ export default function App() {
         <Route
           path="/battery-warranty-schemes"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <ExtendedBatteryWarrantySchemesPage />
             </RequireRole>
           }
@@ -281,7 +281,7 @@ export default function App() {
         <Route
           path="/oem-models"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <OemModelsPage />
             </RequireRole>
           }
@@ -289,7 +289,7 @@ export default function App() {
         <Route
           path="/oem-model-warranties"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <OemModelWarrantiesPage />
             </RequireRole>
           }
@@ -300,7 +300,7 @@ export default function App() {
         <Route
           path="/service-menu-master"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <ServiceMenuMasterPage />
             </RequireRole>
           }
@@ -308,7 +308,7 @@ export default function App() {
         <Route
           path="/complaint-master"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <ComplaintMasterPage />
             </RequireRole>
           }
@@ -319,7 +319,7 @@ export default function App() {
         <Route
           path="/prefix-master"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <DocPrefixMasterPage />
             </RequireRole>
           }
@@ -327,7 +327,7 @@ export default function App() {
         <Route
           path="/reports"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <ReportsPage />
             </RequireRole>
           }
@@ -335,7 +335,7 @@ export default function App() {
         <Route
           path="/employees"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <EmployeesPage />
             </RequireRole>
           }
@@ -355,7 +355,7 @@ export default function App() {
         <Route
           path="/technician-employees"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <TechnicianEmployeesPage />
             </RequireRole>
           }
@@ -363,7 +363,7 @@ export default function App() {
         <Route
           path="/admin/users"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'Technician', 'PartsUser', 'Cashier', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin','Captain','ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <AdminUsersPage />
             </RequireRole>
           }
@@ -371,7 +371,7 @@ export default function App() {
         <Route
           path="/admin/workflow"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <AdminWorkflowPage />
             </RequireRole>
           }
@@ -382,7 +382,7 @@ export default function App() {
         <Route
           path="/admin/menu-access"
           element={
-            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain']}>
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <MenuAccessPage />
             </RequireRole>
           }

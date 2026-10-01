@@ -69,15 +69,19 @@ const ALL_ROLES: StaffRole[] = [
 ]
 
 // SECTION 179 (2026-09-30) "after i tick on menu that role that will show in sidebar untick then
-// remove from sidebar only for dealer" - confirmed via AskUserQuestion: "Role Sidebar Mode panel
-// shows only DealerAdmin." Only the "Role Sidebar Mode" allow-list toggle panel (SECTION 170)
-// below is narrowed down to this one role - the per-item table above (the one with a checkbox
-// column per ALL_ROLES) is UNCHANGED, still restricts any page to any role exactly as before.
-// Deliberately not used anywhere else in this file: ALL_ROLES itself stays untouched, so save()
-// still round-trips every role's onlyShowChecked value (including any other role that may have
-// been set to true from before this change) rather than silently resetting them - narrowing this
-// constant only hides the OTHER roles from being edited here, it doesn't touch their saved data.
-const ROLE_SIDEBAR_MODE_ROLES: StaffRole[] = ['DealerAdmin']
+// remove from sidebar only for dealer" - confirmed via AskUserQuestion at the time: "Role Sidebar
+// Mode panel shows only DealerAdmin." Narrowed this panel to DealerAdmin only.
+//
+// SECTION 182 (2026-10-01) "DealerAdmin role menu working but other role not working why" -
+// confirmed via AskUserQuestion: reopened to every role. The SECTION 179 narrowing was the direct
+// cause - only DealerAdmin had a toggle here to switch into strict "only show checked items" mode
+// at all, so no other role could ever be put into that mode through this page, no matter what was
+// checked for it in the per-item table above. Back to ALL_ROLES so every role gets the toggle
+// again - the per-item table above was never touched by SECTION 179 and still restricts any page
+// to any role exactly as before either way. save() already round-trips every role's
+// onlyShowChecked value regardless of what this panel shows, so this change is purely which
+// toggles are visible/editable here - no saved data for any role is reset by this.
+const ROLE_SIDEBAR_MODE_ROLES: StaffRole[] = ALL_ROLES
 
 // SECTION 173 (2026-09-30) - "Save failed." on dms.bgauss.com with no further detail. This page's
 // save()/load() catches used to show that one fixed string (or a similarly generic "Could not
@@ -385,10 +389,11 @@ export function MenuAccessPage() {
 
       {/* SECTION 170 (2026-09-30) "only give 3 sidebar menu acess only in sidebar this 3 option" -
          see this page's own class doc comment for the full explanation.
-         SECTION 179 (2026-09-30) - narrowed to DealerAdmin only (ROLE_SIDEBAR_MODE_ROLES, see its
-         own doc comment above for why the other roles no longer appear here - they're still fully
-         supported by the per-item table above; this panel specifically is dealer-only per
-         request). */}
+         SECTION 179 (2026-09-30) - was narrowed to DealerAdmin only. SECTION 182 (2026-10-01,
+         "DealerAdmin role menu working but other role not working why") - reopened to every role,
+         confirmed via AskUserQuestion - see ROLE_SIDEBAR_MODE_ROLES' own doc comment above for the
+         full reasoning. Back to generic per-role wording below (was hardcoded to "Dealer Admin"
+         while this panel only ever showed that one role). */}
       {!loading && (
         <div className="card" style={{ marginTop: 16 }}>
           <h3 style={{ marginTop: 0 }}>Role Sidebar Mode</h3>
@@ -398,7 +403,7 @@ export function MenuAccessPage() {
             stays hidden until you check it too.
           </p>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 20px' }}>
-            {ALL_ROLES.map((role) => (
+            {ROLE_SIDEBAR_MODE_ROLES.map((role) => (
               <label key={role} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <input type="checkbox" checked={!!roleModes[role]} onChange={() => toggleRoleMode(role)} />
                 {role} <span className="muted">{roleModes[role] ? '(only checked items)' : '(everyone by default)'}</span>

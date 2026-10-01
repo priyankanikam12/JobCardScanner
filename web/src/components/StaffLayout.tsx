@@ -217,6 +217,32 @@ export function useMenuAccess() {
    * for their own role if they want to - only these two keys are exempted from allow-list mode. */
   const ALWAYS_VISIBLE_KEYS_FOR_HQ_ADMIN = new Set(['dashboard', 'admin-menu-access'])
 
+  /** SECTION 181 (2026-10-01) - "for captaon role menu page not apply why?": CONFIRMED BUG, traced
+   * through the real code. MenuAccessPage.tsx's checkbox grid lets an admin name 'Captain'/
+   * 'ViceCaptain' in a page's allowed-roles list - but both branches below used to compare that
+   * list only against `profile.role`, the signed-in user's REAL backend Role (the C# StaffRole
+   * enum column). 'Captain'/'ViceCaptain' are Designations, not real backend Roles (only 9 values
+   * exist in that enum - see EmployeesPage.tsx's DESIGNATIONS doc comment and badgeLabel() above),
+   * so `profile.role` can never literally equal 'Captain' for ANY user, including one whose
+   * Designation actually is Captain - their Role column holds some other real enum value. That
+   * made checking "Captain" in Menu Access a no-op for everyone, every time - nothing to do with
+   * MenuAccessPage.tsx's save logic, which was already working correctly.
+   *
+   * FIX (your choice: match on Designation too, frontend-only - NOT making these real backend
+   * Roles): a saved roles list now also counts as matching this user if it names 'Captain'/
+   * 'ViceCaptain' AND that's this user's actual Designation (profile.designation, added to
+   * CurrentUser/AuthController.Me the same day - see that type's own doc comment). Scoped to
+   * EXACTLY these two strings so no other real Role's matching behavior changes at all. */
+  const matchesCurrentUser = (roleList: string[]): boolean => {
+    if (
+      (profile?.designation === 'Captain' || profile?.designation === 'ViceCaptain') &&
+      roleList.includes(profile.designation)
+    ) {
+      return true
+    }
+    return !!profile?.role && roleList.includes(profile.role)
+  }
+
   /** SECTION 170 - true if this item should show for the CURRENTLY SIGNED-IN user's own role.
    * Normal (non-allow-list) roles keep the exact same fail-open check as before (no restriction, or
    * this role isn't excluded from one). A role in allow-list mode is the opposite: hidden unless an
@@ -241,6 +267,27 @@ export function useMenuAccess() {
    * menuOverrides instead of through effectiveRoles' default-fallback. effectiveRoles() itself is
    * UNCHANGED (still used by the normal/non-allow-list branch below, and by DashboardPage.tsx's
    * "All Pages" grid via this same hook). */
+  /** SECTION 183 (2026-10-01) - "still shown i hide many option after that": CONFIRMED BUG, traced
+   * through UsersController.cs's RoleForDesignation (now pasted). Captain/ViceCaptain aren't in
+   * that Designation->Role map at all (only "Mechanic"/"Supervisor" are) - on Create, a
+   * Captain-designated employee's Role falls back to EmployeesPage.tsx's hardcoded placeholder
+   * ('ServiceAdvisor'); on Update, Role is left COMPLETELY untouched when Designation is set to
+   * Captain. So there is NO single real backend Role shared by every Captain/ViceCaptain person -
+   * it's arbitrary, whatever that person's Role happened to already be. Keying Role Sidebar Mode
+   * off `roleModes[profile.role]` (SECTION 181's old code) could therefore never reliably catch
+   * "every Captain" - applyQuickSetup() in MenuAccessPage.tsx sets roleModes['Captain'], but a
+   * Captain-designated user's profile.role is never literally 'Captain', so that entry was never
+   * even being READ for them - they fell straight to the normal fail-open branch below, where
+   * their (arbitrary, leftover) real Role was still allowed on most items, so nothing you
+   * unchecked for "Captain" specifically ever removed them from anything.
+   *
+   * FIX: allow-list mode is now entered separately per IDENTITY (real Role, and - independently -
+   * Designation when it's Captain/ViceCaptain), and matching while in that mode uses ONLY the
+   * identity key(s) that actually put this user into allow-list mode - NOT also their incidental
+   * real Role, which is irrelevant noise for a Captain/ViceCaptain person and would otherwise let
+   * them back in through whatever random Role they happen to carry (exactly what was reported).
+   * If you separately turn on Role Sidebar Mode for their real Role too, that Role's own checked
+   * items are additionally allowed (a deliberate OR, not a replacement). */
   const isVisibleForCurrentRole = (item: NavItem): boolean => {
     if (
       (profile?.role === 'CorporateAdmin' || profile?.role === 'SystemAdmin') &&
@@ -248,13 +295,27 @@ export function useMenuAccess() {
     ) {
       return true
     }
-    const role = profile?.role
-    if (role && roleModes[role]) {
-      const override = menuOverrides[item.key]
-      return !!override && override.length > 0 && (override as StaffRole[]).includes(role as StaffRole)
+
+    const activeAllowListKeys: string[] = []
+    if (profile?.role && roleModes[profile.role]) activeAllowListKeys.push(profile.role)
+    if (
+      (profile?.designation === 'Captain' || profile?.designation === 'ViceCaptain') &&
+      roleModes[profile.designation]
+    ) {
+      activeAllowListKeys.push(profile.designation)
     }
+
+    if (activeAllowListKeys.length > 0) {
+      const override = menuOverrides[item.key]
+      return !!override && override.length > 0 && activeAllowListKeys.some((key) => override.includes(key))
+    }
+
     const roles = effectiveRoles(item)
-    return !roles || hasRole(...roles)
+    // SECTION 181: hasRole(...roles) still covers every real backend Role, including its existing
+    // "Up" semantics for DealerAdmin/CorporateAdmin/SystemAdmin (matchesCurrentUser deliberately
+    // does NOT duplicate that - it's a plain membership check) - matchesCurrentUser only adds the
+    // Captain/ViceCaptain-by-Designation case on top, it never narrows what already worked.
+    return !roles || hasRole(...roles) || matchesCurrentUser(roles)
   }
 
   return { isVisibleForCurrentRole }
@@ -276,7 +337,7 @@ function resolveBackTarget(pathname: string): string | null {
  * tier, so the avatar/pill stay meaningful at a glance instead of a rainbow of one-off hues. */
 function roleTier(role?: StaffRole): 'admin' | 'manager' | 'staff' {
   if (role === 'CorporateAdmin' || role === 'SystemAdmin' || role === 'DealerAdmin') return 'admin'
-  if (role === 'WorkshopManager' || role === 'Supervisor' ) return 'manager'
+  if (role === 'WorkshopManager' || role === 'Supervisor') return 'manager'
   return 'staff'
 }
 
@@ -287,6 +348,30 @@ function initialsOf(name?: string | null): string {
   const parts = name.trim().split(/\s+/).filter(Boolean)
   if (parts.length === 0) return '?'
   return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase()
+}
+
+/** 2026-10-01 ("so when 'Captain'/'ViceCaptain' this designation people login on his identy
+ * navbar show designation"): the role-pill below normally shows this user's real backend Role
+ * (profile.role) - but 'Captain'/'ViceCaptain' are NOT real backend StaffRole enum values (only
+ * 9 values exist there - see EmployeesPage.tsx's DESIGNATIONS doc comment and the Role-display
+ * fix added to that page the same day), so someone with one of these two Designations is actually
+ * saved under some OTHER real Role behind the scenes - showing THAT here would be a confusing,
+ * wrong "who am I" readout for exactly the two groups who asked for this. For these two
+ * Designations only, the pill shows the Designation text itself instead; every other user's pill
+ * is completely unchanged (still profile?.role) - this is a REPLACE, not an add-alongside, per
+ * your answer.
+ *
+ * ASSUMPTION, flagged (same caveat as the Work Area block lower in this file): this reads
+ * `profile?.designation`, matching the real backend User.Designation field (confirmed via the
+ * Models file pasted earlier this session) - but I don't have StaffAuthContext.tsx in this
+ * session to confirm the login profile's own TypeScript type actually carries a `designation`
+ * field end-to-end (i.e. that whatever endpoint populates `profile` selects User.Designation into
+ * the response). If your build reports `designation` does not exist on `profile`, it needs
+ * adding there first - tell me the real field name (or paste StaffAuthContext.tsx) and this is a
+ * one-line fix. */
+function badgeLabel(profile?: { role?: StaffRole; designation?: string | null } | null): string | undefined {
+  if (profile?.designation === 'Captain' || profile?.designation === 'ViceCaptain') return profile.designation
+  return profile?.role
 }
 
 export function StaffLayout() {
@@ -427,7 +512,7 @@ export function StaffLayout() {
                   (User.AvatarColor, already set on every account - see UsersController) when
                   there is one, falling back to a role-tier color only for the rare account with
                   none set. */}
-              <span className={`role-pill ${roleTier(profile?.role) !== 'admin' ? `role-pill-${roleTier(profile?.role)}` : ''}`}>{profile?.role}</span>
+              <span className={`role-pill ${roleTier(profile?.role) !== 'admin' ? `role-pill-${roleTier(profile?.role)}` : ''}`}>{badgeLabel(profile)}</span>
               <div
                 className={`avatar-circle tier-${roleTier(profile?.role)}`}
                 style={profile?.avatarColor ? { background: profile.avatarColor } : undefined}
@@ -447,7 +532,7 @@ export function StaffLayout() {
                   </div>
                   <div>
                     <div style={{ fontWeight: 600 }}>{profile?.name}</div>
-                    <span className={`role-pill ${roleTier(profile?.role) !== 'admin' ? `role-pill-${roleTier(profile?.role)}` : ''}`} style={{ marginTop: 4 }}>{profile?.role}</span>
+                    <span className={`role-pill ${roleTier(profile?.role) !== 'admin' ? `role-pill-${roleTier(profile?.role)}` : ''}`} style={{ marginTop: 4 }}>{badgeLabel(profile)}</span>
                   </div>
                 </div>
                 <dl className="profile-details">

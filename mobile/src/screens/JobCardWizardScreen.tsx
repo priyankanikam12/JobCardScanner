@@ -1,3 +1,4 @@
+// mobile\src\screens\JobCardWizardScreen.tsx
 import { useEffect, useState } from 'react'
 import {
   ActivityIndicator, Alert, Image, Platform, ScrollView, StyleSheet, Text,

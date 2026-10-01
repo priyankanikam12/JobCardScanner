@@ -1,4 +1,3 @@
-// web\src\pages\staff\EmployeesPage.tsx
 import { Fragment, useEffect, useState } from 'react'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
@@ -63,7 +62,23 @@ const INDIA_STATES = [
   'West Bengal',
 ]
 
-const DESIGNATIONS = ['Captain', 'Technician', 'Vice Captain'] as const
+// 2026-10-01 ("update my this employeepage which last updated role i was give 'Captain',
+// 'ViceCaptain', 'Technician'"): added these three as selectable Designations. ADDED to the
+// existing list, not replaced - Supervisor/Mechanic are left in place since you didn't say to
+// remove them; tell me if they should come out.
+//
+// StaffRole (web/src/types/index.ts) already lists 'Captain' | 'ViceCaptain' | 'Technician' as
+// valid roles (added earlier in this session), so the TYPE side is ready. But selecting one of
+// these here does NOT yet save as that Role end-to-end - see the role: 'ServiceAdvisor' placeholder
+// a few lines below in save(): on create, this page always sends the hardcoded placeholder
+// `role: 'ServiceAdvisor'` and relies entirely on the backend's UsersController.RoleForDesignation
+// (or equivalent) to re-map Designation -> the real Role; on edit (PUT), this page doesn't send
+// `role` AT ALL, only `designation`, so the SAME backend mapping has to run again there too. I do
+// not have UsersController.cs, the backend StaffRole enum file, or Auth/Policies.cs in this
+// session (never provided) - so I cannot confirm or fix whether Captain/ViceCaptain/Technician
+// actually map through correctly today. Until that mapping is confirmed, selecting these in the
+// dropdown may silently save as the wrong Role (or fail validation) server-side.
+const DESIGNATIONS = ['Supervisor', 'Mechanic', 'Captain', 'ViceCaptain', 'Technician'] as const
 type Designation = typeof DESIGNATIONS[number]
 
 const emptyEmployeeForm = {
@@ -71,6 +86,15 @@ const emptyEmployeeForm = {
   name: '', email: '', password: '', mobile: '',
   state: '', city: '', pincode: '', dateOfJoining: '',
   designation: '' as '' | Designation,
+  // 2026-10-01 ("which designation update that role also want that add in page to update"):
+  // READ-ONLY - the already-saved Role for the employee being edited (u.role, from GET
+  // /api/users), shown next to Designation so you can see what Role this person actually has.
+  // This is NOT an editable field and is never sent back to the server - Role is still only ever
+  // set by the backend's own Designation -> Role mapping (UsersController, not provided to me
+  // this session), per the existing placeholder/doc comments a few lines below in save(). Blank
+  // while creating a new employee, since there is no Role yet until the backend assigns one on
+  // save.
+  role: '' as StaffRole | '',
   dealerId: '',
   workLocationCodes: [] as string[],
 }
@@ -135,6 +159,7 @@ export function EmployeesPage() {
       pincode: u.pincode ?? '',
       dateOfJoining: u.dateOfJoining ? u.dateOfJoining.slice(0, 10) : '',
       designation: (u.designation as Designation) ?? '',
+      role: u.role,
       dealerId: u.dealerId ?? '',
       workLocationCodes: u.workLocationCodes,
     })
@@ -275,6 +300,13 @@ export function EmployeesPage() {
               {DESIGNATIONS.map((d) => <option key={d} value={d}>{d}</option>)}
             </select>
           </div>
+          <div className="field">
+            <label>Role</label>
+            {/* Read-only - see the `role` field's doc comment on emptyEmployeeForm above. Not an
+                input: there is nothing here for the admin to pick, this only shows what the
+                backend already assigned from Designation. */}
+            <input value={employeeForm.id ? employeeForm.role : 'Set automatically after saving'} disabled />
+          </div>
         </div>
 
         <div className="field">
@@ -335,7 +367,7 @@ export function EmployeesPage() {
         <table>
           <thead>
             <tr>
-              <th>Name</th><th>Email</th><th>Designation</th><th>Dealer</th>
+              <th>Name</th><th>Email</th><th>Designation</th><th>Role</th><th>Dealer</th>
               <th>City / State</th><th>Work Area</th><th>Active</th><th></th>
             </tr>
           </thead>
@@ -343,7 +375,7 @@ export function EmployeesPage() {
             {users.map((u) => (
               <Fragment key={u.id}>
                 <tr>
-                  <td>{u.name}</td><td>{u.email}</td><td>{u.designation ?? '-'}</td><td>{u.dealerName ?? 'All'}</td>
+                  <td>{u.name}</td><td>{u.email}</td><td>{u.designation ?? '-'}</td><td>{u.role}</td><td>{u.dealerName ?? 'All'}</td>
                   <td>{[u.city, u.state].filter(Boolean).join(', ') || '-'}</td>
                   <td>{u.workLocationCodes.length > 0 ? `${u.workLocationCodes.length} location${u.workLocationCodes.length === 1 ? '' : 's'}` : 'All'}</td>
                   <td>{u.active ? 'Yes' : 'No'}</td>
@@ -367,11 +399,12 @@ export function EmployeesPage() {
                 </tr>
                 {expandedId === u.id && (
                   <tr>
-                    <td colSpan={8} style={{ background: 'var(--bg-muted, #f9fafb)' }}>
+                    <td colSpan={9} style={{ background: 'var(--bg-muted, #f9fafb)' }}>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '6px 24px', padding: '10px 4px' }}>
                         <div><strong>Name:</strong> {u.name}</div>
                         <div><strong>Email:</strong> {u.email}</div>
                         <div><strong>Designation:</strong> {u.designation ?? '-'}</div>
+                        <div><strong>Role:</strong> {u.role}</div>
                         <div><strong>Dealer:</strong> {u.dealerName ?? 'All'}</div>
                         <div><strong>City/State:</strong> {[u.city, u.state].filter(Boolean).join(', ') || '-'}</div>
                         <div style={{ gridColumn: '1 / -1' }}>
@@ -388,7 +421,7 @@ export function EmployeesPage() {
               </Fragment>
             ))}
             {users.length === 0 && (
-              <tr><td colSpan={8} className="muted">No employees yet - add one above.</td></tr>
+              <tr><td colSpan={9} className="muted">No employees yet - add one above.</td></tr>
             )}
           </tbody>
         </table>
