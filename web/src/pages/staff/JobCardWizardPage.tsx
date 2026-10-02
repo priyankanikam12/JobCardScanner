@@ -558,6 +558,26 @@ export function JobCardWizardPage() {
       .catch(() => setComplaintOptions([]))
   }, [])
 
+  // 2026-10-02 ("17 no complaint showing in dropdown with search functionality"): the "More
+  // complaints…" overflow list (everything past COMPLAINT_BUTTON_LIMIT) was a plain <select> with
+  // no way to type and filter - replaced with a real searchable dropdown: a text box that filters
+  // the overflow list as you type, below it a clickable results list (see overflowComplaintMatches
+  // further down and its render block in the Service Details step).
+  const [complaintSearchQuery, setComplaintSearchQuery] = useState('')
+  const [isComplaintDropdownOpen, setIsComplaintDropdownOpen] = useState(false)
+  const complaintSearchRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!isComplaintDropdownOpen) return
+    const handleClickOutside = (e: MouseEvent) => {
+      if (complaintSearchRef.current && !complaintSearchRef.current.contains(e.target as Node)) {
+        setIsComplaintDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [isComplaintDropdownOpen])
+
   const sortedServiceMenuRows = [...serviceMenuRows].sort((a, b) => a.sortOrder - b.sortOrder)
   const jobTypeOptions = dedupeBy(sortedServiceMenuRows, (r) => r.jobTypeId)
     .map((r) => ({ id: r.jobTypeId, name: r.jobTypeName }))
@@ -603,6 +623,14 @@ export function JobCardWizardPage() {
   const serviceDetailsValid = !!(
     selectedJobTypeId && selectedServiceHeadId && priority && expectedDeliveryAt && complaints.length > 0
   )
+
+  // Overflow Complaint Master rows (past COMPLAINT_BUTTON_LIMIT), filtered by the search box above
+  // the dropdown - case-insensitive substring match against complaintText, same list the old plain
+  // <select> used (complaintOptions.slice(COMPLAINT_BUTTON_LIMIT)), just now searchable.
+  const overflowComplaintOptions = complaintOptions.slice(COMPLAINT_BUTTON_LIMIT)
+  const overflowComplaintMatches = complaintSearchQuery.trim()
+    ? overflowComplaintOptions.filter((c) => c.complaintText.toLowerCase().includes(complaintSearchQuery.trim().toLowerCase()))
+    : overflowComplaintOptions
 
   useEffect(() => {
     // Clear whatever Service Location was previously selected (manually or auto-defaulted) any
@@ -1523,25 +1551,65 @@ export function JobCardWizardPage() {
               })}
             </div>
             {complaintOptions.length > COMPLAINT_BUTTON_LIMIT && (
-              <div style={{ marginBottom: 10 }}>
-                <select
-                  value=""
-                  onChange={(e) => {
-                    addComplaintFromOverflowDropdown(e.target.value)
-                    e.target.value = ''
-                  }}
-                >
-                  <option value="">More complaints…</option>
-                  {complaintOptions.slice(COMPLAINT_BUTTON_LIMIT).map((c) => (
-                    <option key={c.id} value={c.complaintText} disabled={complaints.includes(c.complaintText)}>
-                      {c.complaintText}
-                      {complaints.includes(c.complaintText) ? ' (added)' : ''}
-                    </option>
-                  ))}
-                </select>
+              <div ref={complaintSearchRef} style={{ position: 'relative', marginBottom: 10, maxWidth: 360 }}>
+                <input
+                  value={complaintSearchQuery}
+                  onChange={(e) => { setComplaintSearchQuery(e.target.value); setIsComplaintDropdownOpen(true) }}
+                  onFocus={() => setIsComplaintDropdownOpen(true)}
+                  onKeyDown={(e) => e.key === 'Escape' && setIsComplaintDropdownOpen(false)}
+                  placeholder="Search more complaints…"
+                />
+                {isComplaintDropdownOpen && (
+                  <ul style={{
+                    listStyle: 'none', margin: '4px 0 0', padding: 4, position: 'absolute', zIndex: 10,
+                    top: '100%', left: 0, right: 0, maxHeight: 320, overflowY: 'auto',
+                    background: '#fff', border: '1px solid var(--border)', borderRadius: 8,
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
+                  }}>
+                    {overflowComplaintMatches.length === 0 ? (
+                      <li style={{ padding: '6px 10px', color: '#6b7280' }}>No matching complaints.</li>
+                    ) : (
+                      <>
+                        {overflowComplaintMatches.length > 10 && (
+                          <li style={{
+                            padding: '4px 10px 6px', color: '#6b7280', fontSize: 12,
+                            position: 'sticky', top: 0, background: '#fff',
+                            borderBottom: '1px solid var(--border)', marginBottom: 2,
+                          }}>
+                            {overflowComplaintMatches.length} matches — scroll for more ↓
+                          </li>
+                        )}
+                        {overflowComplaintMatches.map((c) => {
+                          const alreadyAdded = complaints.includes(c.complaintText)
+                          return (
+                            <li key={c.id}>
+                              <button
+                                type="button"
+                                disabled={alreadyAdded}
+                                onClick={() => {
+                                  addComplaintFromOverflowDropdown(c.complaintText)
+                                  setComplaintSearchQuery('')
+                                  setIsComplaintDropdownOpen(false)
+                                }}
+                                style={{
+                                  display: 'block', width: '100%', textAlign: 'left', padding: '6px 10px',
+                                  border: 'none', background: 'transparent', borderRadius: 6,
+                                  cursor: alreadyAdded ? 'default' : 'pointer',
+                                  color: alreadyAdded ? '#9ca3af' : 'inherit',
+                                }}
+                              >
+                                {c.complaintText}{alreadyAdded ? ' (added)' : ''}
+                              </button>
+                            </li>
+                          )
+                        })}
+                      </>
+                    )}
+                  </ul>
+                )}
               </div>
             )}
-            <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+            {/* <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
               <input
                 value={manualComplaintText}
                 onChange={(e) => setManualComplaintText(e.target.value)}
@@ -1556,7 +1624,7 @@ export function JobCardWizardPage() {
               >
                 + Add
               </button>
-            </div>
+            </div> */}
             {complaints.length > 0 ? (
               <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {complaints.map((c) => (

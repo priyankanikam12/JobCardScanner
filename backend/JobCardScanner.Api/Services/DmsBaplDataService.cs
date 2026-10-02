@@ -348,10 +348,32 @@ public interface IDmsBaplDataService
     /// <summary>
     /// Repair bills from DMSBAPLDATA's dbo.DMS_RepairBill (+ their dbo.DMS_RepairBillItem line
     /// items), filtered to PartyName LIKE '%{partyNameFilter}%' - the "Repair Bill" sidebar page's
-    /// data source. partyNameFilter defaults to "Zomato" per the fleet-scoping this page exists
-    /// for; pass null/empty for every party (not currently exposed in the UI, kept for flexibility).
+    /// data source. Unchanged signature, kept for any existing caller - delegates to the
+    /// dealer-aware overload below with dealerCode: null (every dealer), same "null = everyone"
+    /// convention GetVehicleSalesAsync already uses. See that overload for why this one alone is no
+    /// longer enough for the page itself.
     /// </summary>
     Task<IReadOnlyList<DmsBaplDataRepairBillRow>> GetRepairBillsAsync(string? partyNameFilter, CancellationToken ct = default);
+
+    /// <summary>
+    /// 2026-10-02 ("still fetched only zomato data remove this and login dealer data sown and
+    /// systemadmin show all data"): same query as the method above, PLUS dealer scoping - FACT,
+    /// confirmed by reading this file's own GetRepairBillsAsync SQL: DMS_RepairBill already carries
+    /// its own DealerCode column (selected into every DmsBaplDataRepairBillRow already, just never
+    /// filtered on), so this reuses the exact `(@dealerCode IS NULL OR DealerCode = @dealerCode)`
+    /// pattern GetVehicleSalesAsync's 2026-10-01 dealer-scoped overload already established, not a
+    /// new pattern invented for this. dealerCode null still means "every dealer" (SystemAdmin/
+    /// CorporateAdmin - see RepairBillPage.tsx's own isOrgWideRole check); a real dealer's own
+    /// DealerBaplDmsCode scopes everyone else to just their own dealer's bills, replacing the old
+    /// hardcoded partyNameFilter defaulting to "Zomato" that used to be this page's only filter.
+    ///
+    /// NOT WIRED IN YET: I don't have DmsBaplDataController.cs (the file behind GET
+    /// /api/dms-bapl-data/repair-bills) in this session, so I can't add the `dealerCode` query
+    /// parameter to that endpoint and resolve it from the signed-in user myself - paste that
+    /// controller and I'll wire it the same way LookupVehicleForWizardAsync's dealerCode already is
+    /// elsewhere in this same file.
+    /// </summary>
+    Task<IReadOnlyList<DmsBaplDataRepairBillRow>> GetRepairBillsAsync(string? partyNameFilter, string? dealerCode, CancellationToken ct = default);
 
     /// <summary>
     /// Material transfer documents from DMSBAPLDATA's dbo.DMS_MaterialTransfer (+ their
@@ -496,7 +518,13 @@ public class DmsBaplDataService : IDmsBaplDataService
     private string BaplConnStr => _config.GetConnectionString("BaplConnection")
         ?? throw new InvalidOperationException("BaplConnection isn't configured in appsettings.json's ConnectionStrings section.");
 
-    public async Task<IReadOnlyList<DmsBaplDataRepairBillRow>> GetRepairBillsAsync(string? partyNameFilter, CancellationToken ct = default)
+    // 2026-10-02: unchanged signature, kept for any existing caller - delegates to the dealer-aware
+    // overload below with dealerCode: null (same "null = every dealer" behavior this method always
+    // had, so this is not a behavior change for whatever already calls this exact overload).
+    public Task<IReadOnlyList<DmsBaplDataRepairBillRow>> GetRepairBillsAsync(string? partyNameFilter, CancellationToken ct = default) =>
+        GetRepairBillsAsync(partyNameFilter, dealerCode: null, ct);
+
+    public async Task<IReadOnlyList<DmsBaplDataRepairBillRow>> GetRepairBillsAsync(string? partyNameFilter, string? dealerCode, CancellationToken ct = default)
     {
         var headers = new List<DmsBaplDataRepairBillRow>();
         var itemsByBillId = new Dictionary<int, List<DmsBaplDataRepairBillItemRow>>();
@@ -506,6 +534,10 @@ public class DmsBaplDataService : IDmsBaplDataService
             await using var conn = new SqlConnection(ConnStr);
             await conn.OpenAsync(ct);
 
+            // 2026-10-02 ADDED: dealer scoping, mirroring GetVehicleSalesAsync's own
+            // `(@dealerCode IS NULL OR sb.dealer_code = @dealerCode)` pattern - see this method's
+            // interface doc comment for why (this page used to only ever filter by Party Name,
+            // defaulting to "Zomato", with no dealer scoping at all).
             const string headerSql = @"
                 SELECT
                     Id, DealerName, DealerCode, UniqueKey, UniqueId, InvoiceNo, InvoiceDate,
@@ -513,12 +545,14 @@ public class DmsBaplDataService : IDmsBaplDataService
                     CreatedAt, UpdatedAt
                 FROM [dbo].[DMS_RepairBill]
                 WHERE (@party IS NULL OR PartyName LIKE @party)
+                  AND (@dealerCode IS NULL OR DealerCode = @dealerCode)
                 ORDER BY InvoiceDate DESC, Id DESC";
 
             var billIds = new List<int>();
             await using (var cmd = new SqlCommand(headerSql, conn) { CommandTimeout = 30 })
             {
                 cmd.Parameters.AddWithValue("@party", string.IsNullOrWhiteSpace(partyNameFilter) ? DBNull.Value : $"%{partyNameFilter.Trim()}%");
+                cmd.Parameters.AddWithValue("@dealerCode", string.IsNullOrWhiteSpace(dealerCode) ? DBNull.Value : dealerCode.Trim());
                 await using var rdr = await cmd.ExecuteReaderAsync(ct);
                 while (await rdr.ReadAsync(ct))
                 {
@@ -545,12 +579,26 @@ public class DmsBaplDataService : IDmsBaplDataService
                 }
             }
 
-            if (billIds.Count > 0)
+            // 2026-10-02 FIX ("The incoming request has too many parameters. The server supports a
+            // maximum of 2100 parameters."): this used to bind ALL of billIds as one single
+            // unchunked `IN (@id0, @id1, ..., @idN)` parameter list. SQL Server hard-caps a batch at
+            // 2100 parameters total, and a broad Party Name search (e.g. "Zomato", or no dealer
+            // scope at all for an org-wide role) can easily match more than 2100 repair bill
+            // headers, which made this query - and the whole request - fail outright. Chunked into
+            // batches of 500 instead, one query per chunk, same proven pattern this file already
+            // uses in GetRegNoByChassisFromServiceHistoryAsync for the identical reason (see that
+            // method's own doc comment) - just applied here too, where it was missing.
+            const int chunkSize = 500;
+            for (var offset = 0; offset < billIds.Count; offset += chunkSize)
             {
-                // Items pulled in one follow-up query for every header just read, rather than
-                // per-row, to keep this to two round trips regardless of how many bills matched -
-                // same "batch the child rows" shape as BaplDmsService's own multi-row lookups.
-                var inClause = string.Join(",", billIds.Select((_, i) => $"@id{i}"));
+                var chunk = billIds.Skip(offset).Take(chunkSize).ToList();
+                if (chunk.Count == 0) continue;
+
+                // Items pulled in one follow-up query per chunk of headers just read, rather than
+                // per-row, to keep this to a small, bounded number of round trips regardless of how
+                // many bills matched - same "batch the child rows" shape as BaplDmsService's own
+                // multi-row lookups, just chunked now rather than unbounded.
+                var inClause = string.Join(",", chunk.Select((_, i) => $"@id{i}"));
                 var itemSql = $@"
                     SELECT
                         Id, RepairBillId, ItemIdno, ItemCode, ItemDesc, ItemType, Qty, Rate,
@@ -561,7 +609,7 @@ public class DmsBaplDataService : IDmsBaplDataService
                     ORDER BY RepairBillId, Id";
 
                 await using var cmd = new SqlCommand(itemSql, conn) { CommandTimeout = 30 };
-                for (var i = 0; i < billIds.Count; i++) cmd.Parameters.AddWithValue($"@id{i}", billIds[i]);
+                for (var i = 0; i < chunk.Count; i++) cmd.Parameters.AddWithValue($"@id{i}", chunk[i]);
                 await using var rdr = await cmd.ExecuteReaderAsync(ct);
                 while (await rdr.ReadAsync(ct))
                 {
@@ -652,11 +700,22 @@ public class DmsBaplDataService : IDmsBaplDataService
             }
 
             var itemIds = new List<int>();
-            if (transferIds.Count > 0)
+            // 2026-10-02 FIX (same "too many parameters" defect as GetRepairBillsAsync above, just
+            // not yet observed here in production - this page's LocCode scope has apparently stayed
+            // under 2100 transfers per search so far, but the code shape was identical and equally
+            // exposed): both the item and labour follow-up queries below used to bind every id as
+            // one unchunked `IN (...)` parameter list. Chunked into batches of 500, same pattern now
+            // used in GetRepairBillsAsync and GetRegNoByChassisFromServiceHistoryAsync.
+            const int chunkSize = 500;
+            for (var offset = 0; offset < transferIds.Count; offset += chunkSize)
             {
-                // Same "batch the child rows in one follow-up query" shape as GetRepairBillsAsync
-                // above - one query for every header's items, instead of one query per header.
-                var inClause = string.Join(",", transferIds.Select((_, i) => $"@id{i}"));
+                var chunk = transferIds.Skip(offset).Take(chunkSize).ToList();
+                if (chunk.Count == 0) continue;
+
+                // Same "batch the child rows in one follow-up query per chunk" shape as
+                // GetRepairBillsAsync above - a small, bounded number of queries for every header's
+                // items, instead of one query per header or one unbounded query for all of them.
+                var inClause = string.Join(",", chunk.Select((_, i) => $"@id{i}"));
                 var itemSql = $@"
                     SELECT
                         Id, MaterialTransferId, SourceLineId, ItemIdno, ItemName, ItemDescription,
@@ -667,7 +726,7 @@ public class DmsBaplDataService : IDmsBaplDataService
                     ORDER BY MaterialTransferId, Id";
 
                 await using var cmd = new SqlCommand(itemSql, conn) { CommandTimeout = 30 };
-                for (var i = 0; i < transferIds.Count; i++) cmd.Parameters.AddWithValue($"@id{i}", transferIds[i]);
+                for (var i = 0; i < chunk.Count; i++) cmd.Parameters.AddWithValue($"@id{i}", chunk[i]);
                 await using var rdr = await cmd.ExecuteReaderAsync(ct);
                 while (await rdr.ReadAsync(ct))
                 {
@@ -699,9 +758,12 @@ public class DmsBaplDataService : IDmsBaplDataService
                 }
             }
 
-            if (itemIds.Count > 0)
+            for (var offset = 0; offset < itemIds.Count; offset += chunkSize)
             {
-                var inClause = string.Join(",", itemIds.Select((_, i) => $"@iid{i}"));
+                var chunk = itemIds.Skip(offset).Take(chunkSize).ToList();
+                if (chunk.Count == 0) continue;
+
+                var inClause = string.Join(",", chunk.Select((_, i) => $"@iid{i}"));
                 var labourSql = $@"
                     SELECT
                         Id, MaterialTransferItemId, LbrIdno, LbrName, LbrDescription, LbrRate,
@@ -711,7 +773,7 @@ public class DmsBaplDataService : IDmsBaplDataService
                     ORDER BY MaterialTransferItemId, Id";
 
                 await using var cmd = new SqlCommand(labourSql, conn) { CommandTimeout = 30 };
-                for (var i = 0; i < itemIds.Count; i++) cmd.Parameters.AddWithValue($"@iid{i}", itemIds[i]);
+                for (var i = 0; i < chunk.Count; i++) cmd.Parameters.AddWithValue($"@iid{i}", chunk[i]);
                 await using var rdr = await cmd.ExecuteReaderAsync(ct);
                 while (await rdr.ReadAsync(ct))
                 {

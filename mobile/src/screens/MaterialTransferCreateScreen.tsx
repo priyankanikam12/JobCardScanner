@@ -2,12 +2,15 @@
 import { useEffect, useState } from 'react'
 import { DateTimePickerAndroid, type DateTimePickerEvent } from '@react-native-community/datetimepicker'
 import { ActivityIndicator, Alert, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'
+import { useNavigation } from '@react-navigation/native'
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import { apiClient } from '../api/client'
 import { useStaffAuth } from '../auth/StaffAuthContext'
 import { JobSearchModal } from '../components/JobSearchModal'
 import { PartwiseLabourModal, type PartwiseLabourPick } from '../components/PartwiseLabourModal'
 import { PickerField } from '../components/PickerField'
 import { colors } from '../theme/colors'
+import type { RootStackParamList } from '../navigation/RootNavigator'
 import type { BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaster, CombinedMaterialTransferRow, JobSearchResult, MaterialTransferDocItemType, MaterialTransferDocType } from '../types'
 
 /**
@@ -42,6 +45,14 @@ import type { BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaster, CombinedMateria
  * Remove, so there is no later divergence to cascade-guard against, unlike web's editable grid).
  * Removing a Part line cascades to remove its Labour children too (see removeLine below) - a
  * Labour line has no meaning once its governing Part line is gone.
+ *
+ * 2026-10-02 ("for mobile also give this repair bill and material transfer both page report") -
+ * added a "View DMS Report" button next to the "Material Transfers" combined-list header - opens
+ * MaterialTransferReportScreen.tsx, the read-only DMSBAPLDATA material-transfer report (NOT the
+ * combined list immediately below it, which is this screen's own JobCardScanner rows PLUS
+ * DMSBAPLDATA rows merged together - see loadCombined's own endpoint). The new report screen
+ * instead shows DMSBAPLDATA's full item + labour line-item detail for a chosen DMS workshop
+ * location, matching web's MaterialTransferPage.tsx.
  */
 type DiscountType = '%' | 'Value'
 
@@ -116,8 +127,11 @@ const emptyDraft: Omit<DraftItem, 'key'> = {
   itemType: 'Part', sourcePartKey: null,
 }
 
+type MaterialTransferCreateNav = NativeStackNavigationProp<RootStackParamList, 'MaterialTransferCreate'>
+
 export function MaterialTransferCreateScreen() {
   const { profile } = useStaffAuth()
+  const navigation = useNavigation<MaterialTransferCreateNav>()
 
   const [workshops, setWorkshops] = useState<BaplDmsWorkshop[]>([])
   useEffect(() => {
@@ -503,9 +517,19 @@ export function MaterialTransferCreateScreen() {
       </TouchableOpacity>
 
       {/* ---------------- Combined list ---------------- */}
-      <Text style={[styles.sectionTitle, { marginTop: 22 }]}>Material Transfers</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 22, flexWrap: 'wrap', gap: 8 }}>
+        <Text style={styles.sectionTitle}>Material Transfers</Text>
+        {/* 2026-10-02 ("for mobile also give this repair bill and material transfer both page
+            report") - opens the read-only DMSBAPLDATA report (MaterialTransferReportScreen.tsx),
+            with full item + labour detail per document, NOT the combined summary list below (own
+            JobCardScanner rows + DMSBAPLDATA rows merged, item-count only) - see this file's own
+            doc comment for the distinction. */}
+        <TouchableOpacity style={styles.smallBtn} onPress={() => navigation.navigate('MaterialTransferReport')}>
+          <Text style={styles.smallBtnText}>View MT Report</Text>
+        </TouchableOpacity>
+      </View>
       <PickerField label="DMS workshop location (for DMSBAPLDATA rows)" value={locCode} onChange={setLocCode} options={workshops.map((w) => ({ label: `${w.locCode} — ${w.locName}`, value: w.locCode }))} placeholder="— none —" />
-      {dmsError && <Text style={styles.error}>DMSBAPLDATA rows unavailable: {dmsError}</Text>}
+      {dmsError && <Text style={styles.error}>DATA rows unavailable: {dmsError}</Text>}
       {loading && <ActivityIndicator style={{ marginVertical: 8 }} color={colors.primary} />}
 
       {rows.map((r) => (

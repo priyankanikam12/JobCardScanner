@@ -36,6 +36,14 @@ import { LabourMasterScreen } from '../screens/LabourMasterScreen'
 // other one here, uses `export default function AttendanceScreen()` - left as-is rather than
 // changed, to keep this a minimal, targeted fix.
 import AttendanceScreen from '../screens/AttendanceScreen'
+// 2026-10-02 ("for mobile also give this repair bill and material transfer both page report") -
+// read-only DMSBAPLDATA report screens, the mobile counterparts of web/src/pages/staff/
+// RepairBillPage.tsx and MaterialTransferPage.tsx. Named "...ReportScreen" (not
+// RepairBillScreen/MaterialTransferScreen) to stay distinct from the UNRELATED, already-registered
+// RepairBillCreateScreen/RepairBillListScreen/MaterialTransferCreateScreen above (JobCardScannerDb-
+// native creation workflow) - see each new screen's own doc comment.
+import { RepairBillReportScreen } from '../screens/RepairBillReportScreen'
+import { MaterialTransferReportScreen } from '../screens/MaterialTransferReportScreen'
 import { colors } from '../theme/colors'
 
 /** Optional /jobcards-equivalent filters the Dashboard's KPI cards deep-link with - each name
@@ -77,6 +85,11 @@ export type RootStackParamList = {
   // Left optional (not required) so any other future entry point that omits it keeps today's
   // existing server-decided (403 -> personal) behavior unchanged.
   Attendance: { onlyMine?: boolean } | undefined
+  // 2026-10-02 - both screens take no params, same shape as PartUpload/LabourMaster above. See
+  // this file's own import comment for why these are separate routes from RepairBillCreate/
+  // MaterialTransferCreate rather than reusing those names.
+  RepairBillReport: undefined
+  MaterialTransferReport: undefined
 }
 
 const Stack = createNativeStackNavigator<RootStackParamList>()
@@ -135,6 +148,11 @@ export function RootNavigator() {
           <Stack.Screen name="LabourMaster" component={LabourMasterScreen} options={{ title: 'Labour Master' }} />
           {/* 2026-09-28 FIX ("this page not linked in android?") */}
           <Stack.Screen name="Attendance" component={AttendanceScreen} options={{ title: 'Attendance' }} />
+          {/* 2026-10-02 - DMSBAPLDATA report screens, see this file's own import comment above.
+             Not yet on DashboardScreen.tsx's Actions list (see that screen's own note) - reachable
+             by navigation.navigate('RepairBillReport' | 'MaterialTransferReport') for now. */}
+          <Stack.Screen name="RepairBillReport" component={RepairBillReportScreen} options={{ title: 'Repair Bill Report' }} />
+          <Stack.Screen name="MaterialTransferReport" component={MaterialTransferReportScreen} options={{ title: 'Material Transfer Report' }} />
         </Stack.Navigator>
       )}
     </NavigationContainer>

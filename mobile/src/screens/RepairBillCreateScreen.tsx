@@ -71,6 +71,13 @@ import type { BaplDmsLabourRow, BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaste
  * screen is now the create/edit FORM only, reached either fresh (Dashboard's "Repair Bill" card)
  * or already in edit mode via a navigation param - see the route.params effect below, the Android
  * equivalent of web's ?editId= query param.
+ *
+ * 2026-10-02 ("for mobile also give this repair bill and material transfer both page report") -
+ * added a "View DMS Report" button next to "View List" (new-bill header) - opens
+ * RepairBillReportScreen.tsx, the read-only DMSBAPLDATA repair-bill report (NOT this screen's own
+ * JobCardScannerDb Performa/Billed data - see that screen's own doc comment for the distinction).
+ * Not shown while editing an existing bill (editingBillId set), matching where "View List" itself
+ * is hidden, since that header row doesn't render in edit mode either.
  */
 type TaxMode = 'Same State (CGST+SGST)' | 'Different State (IGST)'
 type DiscountType = 'None' | 'Percentage' | 'Amount'
@@ -666,11 +673,20 @@ export function RepairBillCreateScreen() {
           <TouchableOpacity style={styles.smallBtn} onPress={cancelEdit}><Text style={styles.smallBtnText}>✕ Cancel</Text></TouchableOpacity>
         </View>
       ) : (
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
           <Text style={styles.sectionTitle}>New Repair Bill</Text>
-          <TouchableOpacity style={styles.smallBtn} onPress={() => navigation.navigate('RepairBillList')}>
-            <Text style={styles.smallBtnText}>View List</Text>
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            {/* 2026-10-02 ("for mobile also give this repair bill and material transfer both page
+                report") - opens the read-only DMSBAPLDATA report (RepairBillReportScreen.tsx),
+                NOT this screen's own JobCardScannerDb Performa/Billed data - see this file's own
+                doc comment for the distinction. */}
+            <TouchableOpacity style={styles.smallBtn} onPress={() => navigation.navigate('RepairBillReport')}>
+              <Text style={styles.smallBtnText}>View RB Report</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.smallBtn} onPress={() => navigation.navigate('RepairBillList')}>
+              <Text style={styles.smallBtnText}>View List</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       )}
       {editLoadError && <Text style={styles.error}>{editLoadError}</Text>}

@@ -29,6 +29,14 @@ import { colors } from '../theme/colors'
 type Props = NativeStackScreenProps<RootStackParamList, 'JobCardWizard'>
 
 const STEPS = ['Customer', 'Vehicle', 'Service Details', 'Review & Create']
+// 2026-10-02 ("in both web and android jobcardwizards in complaint top 16 complaint shown in
+// Radio button only and after 16 in dropdown dont add in radio only fix 16 Complaint in radio
+// button"): mirrors web's JobCardWizardPage.tsx COMPLAINT_BUTTON_LIMIT - only the first 16
+// Complaint Master rows render as one-tap toggle buttons below; this screen previously had no
+// button grid at all for complaints (only the dropdown-plus-"+ Add" pattern further down), so this
+// adds that grid rather than resizing an existing one. The dropdown is narrowed to just the rows
+// past this limit (see complaintPickOptions below) so nothing is offered as a pick twice.
+const COMPLAINT_BUTTON_LIMIT = 16
 
 // SECTION 169 (2026-09-30) "bind this 3 dropdown dependancy from master" - Job Type/Service Head/
 // Priority and Complaints are no longer live-fetched from BAPL DMS (/api/bapl-dms/job-types,
@@ -624,6 +632,12 @@ export function JobCardWizardScreen({ navigation }: Props) {
     setSelectedComplaintId('')
   }
   const removeComplaint = (name: string) => setComplaints((prev) => prev.filter((c) => c !== name))
+  // 2026-10-02: one-tap toggle for the new button grid (first COMPLAINT_BUTTON_LIMIT complaints) -
+  // mirrors web's toggleComplaint. Tapping an already-added complaint's button removes it again,
+  // same as the Remove chip in the list below.
+  const toggleComplaint = (name: string) => {
+    setComplaints((prev) => (prev.includes(name) ? prev.filter((c) => c !== name) : [...prev, name]))
+  }
 
   const openExpectedDeliveryPicker = () => {
     DateTimePickerAndroid.open({
@@ -940,7 +954,12 @@ export function JobCardWizardScreen({ navigation }: Props) {
   const supervisorPickOptions: PickerOption[] = supervisorOptions.map((s) => ({ label: s.name, value: s.name }))
   const technicianPickOptions: PickerOption[] = technicianOptions.map((t) => ({ label: t.name, value: t.name }))
   const jobSourceOptions: PickerOption[] = jobSources.map((s) => ({ label: s.name, value: String(s.id) }))
-  const complaintPickOptions: PickerOption[] = complaintOptions.map((c) => ({ label: c.complaintText, value: c.id }))
+  // 2026-10-02: narrowed to the rows past COMPLAINT_BUTTON_LIMIT (was every row) now that the
+  // first 16 are offered as one-tap buttons above this dropdown instead - keeps each complaint
+  // reachable exactly one way.
+  const complaintPickOptions: PickerOption[] = complaintOptions
+    .slice(COMPLAINT_BUTTON_LIMIT)
+    .map((c) => ({ label: c.complaintText, value: c.id }))
   // SECTION 169: sourced from the (Job Type, Service Head)-filtered priorityOptionsForSelection now
   // (was a completely independent fixed 3-item '1'/'2'/'3' array) - label = short code
   // (PriorityValue), value = what actually gets POSTED (PriorityLabel) - see the import block's
@@ -1280,10 +1299,27 @@ export function JobCardWizardScreen({ navigation }: Props) {
           </View>
 
           <Text style={[styles.label, { marginTop: 12 }]}>Customer complaints<Text style={styles.requiredStar}> *</Text></Text>
+          {/* 2026-10-02 ("fix 16 Complaint in radio button"): first COMPLAINT_BUTTON_LIMIT (16)
+             Complaint Master rows as one-tap buttons, mirroring web's grid - tap again (or Remove
+             below) to un-pick. Anything past 16 is only in the dropdown underneath this grid. */}
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+            {complaintOptions.slice(0, COMPLAINT_BUTTON_LIMIT).map((c) => {
+              const picked = complaints.includes(c.complaintText)
+              return (
+                <TouchableOpacity
+                  key={c.id}
+                  style={[styles.btn, picked && { backgroundColor: '#2563eb', borderColor: '#2563eb' }]}
+                  onPress={() => toggleComplaint(c.complaintText)}
+                >
+                  <Text style={[styles.btnText, picked && { color: '#fff' }]}>{c.complaintText}</Text>
+                </TouchableOpacity>
+              )
+            })}
+          </View>
           {complaintPickOptions.length > 0 && (
             <View style={styles.searchRow}>
               <View style={{ flex: 1 }}>
-                <PickerField label="" value={selectedComplaintId} options={complaintPickOptions} placeholder="Pick from DMS's complaint list…" onChange={setSelectedComplaintId} />
+                <PickerField label="" value={selectedComplaintId} options={complaintPickOptions} placeholder="More complaints…" onChange={setSelectedComplaintId} />
               </View>
               <TouchableOpacity style={[styles.addBtnSm, !selectedComplaintId && styles.btnDisabled]} disabled={!selectedComplaintId} onPress={addComplaintFromDropdown}>
                 <Text style={styles.addBtnSmText}>+ Add</Text>

@@ -1277,30 +1277,35 @@ async Task RunLedgerMasterCatchUpAsync()
     }
 }
 
-var selfHealStopwatch = Stopwatch.StartNew();
-
-// Wave 1: every block whose tables nothing else in wave 2 needs created first - see the
-// dependency note at the top of this section. Runs concurrently (Task.WhenAll), each on its own
-// scope/DbContext/connection, instead of one after another.
-await Task.WhenAll(
-    RunColumnMigrationsAsync(),
-    RunBaplColumnsLabourWorkflowCatchUpAsync(),
-    RunExtendedBatteryWarrantySchemeCatchUpAsync(),
-    RunMaterialTransferLabourCatchUpAsync(),
-    RunTechnicianEmployeeCatchUpAsync(),
-    RunServiceMenuComplaintPrefixCatchUpAsync(),
-    RunMenuAccessRoleModeCatchUpAsync());
-
-// Wave 2: depends on tables wave 1 just created (OemModels needs ExtendedBatteryWarrantySchemes;
-// the Status type-repair needs JobCardPartSuggestions) - also run concurrently with each other,
-// just after wave 1 instead of interleaved with it.
-await Task.WhenAll(
-    RunOemModelCatchUpAsync(),
-    RunPartSuggestionStatusTypeRepairAsync(),
-    RunLedgerMasterCatchUpAsync());
-
-selfHealStopwatch.Stop();
-Console.WriteLine($"[Startup] All self-healing schema checks complete in {selfHealStopwatch.ElapsedMilliseconds} ms (2 waves, was 9 sequential round-trips before this cleanup).");
+// Self-healing schema catch-up DISABLED 2026-10-02 at user's request: the schema is already
+// fully up to date in production (every ALTER TABLE/CREATE TABLE check in the Run*CatchUpAsync
+// functions above has already been applied), and running all of this on every single app start
+// was adding a long, unnecessary DB round-trip to startup - on 2026-10-02 one of these blocks
+// (RunBaplColumnsLabourWorkflowCatchUpAsync) hung on a SQL Server schema lock long enough to
+// blow through IIS's 120-second startup-time-limit (HTTP 500.37 / Event ID 1007), taking the
+// whole site down. The Run*CatchUpAsync functions above are left in place, unused, as reference
+// in case a future schema change needs this same idempotent-DDL pattern again - they will not
+// run unless the Task.WhenAll calls below are restored.
+//
+// var selfHealStopwatch = Stopwatch.StartNew();
+//
+// await Task.WhenAll(
+//     RunColumnMigrationsAsync(),
+//     RunBaplColumnsLabourWorkflowCatchUpAsync(),
+//     RunExtendedBatteryWarrantySchemeCatchUpAsync(),
+//     RunMaterialTransferLabourCatchUpAsync(),
+//     RunTechnicianEmployeeCatchUpAsync(),
+//     RunServiceMenuComplaintPrefixCatchUpAsync(),
+//     RunMenuAccessRoleModeCatchUpAsync());
+//
+// await Task.WhenAll(
+//     RunOemModelCatchUpAsync(),
+//     RunPartSuggestionStatusTypeRepairAsync(),
+//     RunLedgerMasterCatchUpAsync());
+//
+// selfHealStopwatch.Stop();
+// Console.WriteLine($"[Startup] All self-healing schema checks complete in {selfHealStopwatch.ElapsedMilliseconds} ms (2 waves, was 9 sequential round-trips before this cleanup).");
+Console.WriteLine("[Startup] Self-healing schema catch-up skipped (disabled - schema already up to date in this database).");
 
 // Opens Swagger in the default browser automatically once Kestrel has actually started
 // listening. launchSettings.json's "launchBrowser"/"launchUrl": "swagger" ONLY takes effect when
