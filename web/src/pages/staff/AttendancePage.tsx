@@ -97,6 +97,24 @@ function formatHoursWorked(hours: number | null): string {
   return h > 0 ? `${h}h ${m}m` : `${m}m`
 }
 
+/** 2026-10-02 (SECTION 187, "system time shown" / "in that check in and chekout and in jobcard
+ * timer correct this") - DEFENSIVE: AttendanceController.CheckIn/CheckOut now write whole-second
+ * TimeSpans going forward (see AttendanceController.cs SECTION 187), but any row saved before that
+ * backend fix still has the old raw value sitting in the database exactly as it was written, e.g.
+ * "17:57:19.1741354" (System.Text.Json's default TimeSpan serialization, full sub-second ticks) -
+ * it does not get rewritten retroactively just because the backend changed. This strips any
+ * residual fractional-seconds suffix so those already-stored rows also display cleanly, not just
+ * newly-created ones. It also makes the value safe to feed into the manager Mark() view's HTML
+ * <input type="time"> further down, which silently rejects/blanks anything beyond "HH:mm:ss".
+ * Any value that doesn't match the expected "HH:mm:ss[...]" shape is returned as-is rather than
+ * dropped, so an unexpected format is still visible instead of hidden. */
+function formatTimeOfDay(raw: string | null | undefined): string {
+  if (!raw) return ''
+  const match = raw.match(/^(\d{1,2}):(\d{2}):(\d{2})/)
+  if (!match) return raw
+  return `${match[1].padStart(2, '0')}:${match[2]}:${match[3]}`
+}
+
 function todayIso(): string {
   // Local (browser) date, not UTC - avoids the classic "it's already tomorrow in UTC" off-by-one
   // for IST users after ~5:30pm UTC.
@@ -366,8 +384,8 @@ export function AttendancePage() {
                     <td>{r.date.slice(0, 10)}</td>
                     <td>{r.status ?? <span className="muted">Not marked</span>}</td>
                     <td className="muted">{formatLocation(r.location)}</td>
-                    <td>{r.checkInTime ?? '-'}</td>
-                    <td>{r.checkOutTime ?? '-'}</td>
+                    <td>{formatTimeOfDay(r.checkInTime) || '-'}</td>
+                    <td>{formatTimeOfDay(r.checkOutTime) || '-'}</td>
                     <td className="muted">{r.shift ?? '-'}</td>
                     {/* 2026-09-28 (SECTION 143): still-open (no checkout yet) rows show this as a
                        live-ish figure - it reflects hours worked as of the last time this page
@@ -503,7 +521,7 @@ export function AttendancePage() {
                           <input
                             type="time"
                             className="attn-time-input"
-                            value={s.checkInTime || ''}
+                            value={formatTimeOfDay(s.checkInTime)}
                             onChange={(e) => updateTime(s.employeeId, 'checkInTime', e.target.value)}
                             onBlur={() => saveTimes(s)}
                           />
@@ -514,7 +532,7 @@ export function AttendancePage() {
                           <input
                             type="time"
                             className="attn-time-input"
-                            value={s.checkOutTime || ''}
+                            value={formatTimeOfDay(s.checkOutTime)}
                             onChange={(e) => updateTime(s.employeeId, 'checkOutTime', e.target.value)}
                             onBlur={() => saveTimes(s)}
                           />

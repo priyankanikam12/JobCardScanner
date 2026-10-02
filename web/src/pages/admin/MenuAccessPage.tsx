@@ -1,5 +1,5 @@
 // web\src\pages\admin\MenuAccessPage.tsx
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { staffApi } from '../../api/client'
 import { NAV_ITEMS } from '../../components/StaffLayout'
 import type { StaffRole } from '../../types'
@@ -100,6 +100,32 @@ function describeError(err: unknown, fallback: string): string {
   return `${fallback} (no response reached the server - check your connection)`
 }
 
+// 2026-10-02 ("UI make proper now looking messay" -> "Alerts/banners placement or style"): one
+// shared look for every banner on this page (error/Save success/Apply confirmation), all rendered
+// in the SAME spot (just under the intro paragraph) instead of error+savedMessage sitting at the
+// top while appliedMessage was buried inside the Quick Setup card - so there's one place to look
+// for page-level feedback, no matter which action triggered it.
+const BANNER_STYLES: Record<'error' | 'success' | 'info', { background: string; color: string; icon: string }> = {
+  error: { background: '#fef2f2', color: '#991b1b', icon: '⚠️' },
+  success: { background: '#ecfdf3', color: '#065f46', icon: '✅' },
+  info: { background: '#eff6ff', color: '#1d4ed8', icon: 'ℹ️' },
+}
+function Banner({ kind, children }: { kind: 'error' | 'success' | 'info'; children: ReactNode }) {
+  const s = BANNER_STYLES[kind]
+  return (
+    <p
+      style={{
+        margin: '0 0 12px', padding: '10px 12px', borderRadius: 8,
+        background: s.background, color: s.color, fontSize: 13,
+        display: 'flex', alignItems: 'flex-start', gap: 8,
+      }}
+    >
+      <span aria-hidden="true">{s.icon}</span>
+      <span>{children}</span>
+    </p>
+  )
+}
+
 interface RowState {
   key: string
   to: string
@@ -116,6 +142,12 @@ export function MenuAccessPage() {
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [savedMessage, setSavedMessage] = useState<string | null>(null)
+  // 2026-10-02 ("after click Apply to table below alert shown applied then after save also alert
+  // message"): "Apply to table below" previously gave no feedback at all - you only knew it ran by
+  // noticing the checkboxes below change. Separate from savedMessage (the Save button's own banner,
+  // unchanged) - Apply doesn't talk to the server at all (see applyQuickSetup's own doc comment),
+  // so it gets its own, differently-worded confirmation rather than reusing Save's wording.
+  const [appliedMessage, setAppliedMessage] = useState<string | null>(null)
   // SECTION 170 - per-role allow-list mode, see class doc comment above.
   const [roleModes, setRoleModes] = useState<Record<StaffRole, boolean>>({} as Record<StaffRole, boolean>)
 
@@ -222,6 +254,9 @@ export function MenuAccessPage() {
       if (visible) next.add(r.key)
     })
     setQuickChecked(next)
+    // Clear the previous role's "Applied to the table below for X" confirmation - it names a
+    // specific role, so it should not linger once you've switched to a different one.
+    setAppliedMessage(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [quickRole, loading])
 
@@ -250,10 +285,15 @@ export function MenuAccessPage() {
     // SECTION 170's own doc comment): also switches this role into Role Sidebar Mode's allow-list,
     // so a brand new page added later stays hidden from it too instead of showing up by default.
     setRoleModes((prev) => ({ ...prev, [quickRole]: true }))
+    // 2026-10-02: confirms the apply actually ran, and is explicit that nothing is saved to the
+    // server yet - Apply only fills in the table/toggle below, same as the panel's own intro text
+    // already said; Save (further down) is the step that actually commits it.
+    setAppliedMessage(`Applied to the table below for ${quickRole}. Review it, then click Save at the bottom to commit it.`)
   }
 
   const save = async () => {
     setSaving(true)
+    setAppliedMessage(null)
     setSavedMessage(null)
     setError(null)
     const body = rows.map((r) => ({
@@ -298,12 +338,14 @@ export function MenuAccessPage() {
       </p>
 
       {loading && <p className="muted">Loading…</p>}
-      {error && <p className="error-text">{error}</p>}
-      {savedMessage && (
-        <p style={{ margin: '0 0 12px', padding: '10px 12px', borderRadius: 8, background: '#ecfdf3', color: '#065f46', fontSize: 13 }}>
-          {savedMessage}
-        </p>
-      )}
+      {/* 2026-10-02: all three banners (error/Save success/Apply confirmation) now render in this
+         one spot, in the same Banner style - previously error+savedMessage sat here while
+         appliedMessage was a different-looking banner buried inside the Quick Setup card below.
+         Only one of these three is ever showing at once in practice (each action clears the other
+         two - see save()/applyQuickSetup() above), so stacking them here costs nothing. */}
+      {error && <Banner kind="error">{error}</Banner>}
+      {savedMessage && <Banner kind="success">{savedMessage}</Banner>}
+      {appliedMessage && <Banner kind="info">{appliedMessage}</Banner>}
 
       {!loading && (
         <div className="card" style={{ marginBottom: 16 }}>
@@ -313,15 +355,43 @@ export function MenuAccessPage() {
             Sidebar Mode toggle below for you - review or adjust by hand if you like, then click Save at the bottom
             to actually commit it.
           </p>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-            <label className="muted">Role</label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+            <label className="muted" style={{ fontWeight: 600 }}>Role</label>
             <select value={quickRole} onChange={(e) => setQuickRole(e.target.value as StaffRole)}>
               {ALL_ROLES.map((role) => (
                 <option key={role} value={role}>{role}</option>
               ))}
             </select>
           </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 18px', marginBottom: 12 }}>
+          {/* 2026-10-02 ("Quick Setup panel is cluttered"): the checkbox wall now sits in its own
+             bordered/shaded box (was a bare flex-wrap row blending straight into the page
+             background) with a proper CSS grid instead of flex-wrap - items line up in even
+             columns instead of ragged-wrapping wherever a label happens to be long. Select all /
+             Clear all added so you don't have to click all 17 by hand for either extreme case. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 8 }}>
+            <span className="muted" style={{ fontSize: 12 }}>Pages visible to {quickRole}:</span>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => setQuickChecked(new Set(rows.map((r) => r.key)))}
+            >
+              Select all
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => setQuickChecked(new Set())}
+            >
+              Clear all
+            </button>
+          </div>
+          <div
+            style={{
+              display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+              gap: '8px 16px', marginBottom: 14, padding: 12, borderRadius: 8,
+              background: '#f9fafb', border: '1px solid var(--border)',
+            }}
+          >
             {rows.map((r) => (
               <label key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
                 <input type="checkbox" checked={quickChecked.has(r.key)} onChange={() => toggleQuickChecked(r.key)} />

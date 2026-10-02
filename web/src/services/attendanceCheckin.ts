@@ -1,3 +1,4 @@
+// web\src\services\attendanceCheckin.ts
 /**
  * Self check-in/check-out, tied to the WEB app's OWN login/logout - 2026-09-28 ("when i login then
  * in that automatically check in time shown and when last sign out that was sign out that

@@ -12,6 +12,10 @@ import { JOB_SOURCES, SERVICE_TYPES } from '../../data/serviceCatalog'
 import { buildJobCardPrintHtml } from '../../lib/jobCardPrintHtml'
 
 const STEPS = ['Customer', 'Vehicle', 'Service Details', 'Review & Create']
+// 2026-10-02 ("fix 16 Complaint in radio button"): cap on how many Complaint Master rows render
+// as buttons in the Service Details step - anything past this index is only reachable through the
+// overflow dropdown next to the button grid. See addComplaintFromOverflowDropdown below.
+const COMPLAINT_BUTTON_LIMIT = 16
 
 // SECTION 169 (2026-09-30) "bind this 3 dropdown dependancy from master" - Job Type/Service Head/
 // Priority are no longer read from the hardcoded web/src/data/serviceCatalog.ts (JOB_TYPES/
@@ -715,6 +719,18 @@ export function JobCardWizardPage() {
     setComplaints((prev) => (prev.includes(name) ? prev.filter((c) => c !== name) : [...prev, name]))
   }
   const removeComplaint = (name: string) => setComplaints((prev) => prev.filter((c) => c !== name))
+  // 2026-10-02 ("in complaint top 16 complaint shown in Radio button only and after 16 in
+  // dropdown dont add in radio only fix 16 Complaint in radio button"): Complaint Master can grow
+  // past the 16 shown as buttons below - rather than the button grid growing unbounded, only the
+  // first 16 (COMPLAINT_BUTTON_LIMIT) render as buttons; everything after that is reachable only
+  // through the dropdown added below it. Picking one from the dropdown just adds it to the
+  // `complaints` list the same way a button click does (Remove below still works the same way
+  // either way it was added) - it does not toggle/remove on re-pick, since a <select> can't show
+  // "already picked" state the way a pressed button can.
+  const addComplaintFromOverflowDropdown = (name: string) => {
+    if (!name) return
+    setComplaints((prev) => (prev.includes(name) ? prev : [...prev, name]))
+  }
   // Manual/free-text complaint entry, brought back per your "and manual type" request - adds
   // whatever's typed as its own complaint line, same as a button pick.
   const addManualComplaint = () => {
@@ -1485,9 +1501,12 @@ export function JobCardWizardPage() {
             {/* SECTION 169 (2026-09-30): toggle-button multi-select against the Complaint Master
                table now (GET /api/complaint-master, see complaintOptions above - was the fixed
                COMPLAINTS array from serviceCatalog.ts), plus a manual free-text entry alongside it.
-               Click a button again (or Remove below) to un-pick it. */}
+               Click a button again (or Remove below) to un-pick it.
+               2026-10-02 ("fix 16 Complaint in radio button"): only the first COMPLAINT_BUTTON_LIMIT
+               (16) Complaint Master rows render as buttons here - anything past that is only in the
+               dropdown right below the grid, never added as another button. */}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
-              {complaintOptions.map((c) => {
+              {complaintOptions.slice(0, COMPLAINT_BUTTON_LIMIT).map((c) => {
                 const picked = complaints.includes(c.complaintText)
                 return (
                   <button
@@ -1503,6 +1522,25 @@ export function JobCardWizardPage() {
                 )
               })}
             </div>
+            {complaintOptions.length > COMPLAINT_BUTTON_LIMIT && (
+              <div style={{ marginBottom: 10 }}>
+                <select
+                  value=""
+                  onChange={(e) => {
+                    addComplaintFromOverflowDropdown(e.target.value)
+                    e.target.value = ''
+                  }}
+                >
+                  <option value="">More complaints…</option>
+                  {complaintOptions.slice(COMPLAINT_BUTTON_LIMIT).map((c) => (
+                    <option key={c.id} value={c.complaintText} disabled={complaints.includes(c.complaintText)}>
+                      {c.complaintText}
+                      {complaints.includes(c.complaintText) ? ' (added)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
               <input
                 value={manualComplaintText}

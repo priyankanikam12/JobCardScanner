@@ -83,6 +83,10 @@ public class JobCardScannerDbContext : DbContext
     public DbSet<DocPrefixMaster> DocPrefixMasters => Set<DocPrefixMaster>();
     public DbSet<DocNumberSequence> DocNumberSequences => Set<DocNumberSequence>();
 
+    // 2026-10-02 (SECTION 188) - "Ledger Master" (Party/Insurance only - Company/Dealer are ERP-
+    // sourced, not stored here) - see Models/LedgerMaster.cs for the full reasoning.
+    public DbSet<LedgerMaster> LedgerMasters => Set<LedgerMaster>();
+
     protected override void OnModelCreating(ModelBuilder b)
     {
         base.OnModelCreating(b);
@@ -470,16 +474,32 @@ public class JobCardScannerDbContext : DbContext
             e.HasOne<User>().WithMany().HasForeignKey(x => x.UpdatedById).OnDelete(DeleteBehavior.Restrict);
         });
 
+        // SECTION 184 (2026-10-02, "module our sidebar option page name for every page"): DocType
+        // (closed JC/MT/RB vocabulary) renamed to ModuleKey (any NAV_ITEMS page key) - see
+        // Models/DocPrefixMaster.cs's class doc comment and the migration SQL script
+        // backend/add-module-prefix-master-columns.sql, which renames the underlying DB columns to
+        // match (this HasIndex below must agree with that script's column names or EF's own model
+        // snapshot will disagree with the real table).
         b.Entity<DocPrefixMaster>(e =>
         {
-            e.HasIndex(x => x.DocType).IsUnique();
+            e.HasIndex(x => x.ModuleKey).IsUnique();
             e.HasOne<User>().WithMany().HasForeignKey(x => x.CreatedById).OnDelete(DeleteBehavior.Restrict);
             e.HasOne<User>().WithMany().HasForeignKey(x => x.UpdatedById).OnDelete(DeleteBehavior.Restrict);
         });
 
         b.Entity<DocNumberSequence>(e =>
         {
-            e.HasIndex(x => new { x.DocType, x.FinancialYear }).IsUnique();
+            e.HasIndex(x => new { x.ModuleKey, x.FinancialYear }).IsUnique();
+        });
+
+        // ----- LedgerMaster (2026-10-02, SECTION 188/189, see Models/LedgerMaster.cs) -----
+        b.Entity<LedgerMaster>(e =>
+        {
+            e.HasIndex(x => x.LedgerCode).IsUnique();
+            e.HasIndex(x => new { x.DealerId, x.LedgerType });
+            e.HasOne<Dealer>().WithMany().HasForeignKey(x => x.DealerId).OnDelete(DeleteBehavior.Restrict);
+            e.HasOne<User>().WithMany().HasForeignKey(x => x.CreatedById).OnDelete(DeleteBehavior.Restrict);
+            e.HasOne<User>().WithMany().HasForeignKey(x => x.UpdatedById).OnDelete(DeleteBehavior.Restrict);
         });
 
         // ----- VehicleSaleOverride (2026-09-28, see Models/VehicleSaleOverride.cs /

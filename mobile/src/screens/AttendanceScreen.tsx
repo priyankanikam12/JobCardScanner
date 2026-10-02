@@ -130,6 +130,21 @@ function formatHoursWorked(hours: number | null): string {
   return h > 0 ? `${h}h ${m}m` : `${m}m`
 }
 
+/** 2026-10-02 (SECTION 187, "system time shown" / "in that check in and chekout and in jobcard
+ * timer correct this") - DEFENSIVE, same fix as the web AttendancePage.tsx: the backend now writes
+ * whole-second check-in/check-out times going forward (AttendanceController.cs SECTION 187), but
+ * rows saved before that fix still hold the old raw value, e.g. "17:57:19.1741354"
+ * (System.Text.Json's default TimeSpan serialization, full sub-second ticks) - it isn't rewritten
+ * retroactively. This strips any residual fractional-seconds suffix so those already-stored rows
+ * also display cleanly, not just newly-created ones. An unexpected format is returned as-is rather
+ * than dropped, so it stays visible instead of silently disappearing. */
+function formatTimeOfDay(raw: string | null | undefined): string {
+  if (!raw) return ''
+  const match = raw.match(/^(\d{1,2}):(\d{2}):(\d{2})/)
+  if (!match) return raw
+  return `${match[1].padStart(2, '0')}:${match[2]}:${match[3]}`
+}
+
 function todayIso(): string {
   const d = new Date()
   const y = d.getFullYear()
@@ -314,7 +329,7 @@ export default function AttendanceScreen({ route }: Props) {
               <Text style={styles.staffName}>{item.date.slice(0, 10)}</Text>
               <Text style={styles.muted}>{item.status ?? 'Not marked'}{item.location ? ` - ${item.location}` : ''}</Text>
               <Text style={styles.muted}>
-                In: {item.checkInTime ?? '-'}  Out: {item.checkOutTime ?? '-'}
+                In: {formatTimeOfDay(item.checkInTime) || '-'}  Out: {formatTimeOfDay(item.checkOutTime) || '-'}
               </Text>
               {/* 2026-09-28 (SECTION 143) - see MyAttendanceRow's own doc comment above. */}
               <Text style={styles.muted}>
@@ -394,14 +409,14 @@ export default function AttendanceScreen({ route }: Props) {
                 <TextInput
                   style={styles.timeInput}
                   placeholder="Check-in (HH:MM)"
-                  value={item.checkInTime || ''}
+                  value={formatTimeOfDay(item.checkInTime)}
                   onChangeText={(v) => updateTime(item.employeeId, 'checkInTime', v)}
                   onBlur={() => saveTimes(item)}
                 />
                 <TextInput
                   style={styles.timeInput}
                   placeholder="Check-out (HH:MM)"
-                  value={item.checkOutTime || ''}
+                  value={formatTimeOfDay(item.checkOutTime)}
                   onChangeText={(v) => updateTime(item.employeeId, 'checkOutTime', v)}
                   onBlur={() => saveTimes(item)}
                 />

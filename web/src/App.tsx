@@ -46,6 +46,8 @@ import { OemModelWarrantiesPage } from './pages/staff/OemModelWarrantiesPage'
 import { ServiceMenuMasterPage } from './pages/staff/ServiceMenuMasterPage'
 import { ComplaintMasterPage } from './pages/staff/ComplaintMasterPage'
 import { DocPrefixMasterPage } from './pages/staff/DocPrefixMasterPage'
+// 2026-10-02 (SECTION 188) - Ledger Master (Party/Insurance) - see that page's own doc comment.
+import { LedgerMasterPage } from './pages/staff/LedgerMasterPage'
 import { AdminUsersPage } from './pages/staff/AdminUsersPage'
 import { EmployeesPage } from './pages/staff/EmployeesPage'
 // 2026-09-24 "that supervisor when login then he have access to create Tecnician that tab name
@@ -321,6 +323,17 @@ export default function App() {
           element={
             <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <DocPrefixMasterPage />
+            </RequireRole>
+          }
+        />
+        {/* 2026-10-02 (SECTION 188) - Ledger Master: Party/Insurance only (Company/Dealer come from
+            the ERP - see LedgerMasterPage.tsx's own doc comment) - same WorkshopManagerUp floor as
+            Service Menu Master/Complaint Master above (operational master data). */}
+        <Route
+          path="/ledger-master"
+          element={
+            <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
+              <LedgerMasterPage />
             </RequireRole>
           }
         />
