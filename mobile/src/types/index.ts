@@ -733,3 +733,105 @@ export interface PartMaster {
   unitPrice: number
   stockQty: number
 }
+
+// 2026-10-02 ("for mobile also give this repair bill and material transfer both page report") -
+// mirrors web/src/types/index.ts's own DmsBaplDataRepairBill*/DmsBaplDataMaterialTransfer* types
+// field-for-field, copied from that file rather than re-derived, so RepairBillReportScreen.tsx/
+// MaterialTransferReportScreen.tsx consume the EXACT same GET /api/dms-bapl-data/repair-bills and
+// GET /api/dms-bapl-data/material-transfers response shapes web's own RepairBillPage.tsx/
+// MaterialTransferPage.tsx already do. See DmsBaplDataService.cs's doc comment (backend) for what
+// DMSBAPLDATA is and how it differs from the live DMS database.
+export interface DmsBaplDataRepairBillItem {
+  id: number
+  repairBillId: number
+  itemIdno?: number | null
+  itemCode?: string | null
+  itemDesc?: string | null
+  itemType?: string | null
+  qty?: number | null
+  rate?: number | null
+  issueType?: string | null
+  sgstPer?: number | null
+  sgstAmount?: number | null
+  cgstPer?: number | null
+  cgstAmount?: number | null
+  igstPer?: number | null
+  igstAmount?: number | null
+  wavRate?: number | null
+  totAmnt?: number | null
+  mtrlIssue?: string | null
+}
+
+export interface DmsBaplDataRepairBill {
+  id: number
+  dealerName?: string | null
+  dealerCode?: string | null
+  uniqueKey?: number | null
+  uniqueId?: number | null
+  invoiceNo?: number | null
+  invoiceDate?: string | null
+  location?: string | null
+  partyName?: string | null
+  billType?: number | null
+  cashType?: string | null
+  cashAccount?: string | null
+  regNo?: string | null
+  chassisNo?: string | null
+  createdAt?: string | null
+  updatedAt?: string | null
+  items: DmsBaplDataRepairBillItem[]
+}
+
+export interface DmsBaplDataMaterialTransferLabor {
+  id: number
+  materialTransferItemId: number
+  lbrIdno?: number | null
+  lbrName?: string | null
+  lbrDescription?: string | null
+  lbrRate: number
+  sgstPer: number
+  sgstAmount: number
+  cgstPer: number
+  cgstAmount: number
+  igstPer: number
+  igstAmount: number
+}
+
+export interface DmsBaplDataMaterialTransferItem {
+  id: number
+  materialTransferId: number
+  sourceLineId?: number | null
+  itemIdno?: number | null
+  itemName?: string | null
+  itemDescription?: string | null
+  itemType?: string | null
+  qty: number
+  rate: number
+  sgstPer: number
+  sgstAmount: number
+  cgstPer: number
+  cgstAmount: number
+  igstPer: number
+  igstAmount: number
+  discount: number
+  mrp: number
+  labour: DmsBaplDataMaterialTransferLabor[]
+}
+
+export interface DmsBaplDataMaterialTransfer {
+  id: number
+  dealerName?: string | null
+  dealerCode?: string | null
+  sourceUniqueId?: number | null
+  sourceJobId?: number | null
+  docNo?: number | null
+  docDate?: string | null
+  docType?: string | null
+  location?: string | null
+  locCode?: string | null
+  technicianName?: string | null
+  uniqueKey?: string | null
+  createdAt: string
+  updatedAt: string
+  items: DmsBaplDataMaterialTransferItem[]
+}

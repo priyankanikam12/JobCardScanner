@@ -14,6 +14,17 @@ export interface PickerOption {
   value: string
 }
 
+// 2026-10-02 ("scroll add in that after 10", applied to Android too after the same fix went into
+// web's complaint overflow dropdown - JobCardWizardPage.tsx): the FlatList below already scrolls
+// past its maxHeight (it's a virtualized list, not a clipped View), so with 100 Complaint Master
+// rows the rest were always reachable by scrolling - there was just no visual cue telling the user
+// that, which is what read as "only top 10 shown, no scroll". This threshold adds a sticky "N
+// options - scroll for more" row at the top of the sheet once there are enough options that the
+// list is likely to scroll off-screen, applied to every PickerField call site (Job Type/Service
+// Head/Complaint/Model/etc.), not complaints specifically - the same gap existed everywhere this
+// component renders a long list.
+const SCROLL_HINT_THRESHOLD = 10
+
 export function PickerField({
   label, value, options, onChange, placeholder = 'Select…', disabled = false, required = false,
 }: {
@@ -33,6 +44,7 @@ export function PickerField({
   const starMatch = /^(.*?)\s\*$/.exec(label)
   const baseLabel = starMatch ? starMatch[1] : label
   const isRequired = required || !!starMatch
+  const showScrollHint = options.length > SCROLL_HINT_THRESHOLD
 
   return (
     <View style={{ flex: 1 }}>
@@ -59,6 +71,14 @@ export function PickerField({
               keyExtractor={(o) => o.value}
               style={{ maxHeight: 420 }}
               ListEmptyComponent={<Text style={styles.empty}>No options.</Text>}
+              ListHeaderComponent={
+                showScrollHint ? (
+                  <View style={styles.scrollHint}>
+                    <Text style={styles.scrollHintText}>{options.length} options — scroll for more ↓</Text>
+                  </View>
+                ) : null
+              }
+              stickyHeaderIndices={showScrollHint ? [0] : undefined}
               renderItem={({ item }) => (
                 <TouchableOpacity
                   style={[styles.option, item.value === value && styles.optionSelected]}
@@ -87,6 +107,8 @@ const styles = StyleSheet.create({
   sheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: '#f1f3f6' },
   sheetTitle: { fontSize: 15, fontWeight: '700', color: '#101828' },
   close: { color: '#2563eb', fontWeight: '600' },
+  scrollHint: { paddingHorizontal: 16, paddingVertical: 8, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#f1f3f6' },
+  scrollHintText: { fontSize: 12, color: '#6b7280' },
   option: { paddingHorizontal: 16, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: '#f1f3f6' },
   // Selected option uses the navy "chip-selected" treatment (Hub Pulse reskin) instead of the old
   // soft-blue tint, matching the chip states used elsewhere (filter chips, DMS badges).

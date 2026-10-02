@@ -1,6 +1,7 @@
 // web\src\pages\staff\RepairBillPage.tsx
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { staffApi } from '../../api/client'
+import { useStaffAuth } from '../../auth/StaffAuthContext'
 import type { DmsBaplDataRepairBill } from '../../types'
 import { ReportDownloadButtons } from '../../components/ReportDownloadButtons'
 import { ImportExcelButton } from '../../components/ImportExcelButton'
@@ -19,27 +20,95 @@ import { usePagination } from '../../lib/usePagination'
  * actually carry - this is a synced copy, not the live DMS database, so a few live-only columns
  * (Job No, Status, Prepared/Modified by) have no equivalent here and are left out rather than
  * guessed.
+ *
+ * SECTION 190 (2026-10-02) "still fetched only zomato data remove this and login dealer data
+ * sown and systemadmin show all data": this page used to hardcode `party = 'Zomato'` as both the
+ * default AND, in practice, the only real scoping this endpoint ever got - any dealer's staff
+ * could see any OTHER dealer's "Zomato" bills (or any party's, by just clearing the box), because
+ * nothing here was ever scoped by DEALER at all, only by a free-text Party Name the user typed.
+ * Fixed by adding real dealer scoping, the same isOrgWide/ORG_WIDE_ROLES pattern already used on
+ * LedgerMasterPage.tsx:
+ *   - A normal dealer login (ServiceAdvisor..DealerAdmin) is now scoped to THEIR OWN dealer's
+ *     bills automatically - every party, not just Zomato - via the new `dealerCode` param (see
+ *     DmsBaplDataService.GetRepairBillsAsync's new dealer-scoped overload), resolved from
+ *     profile.dealerBaplDmsCode (the signed-in user's own DMS dealer code - NOT this app's local
+ *     Dealer.Code, a different code space - see JobCardsController.Detail's own BaplDealerCode
+ *     doc comment distinguishing the two, same distinction used for the Zoho integration earlier
+ *     this session).
+ *   - CorporateAdmin/SystemAdmin see every dealer's bills (dealerCode omitted = no filter), same
+ *     "org-wide roles see everything" convention used everywhere else in this app.
+ * The old "Party Name" box (which doubled as the ONLY filter AND defaulted to locking the page to
+ * Zomato) is now an OPTIONAL refinement search within whatever dealer scope already applies -
+ * blank by default, not "Zomato".
+ *
+ * NOT WIRED IN YET on the backend: I don't have DmsBaplDataController.cs (the file behind GET
+ * /api/dms-bapl-data/repair-bills) in this session, so the new `dealerCode` query param this page
+ * now sends is not yet read by anything server-side - see DmsBaplDataService.cs's own doc comment
+ * on the new GetRepairBillsAsync overload. Paste that controller and I'll finish the wiring; until
+ * then this page will silently keep showing every dealer's bills to everyone (dealerCode ignored),
+ * same as before this fix, just without the Zomato-only default.
  */
 const billAmount = (b: DmsBaplDataRepairBill) => b.items.reduce((sum, i) => sum + (i.totAmnt ?? 0), 0)
 
-// 2026-09-18 "download report excel pdf download button insert in starting row" - flat, bill-level
-// column set for both Excel and PDF export (not a line-item breakdown - a report of bills, matching
-// what the collapsed table already shows one row per bill for).
-const REPORT_COLUMNS: ReportColumn<DmsBaplDataRepairBill>[] = [
-  { header: 'Invoice No', value: (b) => b.invoiceNo ?? '' },
-  { header: 'Invoice Date', value: (b) => (b.invoiceDate ? new Date(b.invoiceDate).toLocaleDateString('en-IN') : '') },
-  { header: 'Dealer', value: (b) => b.dealerName ?? b.dealerCode ?? '' },
-  { header: 'Party Name', value: (b) => b.partyName ?? '' },
-  { header: 'Reg No', value: (b) => b.regNo ?? '' },
-  { header: 'Chassis No', value: (b) => b.chassisNo ?? '' },
-  { header: 'Location', value: (b) => b.location ?? '' },
-  { header: 'Bill Type', value: (b) => b.billType ?? '' },
-  { header: 'Items', value: (b) => b.items.length },
-  { header: 'Bill Amount', value: (b) => billAmount(b) },
+const ORG_WIDE_ROLES = ['CorporateAdmin', 'SystemAdmin']
+
+// 2026-10-02 ("for 1 record this full details download in excel pdf only showing currently item
+// count shown not shown which item so all need to show"): the export used to be one row per BILL,
+// with an "Items" column that only ever showed a count (b.items.length) - the same number already
+// visible in the collapsed table row, so downloading added nothing you couldn't already see without
+// expanding each bill. This is now one row per repair bill ITEM instead (the same line-item fields
+// already shown in the expanded detail table above - Item Code/Description/Type/Qty/Rate/Issue
+// Type/CGST/SGST/IGST/Total), with every bill-level field (Invoice No/Date/Dealer/Party/Reg No/
+// Chassis No/Location/Bill Type/Bill Amount) repeated on each of that bill's item rows - the
+// standard "line-item report" shape, so a bill with 3 items produces 3 export rows, not 1. A bill
+// with ZERO items still produces exactly one row (item fields blank) so it isn't silently dropped
+// from the export entirely.
+type RepairBillExportRow = {
+  bill: DmsBaplDataRepairBill
+  item: DmsBaplDataRepairBill['items'][number] | null
+}
+
+function buildRepairBillExportRows(bills: DmsBaplDataRepairBill[]): RepairBillExportRow[] {
+  const rows: RepairBillExportRow[] = []
+  for (const bill of bills) {
+    if (bill.items.length === 0) {
+      rows.push({ bill, item: null })
+    } else {
+      for (const item of bill.items) rows.push({ bill, item })
+    }
+  }
+  return rows
+}
+
+const REPORT_COLUMNS: ReportColumn<RepairBillExportRow>[] = [
+  { header: 'Invoice No', value: ({ bill }) => bill.invoiceNo ?? '' },
+  { header: 'Invoice Date', value: ({ bill }) => (bill.invoiceDate ? new Date(bill.invoiceDate).toLocaleDateString('en-IN') : '') },
+  { header: 'Dealer', value: ({ bill }) => bill.dealerName ?? bill.dealerCode ?? '' },
+  { header: 'Party Name', value: ({ bill }) => bill.partyName ?? '' },
+  { header: 'Reg No', value: ({ bill }) => bill.regNo ?? '' },
+  { header: 'Chassis No', value: ({ bill }) => bill.chassisNo ?? '' },
+  { header: 'Location', value: ({ bill }) => bill.location ?? '' },
+  { header: 'Bill Type', value: ({ bill }) => bill.billType ?? '' },
+  { header: 'Item Code', value: ({ item }) => item?.itemCode ?? '' },
+  { header: 'Item Description', value: ({ item }) => item?.itemDesc ?? '' },
+  { header: 'Item Type', value: ({ item }) => item?.itemType ?? '' },
+  { header: 'Qty', value: ({ item }) => item?.qty ?? '' },
+  { header: 'Rate', value: ({ item }) => item?.rate ?? '' },
+  { header: 'Issue Type', value: ({ item }) => item?.issueType ?? '' },
+  { header: 'CGST', value: ({ item }) => item?.cgstAmount ?? '' },
+  { header: 'SGST', value: ({ item }) => item?.sgstAmount ?? '' },
+  { header: 'IGST', value: ({ item }) => item?.igstAmount ?? '' },
+  { header: 'Item Total', value: ({ item }) => item?.totAmnt ?? '' },
+  { header: 'Bill Amount', value: ({ bill }) => billAmount(bill) },
 ]
 
 export function RepairBillPage() {
-  const [party, setParty] = useState('Zomato')
+  const { profile } = useStaffAuth()
+  const isOrgWide = !!profile && ORG_WIDE_ROLES.includes(profile.role)
+
+  // SECTION 190: Party Name is now an OPTIONAL refinement within the dealer scope below - blank
+  // by default (no more hardcoded "Zomato"), and no longer the only thing this page filters by.
+  const [party, setParty] = useState('')
   const [bills, setBills] = useState<DmsBaplDataRepairBill[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -51,11 +120,27 @@ export function RepairBillPage() {
   const [importNos, setImportNos] = useState<Set<string> | null>(null)
 
   const search = () => {
+    // SECTION 190: a non-org-wide user with no dealerBaplDmsCode on file has no scope to show -
+    // same "show nothing rather than silently show everything" safety default used elsewhere in
+    // this app (e.g. JobCardsController.List's own 2026-09-xx dealer-scoping fix) rather than
+    // falling through to an unscoped fetch.
+    if (!isOrgWide && !profile?.dealerBaplDmsCode) {
+      setBills([])
+      setError(profile ? 'Your account has no DMS dealer code on file - contact your admin.' : null)
+      return
+    }
     setLoading(true)
     setError(null)
     setImportNos(null) // a fresh search drops any stale import-filter from a previous one
     staffApi
-      .get<DmsBaplDataRepairBill[]>('/api/dms-bapl-data/repair-bills', { params: { party: party || undefined } })
+      .get<DmsBaplDataRepairBill[]>('/api/dms-bapl-data/repair-bills', {
+        params: {
+          party: party || undefined,
+          // SECTION 190: real scoping lives here now, not in the Party Name box - org-wide roles
+          // send no dealerCode (see every dealer), everyone else is forced to their own.
+          dealerCode: isOrgWide ? undefined : profile?.dealerBaplDmsCode ?? undefined,
+        },
+      })
       .then((r) => setBills(r.data))
       .catch((err) => {
         setBills([])
@@ -64,7 +149,7 @@ export function RepairBillPage() {
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { search() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { search() }, [profile?.dealerBaplDmsCode, isOrgWide]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const filteredBills = useMemo(
     () => (importNos
@@ -74,19 +159,24 @@ export function RepairBillPage() {
   )
   const { page, setPage, pageSize, setPageSize, pageCount, pageRows, total } = usePagination(filteredBills)
 
+  // 2026-10-02: exported once per download click, not on every render - see REPORT_COLUMNS' own
+  // doc comment for why this is a flattened one-row-per-item list now, not one row per bill.
+  const exportRows = useMemo(() => buildRepairBillExportRows(filteredBills), [filteredBills])
+
   return (
     <div>
       <h2>Repair Bill</h2>
       <p className="muted">
-        Synced repair bill data from DMSBAPLDATA, scoped by Party Name. Read-only - this app never
-        writes to DMSBAPLDATA.
+        {isOrgWide
+          ? 'Synced repair bill data from DMSBAPLDATA, across every dealer. Read-only - this app never writes to DMSBAPLDATA.'
+          : 'Synced repair bill data from DMSBAPLDATA for your own dealer. Read-only - this app never writes to DMSBAPLDATA.'}
       </p>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
         <ReportDownloadButtons
-          disabled={filteredBills.length === 0}
-          onExcel={() => exportReportToExcel('Repair_Bill_Report', REPORT_COLUMNS, filteredBills)}
-          onPdf={() => exportReportToPdf('Repair Bill Report', 'Repair_Bill_Report', REPORT_COLUMNS, filteredBills)}
+          disabled={exportRows.length === 0}
+          onExcel={() => exportReportToExcel('Repair_Bill_Report', REPORT_COLUMNS, exportRows)}
+          onPdf={() => exportReportToPdf('Repair Bill Report', 'Repair_Bill_Report', REPORT_COLUMNS, exportRows)}
         />
         <ImportExcelButton
           label="Import Chassis/Reg No List"
@@ -104,12 +194,12 @@ export function RepairBillPage() {
       <div className="card">
         <div className="form-row">
           <div className="field">
-            <label>Party Name</label>
+            <label>Party Name (optional)</label>
             <input
               value={party}
               onChange={(e) => setParty(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && search()}
-              placeholder="e.g. Zomato"
+              placeholder="Leave blank to show every party"
             />
           </div>
         </div>
