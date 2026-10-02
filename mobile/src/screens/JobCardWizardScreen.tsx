@@ -444,10 +444,30 @@ export function JobCardWizardScreen({ navigation }: Props) {
   // cleared) - so there's nothing to actually enforce there, but the label still gets the same red
   // * for visual consistency with web. SECTION 169: priority is now also required (it's a real
   // master-driven dropdown again, not an always-populated 'Normal' default).
+  // 2026-10-02 FIX ("yesterday my user facing issue in jobcard create in Service details tab
+  // all requird feilds filled but Continue to Review button still shown disable"): this boolean
+  // used to also require selectedServiceTypeId, baplSupervisorName, baplTechnicianName and
+  // selectedJobSourceId to be truthy - but the <PickerField> inputs that would ever set those
+  // four values are commented out further down in this same Step 2 JSX (Service Type ~line 1210,
+  // Supervisor/Technician ~lines 1227-1242, Source ~line 1244), so none of them can ever become
+  // truthy no matter what the user fills in - permanently disabling "Continue to Review" on
+  // Android (and web, if it ever shared this logic). Dropped those four from the gate. Kept
+  // selectedWorkshopLocCode, since its "Service Location (workshop) *" picker IS actually
+  // rendered/interactive on this screen (line 1223) - unlike web, where that field is shown
+  // read-only, not user-chosen.
+  // FACT, checked before this change: JobCardsController.cs's Create action assigns
+  // req.BaplSupervisorName/BaplTechnicianName/BaplServiceTypeId/BaplJobSourceId straight onto the
+  // new JobCard with no [Required]/null-check visible in that action, so submitting with these
+  // four left null is not expected to be rejected server-side - but I have not located and read
+  // the request DTO's own property declarations (to rule out a [Required] attribute there), so
+  // flagging this as unconfirmed rather than certain. If dealers need Supervisor/Technician/
+  // Service Type/Source captured on a job card, the right fix is to UN-comment those PickerFields
+  // (they already have working option-loading code above, e.g. supervisorPickOptions/
+  // technicianPickOptions/serviceTypeOptions/jobSourceOptions) and add them back to this
+  // requirement list, rather than leaving them silently uncollected.
   const serviceDetailsValid = !!(
-    selectedJobTypeId && selectedServiceHeadId && selectedServiceTypeId && priority &&
-    selectedWorkshopLocCode && baplSupervisorName.trim() && baplTechnicianName.trim() &&
-    selectedJobSourceId && complaints.length > 0
+    selectedJobTypeId && selectedServiceHeadId && priority &&
+    selectedWorkshopLocCode && complaints.length > 0
   )
 
   // SECTION 169 - Job Type/Service Head/Priority and Complaints now come from the new master

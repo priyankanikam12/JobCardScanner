@@ -33,6 +33,19 @@ namespace JobCardScanner.Api.Controllers;
 ///      just one - same as before this rework, just now additionally gated behind
 ///      WorkshopManagerUp too (both roles already pass a "...Up" policy check by construction).
 ///
+/// 2026-10-02 SECTION 185 CORRECTION - the paragraph above was WRONG about what "WorkshopManagerUp"
+/// actually excludes: that policy's role list (defined in Program.cs) is Supervisor,
+/// WorkshopManager, DealerAdmin, CorporateAdmin, SystemAdmin - Supervisor was never dropped from it
+/// by the 2026-09-28 rework above, only ServiceAdvisor-and-below were. CONFIRMED BUG, from a real
+/// screenshot: a Captain (= Supervisor, confirmed same role under a different display label) login
+/// was still reaching and editing the full dealer roster, exactly what the rework above was
+/// supposed to prevent. DealersSummary/List/Mark/Summary below are now re-gated a SECOND time, to
+/// Policies.DealerAdminUp (DealerAdmin, CorporateAdmin, SystemAdmin only - already defined in
+/// Program.cs, no new policy added) - this is now the real "main dealer" tier. Side effect flagged
+/// on each endpoint below: WorkshopManager also loses this access as a result, since no existing
+/// policy keeps WorkshopManager in while dropping Supervisor - say so if WorkshopManager needs its
+/// own carve-out and I'll add one.
+///
 /// Mark() upserting the SAME day's row is ALSO how "if this user miss then this main dealer can
 /// adjust this" is satisfied - no separate edit endpoint was needed, only the policy re-gating
 /// above (only WorkshopManagerUp+ can call it now).
@@ -40,15 +53,16 @@ namespace JobCardScanner.Api.Controllers;
 /// FOUR endpoints, matching the "all dealer" framing of your original request, plus the new #5:
 ///   GET  /api/attendance/dealers-summary?date=   - one row per dealer with present/absent/etc.
 ///        counts for that day (the "all dealer" landing view). Org-wide roles see every dealer;
-///        a dealer-scoped user sees only their own (single row). WorkshopManagerUp+ only.
+///        a dealer-scoped user sees only their own (single row). DealerAdminUp only (SECTION 185 - see below).
 ///   GET  /api/attendance?date=&dealerId=          - full staff roster for ONE dealer on that day,
 ///        each row showing whether/how they're marked, plus their Location (drill-down from
-///        dealers-summary). WorkshopManagerUp+ only.
+///        dealers-summary). DealerAdminUp only (SECTION 185 - see below).
 ///   POST /api/attendance/mark                     - upsert one staff member's attendance for a
-///        day - also how a main dealer adjusts/corrects a missed entry. WorkshopManagerUp+ only.
+///        day - also how a main dealer adjusts/corrects a missed entry. DealerAdminUp only
+///        (SECTION 185 - see below).
 ///   GET  /api/attendance/summary?date=&dealerId=  - same counts as dealers-summary but for one
 ///        dealer (used by the web/mobile page's header tile row after drilling in).
-///        WorkshopManagerUp+ only.
+///        DealerAdminUp only (SECTION 185 - see below).
 ///   GET  /api/attendance/me?date=                 - NEW 2026-09-28: any logged-in staff member's
 ///        OWN attendance only, hard-scoped server-side to _currentUser.UserId regardless of any
 ///        parameter - Policies.Staff (the lowest bar).
@@ -75,9 +89,11 @@ public class AttendanceController : ControllerBase
     }
 
     // ---------------- "All dealer" landing view: one row per dealer ----------------
-    // 2026-09-28: re-gated from ServiceAdvisorUp to WorkshopManagerUp - see class doc comment.
+    // 2026-10-02 (SECTION 185): re-gated AGAIN, from WorkshopManagerUp to DealerAdminUp - see this
+    // class's own doc comment above for the full reasoning (a Captain/Supervisor login was
+    // confirmed still reaching this roster).
     [HttpGet("dealers-summary")]
-    [Authorize(Policy = Policies.WorkshopManagerUp)]
+    [Authorize(Policy = Policies.DealerAdminUp)]
     public async Task<IActionResult> DealersSummary([FromQuery] DateTime? date)
     {
         var day = (date ?? DateTime.UtcNow).Date;
@@ -138,13 +154,14 @@ public class AttendanceController : ControllerBase
     }
 
     // ---------------- One dealer's staff roster + that day's marks (drill-down) ----------------
-    // 2026-09-28: re-gated from ServiceAdvisorUp to WorkshopManagerUp - see class doc comment. Also
-    // now returns each row's `location` - see Attendance.Location's doc comment. Deliberately still
-    // shows EVERY location under this dealer in one flat list (not grouped/filtered by location) -
-    // your request was "main dealer ... all location ... all users", i.e. everything at once; tell
-    // me if you'd rather this be filterable by a specific location too.
+    // 2026-10-02 (SECTION 185): re-gated AGAIN, from WorkshopManagerUp to DealerAdminUp - see this
+    // class's own doc comment above for the full reasoning. Also still returns each row's
+    // `location` - see Attendance.Location's doc comment. Deliberately still shows EVERY location
+    // under this dealer in one flat list (not grouped/filtered by location) - your request was
+    // "main dealer ... all location ... all users", i.e. everything at once; tell me if you'd
+    // rather this be filterable by a specific location too.
     [HttpGet]
-    [Authorize(Policy = Policies.WorkshopManagerUp)]
+    [Authorize(Policy = Policies.DealerAdminUp)]
     public async Task<IActionResult> List([FromQuery] DateTime? date, [FromQuery] Guid? dealerId)
     {
         var day = (date ?? DateTime.UtcNow).Date;
@@ -195,12 +212,13 @@ public class AttendanceController : ControllerBase
     }
 
     // ---------------- Mark / update one staff member's attendance for a day (upsert) ----------------
-    // 2026-09-28: re-gated from ServiceAdvisorUp to WorkshopManagerUp - see class doc comment. This
-    // same upsert (re-POST for a date that already has a row) is what satisfies "if this user miss
-    // then this main dealer can adjust this" - no separate edit endpoint needed, just this
-    // tightened policy restricting WHO can call it.
+    // 2026-10-02 (SECTION 185): re-gated AGAIN, from WorkshopManagerUp to DealerAdminUp - see this
+    // class's own doc comment above for the full reasoning. This same upsert (re-POST for a date
+    // that already has a row) is what satisfies "if this user miss then this main dealer can adjust
+    // this" - no separate edit endpoint needed, just this tightened policy restricting WHO can call
+    // it.
     [HttpPost("mark")]
-    [Authorize(Policy = Policies.WorkshopManagerUp)]
+    [Authorize(Policy = Policies.DealerAdminUp)]
     public async Task<IActionResult> Mark(MarkAttendanceRequest req)
     {
         var isOrgWideRole = _currentUser.Role is StaffRole.CorporateAdmin or StaffRole.SystemAdmin;
@@ -256,9 +274,10 @@ public class AttendanceController : ControllerBase
     }
 
     // ---------------- Summary counts for one dealer on one day ----------------
-    // 2026-09-28: re-gated from ServiceAdvisorUp to WorkshopManagerUp - see class doc comment.
+    // 2026-10-02 (SECTION 185): re-gated AGAIN, from WorkshopManagerUp to DealerAdminUp - see this
+    // class's own doc comment above for the full reasoning.
     [HttpGet("summary")]
-    [Authorize(Policy = Policies.WorkshopManagerUp)]
+    [Authorize(Policy = Policies.DealerAdminUp)]
     public async Task<IActionResult> Summary([FromQuery] DateTime? date, [FromQuery] Guid? dealerId)
     {
         var day = (date ?? DateTime.UtcNow).Date;
@@ -346,7 +365,15 @@ public class AttendanceController : ControllerBase
 
         var istNow = DateTime.UtcNow.AddHours(5).AddMinutes(30); // see doc comment above - fixed IST offset, no OS timezone lookup
         var day = istNow.Date;
-        var timeOfDay = istNow.TimeOfDay;
+        // SECTION 187 (2026-10-02, "system time shown") - confirmed from a screenshot: CheckInTime
+        // was saving/serializing as "17:57:19.1741354", a raw TimeSpan with full sub-second ticks.
+        // istNow.TimeOfDay carries DateTime.UtcNow's own sub-millisecond precision straight through;
+        // System.Text.Json's default TimeSpan converter (.NET 6+) renders that as "HH:mm:ss.fffffff"
+        // verbatim, which AttendancePage.tsx then printed as-is. Truncated to whole seconds here -
+        // nobody needs sub-second check-in precision, and this also makes the value a clean
+        // "HH:mm:ss" that an HTML <input type="time"> (the manager Mark() view) can actually bind
+        // to without a mismatched `step` attribute.
+        var timeOfDay = new TimeSpan(istNow.Hour, istNow.Minute, istNow.Second);
         // 2026-09-28 (SECTION 153, "in attendance only 1 shift 10 to 6"): single shift now,
         // 10:00-18:00 IST (8 hrs) - replaces the two-window Shift1 (09:00-18:00) / Shift2
         // (18:00-03:00 next day) split used since SECTION 101/143. Every check-in is recorded as
@@ -458,7 +485,10 @@ public class AttendanceController : ControllerBase
             _db.Attendance.Add(existing);
         }
 
-        existing.CheckOutTime = istNow.TimeOfDay;
+        // SECTION 187 (2026-10-02, "system time shown" / "in that check in and chekout and in
+        // jobcard timer correct this") - same fix as CheckIn() above: truncate to whole seconds so
+        // System.Text.Json doesn't serialize the full sub-second ticks as "HH:mm:ss.fffffff".
+        existing.CheckOutTime = new TimeSpan(istNow.Hour, istNow.Minute, istNow.Second);
         existing.MarkedByUserId = employeeId;
         existing.MarkedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync();

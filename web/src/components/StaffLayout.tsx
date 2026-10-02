@@ -84,6 +84,11 @@ const NAV_ITEMS_BASE: Omit<NavItem, 'key'>[] = [
   { to: '/service-menu-master', label: 'Service Menu Master', icon: '🧭', subtitle: 'Job Type -> Service Head -> Priority (Job Card Wizard)', roles: ['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
   { to: '/complaint-master', label: 'Complaint Master', icon: '💬', subtitle: 'Shared complaint list (Job Card Wizard)', roles: ['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
   { to: '/prefix-master', label: 'Prefix Master', icon: '#️⃣', subtitle: 'JC / MT / RB document numbering prefixes', roles: ['CorporateAdmin', 'SystemAdmin'] },
+  // 2026-10-02 (SECTION 188) - "Ledger master ... for 3 pages Jobcard, Material Transfer,
+  // RepairBill" - Party/Insurance master data (Company/Dealer are ERP-sourced, not this table) -
+  // see web/src/pages/staff/LedgerMasterPage.tsx's own doc comment. Same WorkshopManagerUp floor
+  // as Service Menu Master/Complaint Master (operational master data, not rare admin config).
+  { to: '/ledger-master', label: 'Ledger Master', icon: '📒', subtitle: 'Party & Insurance ledgers (Company/Dealer via ERP)', roles: ['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
   // 2026-09-21 "Part Upload" tab ("new tab add Part Upload using this excel create table and
   // functionality to upload using this excel file for upload") - same role floor as Parts &
   // Inventory above, matching PartUploadController's PartsUserUp/PartsReadUp policies.

@@ -1,25 +1,36 @@
 import { useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { staffApi } from '../../api/client'
+import { NAV_ITEMS } from '../../components/StaffLayout'
 
 /**
- * SECTION 165 (2026-09-30) + SECTION 166 (2026-09-30) "for this 3 master create edit delete
- * access ?" - JC / MT / RB document-numbering prefixes, plus the non-destructive "preview next
- * number" tool. Now a full add / edit / deactivate page backed by
- * POST/PUT/DELETE /api/doc-prefix-master (see DocPrefixMasterController.cs's class doc comment -
- * gated to CorporateAdmin/SystemAdmin only, narrower than the other two masters). DocType is only
- * set when a row is first created - it's not editable afterwards (see that controller's doc
- * comment for why).
+ * SECTION 165/166 (2026-09-30) "for this 3 master create edit delete access ?" - document-
+ * numbering prefixes, plus the non-destructive "preview next number" tool.
+ *
+ * SECTION 184 (2026-10-02) "in module our sidebar option page name for every page ... Financial
+ * Year is not required in that none option also add ... Number Length (Padding), Next Number,
+ * Separator that feilds dont add ... auto increase" - confirmed via AskUserQuestion:
+ *  - Module is no longer a closed JC/MT/RB list - it's now every sidebar page (NAV_ITEMS below),
+ *    same list/labels the sidebar itself uses, so this never drifts out of sync with what pages
+ *    actually exist.
+ *  - Financial Year is now optional per module - a "No Financial Year" choice (UsesFinancialYear)
+ *    drops the FY segment entirely, so e.g. Prefix "RB/hgh" + No Financial Year previews as
+ *    "RB/hgh/001" rather than "RB/hgh/26-25/001".
+ *  - Padding/Next Number/Separator are still NOT admin-editable fields anywhere on this page, per
+ *    your explicit instruction - see DocPrefixMasterController.cs's SEPARATOR constant and
+ *    FormatNumber's doc comment for how the running number auto-expands past 999/9999 with no
+ *    Padding setting needed.
  *
  * IMPORTANT, carried over from SECTION 163's own README note: this table/page does NOT yet drive
  * your REAL Job Card / Material Transfer / Repair Bill numbers - those still come from the
  * existing JobCardNumberingService, which is not in this session. Preview below only shows what a
- * number WOULD look like using this new, separate table - it does not reserve or consume anything.
+ * number WOULD look like using this separate table - it does not reserve or consume anything.
  */
 interface PrefixRow {
   id: string
-  docType: string
+  moduleKey: string
   prefix: string
+  usesFinancialYear: boolean
   isActive: boolean
 }
 
@@ -34,13 +45,14 @@ const TOGGLE_LABEL_STYLE: CSSProperties = {
   color: '#374151', background: '#f3f4f6', padding: '6px 12px', borderRadius: 20, whiteSpace: 'nowrap',
 }
 
-// SECTION 174 (2026-09-30) "...in all master search and dropdown filter add" - added a search box
-// (matches Doc Type/Prefix text) and a "Doc Type" dropdown filter, reusing the same fixed JC/MT/RB
-// option list the "Preview next number" panel below already uses, rather than inventing a second
-// list from whatever happens to be in `rows` right now - Doc Type is a closed, fixed vocabulary
-// here (see DocPrefixMasterController.cs), not an open-ended field like Job Type on
-// ServiceMenuMasterPage.tsx.
-const DOC_TYPE_OPTIONS = ['JC', 'MT', 'RB']
+// SECTION 184: every sidebar page, same list the sidebar itself renders from - replaces the old
+// fixed DOC_TYPE_OPTIONS = ['JC', 'MT', 'RB']. Built as {key, label} pairs so the dropdown can show
+// the readable sidebar label while posting/filtering on the same stable `key` NAV_ITEMS already
+// uses everywhere else (Menu Access, the dashboard's "All Pages" grid, ...).
+const MODULE_OPTIONS = NAV_ITEMS.map((item) => ({ key: item.key, label: item.label }))
+function moduleLabel(key: string): string {
+  return MODULE_OPTIONS.find((m) => m.key === key)?.label ?? key
+}
 
 export function DocPrefixMasterPage() {
   const [rows, setRows] = useState<PrefixRow[]>([])
@@ -48,15 +60,18 @@ export function DocPrefixMasterPage() {
   const [error, setError] = useState<string | null>(null)
   const [showInactive, setShowInactive] = useState(false)
   const [search, setSearch] = useState('') // SECTION 174
-  const [docTypeFilter, setDocTypeFilter] = useState('') // SECTION 174 - '' = All Doc Types
+  const [moduleFilter, setModuleFilter] = useState('') // SECTION 174 - '' = All Modules
 
   const [editId, setEditId] = useState<string | null>(null)
-  const [newDocType, setNewDocType] = useState('')
+  const [newModuleKey, setNewModuleKey] = useState('')
   const [prefix, setPrefix] = useState('')
+  // SECTION 184: "Financial Year is not required ... none option" - a 2-choice Yes/No control,
+  // defaulting to Yes (matches every row created before this change, which all used Prefix/FY/####).
+  const [usesFinancialYear, setUsesFinancialYear] = useState(true)
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
 
-  const [docType, setDocType] = useState('JC')
+  const [previewModuleKey, setPreviewModuleKey] = useState('')
   const [financialYear, setFinancialYear] = useState('26-25')
   const [preview, setPreview] = useState<string | null>(null)
   const [previewError, setPreviewError] = useState<string | null>(null)
@@ -73,12 +88,21 @@ export function DocPrefixMasterPage() {
 
   useEffect(load, [])
 
+  // The module currently picked in the Preview panel, if any row exists for it - used to decide
+  // whether to even show the Financial Year box (SECTION 184: hidden/ignored entirely for a
+  // "No Financial Year" module, rather than asking for a value that would just be discarded).
+  const previewRow = rows.find((r) => r.moduleKey === previewModuleKey)
+
   const runPreview = () => {
     setPreviewing(true)
     setPreviewError(null)
     setPreview(null)
     staffApi
-      .get<{ nextNumber: string }>('/api/doc-prefix-master/preview', { params: { docType, financialYear } })
+      .get<{ nextNumber: string }>('/api/doc-prefix-master/preview', {
+        params: previewRow?.usesFinancialYear === false
+          ? { moduleKey: previewModuleKey }
+          : { moduleKey: previewModuleKey, financialYear },
+      })
       .then((res) => setPreview(res.data.nextNumber))
       .catch((err) => setPreviewError(err?.response?.data?.message ?? 'Could not compute a preview.'))
       .finally(() => setPreviewing(false))
@@ -86,15 +110,17 @@ export function DocPrefixMasterPage() {
 
   const startEdit = (r: PrefixRow) => {
     setEditId(r.id)
-    setNewDocType(r.docType)
+    setNewModuleKey(r.moduleKey)
     setPrefix(r.prefix)
+    setUsesFinancialYear(r.usesFinancialYear)
     setFormError(null)
   }
 
   const cancelEdit = () => {
     setEditId(null)
-    setNewDocType('')
+    setNewModuleKey('')
     setPrefix('')
+    setUsesFinancialYear(true)
     setFormError(null)
   }
 
@@ -104,11 +130,15 @@ export function DocPrefixMasterPage() {
       setFormError('Prefix is required.')
       return
     }
+    if (!editId && !newModuleKey) {
+      setFormError('Module is required.')
+      return
+    }
     setSaving(true)
     setFormError(null)
     const req = editId
-      ? staffApi.put(`/api/doc-prefix-master/${editId}`, { prefix: trimmedPrefix, isActive: true })
-      : staffApi.post('/api/doc-prefix-master', { docType: newDocType.trim(), prefix: trimmedPrefix })
+      ? staffApi.put(`/api/doc-prefix-master/${editId}`, { prefix: trimmedPrefix, usesFinancialYear, isActive: true })
+      : staffApi.post('/api/doc-prefix-master', { moduleKey: newModuleKey, prefix: trimmedPrefix, usesFinancialYear })
     req
       .then(() => {
         cancelEdit()
@@ -123,7 +153,7 @@ export function DocPrefixMasterPage() {
       staffApi.delete(`/api/doc-prefix-master/${r.id}`).then(load).catch((err) => setError(err?.response?.data?.message ?? 'Could not deactivate this row.'))
     } else {
       staffApi
-        .put(`/api/doc-prefix-master/${r.id}`, { prefix: r.prefix, isActive: true })
+        .put(`/api/doc-prefix-master/${r.id}`, { prefix: r.prefix, usesFinancialYear: r.usesFinancialYear, isActive: true })
         .then(load)
         .catch((err) => setError(err?.response?.data?.message ?? 'Could not reactivate this row.'))
     }
@@ -131,19 +161,25 @@ export function DocPrefixMasterPage() {
 
   const visibleRows = rows
     .filter((r) => showInactive || r.isActive)
-    .filter((r) => !docTypeFilter || r.docType === docTypeFilter)
+    .filter((r) => !moduleFilter || r.moduleKey === moduleFilter)
     .filter((r) => {
       if (!search.trim()) return true
       const q = search.trim().toLowerCase()
-      return r.docType.toLowerCase().includes(q) || r.prefix.toLowerCase().includes(q)
+      return moduleLabel(r.moduleKey).toLowerCase().includes(q) || r.moduleKey.toLowerCase().includes(q) || r.prefix.toLowerCase().includes(q)
     })
+
+  // Modules that don't already have a prefix row - only these are offered on "Add new module" so
+  // you can't accidentally try to create a second row for the same page (the backend's unique
+  // index on ModuleKey would reject it anyway, but this avoids the round-trip).
+  const usedModuleKeys = new Set(rows.map((r) => r.moduleKey))
+  const availableModuleOptions = MODULE_OPTIONS.filter((m) => !usedModuleKeys.has(m.key))
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: 12, marginBottom: 4 }}>
         <div>
           <h2 style={PAGE_TITLE_STYLE}>Prefix Master</h2>
-          <p style={PAGE_SUBTITLE_STYLE}>JC / MT / RB document-numbering prefixes.</p>
+          <p style={PAGE_SUBTITLE_STYLE}>Document-numbering prefixes, by sidebar page.</p>
         </div>
         <label style={TOGGLE_LABEL_STYLE}>
           <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
@@ -156,21 +192,31 @@ export function DocPrefixMasterPage() {
       </p>
 
       <div className="card" style={{ marginBottom: 16 }}>
-        <h3 style={SECTION_TITLE_STYLE}>{editId ? 'Edit prefix' : 'Add new doc type'}</h3>
+        <h3 style={SECTION_TITLE_STYLE}>{editId ? 'Edit prefix' : 'Add new module'}</h3>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
           <label>
-            <div className="muted">Doc Type</div>
-            <input
-              style={{ width: 90 }}
-              value={editId ? newDocType : newDocType}
-              onChange={(e) => setNewDocType(e.target.value)}
-              disabled={!!editId}
-              placeholder="JC"
-            />
+            <div className="muted">Module</div>
+            {editId ? (
+              <input style={{ width: 220 }} value={moduleLabel(newModuleKey)} disabled />
+            ) : (
+              <select style={{ width: 220 }} value={newModuleKey} onChange={(e) => setNewModuleKey(e.target.value)}>
+                <option value="">Select a page…</option>
+                {availableModuleOptions.map((m) => (
+                  <option key={m.key} value={m.key}>{m.label}</option>
+                ))}
+              </select>
+            )}
           </label>
           <label>
             <div className="muted">Prefix</div>
-            <input style={{ width: 120 }} value={prefix} onChange={(e) => setPrefix(e.target.value)} placeholder="JC" />
+            <input style={{ width: 140 }} value={prefix} onChange={(e) => setPrefix(e.target.value)} placeholder="e.g. JC, or RB/hgh" />
+          </label>
+          <label>
+            <div className="muted">Financial Year</div>
+            <select value={usesFinancialYear ? 'yes' : 'none'} onChange={(e) => setUsesFinancialYear(e.target.value === 'yes')}>
+              <option value="yes">Uses Financial Year</option>
+              <option value="none">None</option>
+            </select>
           </label>
           <button className="btn btn-primary" disabled={saving} onClick={save}>
             {saving ? 'Saving…' : editId ? 'Save changes' : 'Add row'}
@@ -181,7 +227,10 @@ export function DocPrefixMasterPage() {
             </button>
           )}
         </div>
-        {editId && <p className="muted">Doc Type cannot be changed once created - deactivate this row and add a new one instead.</p>}
+        {editId && <p className="muted">Module cannot be changed once created - deactivate this row and add a new one instead.</p>}
+        {!editId && availableModuleOptions.length === 0 && (
+          <p className="muted">Every sidebar page already has a Prefix Master row - deactivate one below to free it up, or edit it in place.</p>
+        )}
         {formError && <p className="error-text">{formError}</p>}
       </div>
 
@@ -189,19 +238,19 @@ export function DocPrefixMasterPage() {
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
         <input
           type="text"
-          placeholder="Search Doc Type / Prefix…"
+          placeholder="Search Module / Prefix…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           style={{ maxWidth: 280 }}
         />
-        <select value={docTypeFilter} onChange={(e) => setDocTypeFilter(e.target.value)}>
-          <option value="">All Doc Types</option>
-          {DOC_TYPE_OPTIONS.map((dt) => (
-            <option key={dt} value={dt}>{dt}</option>
+        <select value={moduleFilter} onChange={(e) => setModuleFilter(e.target.value)}>
+          <option value="">All Modules</option>
+          {MODULE_OPTIONS.filter((m) => usedModuleKeys.has(m.key)).map((m) => (
+            <option key={m.key} value={m.key}>{m.label}</option>
           ))}
         </select>
-        {(search || docTypeFilter) && (
-          <button type="button" className="btn btn-sm" onClick={() => { setSearch(''); setDocTypeFilter('') }}>
+        {(search || moduleFilter) && (
+          <button type="button" className="btn btn-sm" onClick={() => { setSearch(''); setModuleFilter('') }}>
             Clear filters
           </button>
         )}
@@ -220,8 +269,9 @@ export function DocPrefixMasterPage() {
             <table>
               <thead>
                 <tr>
-                  <th style={TH_STYLE}>Doc Type</th>
+                  <th style={TH_STYLE}>Module</th>
                   <th style={TH_STYLE}>Prefix</th>
+                  <th style={TH_STYLE}>Financial Year</th>
                   <th style={TH_STYLE}>Status</th>
                   <th></th>
                 </tr>
@@ -229,8 +279,9 @@ export function DocPrefixMasterPage() {
               <tbody>
                 {visibleRows.map((r) => (
                   <tr key={r.id} style={r.isActive ? undefined : { opacity: 0.5 }}>
-                    <td>{r.docType}</td>
+                    <td>{moduleLabel(r.moduleKey)}</td>
                     <td>{r.prefix}</td>
+                    <td>{r.usesFinancialYear ? 'Yes' : 'None'}</td>
                     <td>{r.isActive ? 'Active' : 'Deactivated'}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>
                       <button className="btn" onClick={() => startEdit(r)}>Edit</button>{' '}
@@ -248,18 +299,23 @@ export function DocPrefixMasterPage() {
         <h3 style={SECTION_TITLE_STYLE}>Preview next number</h3>
         <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <label>
-            <div className="muted">Doc Type</div>
-            <select value={docType} onChange={(e) => setDocType(e.target.value)}>
-              <option value="JC">JC</option>
-              <option value="MT">MT</option>
-              <option value="RB">RB</option>
+            <div className="muted">Module</div>
+            <select value={previewModuleKey} onChange={(e) => setPreviewModuleKey(e.target.value)}>
+              <option value="">Select a module…</option>
+              {MODULE_OPTIONS.filter((m) => usedModuleKeys.has(m.key)).map((m) => (
+                <option key={m.key} value={m.key}>{m.label}</option>
+              ))}
             </select>
           </label>
-          <label>
-            <div className="muted">Financial Year</div>
-            <input value={financialYear} onChange={(e) => setFinancialYear(e.target.value)} placeholder="26-25" />
-          </label>
-          <button className="btn btn-primary" disabled={previewing} onClick={runPreview}>
+          {/* SECTION 184: hidden entirely for a "No Financial Year" module instead of showing a
+             box whose value would just be ignored - matches how Preview() itself now treats it. */}
+          {previewRow?.usesFinancialYear !== false && (
+            <label>
+              <div className="muted">Financial Year</div>
+              <input value={financialYear} onChange={(e) => setFinancialYear(e.target.value)} placeholder="26-25" />
+            </label>
+          )}
+          <button className="btn btn-primary" disabled={previewing || !previewModuleKey} onClick={runPreview}>
             {previewing ? 'Checking…' : 'Preview'}
           </button>
         </div>

@@ -231,6 +231,13 @@ builder.Services.AddScoped<IAuditLogService, AuditLogService>();
 // non-destructive per-line tagging, see IExtendedBatteryWarrantyEligibilityService's own doc comment.
 builder.Services.AddScoped<IExtendedBatteryWarrantyEligibilityService, ExtendedBatteryWarrantyEligibilityService>();
 
+// SECTION 186 (2026-10-02, "after 1st login 9 hr calculate and log out after 9 hr that
+// implememnt properly") - confirmed via AskUserQuestion: Shift 1 staff still checked in at 18:00
+// IST get CheckOutTime auto-written as 18:00. See Services/AttendanceAutoCheckoutService.cs's own
+// doc comment for the full reasoning (plain poll-loop BackgroundService, not Hangfire/Quartz -
+// nothing in this file registers either, so none is assumed to exist).
+builder.Services.AddHostedService<AttendanceAutoCheckoutService>();
+
 builder.Services.AddControllers().AddJsonOptions(o =>
 {
     o.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
@@ -1196,6 +1203,80 @@ async Task RunMenuAccessRoleModeCatchUpAsync()
     }
 }
 
+// 2026-10-02 (SECTION 188) - "Ledger Master" (Party/Insurance only) - see Models/LedgerMaster.cs
+// for the full reasoning. Runs in WAVE 2 (not wave 1) because, beyond creating its own table, it
+// also seeds a "ledger-master" row into dbo.DocPrefixMasters (IF NOT EXISTS) so Ledger Codes have
+// a Prefix Master row to consume from day one - that seed depends on DocPrefixMasters already
+// existing, which wave 1's RunServiceMenuComplaintPrefixCatchUpAsync is responsible for creating.
+// The seed check here is a data-level "IF NOT EXISTS (SELECT ...)", not an OBJECT_ID check, since
+// DocPrefixMasters itself may already exist with other rows in it (it does, on your real DB - JC/
+// MT/RB were seeded back in SECTION 163) - this only ever adds the ONE new row this feature needs,
+// never touches your existing JC/MT/RB rows.
+//
+// ASSUMPTION FLAGGED: this assumes the SECTION 184 migration (backend/recreate-doc-prefix-master-tables.sql,
+// delivered earlier this session) has already been run against your real DB, so DocPrefixMasters
+// has ModuleKey/UsesFinancialYear columns (not the older DocType-only shape) - if it hasn't, this
+// INSERT will fail with an "Invalid column name" error and the warning below will say so; run that
+// migration first if you see that in your console.
+//
+// SECTION 189 (2026-10-02): added DealerId to the CREATE TABLE below (per-dealer scoping, see
+// Models/LedgerMaster.cs). IF your "Could not save this ledger" error happened because
+// dbo.LedgerMasters was ALREADY created on your DB by the SECTION 188 version of this file (without
+// DealerId) - unlikely if Save was already failing outright, since that usually means the table was
+// never created successfully in the first place, but possible - this guarded CREATE TABLE will NOT
+// retroactively add the column (IF OBJECT_ID(...) IS NULL is now false). Run
+// backend/add-ledgermaster-dealerid-column.sql by hand first in that case; otherwise just restart
+// the backend and this creates the table correctly from scratch.
+async Task RunLedgerMasterCatchUpAsync()
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
+    try
+    {
+        await db.Database.ExecuteSqlRawAsync(@"
+            IF OBJECT_ID('dbo.LedgerMasters', 'U') IS NULL
+            BEGIN
+                CREATE TABLE dbo.LedgerMasters (
+                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+                    DealerId UNIQUEIDENTIFIER NOT NULL,
+                    LedgerType NVARCHAR(20) NOT NULL,
+                    LedgerCode NVARCHAR(40) NOT NULL,
+                    LedgerName NVARCHAR(200) NOT NULL,
+                    MobileNumber NVARCHAR(10) NULL,
+                    AlternateMobileNo NVARCHAR(10) NULL,
+                    EMail NVARCHAR(200) NULL,
+                    Address NVARCHAR(400) NULL,
+                    Pin NVARCHAR(10) NULL,
+                    Gstno NVARCHAR(20) NULL,
+                    Pan NVARCHAR(10) NULL,
+                    AadharNumber NVARCHAR(20) NULL,
+                    IsActive BIT NOT NULL DEFAULT (1),
+                    CreatedById UNIQUEIDENTIFIER NULL,
+                    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+                    UpdatedById UNIQUEIDENTIFIER NULL,
+                    UpdatedAt DATETIME2 NULL,
+                    CONSTRAINT FK_LedgerMasters_Dealer FOREIGN KEY (DealerId) REFERENCES dbo.Dealers(Id),
+                    CONSTRAINT FK_LedgerMasters_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id),
+                    CONSTRAINT FK_LedgerMasters_UpdatedBy FOREIGN KEY (UpdatedById) REFERENCES dbo.Users(Id)
+                );
+                CREATE UNIQUE INDEX IX_LedgerMasters_LedgerCode ON dbo.LedgerMasters(LedgerCode);
+                CREATE INDEX IX_LedgerMasters_Dealer_LedgerType ON dbo.LedgerMasters(DealerId, LedgerType);
+            END
+
+            IF NOT EXISTS (SELECT 1 FROM dbo.DocPrefixMasters WHERE ModuleKey = 'ledger-master')
+            BEGIN
+                INSERT INTO dbo.DocPrefixMasters (Id, ModuleKey, Prefix, UsesFinancialYear, IsActive, CreatedAt) VALUES
+                    (NEWID(), 'ledger-master', 'LED', 0, 1, SYSUTCDATETIME());
+            END
+        ");
+        Console.WriteLine("[Startup] Self-healing schema catch-up (LedgerMasters table + ledger-master Prefix Master seed) checked/applied.");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Startup] WARNING: LedgerMaster schema catch-up failed - {ex.Message}");
+    }
+}
+
 var selfHealStopwatch = Stopwatch.StartNew();
 
 // Wave 1: every block whose tables nothing else in wave 2 needs created first - see the
@@ -1215,7 +1296,8 @@ await Task.WhenAll(
 // just after wave 1 instead of interleaved with it.
 await Task.WhenAll(
     RunOemModelCatchUpAsync(),
-    RunPartSuggestionStatusTypeRepairAsync());
+    RunPartSuggestionStatusTypeRepairAsync(),
+    RunLedgerMasterCatchUpAsync());
 
 selfHealStopwatch.Stop();
 Console.WriteLine($"[Startup] All self-healing schema checks complete in {selfHealStopwatch.ElapsedMilliseconds} ms (2 waves, was 9 sequential round-trips before this cleanup).");

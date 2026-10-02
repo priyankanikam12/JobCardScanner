@@ -1,5 +1,5 @@
 // web\src\pages\staff\DashboardPage.tsx
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { staffApi } from '../../api/client'
@@ -327,10 +327,195 @@ function CorporateDashboard() {
       .finally(() => setLoading(false))
   }, [filters])
 
+  // 2026-10-02 ("in dashboard of systemadmin ... kpi cards app like other dashboard ... other
+  // role ... Parts stocks") - confirmed via AskUserQuestion: "other role" = total staff across
+  // every role, combined into one number. ASSUMPTION FLAGGED: I don't have EmployeesController.cs
+  // (or whichever controller backs NAV_ITEMS' "employees"/"technician-employees" pages) in this
+  // session, so GET /api/employees with no params is a best guess at the endpoint, not confirmed -
+  // same "try it, degrade to a dash on failure" pattern this file already uses for the Dealer
+  // Dashboard's Stock Qty tile below. If this shows "—", tell me the real endpoint/shape and I'll
+  // fix it rather than guess again.
+  //
+  // 2026-10-02 ("that card clickable dealerwise can check how much dealer how his under role and
+  // that role dealtail") - the FULL employee array is now kept (not just its length), so the
+  // Dealers card's click-through breakdown below can group these same rows by dealer + role
+  // without a second network call. ASSUMPTION FLAGGED (separate from the endpoint path itself):
+  // each row is assumed to carry `role` and `dealerId` fields (camelCase, matching every other
+  // confirmed JSON response this session, e.g. AttendanceController.List's `role: s.Role.ToString()`
+  // and `dealerId`) - if the breakdown panel below comes up empty/wrong, this field-shape guess is
+  // the first thing to check once the real controller is pasted.
+  interface EmployeeRow {
+    id?: string
+    name?: string
+    role?: string
+    dealerId?: string | null
+    dealerName?: string | null
+  }
+  const [employees, setEmployees] = useState<EmployeeRow[] | null>(null)
+  const [staffError, setStaffError] = useState(false)
+  useEffect(() => {
+    staffApi
+      .get<EmployeeRow[]>('/api/employees')
+      .then((res) => setEmployees(Array.isArray(res.data) ? res.data : []))
+      .catch(() => setStaffError(true))
+  }, [])
+  const staffCount = employees?.length ?? null
+
+  // Toggled by clicking the "Dealers" KPI tile - see that tile's own render below.
+  const [showDealerBreakdown, setShowDealerBreakdown] = useState(false)
+
+  // Groups the same `employees` array above by dealer, then by role within each dealer - built
+  // once per employees/filterOptions change rather than on every render.
+  const dealerRoleBreakdown = useMemo(() => {
+    if (!employees) return null
+    const byDealer = new Map<string, { dealerName: string; roles: Map<string, number>; total: number }>()
+    for (const e of employees) {
+      const dealerKey = e.dealerId ?? '__unassigned__'
+      const dealerName =
+        e.dealerName ||
+        filterOptions?.dealers.find((d) => d.id === e.dealerId)?.name ||
+        (e.dealerId ? e.dealerId : 'Unassigned / no dealer')
+      const role = e.role || 'Unknown role'
+      if (!byDealer.has(dealerKey)) byDealer.set(dealerKey, { dealerName, roles: new Map(), total: 0 })
+      const entry = byDealer.get(dealerKey)!
+      entry.roles.set(role, (entry.roles.get(role) ?? 0) + 1)
+      entry.total += 1
+    }
+    return Array.from(byDealer.values()).sort((a, b) => a.dealerName.localeCompare(b.dealerName))
+  }, [employees, filterOptions])
+
+  // 2026-10-02 - confirmed via AskUserQuestion: Parts Stock = quantity summed across every dealer.
+  // Same GET /api/part-uploads + sum(balQty) approach already used for the Dealer Dashboard's own
+  // Stock Qty tile (see that tile's doc comment), called here with no dealer filter. ASSUMPTION
+  // FLAGGED: I don't have PartUploadsController.cs in this session to confirm it actually returns
+  // every dealer's rows (not just one) when called by a Corporate/System Admin - if the number
+  // looks like a single dealer's stock rather than the org total, that controller needs a look.
+  const [orgStockQty, setOrgStockQty] = useState<number | null>(null)
+  const [orgStockError, setOrgStockError] = useState(false)
+  useEffect(() => {
+    staffApi
+      .get<{ balQty: number | null }[]>('/api/part-uploads')
+      .then((res) => setOrgStockQty(res.data.reduce((sum, r) => sum + (r.balQty ?? 0), 0)))
+      .catch(() => setOrgStockError(true))
+  }, [])
+
   return (
     <div>
       <h2 style={{ marginBottom: 4 }}>Corporate Dashboard</h2>
       <p className="muted" style={{ marginTop: 0 }}>Consolidated visibility across all dealers</p>
+
+      {/* 2026-10-02 ("in dashboard of systemadmin ... kpi cards app like other dashboard ... Open
+         Job Cards Count / Dealer Wise count of job cards / Dealer / other role / Parts stocks ...
+         all main after login in starting like after other role login") - mirrors the Dealer
+         Dashboard's own 2026-09-28 reorder (KPI tiles first, All Pages/action cards below), so a
+         SystemAdmin/CorporateAdmin login lands on the same kind of overview row other roles get,
+         instead of two card grids and a filter bar first.
+
+         INTERPRETATION, not a new/duplicate number: "Open Job Cards Count" below reuses
+         data.pendingVehicles rather than adding a second count. Its own Link already points at
+         /jobcards?excludeClosed=true - the exact same filter the Dealer Dashboard's "Open Job
+         Cards" tile uses - and this component's own prior comment on this tile ("there's no
+         /jobcards filter that actually reproduces those numbers the way there is for Pending
+         Vehicles") confirms it really is a live job-card count server-side, unlike
+         Revenue/Warranty Cost/CSAT. "Dealer Wise count of job cards" is the existing "Job Card
+         Volume by Dealer" chart, just moved up here instead of being duplicated as a second
+         per-dealer number - see that chart below. */}
+      <div className="kpi-grid" style={{ margin: '16px 0' }}>
+        <Link to="/jobcards?excludeClosed=true" className="kpi kpi-a4" style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
+          <span className="kpi-badge-action">Action Needed</span>
+          <div className="kpi-icon">📋</div>
+          <div className="value">{loading || !data ? '…' : data.pendingVehicles}</div>
+          <div className="label">Open Job Cards Count</div>
+        </Link>
+        {/* 2026-10-02 ("that card clickable dealerwise can check how much dealer how his under
+           role and that role dealtail") - toggles the role-breakdown panel below instead of
+           navigating, so this is a <div onClick> (matching the Staff/Parts Stock tiles' look) with
+           keyboard support, not a <Link>. */}
+        <div
+          className="kpi kpi-a2"
+          role="button"
+          tabIndex={0}
+          style={{ cursor: 'pointer' }}
+          onClick={() => setShowDealerBreakdown((v) => !v)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') setShowDealerBreakdown((v) => !v)
+          }}
+        >
+          <div className="kpi-icon">🏢</div>
+          <div className="value">{filterOptions ? filterOptions.dealers.length : '…'}</div>
+          <div className="label">Dealers</div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+            {showDealerBreakdown ? 'Hide role-wise detail ▲' : 'Click for role-wise detail ▼'}
+          </div>
+        </div>
+        <div className="kpi kpi-a3">
+          <div className="kpi-icon">👥</div>
+          <div className="value">{staffError ? '—' : staffCount === null ? '…' : staffCount}</div>
+          <div className="label">Staff (All Roles)</div>
+        </div>
+        <Link to="/part-upload" className="kpi kpi-a5" style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
+          <div className="kpi-icon">📦</div>
+          <div className="value">{orgStockError ? '—' : orgStockQty === null ? '…' : orgStockQty.toLocaleString('en-IN')}</div>
+          <div className="label">Parts Stock</div>
+        </Link>
+      </div>
+
+      {/* 2026-10-02 - the Dealers tile's click-through breakdown: how many staff, by role, under
+         each dealer. Built client-side from the same /api/employees fetch as the Staff (All
+         Roles) tile above - see that tile's own doc comment for the flagged endpoint/shape
+         assumption this inherits. */}
+      {showDealerBreakdown && (
+        <div className="card" style={{ marginBottom: 20 }}>
+          <h3>Dealers - Role-wise Staff</h3>
+          {staffError ? (
+            <p className="muted">Could not load staff details to build this breakdown ({'/api/employees'} failed - see this tile's own code comment).</p>
+          ) : !dealerRoleBreakdown ? (
+            <p className="muted">Loading...</p>
+          ) : dealerRoleBreakdown.length === 0 ? (
+            <p className="muted">No staff records found.</p>
+          ) : (
+            <table>
+              <thead>
+                <tr><th>Dealer</th><th>Total Staff</th><th>Role-wise Count</th></tr>
+              </thead>
+              <tbody>
+                {dealerRoleBreakdown.map((d) => (
+                  <tr key={d.dealerName}>
+                    <td>{d.dealerName}</td>
+                    <td>{d.total}</td>
+                    <td className="muted">
+                      {Array.from(d.roles.entries())
+                        .sort((a, b) => b[1] - a[1])
+                        .map(([role, count]) => `${role}: ${count}`)
+                        .join(', ')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      <div className="card" style={{ marginBottom: 20 }}>
+        <h3>Job Card Volume by Dealer</h3>
+        <p className="muted" style={{ marginTop: -6, marginBottom: 10 }}>Dealer-wise count of job cards.</p>
+        {loading || !data ? (
+          <p className="muted">Loading...</p>
+        ) : (
+          <div style={{ width: '100%', height: 260 }}>
+            <ResponsiveContainer>
+              <BarChart data={data.jobCardVolumeByDealer}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="dealerName" fontSize={11} />
+                <YAxis allowDecimals={false} />
+                <Tooltip />
+                <Bar dataKey="count" fill="#16a34a" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </div>
 
       <div className="action-card-grid">
         {CORPORATE_ACTION_CARDS.map((a, i) => (
@@ -412,36 +597,11 @@ function CorporateDashboard() {
               <div className="value">{data.csat.average != null ? `${data.csat.average.toFixed(1)} / 5` : '—'}</div>
               <div className="label">CSAT{data.csat.average == null ? ' (no ratings yet)' : ''}</div>
             </div>
-            {/* Only this tile links out - Revenue/Warranty Cost/CSAT are computed off Invoices (or,
-               for CSAT, off a rating system that doesn't exist yet - see DealerDashboard's own
-               CSAT tile comment), not a job-card count, so there's no /jobcards filter that
-               actually reproduces those numbers the way there is for Pending Vehicles. The
-               region/state/city/dealer/model filter bar above isn't passed through - JobCardsListPage
-               doesn't support those dimensions today, only status/stageKey/q. */}
-            <Link to="/jobcards?excludeClosed=true" className="kpi kpi-a4" style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
-              <span className="kpi-badge-action">Action Needed</span>
-              <div className="kpi-icon">🚗</div>
-              <div className="value">{data.pendingVehicles}</div>
-              <div className="label">Pending Vehicles</div>
-            </Link>
           </div>
+          {/* Pending Vehicles / Job Card Volume by Dealer moved up to the top overview row/card
+             (2026-10-02) - see this component's own doc comment above. Not duplicated here. */}
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: 16 }}>
-            <div className="card">
-              <h3>Job Card Volume by Dealer</h3>
-              <div style={{ width: '100%', height: 260 }}>
-                <ResponsiveContainer>
-                  <BarChart data={data.jobCardVolumeByDealer}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="dealerName" fontSize={11} />
-                    <YAxis allowDecimals={false} />
-                    <Tooltip />
-                    <Bar dataKey="count" fill="#16a34a" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-
             <div className="card">
               <h3>Job Card Volume Trend</h3>
               <div style={{ width: '100%', height: 260 }}>

@@ -28,6 +28,8 @@ public enum StaffRole
     /// they'll switch to this new role and pick up its slightly different (Technician-tab-gaining)
     /// permission set.</summary>
     Supervisor,
+
+    
 }
 
 /// <summary>How a <see cref="User"/> proves their identity. AzureAd = signs in via the

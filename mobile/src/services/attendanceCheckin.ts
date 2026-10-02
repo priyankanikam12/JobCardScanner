@@ -1,3 +1,4 @@
+// mobile\src\services\attendanceCheckin.ts
 /**
  * Self check-in/check-out, tied to the mobile app's OWN login/logout - 2026-09-26 ("when i login
  * then this time was login time and add in that shift when i login on 9 am then 1st shift 9 am to
