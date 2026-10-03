@@ -349,10 +349,10 @@ export function AttendancePage() {
       <div className="card">
         <style>{ATTENDANCE_STYLES}</style>
         <h2>My Attendance</h2>
-        <p className="muted">
+        {/* <p className="muted">
           Your own attendance only - if a day looks wrong, ask your dealer's Workshop Manager to correct it; you
           can't edit this yourself here.
-        </p>
+        </p> */}
 
         <div className="form-row" style={{ marginBottom: 16 }}>
           <div className="field">

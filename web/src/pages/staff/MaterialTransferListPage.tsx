@@ -1,3 +1,4 @@
+// web\src\pages\staff\MaterialTransferListPage.tsx
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { staffApi } from '../../api/client'
@@ -44,7 +45,29 @@ import { RecordDetailModal } from '../../components/RecordDetailModal'
  * Delete button exactly, which never had one either (confirmed by reading that file before this
  * split - `hasRole`/`canDelete` were never imported/used there at all). Left exactly as-is, not
  * silently tightened to match Repair Bill's own stricter rule.
+ *
+ * 2026-10-03 ("Date From default select start date of month and Date To default today date ...
+ * and below search data" + "in pagination 10 default select"): same two defaults as
+ * RepairBillListPage.tsx's identical 2026-10-03 change - see that file's top-of-file doc comment
+ * for the full reasoning (local-date math, not UTC; scoped setPageSize(10) rather than touching
+ * usePagination's own shared default). The Date From/To, Service Location, Transfer No and Job No
+ * filters and the Search button were already present and wired into loadCombined()'s params before
+ * this change; nothing about that wiring itself changed here, just these two defaults.
  */
+function toLocalIso(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+function todayIso(): string {
+  return toLocalIso(new Date())
+}
+function startOfMonthIso(): string {
+  const d = new Date()
+  return toLocalIso(new Date(d.getFullYear(), d.getMonth(), 1))
+}
+
 export function MaterialTransferListPage() {
   const { profile } = useStaffAuth()
   const navigate = useNavigate()
@@ -61,8 +84,10 @@ export function MaterialTransferListPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.dealerId, profile?.workLocationCodes])
 
-  const [listDateFrom, setListDateFrom] = useState('')
-  const [listDateTo, setListDateTo] = useState('')
+  // 2026-10-03: default Date From/To to this month's 1st / today - see this file's top-of-file
+  // doc comment for why local-date math is used instead of toISOString().
+  const [listDateFrom, setListDateFrom] = useState(startOfMonthIso())
+  const [listDateTo, setListDateTo] = useState(todayIso())
   const [listLocation, setListLocation] = useState('')
   const [listTransferNo, setListTransferNo] = useState('')
   const [listJobNo, setListJobNo] = useState('')
@@ -100,6 +125,10 @@ export function MaterialTransferListPage() {
   }
 
   const { page, setPage, pageSize, setPageSize, pageCount, pageRows, total } = usePagination(rows)
+  // 2026-10-03 ("pagination 10 default select"): see this file's top-of-file doc comment - a
+  // scoped, one-time default for THIS page only, not a change to usePagination's own internal
+  // default (which RepairBillPage.tsx/MaterialTransferPage.tsx/VehicleSalePage.tsx also rely on).
+  useEffect(() => { setPageSize(10) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // 2026-09-23 - read-only detail popup for a Confirmed/Cancelled row, ported from the old embedded
   // list (MaterialTransferCreatePage.tsx's own viewingTransfer) - always source: 'JobCardScanner'

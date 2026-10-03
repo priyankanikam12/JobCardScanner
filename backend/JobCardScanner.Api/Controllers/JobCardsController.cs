@@ -770,7 +770,6 @@ public class JobCardsController : ControllerBase
         return Ok(new { message = $"Estimate emailed to {req.Email}." });
     }
 
-
     // ---------------- Job Card Opening Wizard: finalize ----------------
     [HttpPost]
     [Authorize(Policy = Policies.ServiceAdvisorUp)]
@@ -962,7 +961,7 @@ public class JobCardsController : ControllerBase
 
     // ---------------- Assignment / priority / ETA ----------------
     [HttpPut("{id:guid}")]
-    [Authorize(Policy = Policies.WorkshopManagerUp)]
+    [Authorize(Policy = Policies.ServiceAdvisorUp)]
     public async Task<IActionResult> Update(Guid id, UpdateJobCardRequest req)
     {
         var jc = await _db.JobCards.FirstOrDefaultAsync(j => j.Id == id);
@@ -1359,6 +1358,7 @@ public class JobCardsController : ControllerBase
         CustomerMobile = j.Customer?.Mobile,
         VehicleModel = j.Vehicle?.Model,
         VehicleRegNo = j.Vehicle?.RegNo,
+        VehicleChassisNo = j.Vehicle?.Vin,
         StageLabel = j.CurrentStage?.Label,
         ServiceAdvisorName = j.ServiceAdvisor?.Name,
         TechnicianName = j.AssignedTechnician?.Name ?? j.AssignedTechnicianName,
@@ -1385,6 +1385,7 @@ public class JobCardsController : ControllerBase
         CustomerMobile = r.CustomerMobile,
         VehicleModel = r.ModelName,
         VehicleRegNo = string.IsNullOrWhiteSpace(r.RegisterNo) ? r.ChassisNo : r.RegisterNo,
+        VehicleChassisNo = r.ChassisNo, // NEW
         StageLabel = (string?)null,
         ServiceAdvisorName = r.Supervisor,
         TechnicianName = r.Technician,
@@ -1719,6 +1720,47 @@ public class JobCardsController : ControllerBase
                 .Select(v => new { v.Odometer })
                 .FirstOrDefaultAsync();
             if (localVehicle is not null) vehiclePrevKms = (int)localVehicle.Odometer;
+        }
+
+        // 2026-10-03 ("when i create Jobcard 1st time then his last km take from this seravice
+        // history and after this Job date which i create job cards in my jobcard db then this show
+        // previous km in job card creation") - the block above is only non-null once a local Vehicle
+        // row already exists for this chassis, i.e. from the SECOND job card onward (the first job
+        // card's own creation is what inserts that row via POST /api/customers/vehicles - see
+        // createVehicle in the wizard). For the very first job card on a chassis, localVehicle is
+        // always null here even when DMSBAPLDATA's own DMS_ServiceHistory already has real past
+        // service visits (and therefore a real last-known KMS) on file from before this app existed.
+        // This fills that one gap - local JobCardScanner data stays authoritative and is never
+        // overridden once it exists, matching "after this Job date... show previous km" (the
+        // `vehiclePrevKms is null` guard below only ever lets this branch run on that first-time
+        // case). DMS_ServiceHistory.KMS is a free-text column, not numeric (see
+        // DmsBaplDataServiceHistoryRow's own doc comment) - only a row whose KMS actually parses as a
+        // number is usable, and GetServiceHistoryAsync already orders its matches JobDate DESC, Id
+        // DESC, so the first parseable row for this exact chassis is its most recent recorded KMS.
+        // (GetServiceHistoryAsync itself matches by LIKE '%value%' on ChassisNo OR RegNo - the exact
+        // ChassisNo equality check below guards against a false-positive substring match pulling in
+        // a different vehicle's KMS.) Best-effort: if DMSBAPLDATA can't be reached right now, this
+        // leaves vehiclePrevKms as it was (no previous-KM hint) rather than failing the whole
+        // lookup - the wizard's Odometer field stays editable either way, it just loses the
+        // auto-filled hint for this one chassis this one time.
+        if (vehiclePrevKms is null && !string.IsNullOrWhiteSpace(hit.ChassisNo))
+        {
+            try
+            {
+                var history = await _dmsBaplData.GetServiceHistoryAsync(hit.ChassisNo, HttpContext.RequestAborted);
+                var latestWithKms = history.FirstOrDefault(h =>
+                    h.ChassisNo == hit.ChassisNo &&
+                    decimal.TryParse(h.Kms, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out _));
+                if (latestWithKms is not null &&
+                    decimal.TryParse(latestWithKms.Kms, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var kmsVal))
+                {
+                    vehiclePrevKms = (int)kmsVal;
+                }
+            }
+            catch (InvalidOperationException ex)
+            {
+                _logger.LogWarning(ex, "Could not read ServiceHistory for the previous-KM fallback on chassis {ChassisNo} - continuing without it.", hit.ChassisNo);
+            }
         }
 
         // 2026-10-01 ("When we change reg no, against this chassis no. then for jobcard search

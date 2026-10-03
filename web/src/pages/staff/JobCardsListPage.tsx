@@ -143,7 +143,12 @@ export function JobCardsListPage() {
                       )}
                     </td>
                     <td>{jc.customerName}<div className="muted">{jc.customerMobile}</div></td>
-                    <td>{jc.vehicleModel}<div className="muted">{jc.vehicleRegNo}</div></td>
+                    {/* <td>{jc.vehicleModel}<div className="muted">{jc.vehicleRegNo}</div></td> */}
+                    <td>
+                      {jc.vehicleModel}
+                      <div className="muted">{jc.vehicleRegNo}</div>
+                      <div className="muted">{jc.vehicleChassisNo ?? '-'}</div>
+                    </td>
                     <td>{isBapl ? <span className="muted">-</span> : jc.stageLabel}</td>
                     <td><StatusBadge status={jc.status} /></td>
                     <td>{jc.technicianName ?? '-'}</td>

@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import { useIsAuthenticated, useMsal } from '@azure/msal-react'
 import { staffApi } from '../api/client'
 import { getDealerSession } from './dealerSession'
+import { checkInAfterLogin } from '../services/attendanceCheckin'
 import type { CurrentUser, StaffRole } from '../types'
 
 interface StaffAuthValue {
@@ -88,6 +89,19 @@ export function StaffAuthProvider({ children }: { children: ReactNode }) {
     try {
       const { data } = await staffApi.get<CurrentUser>('/api/auth/me')
       setProfile(data)
+      // 2026-10-03 ("daily attendance not working"): checkInAfterLogin()/checkOutBeforeLogout()
+      // (web/src/services/attendanceCheckin.ts) have existed since 2026-09-28 but were never
+      // actually called from anywhere on web - that file's own doc comment and
+      // AttendanceAutoCheckoutService.cs's doc comment both flagged this as the one remaining
+      // step, blocked only on not having this file in session. Wired in here: every time this
+      // load() resolves a real signed-in profile (initial sign-in, AND every later page
+      // load/refresh while already signed in) it fires a check-in. This is safe to call
+      // repeatedly - AttendanceController.CheckIn() only ever sets CheckInTime/Shift on the
+      // FIRST call for the current IST calendar day; every call after that just re-confirms
+      // Status = Present without moving the check-in time. Fire-and-forget on purpose (not
+      // awaited) - a failed check-in must never delay or block the rest of the app loading, and
+      // checkInAfterLogin() itself swallows its own errors.
+      void checkInAfterLogin()
     } catch (err: unknown) {
       const message =
         (err as { response?: { data?: { message?: string } } })?.response?.data?.message ??

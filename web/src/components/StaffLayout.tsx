@@ -4,6 +4,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useMsal } from '@azure/msal-react'
 import { useStaffAuth } from '../auth/StaffAuthContext'
 import { dealerLogout } from '../services/dealerAuthService'
+import { checkOutBeforeLogout } from '../services/attendanceCheckin'
 import { staffApi } from '../api/client'
 import type { StaffRole } from '../types'
 // 2026-09-18 "in place of JobCardScanner i want add web\src\assets\BGauss_Logo.png": this file lives
@@ -427,7 +428,17 @@ export function StaffLayout() {
     return () => document.removeEventListener('mousedown', onDocClick)
   }, [profileOpen])
 
-  const signOut = () => {
+  // 2026-10-03 ("daily attendance not working") - same wiring gap as checkInAfterLogin() in
+  // StaffAuthContext.tsx (see that file's own doc comment): checkOutBeforeLogout() has existed
+  // since 2026-09-28 but this is the ONE sign-out path on web (both the sidebar "Logout" link and
+  // the footer "Sign out" button below call this same function), so it's the one place that
+  // needed the call added. Awaited and placed FIRST, before either logout path runs - "before log
+  // out chek out need to do that will update" - but it can never block/break sign-out itself:
+  // checkOutBeforeLogout() swallows its own errors (network failure, session already expired,
+  // etc.), so this always proceeds to the real logout regardless of whether the checkout call
+  // succeeded.
+  const signOut = async () => {
+    await checkOutBeforeLogout()
     if (authMode === 'dealer') {
       dealerLogout()
       navigate('/login', { replace: true })

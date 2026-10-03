@@ -76,10 +76,17 @@ public class PartUploadController : ControllerBase
     /// fix: `allowedLocations` (this login's own WorkLocationCodes) is now passed into
     /// GetAsync alongside the existing `locationCode` dropdown filter, so a Work Area-restricted
     /// login can no longer see another location's uploaded stock, on top of (not instead of) the
-    /// existing DealerId scope.</summary>
+    /// existing DealerId scope.
+    ///
+    /// 2026-10-03 ("in part upload also add date filter"): new optional `dateFrom`/`dateTo`,
+    /// filtering on PartUpload.ReportDate (the "as of" date picked on the upload form - see
+    /// Models/PartUpload.cs's doc comment) - this grid had NO date filter of any kind before this;
+    /// the only Date field on the page was the required upload-form Date, a separate concept.
+    /// Named arguments used for the same reason the existing allowedLocations call already does -
+    /// see GetAsync's own doc comment for the CS1503 this avoided once before.</summary>
     [HttpGet]
     [Authorize(Policy = Policies.PartsReadUp)]
-    public async Task<IActionResult> Get([FromQuery] string? search, [FromQuery] string? locationCode)
+    public async Task<IActionResult> Get([FromQuery] string? search, [FromQuery] string? locationCode, [FromQuery] DateOnly? dateFrom = null, [FromQuery] DateOnly? dateTo = null)
     {
         if (_currentUser.DealerId is not { } dealerId)
             return BadRequest(new { message = "Your login isn't linked to a dealer - Part Upload is scoped per dealer." });
@@ -93,7 +100,7 @@ public class PartUploadController : ControllerBase
             // first time). Named here so a future signature change can't silently miswire this
             // call the same way again.
             var allowedLocations = _currentUser.WorkLocationCodes;
-            return Ok(await _partUploads.GetAsync(dealerId, locationCode, search, HttpContext.RequestAborted, allowedLocations: allowedLocations));
+            return Ok(await _partUploads.GetAsync(dealerId, locationCode, search, HttpContext.RequestAborted, allowedLocations: allowedLocations, dateFrom: dateFrom, dateTo: dateTo));
         }
         catch (InvalidOperationException ex)
         {
