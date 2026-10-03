@@ -57,17 +57,26 @@ public class EstimatePdfService : IEstimatePdfService
             .FirstOrDefaultAsync(j => j.Id == jobCardId, ct);
         if (jc is null) return null;
 
+        // 2026-10-03 ("Issue Type ... FOC select the Amount will be 0 ... that give from backend
+        // calculation ... as well"): this method computed Amount as a flat Rate*Qty with no look
+        // at Status (Part)/IssueType (Labour) at all - this is exactly the gap flagged when FOC
+        // was added to the frontend. Same zero-amount rule the frontend's EstimatesCard and
+        // PrintMenu.printEstimate now apply (Part: p.status === 'FOC', Labour: l.issueType ===
+        // 'FOC') is applied here too, so an emailed estimate PDF matches what's shown on screen
+        // for an FOC line instead of still showing its real amount.
         var partRows = jc.PartSuggestions.Select((p, i) =>
         {
             var mrp = p.Mrp ?? 0;
             var qty = p.Quantity <= 0 ? 1 : p.Quantity;
-            return (Sr: i + 1, Code: p.ItemCode, Description: p.Description ?? "-", Hsn: p.HsnCode ?? "-", Rate: mrp, Qty: qty, Amount: mrp * qty);
+            var isFoc = p.Status == "FOC";
+            return (Sr: i + 1, Code: p.ItemCode, Description: p.Description ?? "-", Hsn: p.HsnCode ?? "-", Rate: mrp, Qty: qty, Amount: isFoc ? 0 : mrp * qty);
         }).ToList();
         var labourRows = jc.LabourSuggestions.Select((l, i) =>
         {
             var rate = l.RateAtSuggestion ?? 0;
             var qty = l.Quantity <= 0 ? 1 : l.Quantity;
-            return (Sr: i + 1, Code: l.LabourCode, Description: l.LabourDescription ?? "-", Hsn: l.HsnCode ?? "-", Rate: rate, Qty: qty, Amount: rate * qty);
+            var isFoc = l.IssueType == "FOC";
+            return (Sr: i + 1, Code: l.LabourCode, Description: l.LabourDescription ?? "-", Hsn: l.HsnCode ?? "-", Rate: rate, Qty: qty, Amount: isFoc ? 0 : rate * qty);
         }).ToList();
         var partsTotal = partRows.Sum(r => r.Amount);
         var labourTotal = labourRows.Sum(r => r.Amount);
@@ -85,9 +94,6 @@ public class EstimatePdfService : IEstimatePdfService
                 page.Margin(30);
                 page.DefaultTextStyle(x => x.FontSize(10).FontColor(BodyText));
 
-                // ---------------- Header: dealer name/code left, "ESTIMATE" + Job Card No/Date
-                // right, 2.5pt navy rule underneath - matches .doc-head/.co-name/.doc-title/
-                // .doc-right in PRINT_DOC_CSS exactly.
                 page.Header().Column(col =>
                 {
                     col.Item().Row(row =>
@@ -108,7 +114,6 @@ public class EstimatePdfService : IEstimatePdfService
                             c.Item().AlignRight().Text(t =>
                             {
                                 t.Span("Date: ").FontSize(9.5f).FontColor(LabelGrey);
-                                // IST, matching this feature's "show actual IST time" requirement elsewhere
                                 t.Span(DateTime.UtcNow.AddMinutes(330).ToString("dd/MM/yyyy")).FontSize(9.5f).Bold();
                             });
                         });
@@ -120,9 +125,6 @@ public class EstimatePdfService : IEstimatePdfService
                 {
                     col.Spacing(6);
 
-                    // ---------------- Customer Details / Vehicle Details - two bordered boxes
-                    // side by side, each with a grey title bar and a label:value row table -
-                    // matches .row2 > .sec > .sec-title + .kv in PRINT_DOC_CSS.
                     col.Item().Row(row =>
                     {
                         row.Spacing(6);
@@ -199,8 +201,6 @@ public class EstimatePdfService : IEstimatePdfService
                     ItemsTable("Part Details", partRows, "Item Code", "MRP", partsTotal);
                     ItemsTable("Labour Details", labourRows, "Labour Code", "Rate", labourTotal);
 
-                    // ---------------- Grand Total - its own bordered box, 2pt navy rule on top of
-                    // the total row itself, matching .cpl tfoot's border-top in PRINT_DOC_CSS.
                     col.Item().Border(1).BorderColor(BoxBorder).Padding(8).PaddingTop(0).Column(box =>
                     {
                         box.Item().PaddingTop(8).BorderTop(2).BorderColor(Navy).PaddingTop(6).Row(r =>

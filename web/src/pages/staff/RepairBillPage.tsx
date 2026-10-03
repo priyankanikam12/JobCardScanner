@@ -166,11 +166,11 @@ export function RepairBillPage() {
   return (
     <div>
       <h2>Repair Bill</h2>
-      <p className="muted">
+      {/* <p className="muted">
         {isOrgWide
           ? 'Synced repair bill data from DMSBAPLDATA, across every dealer. Read-only - this app never writes to DMSBAPLDATA.'
           : 'Synced repair bill data from DMSBAPLDATA for your own dealer. Read-only - this app never writes to DMSBAPLDATA.'}
-      </p>
+      </p> */}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
         <ReportDownloadButtons

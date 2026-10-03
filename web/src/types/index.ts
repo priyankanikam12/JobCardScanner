@@ -893,7 +893,7 @@ export interface JobCardPartSuggestion {
   id: string
   itemCode: string
   availableQtyAtSuggestion?: number | null
-  status: 'Paid' | 'U/W'
+  status: 'Paid' | 'U/W' | 'FOC'
   /// How many units of this part are used on this job card - distinct from
   /// availableQtyAtSuggestion (DMS's stock level at suggestion time). Defaults to 1.
   quantity: number

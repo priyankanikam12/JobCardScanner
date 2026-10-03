@@ -145,11 +145,6 @@ export function MaterialTransferListPage() {
   return (
     <div>
       <h2>Material Transfer List</h2>
-      <p className="muted">
-        Every material transfer saved in JobCardScanner's own database - click a still-Draft
-        transfer (or its ✎ button) to open and edit it, or a Confirmed/Cancelled one to view its
-        full details.
-      </p>
 
       <div className="card">
         <div className="form-row">

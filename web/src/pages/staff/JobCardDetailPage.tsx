@@ -344,12 +344,14 @@ function PrintMenu({ jc, setMsg }: { jc: JobCardDetail; setMsg: (m: string | nul
     const partRows = jc.partSuggestions.map((p, i) => {
       const mrp = p.mrp ?? 0
       const qty = p.quantity ?? 1
-      return { sr: i + 1, code: p.itemCode, description: p.description ?? '-', hsn: p.hsnCode ?? '-', mrp: money(mrp), qty, amount: mrp * qty }
+      const isFoc = p.status === 'FOC'
+      return { sr: i + 1, code: p.itemCode, description: p.description ?? '-', hsn: p.hsnCode ?? '-', mrp: money(mrp), qty, amount: isFoc ? 0 : mrp * qty }
     })
     const labourRows = jc.labourSuggestions.map((l, i) => {
       const rate = l.rateAtSuggestion ?? 0
       const qty = l.quantity ?? 1
-      return { sr: i + 1, code: l.labourCode, description: l.labourDescription ?? '-', hsn: l.hsnCode ?? '-', rate: money(rate), qty, amount: rate * qty }
+      const isFoc = l.issueType === 'FOC'
+      return { sr: i + 1, code: l.labourCode, description: l.labourDescription ?? '-', hsn: l.hsnCode ?? '-', rate: money(rate), qty, amount: isFoc ? 0 : rate * qty }
     })
     const partsTotal = partRows.reduce((sum, r) => sum + r.amount, 0)
     const labourTotal = labourRows.reduce((sum, r) => sum + r.amount, 0)
@@ -560,19 +562,6 @@ export function JobCardDetailPage() {
           <h3>Customer & Vehicle</h3>
           <p><strong>{jc.customer?.name}</strong><br />{jc.customer?.mobile}</p>
           <p>{jc.vehicle?.model} {jc.vehicle?.variant}<br />Reg: {jc.vehicle?.regNo} | Odometer: {jc.odometerAtCheckIn} km</p>
-          {/* 2026-10-03 ("why technicuan not shown aftrr assign") - CONFIRMED BUG: the "Assign
-             Technician" dropdown further down this page (UpdateWorkflowStageCard) saves into
-             jc.assignedTechnicianName, but the only "Technician: ..." text anywhere on this page
-             was the DMS summary line below, which reads jc.baplTechnicianName instead - a
-             DIFFERENT field, only ever set once at job-card creation time from the wizard's old
-             Technician picker (removed entirely on 2026-09-25 - see JobCardWizardPage.tsx's own
-             comment - so it's effectively always empty on any job card created since). So assigning
-             a technician here never updated anything visible on this card - the only place it showed
-             at all was inside the dropdown itself, which is hidden from every role except
-             WorkshopManager/Supervisor/DealerAdmin/CorporateAdmin/SystemAdmin (canAssignTechnician),
-             so a ServiceAdvisor/Technician had no way to see who was assigned. This line fixes both:
-             it reads the correct, live field, and it's shown to every role that can view this page,
-             not just the ones who can change it. */}
           <p className="muted" style={{ marginTop: 2 }}>
             Technician: <strong>{jc.assignedTechnicianName || 'Not assigned yet'}</strong>
           </p>
@@ -598,9 +587,6 @@ export function JobCardDetailPage() {
           )}
           {jc.baplSyncStatus === 'Synced' && jc.baplJobCardHeaderId && (
             <p className="muted" style={{ marginTop: 4 }}>
-              {/* Show DMS's own JobNo (what DMS's own Job Card List calls "JobNo") - not
-                 baplJobCardHeaderId, which is only JobCardScanner's internal reference to the row
-                 and means nothing to a user looking at DMS's own screens. */}
               ✅ Synced to DMS as{' '}
               <a href={`/jobcards/bapl/${jc.baplJobCardHeaderId}`}>
                 {jc.baplJobNo != null ? `job card #${jc.baplJobNo}` : 'a job card (DMS sync pending)'}
@@ -632,42 +618,17 @@ export function JobCardDetailPage() {
       <ComplaintsCard jc={jc} run={run} />
       <PhotosCard jc={jc} run={run} />
       <WorklogCard jc={jc} run={run} profileId={profile?.id} />
-      {/* Quality Check panel hidden per request - kept in code (not deleted) in case it's needed
-         again later. QcCard itself is still defined below, just never rendered. */}
       {SHOW_QUALITY_CHECK_PANEL && hasRole('WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && <QcCard jc={jc} run={run} />}
-      {/* Item 16: Part Suggestion, then Item 17: Labour Suggestion, then Item 15: Estimates Amount
-         moves to AFTER Labour Suggestion (was before both). */}
-      {/* 2026-10-01: the ₹2000 Grand Total auto-lock on these two add-forms has been removed per
-         explicit request - no maximum any more. Only the manual Done/Edit `estimatesLocked` state
-         gates them now. */}
       <PartSuggestionCard jc={jc} run={run} estimatesLocked={estimatesLocked} />
       <LabourSuggestionCard jc={jc} run={run} estimatesLocked={estimatesLocked} />
       <EstimatesCard jc={jc} run={run} estimatesLocked={estimatesLocked} setEstimatesLocked={setEstimatesLocked} />
-      {/* 2026-09-28 CHANGE ("remove DMS Service History" from both web and android): this card
-         (DMS's own service/job-card history for this vehicle's chassis, GET /api/bapl-dms/
-         service-history) is no longer rendered here - consistent with the same session's broader
-         "dont fetch jobcards and dont save jobcards from/to dms" instruction (see
-         JobCardsController's matching removals). BaplServiceHistoryCard is left defined below (not
-         deleted), same "kept, not deleted" convention as QcCard/InvoiceCard/ClosureCard, in case
-         this needs to come back. */}
-      {/* 2026-09-24 CHANGE ("hide Invoice and OTP-Based Closure that both coz already have in this
-         invoice in Print button"): both cards removed from this page - the Print menu (next to the
-         status badge above) already has its own "Invoice" option that opens/downloads the exact
-         same PDF InvoiceCard did, and OTP-Based Closure's flow duplicated that same Print/Invoice
-         path with an extra SMS-OTP step this request treats as no longer needed here. InvoiceCard/
-         ClosureCard are left defined below (not deleted) in case this needs to be revisited -
-         same convention as SHOW_QUALITY_CHECK_PANEL's QcCard above. */}
     </div>
   )
 }
 
 /** DMS's own service/job-card history for this vehicle's chassis (GET
- * /api/bapl-dms/service-history) - a read-only reference panel, separate from JobCardScanner's own
- * records above it, per the explicit answer to "what should the DMS sync show on this page":
- * "DMS's own service/job-card history for this chassis". Silently shows nothing if the
- * vehicle has no VIN/chassis on file yet, or if DMS has never seen this chassis - only a real
- * DMS problem (502) surfaces as an error, since "no history" is an entirely normal outcome for
- * a brand new vehicle. */
+ * /api/bapl-dms/service-history) - a read-only reference panel, kept but unused - see
+ * JobCardDetailPage's own doc comments history for why it's no longer rendered. */
 function BaplServiceHistoryCard({ chassisNo, dealerCode }: { chassisNo?: string | null; dealerCode?: string | null }) {
   const [rows, setRows] = useState<BaplDmsJobCardHistory[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -680,8 +641,6 @@ function BaplServiceHistoryCard({ chassisNo, dealerCode }: { chassisNo?: string 
       .then(({ data }) => setRows(data))
       .catch((err) => {
         const msg = err?.response?.data?.message
-        // A 502 here is a real DMS problem; anything else (404/network hiccup) just means
-        // "nothing to show", which is normal and not worth alarming the service advisor over.
         if (err?.response?.status === 502) setError(msg ?? 'Could not reach DMS.')
         setRows([])
       })
@@ -720,15 +679,8 @@ function BaplServiceHistoryCard({ chassisNo, dealerCode }: { chassisNo?: string 
   )
 }
 
-/** Photo capture + upload, added to the Job Card Detail page (not the wizard - see the explicit
- * "On the Job Card Detail page only, after creation" answer). Captures the browser's GPS location
- * (Geolocation API) at the same moment a photo is picked, so the two travel together to
- * POST /api/jobcards/{id}/photos/upload as one multipart/form-data request; location is best-effort
- * and the upload still proceeds without it (denied permission, no GPS fix, desktop browser, etc). */
+/** Photo capture + upload, added to the Job Card Detail page. */
 function PhotosCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => void }) {
-  // Item 8: Stage field removed from this card entirely (still sent to the API as a fixed
-  // default, since JobCardPhoto.Stage is a required column - it's just no longer something the
-  // user picks or sees here). Caption moved from "pre-upload only" to editable per-photo below.
   const [caption, setCaption] = useState('')
   const [uploading, setUploading] = useState(false)
   const [locationNote, setLocationNote] = useState<string | null>(null)
@@ -740,7 +692,7 @@ function PhotosCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<un
       if (!('geolocation' in navigator)) { resolve(null); return }
       navigator.geolocation.getCurrentPosition(
         (pos) => resolve(pos),
-        () => resolve(null), // permission denied / unavailable - upload proceeds without coordinates
+        () => resolve(null),
         { enableHighAccuracy: true, timeout: 8000, maximumAge: 60_000 },
       )
     })
@@ -790,8 +742,6 @@ function PhotosCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<un
         </div>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        {/* capture="environment" hints the rear camera on a phone; still falls back to a normal
-           file picker on desktop, where "capture" is simply ignored. */}
         <label className="btn btn-sm btn-primary" style={{ cursor: uploading ? 'default' : 'pointer', opacity: uploading ? 0.6 : 1 }}>
           {uploading ? 'Uploading…' : 'Take / Upload Photo'}
           <input
@@ -813,8 +763,6 @@ function PhotosCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<un
               <a href={photoSrc(p.url)} target="_blank" rel="noreferrer">
                 <img src={photoSrc(p.url)} alt={p.caption ?? 'Job card photo'} style={{ width: '100%', height: 120, objectFit: 'cover', borderRadius: 6, border: '1px solid #ddd' }} />
               </a>
-              {/* Item 8: Caption now lives here, editable per photo, instead of only being set
-                 once before upload. */}
               <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
                 <input
                   value={captionEdits[p.id] ?? p.caption ?? ''}
@@ -845,19 +793,6 @@ function PhotosCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<un
   )
 }
 
-/** The interactive counterpart to the read-only WorkflowTimeline above: moves the job card to a
- * new stage (POST /stage, ServiceAdvisor+) and, for WorkshopManager+, also assigns a technician
- * and expected-completion date (PUT /api/jobcards/{id}) in the same action - mirrors the combined
- * "Update Workflow Stage" panel this was modelled on.
- *
- * No longer has a manual stage picker (per explicit request: "dont want manual whole... stage
- * automatically update") - the job card's stage now advances itself as real work happens (see
- * backend WorkflowStageAutomation): adding a part/labour suggestion, drafting an estimate, or
- * starting a technician worklog each auto-advance to the matching stage the first time they
- * happen. Only two of the 8 stages have no such unambiguous trigger anywhere else in the app -
- * "Repair Completed" and "Ready for Delivery" - so those stay one explicit button each below,
- * never a dropdown. Assign Technician / Expected Completion / Remarks stay manual fields, exactly
- * as asked. */
 function UpdateWorkflowStageCard({
   jc, stages, busy, run, canAssignTechnician,
 }: {
@@ -867,13 +802,6 @@ function UpdateWorkflowStageCard({
   run: (fn: () => Promise<unknown>, successMsg?: string) => void
   canAssignTechnician: boolean
 }) {
-  // 2026-09-24 CHANGE ("that bind in jobcard ... Assign Technician name update"): was a free-text
-  // name (no confirmed technician catalog existed); now a dropdown bound to the new login-less
-  // Technician Employee roster (see types/Technician.cs), scoped to this job card's own Service
-  // Location - same GET /api/technicians?locationCode=... the Job Card Wizard's own Technician
-  // field uses. Still sent as the plain assignedTechnicianName string on PUT /api/jobcards/{id}
-  // (unchanged field/shape on the backend - see JobCardsController.Update) - the dropdown only
-  // changes how the value is picked, not what's stored.
   const [technicianName, setTechnicianName] = useState(jc.assignedTechnicianName ?? '')
   const [expectedDeliveryAt, setExpectedDeliveryAt] = useState(jc.expectedDeliveryAt ? jc.expectedDeliveryAt.slice(0, 16) : '')
   const [notes, setNotes] = useState('')
@@ -885,9 +813,6 @@ function UpdateWorkflowStageCard({
   }, [jc.id, jc.assignedTechnicianName, jc.expectedDeliveryAt])
 
   useEffect(() => {
-    // No dealerId param for a regular dealer-scoped login (TechniciansController.List already
-    // scopes to _currentUser.DealerId) - only relevant for a Corporate/System Admin viewing a job
-    // card outside their own dealer, hence jc.dealer?.id here.
     staffApi.get<Technician[]>('/api/technicians', { params: { dealerId: jc.dealer?.id, locationCode: jc.baplServiceLocationCode || undefined } })
       .then(({ data }) => setTechnicianOptions(data))
       .catch(() => setTechnicianOptions([]))
@@ -901,34 +826,6 @@ function UpdateWorkflowStageCard({
   const currentSeq = jc.currentStage?.seq ?? -1
   const repairCompletedStage = stages.find((s) => s.stageKey === 'repair_completed')
   const readyForDeliveryStage = stages.find((s) => s.stageKey === 'ready_for_delivery')
-  // 2026-09-28 (SECTION 145, then REVERTED same day - SECTION 147): a "Generate Invoice & Close Job
-  // Card" button briefly lived here, moving the job card straight to the terminal
-  // "invoice_generated" stage on a click. WITHDRAWN per your correction: "we cant close jobcards
-  // without repair ... save as proforma then save as invoice then this jobcard close" - closing is
-  // tied to your existing Repair Bill flow (Proforma -> Invoice save) elsewhere in the app, not a
-  // button on this page. See README SECTION 147.
-  //
-  // 2026-09-29 (SECTION 156, "not update stagw which i told befre Ready for Delivery / wants
-  // Invoice Generated stage and manually we can done stage of Invoice Generated") - REINSTATED,
-  // corrected: a manual "Mark Invoice Generated" button is back below, ADDITIVE to (not replacing)
-  // the automatic trigger SECTION 147/149 built into RepairBillDocsController.UpdateStatus (a
-  // linked Repair Bill saved as Invoice still auto-advances + auto-closes on its own, unchanged).
-  // "Repair Completed"/"Ready for Delivery" above are UNTOUCHED per your explicit "not update
-  // stage ... Ready for Delivery" instruction - same disabled-once-past pattern, same markStage().
-  //
-  // FLAGGED - please confirm this is what you want: this is the opposite of what SECTION 147
-  // withdrew ("we cant close jobcards without repair"). I'm implementing it because it's your most
-  // recent explicit instruction, but since RepairBillDocsController's generic ChangeStage() action
-  // (the same POST /api/jobcards/{id}/stage this button calls, via markStage()) closes the job card
-  // whenever a stage marked IsTerminal is reached, clicking this button WILL close the job card
-  // immediately - with no Repair Bill required at all, and no Invoice PDF necessarily on file. If
-  // you only meant "let us mark it manually when the repair bill was already generated/invoiced
-  // outside a saved Repair Bill row here" (e.g. a walk-in bill, or one entered directly in
-  // DMS/BAPL), this button does that correctly. If you meant something narrower - e.g. only enabled
-  // once a Repair Bill row for this job card already shows Status=Billed - tell me and I'll add
-  // that guard (the PrintMenu.printInvoice() function just below already fetches
-  // `/api/repair-bill-docs?jobCardId=...` and checks `b.status === 'Billed'`, so the same check is
-  // easy to reuse here).
   const invoiceGeneratedStage = stages.find((s) => s.stageKey === 'invoice_generated')
   const markStage = (stage?: WorkflowStage) => {
     if (!stage) return Promise.resolve()
@@ -938,12 +835,6 @@ function UpdateWorkflowStageCard({
   return (
     <div className="card">
       <h3>Update Workflow Stage</h3>
-      {/* 2026-09-24 CHANGE ("before start required Assign Technician name update"): every stage
-         change - the two manual buttons below AND every automatic trigger elsewhere on this page
-         (worklog start, part/labour suggestion) - is now refused with a 400 until a Technician is
-         assigned here first (see JobCardsController.RequireAssignedTechnician). The refusal's own
-         message already surfaces through the page's msg banner (see run()'s catch block above),
-         but this note says so up front instead of only after a first failed attempt. */}
       {!jc.assignedTechnicianName && (
         <p className="error-text" style={{ marginTop: -4 }}>
           ⚠ No Technician assigned yet - every stage update (including the automatic ones above)
@@ -956,9 +847,6 @@ function UpdateWorkflowStageCard({
             <label>Assign Technician</label>
             <select disabled={busy} value={technicianName} onChange={(e) => setTechnicianName(e.target.value)}>
               <option value="">{technicianOptions.length ? 'Select technician…' : 'No Technician set up for this location yet'}</option>
-              {/* A pre-existing name (saved as free text before this dropdown existed, or a
-                 Technician later deactivated/removed) that no longer matches any option - keep it
-                 selectable so opening this dropdown never silently blanks/overwrites it on Save. */}
               {technicianName && !technicianOptions.some((t) => t.name === technicianName) && (
                 <option value={technicianName}>{technicianName} (not in this location's list)</option>
               )}
@@ -988,22 +876,6 @@ function UpdateWorkflowStageCard({
             Mark Repair Completed
           </button>
         )}
-        {/* 2026-10-01 ("in Workflow Timeline after Repair Completed shift Invoice Generated after
-           this Ready for Delivery"): this button moved ahead of "Mark Ready for Delivery" below,
-           per explicit request, so the button ROW now reads Repair Completed -> Invoice Generated
-           -> Ready for Delivery. See this component's own doc comment above (just before
-           markStage) for the full history/interpretation flag on this button. Same disabled-once-
-           past pattern as the other two buttons; markStage() posts to the same generic
-           /api/jobcards/{id}/stage endpoint the automatic Repair-Bill-Billed trigger's
-           WorkflowStageAutomation call also feeds into, so a job card marked this way ends up in
-           an identical CurrentStage/StageHistory state either way.
-           NOTE - FLAGGED, not yet done: the read-only Workflow Timeline STEPPER further up this
-           page (<WorkflowTimeline stages={buildTimelineStages(stages)} .../>) is a separate
-           component from this button row, and its left-to-right order comes from the `stages`
-           array's own Seq values as seeded on the backend (GET /api/workflow-stages) - I don't have
-           that seed source (DbSeeder.cs or equivalent) or WorkflowTimeline.tsx's own rendering
-           logic in this session, so I have NOT reordered that stepper itself here, only this
-           action-button row. See my reply for what I need from you to also fix the stepper. */}
         {invoiceGeneratedStage && (
           <button
             className="btn btn-sm btn-primary"
@@ -1047,34 +919,12 @@ function ComplaintsCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promis
   )
 }
 
-// 2026-09-07: timer is manual again per explicit request ("timer start button add manual start...
-// remove condition when it is in Work In Progress then start that timer button add"). Starting the
-// timer (POST /worklogs/start) already flips jc.status to InProgress as a side effect on the
-// backend (StartWorklog) and auto-advances the workflow stage - so clicking "Start Timer" IS what
-// puts the job card into Work In Progress, there's no separate InProgress-gated visibility to
-// remove beyond the old auto-start effect itself. A manual "Stop Timer" button ends the open log;
-// the job-card-closed auto-stop effect below stays as a safety net so a forgotten timer doesn't run
-// forever, but starting is never automatic anymore. All timestamps are shown explicitly in IST
-// (Asia/Kolkata) rather than the browser's own locale/timezone, per explicit request ("dont use utc
-// show actual time current time zone is IST").
 const IST_TIME_ZONE = 'Asia/Kolkata'
-// 2026-10-03 ("correct timer time utc maharashtra current time") - StartWorklog/EndWorklog always
-// stamp DateTime.UtcNow on the backend, but the JSON that comes back for StartedAt/EndedAt has no
-// 'Z'/offset on it (EF Core reads the SQL Server datetime column back as Kind=Unspecified, so
-// System.Text.Json serializes it as a bare "2026-10-03T05:32:00" with no timezone marker). JS's
-// `new Date(...)` treats an offset-less ISO string as the BROWSER'S OWN local time rather than
-// UTC - on a machine set to IST that silently cancelled out the `timeZone: 'Asia/Kolkata'` below
-// (parse-as-IST then format-as-IST is a no-op), so the table kept showing the raw UTC digits
-// mislabeled "(IST)", about 5 hours 30 minutes behind the real Maharashtra time. Appending 'Z' when
-// the string has no zone of its own forces the correct UTC interpretation before converting to IST.
 const parseUtcIso = (iso: string): Date => new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : `${iso}Z`)
 const formatIST = (iso: string, opts: Intl.DateTimeFormatOptions) => parseUtcIso(iso).toLocaleString('en-IN', { timeZone: IST_TIME_ZONE, ...opts })
 const formatISTTime = (iso: string) => formatIST(iso, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })
 const formatISTDateTime = (iso: string) => formatIST(iso, { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true })
 
-/** "now i start timer but still another time show current time 11.51 not shown in timer" - formats
- * a millisecond duration as H:MM:SS (or M:SS under an hour) for WorklogCard's live elapsed-time
- * display below. */
 function formatElapsedMs(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000))
   const h = Math.floor(totalSeconds / 3600)
@@ -1084,23 +934,11 @@ function formatElapsedMs(ms: number): string {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`
 }
 
-/** Whether a Part/Labour suggestion can be added right now - gated on an open (not-yet-ended)
- * worklog existing, per explicit request ("Part Suggestion, Labour Suggestion not can update give
- * alret in this process start the timer"). Exported-shape helper (not exported, just shared) so
- * PartSuggestionCard/LabourSuggestionCard below check the exact same condition WorklogCard uses to
- * decide whether the timer looks "running". */
 const hasOpenWorklog = (jc: JobCardDetail) => jc.worklogs.some((w) => !w.endedAt)
 
 function WorklogCard({ jc, run, profileId }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>) => void; profileId?: string }) {
   const openLog = jc.worklogs.find((w) => !w.endedAt)
 
-  // "now i start timer but still another time show current time 11.51 not shown in timer" - the
-  // "Timer running since ..." line below only ever rendered once, from whatever jc.worklogs looked
-  // like the moment the page last fetched it, so it silently froze at the start time forever and
-  // never reflected that real time kept passing while the timer ran - there was nothing here to
-  // ever trigger a re-render on its own. This ticks nowMs once a second (only while a worklog is
-  // actually open, so it's a complete no-op the rest of the time - not a page-wide poller) purely
-  // so the elapsed-time text below stays live instead of static.
   const [nowMs, setNowMs] = useState(() => Date.now())
   useEffect(() => {
     if (!openLog) return
@@ -1170,43 +1008,6 @@ function QcCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<unknow
   )
 }
 
-/** Item 18: redefined from an OTP-gated customer-approval flow into a pure calculation view - a
- * Part Details table (Sr no., Part No./Item Code, Description, HSN, MRP, Qty, Amount = MRP x Qty)
- * sourced from jc.partSuggestions, a Labour Details table (same shape, Amount = Rate x Qty) sourced
- * from jc.labourSuggestions, and a Grand Total row summing both. Per an explicit decision, this
- * REPLACES the old Description/Amount/Reason + "Send Estimate to Customer" OTP flow entirely -
- * that flow (and the Estimate/estimateNumber data behind it) still exists in the backend, just no
- * longer surfaced on this card.
- *
- * 2026-09-07: added a "Done"/"Edit" toggle per explicit request. "Done" (blue button) locks the
- * estimate - PartSuggestionCard/LabourSuggestionCard's "add a new suggestion" forms hide (their
- * already-added grids stay visible - see `estimatesLocked` threaded down from JobCardDetailPage)
- * and an email textbox + Send button appear right here so the estimate can be mailed out as a PDF
- * attachment (POST /api/jobcards/{id}/estimates/email - see JobCardsController.EmailEstimate /
- * IEstimatePdfService). "Edit" flips back, re-showing the add-suggestion forms and hiding the email
- * box. This toggle is plain client-side UI state (see JobCardDetailPage's `estimatesLocked`) - it
- * is NOT persisted to the backend, so it resets to unlocked on a fresh page load; nothing about
- * this changes what's actually saved (the parts/labour suggestions themselves still save
- * immediately as before).
- *
- * 2026-10-01 ("after close Jobcard this done button remove"): once jc.status === 'Closed', the
- * Done/Edit toggle itself is no longer rendered at all - a closed job card's estimate has nothing
- * left to lock/unlock, so just the Grand Total shows.
- *
- * 2026-10-01 follow-up ("this jobcard closed still shown done button and Edit and send mail
- * fuctionality hide this after close"): the email-estimate box (address field + Send Estimate
- * button) is now ALSO hidden once closed - previously it stayed visible on a closed job card on
- * the theory that mailing out the final estimate was still useful after closure; that was an
- * unconfirmed Assumption and this instruction replaces it. Now: email box shows only while
- * `estimatesLocked && !closed` (same "Done" lock as before, but closed always wins and hides it).
- *
- * NOTE on "closed": jc.status only becomes 'Closed' when a workflow stage flagged IsTerminal is
- * reached (see backend JobCardsController.ChangeStage: `if (stage.IsTerminal && jc.Status !=
- * Closed) jc.Status = Closed`). Today only "Invoice Generated" carries IsTerminal=true. If a job
- * card looks finished to you but this card's Edit/Done + email box are still showing, it most
- * likely means that job card's Status field isn't actually 'Closed' yet (it hasn't been moved to
- * the Invoice Generated stage) - worth confirming on the specific job card via its status badge
- * before assuming this code path isn't working. */
 function EstimatesCard({
   jc, estimatesLocked, setEstimatesLocked,
 }: {
@@ -1239,18 +1040,18 @@ function EstimatesCard({
   const partRows = jc.partSuggestions.map((p, i) => {
     const mrp = p.mrp ?? 0
     const qty = p.quantity ?? 1
-    return { sr: i + 1, code: p.itemCode, description: p.description ?? '-', hsn: p.hsnCode ?? '-', mrp, qty, amount: mrp * qty }
+    const isFoc = p.status === 'FOC'
+    return { sr: i + 1, code: p.itemCode, description: p.description ?? '-', hsn: p.hsnCode ?? '-', mrp, qty, amount: isFoc ? 0 : mrp * qty }
   })
   const labourRows = jc.labourSuggestions.map((l, i) => {
     const rate = l.rateAtSuggestion ?? 0
     const qty = l.quantity ?? 1
-    return { sr: i + 1, code: l.labourCode, description: l.labourDescription ?? '-', hsn: l.hsnCode ?? '-', rate, qty, amount: rate * qty }
+    const isFoc = l.issueType === 'FOC'
+    return { sr: i + 1, code: l.labourCode, description: l.labourDescription ?? '-', hsn: l.hsnCode ?? '-', rate, qty, amount: isFoc ? 0 : rate * qty }
   })
   const partsTotal = partRows.reduce((sum, r) => sum + r.amount, 0)
   const labourTotal = labourRows.reduce((sum, r) => sum + r.amount, 0)
   const grandTotal = partsTotal + labourTotal
-  // 2026-10-01: a closed job card has nothing left to lock/unlock, so the Done/Edit toggle is
-  // hidden entirely below - see this component's doc comment.
   const closed = jc.status === 'Closed'
 
   return (
@@ -1259,8 +1060,6 @@ function EstimatesCard({
 
       <h4>Part Details</h4>
       <table>
-        {/* 2026-09-03: header text matched to Part Suggestion's own "Item Code" column above (was
-           "Part No. (Item Code)") - same table, same field, should read the same everywhere. */}
         <thead><tr><th>Sr no.</th><th>Item Code</th><th>Description</th><th>HSN</th><th>MRP</th><th>Qty</th><th>Amount</th></tr></thead>
         <tbody>
           {partRows.map((r) => (
@@ -1337,47 +1136,15 @@ function EstimatesCard({
   )
 }
 
-/** "Part Suggestion" panel (renamed from "Parts Used" - see JobCardPartSuggestion's doc comment in
- * types/index.ts). 2026-09-24 CHANGE ("Part Suggestion and Labour Suggestion that link with our
- * labour-master, item-master and part-upload"): parts now come from this app's OWN Item Master +
- * Part Upload data (GET /api/jobcards/parts-catalog?locationCode=... -
- * JobCardsController.PartsCatalog) instead of DMS's live PartsInventory (the old
- * GET /api/bapl-dms/parts) - consistent with job cards no longer being written into/read from DMS.
- * Fetched once on mount the same way BaplServiceHistoryCard above fetches its supplementary data;
- * suggesting one just records an itemCode + a Paid/U-W status in JobCardScannerDb
- * (POST .../part-suggestions) - nothing is written back into DMS. Status can be flipped afterwards
- * (PUT .../part-suggestions/{id}). */
-/** Item 16: reworked into a type-ahead Item Code search (bound to description, so typing either
- * the code or a word of the description narrows the list), a Qty field (distinct from the
- * available-stock number, which is only shown as a hint), and multi add/remove - each suggested
- * part gets its own Remove button (DELETE /api/jobcards/part-suggestions/{id}), instead of the old
- * Paid/U-W toggle being the only action available. Grid columns per spec: Sr no., Item Code,
- * Description, MRP, QTY, IssueType(Status). */
 function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => void; estimatesLocked: boolean }) {
   const [availableParts, setAvailableParts] = useState<JobCardsPartsCatalogRow[]>([])
   const [search, setSearch] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [itemCode, setItemCode] = useState('')
   const [qty, setQty] = useState<number>(1)
-  const [status, setStatus] = useState<'Paid' | 'U/W'>('Paid')
-  // 2026-09-28 (SECTION 137) - see describeSearchError's own doc comment above: distinguishes a
-  // real backend failure on this search from a genuine zero-match, instead of both looking
-  // identical ("does not exist").
+  const [status, setStatus] = useState<'Paid' | 'U/W' | 'FOC'>('Paid')
   const [searchError, setSearchError] = useState<string | null>(null)
 
-  // 2026-09-28 fix ("search from select * from C_ItemMaster and 3/part-upload but still not
-  // search why" - a real part, confirmed by you in both PartUploads and C_ItemMaster, still never
-  // showed up here): FACT, root cause - this used to fetch ONCE on mount with NO `q` param, then
-  // filter that one batch client-side as you typed. GET .../parts-catalog's Item Master list comes
-  // from IBaplDealerService.SearchItemMasterAsync, which (per ItemMasterPage.tsx's own doc
-  // comment) is server-capped to roughly the first 1000 items, ALPHABETICALLY, whenever `q` is
-  // blank. A part that falls outside that one capped, alphabetically-sorted batch could never
-  // appear here no matter what you typed - nothing ever asked the backend again with your actual
-  // search text, it only ever filtered whatever happened to already be in that first blank-query
-  // page. FIXED: now sends your typed text as a real `q` param on every keystroke (debounced
-  // 300ms, same pattern LabourSuggestionCard below already uses), so SearchItemMasterAsync
-  // actually searches/narrows server-side instead of relying on an unfiltered, capped batch - this
-  // should now find a part regardless of where it falls alphabetically in the full catalog.
   useEffect(() => {
     const handle = setTimeout(() => {
       const trimmed = search.trim()
@@ -1387,15 +1154,6 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
       })
         .then(({ data }) => { setAvailableParts(data); setSearchError(null) })
         .catch((err) => {
-          // 2026-09-28 (SECTION 137): was `.catch(() => setAvailableParts([]))` - a REAL backend
-          // failure here (e.g. this endpoint's own 502 when the BAPL C_ItemMaster connection has a
-          // problem) looked byte-for-byte identical to "your search text matched nothing", which
-          // is how a confirmed-real part ("0301-A01-1025", confirmed in both C_ItemMaster and
-          // PartUploads via your real SQL) could show "does not exist" even though
-          // IBaplDealerService.SearchItemMasterAsync's own WHERE clause (confirmed from your real
-          // pasted source - a plain `ItemCode LIKE @q`, no Status filter at all) should match it
-          // directly. Now shows the real HTTP status/message instead of silently pretending
-          // nothing matched, so the next time this happens you'll see exactly what failed.
           setAvailableParts([])
           setSearchError(describeSearchError(err, 'Search failed'))
         })
@@ -1403,14 +1161,6 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
     return () => clearTimeout(handle)
   }, [search, jc.baplServiceLocationCode])
 
-  // 2026-09-28: selectedPart is now set directly at pick time (see pickPart below) instead of
-  // derived via `availableParts.find(...)` - the same fix already applied to Labour Suggestion's
-  // `selected` state (see LabourSuggestionCard's own 2026-09-03 doc comment for the full story).
-  // Deriving it from availableParts broke the instant you picked a part: pickPart sets `search` to
-  // the picked part's own "code - description" text, which is also this effect's fetch trigger, so
-  // that same assignment re-fires the debounced search a moment later against that literal string -
-  // which rarely matches anything, replacing availableParts with an empty (or different) list and
-  // silently un-picking whatever had just been selected.
   const [selectedPart, setSelectedPart] = useState<JobCardsPartsCatalogRow | null>(null)
   const q = search.trim()
   const matches = availableParts.slice(0, 20)
@@ -1462,12 +1212,14 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
                 />
               </td>
               <td style={{ display: 'flex', gap: 4 }}>
-                <button
-                  className="btn btn-sm"
-                  onClick={() => run(() => staffApi.put(`/api/jobcards/part-suggestions/${p.id}`, { status: p.status === 'Paid' ? 'U/W' : 'Paid' }))}
+                <select
+                  value={p.status}
+                  onChange={(e) => run(() => staffApi.put(`/api/jobcards/part-suggestions/${p.id}`, { status: e.target.value }))}
                 >
-                  Mark {p.status === 'Paid' ? 'U/W' : 'Paid'}
-                </button>
+                  <option value="Paid">Paid</option>
+                  <option value="U/W">U/W</option>
+                  <option value="FOC">FOC</option>
+                </select>
                 <button
                   className="btn btn-sm"
                   style={{ background: '#dc2626', color: '#fff', border: '1px solid #dc2626' }}
@@ -1484,13 +1236,6 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
         </tbody>
       </table>
 
-      {/* Estimates Amount "Done" hides this add-new-suggestion form (grid above stays visible) -
-         see EstimatesCard's doc comment for the full Done/Edit toggle. 2026-10-01: the separate
-         ₹2000 Grand Total auto-lock that used to apply here has been removed per explicit request -
-         this form now has no maximum and only respects the manual Done/Edit toggle, plus a closed
-         job card (jc.status === 'Closed') also hides it - estimatesLocked resets to false on every
-         fresh page load, and a closed job card's Done/Edit toggle is itself gone now (see
-         EstimatesCard), so without this a closed job card's add-forms would otherwise reopen. */}
       {estimatesLocked || jc.status === 'Closed' ? (
         <p className="muted">
           {jc.status === 'Closed'
@@ -1501,11 +1246,22 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
       <>
       <h4>Suggest a part (from Item Master{jc.baplServiceLocationCode ? ' / Part Upload' : ''})</h4>
       {!jc.baplServiceLocationCode && <p className="muted">No Service Location on this job card - Available Qty won't be shown (the part list itself still works).</p>}
-      {/* Item-code/description, QTY, Issue Type and the Add Suggestion button all in one row now,
-         matching Suggest labour's layout below - Add sits at the end of the row instead of on its
-         own line underneath. .suggest-row (not .form-row) so the search field grows and Qty/Issue
-         Type/Add stay sized to their content instead of being stretched into equal-width columns. */}
-      <div className="suggest-row">
+      {/* 2026-10-03 ("in 1 row line all and ui make proper"): the Issue Type <select> used to sit
+         directly inside .suggest-row with no wrapping .field/.field-compact div and no label -
+         unlike every other control in this same row (Item Code/Description's own .field-grow,
+         QTY's own .field-compact) - so it had no fixed sizing and no visual grouping with its
+         neighbours, which is what made the row read as uneven/overflowing rather than one tidy
+         line. Wrapped it in the same .field.field-compact pattern QTY/Add already use, with its
+         own "Issue Type" label so all three (QTY/Issue Type/Add) read the same way, and the whole
+         row is now wrapped in an overflowX:auto container with flexWrap:'nowrap' forced on
+         .suggest-row - the exact same single-line fix already applied to RepairBillCreatePage.tsx's
+         Labour staging row (see that file's own 2026-09-23 "SECOND correction" doc comment for the
+         full reasoning: .suggest-row's shared flex-wrap:wrap in global.css is left untouched, so
+         other .suggest-row users such as Labour Suggestion's own row below are unaffected - this
+         override is local to this one row only). No field, data, or save behaviour changed - same
+         state (search/itemCode/qty/status), same addSuggestion() call. */}
+      <div style={{ overflowX: 'auto' }}>
+      <div className="suggest-row" style={{ flexWrap: 'nowrap' }}>
         <div className="field field-grow" style={{ position: 'relative' }}>
           <label>Item Code / Description</label>
           <input
@@ -1537,10 +1293,6 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
                 ))}
               </ul>
             ) : (
-              // Item 4: was silently blank when nothing matched - now says explicitly why, instead
-              // of looking like the search itself is broken. 2026-09-28 (SECTION 137): now branches
-              // on searchError - a real backend failure no longer shows the misleading "does not
-              // exist" text (see describeSearchError's own doc comment above for why that mattered).
               <div style={{
                 position: 'absolute', zIndex: 10, top: '100%', left: 0, right: 0, marginTop: 2,
                 background: 'var(--card-bg, #fff)', border: '1px solid var(--border)', borderRadius: 8,
@@ -1559,9 +1311,10 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
         </div>
         <div className="field field-compact">
           <label>Issue Type</label>
-          <select value={status} onChange={(e) => setStatus(e.target.value as 'Paid' | 'U/W')}>
+          <select value={status} onChange={(e) => setStatus(e.target.value as 'Paid' | 'U/W' | 'FOC')}>
             <option value="Paid">Paid</option>
             <option value="U/W">U/W</option>
+            <option value="FOC">FOC</option>
           </select>
         </div>
         <div className="field field-compact">
@@ -1575,6 +1328,7 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
           >Add Suggestion</button>
         </div>
       </div>
+      </div>
       {selectedPart && (
         <p className="muted">MRP {selectedPart.mrp != null ? `₹${selectedPart.mrp}` : '-'} · HSN {selectedPart.hsnCode ?? '-'} · Available {selectedPart.availableQty}</p>
       )}
@@ -1584,14 +1338,6 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
   )
 }
 
-/** Part Suggestion grid's "Picture" column (2026-09-03 - "which partcode we added after added we
- * upload phtoos and video"). One cell per already-added suggestion row: shows whatever
- * photos/videos have already been uploaded against it (small clickable thumbnails - a video shows
- * a "▶" badge instead of trying to render a full inline player in a table cell) plus a small "+"
- * button that opens the file picker straight to POST /api/jobcards/{id}/photos/upload with
- * PartSuggestionId set to this row's id and Stage fixed to 'PartSuggestion'. Deliberately has no
- * caption/GPS capture like the general Photos card - this is just "attach evidence to this part",
- * not a dated site-visit record. */
 function PartPictureCell({
   jcId, suggestionId, photos, run,
 }: {
@@ -1612,9 +1358,7 @@ function PartPictureCell({
         form.append('File', file)
         form.append('Stage', 'PartSuggestion')
         form.append('PartSuggestionId', suggestionId)
-        // eslint-disable-next-line no-await-in-loop -- uploads one file at a time on purpose, so a
-        // failure partway through a multi-file pick still keeps the ones that already succeeded
-        // (run() reloads jc after every call, so each upload shows up as soon as it lands).
+        // eslint-disable-next-line no-await-in-loop
         await run(() => staffApi.post(`/api/jobcards/${jcId}/photos/upload`, form, { headers: { 'Content-Type': 'multipart/form-data' } }))
       }
     } finally {
@@ -1628,12 +1372,6 @@ function PartPictureCell({
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
       {photos.map((ph) => (
-        // 2026-09-03 fix ("uploaded photos not shown") - JobCardPhoto.Url is a relative path
-        // (e.g. "/uploads/jobcard-photos/..."), served by the BACKEND, not the Vite dev server
-        // this page itself runs on - a bare `src={ph.url}` resolves against the page's own origin
-        // (localhost:5173) and 404s there. Every other photo on this page already goes through the
-        // photoSrc() helper (see the top of this file) for exactly this reason; this cell was the
-        // one place that used ph.url directly instead.
         <a key={ph.id} href={photoSrc(ph.url)} target="_blank" rel="noreferrer" title={isVideo(ph) ? 'View video' : 'View photo'}>
           {isVideo(ph) ? (
             <span style={{
@@ -1666,47 +1404,19 @@ function PartPictureCell({
   )
 }
 
-/** "Labour Suggestion" panel (see JobCard.LabourSuggestions) - mirrors PartSuggestionCard above.
- * 2026-09-24 CHANGE ("Part Suggestion and Labour Suggestion that link with our labour-master"):
- * now pulls from this app's OWN imported Labour Master rate card (GET
- * /api/jobcards/labour-catalog?search=... - JobCardsController.LabourCatalog, unions
- * LabourMasterWithoutPartwise + LabourMasterPartwise) instead of DMS's live LabourMaster (the old
- * GET /api/bapl-dms/labour). The old Job Type/Service Head/Service Type cascade scoping is gone
- * along with it - JobCardScanner's own imported Labour Master has no such cascade concept - so
- * this is now a plain free-text search-as-you-type over labour code/description only. HSN is
- * always null from this source (Labour Master doesn't carry a per-row HSN - see
- * JobCardsLabourCatalogRow's doc comment); Description/GST/Rate are snapshotted from whichever
- * row is picked, not re-editable once added (Rate especially - see JobCardLabourSuggestion's doc
- * comment); Quantity and Issue Type (free text, not a fixed dropdown) can be edited after the
- * fact. */
-// Issue Type is a fixed Paid / Under Warranty choice, not free text - matches how the workshop
-// actually bills labour (paid work vs. work covered by the vehicle's warranty).
-const LABOUR_ISSUE_TYPES = ['Paid', 'U/W'] as const
+const LABOUR_ISSUE_TYPES = ['Paid', 'U/W', 'FOC'] as const
 
 function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => void; estimatesLocked: boolean }) {
   const [rows, setRows] = useState<JobCardsLabourCatalogRow[]>([])
   const [q, setQ] = useState('')
-  // Type-ahead dropdown state, mirroring PartSuggestionCard's search/pickPart pattern above -
-  // "search, see a list appear below, pick one, it locks" instead of the old plain <select> (which
-  // needed an extra click to open and, with a search box that looked inert above it, read as
-  // "typing 'P' then Enter does nothing").
   const [showSuggestions, setShowSuggestions] = useState(false)
-  // Tracks the selected LabourMaster row by its own unique int id, NOT by LabourCode - real
-  // LabourMaster data has the same LabourCode repeated across several rows for different
-  // CityTier/oemmodelname scoping (e.g. "SF0M001" appears 4 times), so keying/looking up by
-  // LabourCode both broke React's key uniqueness and silently resolved to the wrong row's
-  // rate/HSN/GST (always the first match) regardless of which option was actually picked.
   const [selectedId, setSelectedId] = useState('')
-  // Holds the actually-picked row's own data, set once at pick time - see pickLabour below for why
-  // this can no longer be derived as `rows.find(...)` (2026-09-03 fix).
   const [selected, setSelected] = useState<JobCardsLabourCatalogRow | null>(null)
   const [qty, setQty] = useState<number>(1)
   const [issueType, setIssueType] = useState('')
   const [editing, setEditing] = useState<{ id: string; qty: number; issueType: string } | null>(null)
 
   useEffect(() => {
-    // Debounced (300ms) same as every other search-as-you-type box in this app - was firing a
-    // request on every single keystroke before.
     const handle = setTimeout(() => {
       staffApi.get<JobCardsLabourCatalogRow[]>('/api/jobcards/labour-catalog', { params: q.trim() ? { search: q.trim() } : {} })
         .then(({ data }) => setRows(data))
@@ -1714,18 +1424,6 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
     }, 300)
     return () => clearTimeout(handle)
   }, [q])
-
-  // 2026-09-03 fix ("Add Suggestion" silently doing nothing under Labour Suggestion): this used to
-  // be `rows.find((r) => String(r.id) === selectedId)`. pickLabour below sets `q` to the picked
-  // row's own "Code - Description" text so the input shows what was chosen - but `q` is also this
-  // effect's search trigger, so that same assignment re-fires the debounced search a moment later,
-  // searching DMS for the literal string "SF0M001 - Some Description". That essentially never
-  // matches a real LabourCode/Description on its own, so `rows` comes back empty and `selected`
-  // (when derived from `rows`) would go right back to undefined - even though selectedId (and so
-  // the enabled Add Suggestion button) still looked picked. Clicking Add Suggestion then hit
-  // `if (!selected) return` and silently did nothing: no request, no error, nothing added to the
-  // grid. Storing the picked row directly (see pickLabour) instead of re-deriving it from `rows`
-  // means a later, unrelated re-search can no longer un-pick it.
 
   const pickLabour = (r: JobCardsLabourCatalogRow) => {
     setSelectedId(String(r.id))
@@ -1826,12 +1524,6 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
         </tbody>
       </table>
 
-      {/* Estimates Amount "Done" hides this add-new-suggestion form (grid above stays visible) -
-         see EstimatesCard's doc comment for the full Done/Edit toggle. 2026-10-01: the separate
-         ₹2000 Grand Total auto-lock that used to apply here has been removed per explicit request -
-         this form now has no maximum and only respects the manual Done/Edit toggle, plus a closed
-         job card (jc.status === 'Closed') also hides it - see PartSuggestionCard's matching
-         2026-10-01 doc comment above for why. */}
       {estimatesLocked || jc.status === 'Closed' ? (
         <p className="muted">
           {jc.status === 'Closed'
@@ -1841,13 +1533,8 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
       ) : (
       <>
       <h4>Suggest labour (from Labour Master)</h4>
-      {/* Item 17: Labour Code, Qty, Issue Type and the Add Suggestion button all in one row now -
-         no separate "Search" field/label any more, same as Item Code / Description above: the
-         Labour Code field itself IS the search box (typing filters the dropdown below it), matching
-         PartSuggestionCard's pattern instead of presenting search as a distinct extra step.
-         .suggest-row (not .form-row) so this field grows and Qty/Issue Type/Add stay sized to their
-         content instead of being stretched into equal-width columns. */}
-      <div className="suggest-row">
+      <div style={{ overflowX: 'auto' }}>
+      <div className="suggest-row" style={{ flexWrap: 'nowrap' }}>
         <div className="field field-grow" style={{ position: 'relative' }}>
           <label>Labour Code</label>
           <input
@@ -1875,9 +1562,6 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
                       onMouseDown={(e) => { e.preventDefault(); pickLabour(r) }}
                     >
                       <strong>{r.labourCode}</strong>{r.labourDescription ? ` — ${r.labourDescription}` : ''} <span className="muted">(₹{r.labourRate ?? '-'})</span>
-                      {/* 2026-09-03: PartWiseLabourMaster rows are tied to a specific part - shown
-                         here so it's clear this rate applies to that part, not labour in general
-                         (plain LabourMaster rows have no partCode, so this never shows for those). */}
                       {r.partCode && (
                         <><br /><span className="muted" style={{ fontSize: 12 }}>Part: {r.partCode}{r.partDescription ? ` — ${r.partDescription}` : ''}</span></>
                       )}
@@ -1918,6 +1602,7 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
           >Add Suggestion</button>
         </div>
       </div>
+      </div>
       {selected && (
         <p className="muted">
           Rate ₹{selected.labourRate ?? '-'} · HSN {selected.hsnCode ?? '-'} · SGST {selected.sgst ?? '-'} · CGST {selected.cgst ?? '-'} · IGST {selected.igst ?? '-'}
@@ -1930,13 +1615,6 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
   )
 }
 
-/** "Download Invoice from DMS" - DMS's own repair bill is the source of truth for a job
- * card's invoice. Streams the PDF through staffApi so the same Bearer token every other call on
- * this page carries is attached (see api/client.ts's interceptor) - a plain <a href> pointed at
- * the API would 401 instead of downloading anything - then hands the blob to the browser via a
- * temporary <a download> element. Re-added 2026-09-03 as its own card below DMS Service
- * History (it briefly lived only inside the header's Print menu - see PrintMenu's "Invoice"
- * option, which stays too and opens the same PDF in a new tab instead of forcing a download). */
 function InvoiceCard({ jc }: { jc: JobCardDetail }) {
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
@@ -1991,10 +1669,6 @@ function ClosureCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promise<u
         <button className="btn btn-sm btn-primary" onClick={async () => {
           const { data } = await staffApi.post(`/api/jobcards/${jc.id}/closure/otp`)
           setOtpRequestId(data.otpRequestId)
-          // Only ever populated when the API is running in Development - there's no real SMS
-          // provider wired up yet (see OtpService), so without this there was no way to actually
-          // complete this flow outside of digging through server logs, which is what was causing
-          // "Verify & Close" to always 400 with "Invalid or expired OTP."
           setDevOtpCode(data.devOtpCode ?? null)
         }}>
           Send Closure OTP to Customer

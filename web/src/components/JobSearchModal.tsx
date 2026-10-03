@@ -1,3 +1,4 @@
+// web\src\components\JobSearchModal.tsx
 import { useEffect, useState } from 'react'
 import { staffApi } from '../api/client'
 import type { JobSearchResult } from '../types'
@@ -32,6 +33,22 @@ import type { JobSearchResult } from '../types'
  * Transfer or Repair Bill. Deliberately NOT sent when onlyWithMaterialTransfer is true (the "MT
  * History" grid-button mode): a completed Material Transfer is still valid history even after its
  * job card later closes, so that view keeps showing closed-job transfers exactly as before.
+ *
+ * 2026-10-03 ("this JobSearchModal.tsx also make proper in that button are not showing proper"):
+ * two real layout bugs fixed, both purely visual:
+ *  1. The Search button's own .field had no <label> above it, unlike every other field in this same
+ *     .form-row (Date From/To, Job No, Registration No, Chassis Number all have one) - a .field is
+ *     a flex column of [label, input], so a field with no label sat noticeably higher/mis-aligned
+ *     against its siblings' actual input boxes instead of lining up with them. Fixed with the same
+ *     visibility:hidden spacer-label trick other button-in-a-field-row spots in this app already
+ *     use, so the Search button's own box now lines up exactly like a real input would.
+ *  2. The results table's trailing action column (the "Select" button) had no header width and no
+ *     nowrap on its cell, so at a narrower modal width "Select" could wrap its own label onto two
+ *     lines inside a cramped cell. Given an explicit fixed width + whiteSpace:'nowrap', matching
+ *     this app's own convention elsewhere (table action columns in RepairBillCreatePage.tsx, etc).
+ *     The empty-state row's own colSpan was also still hardcoded to 10 - left over from before the
+ *     Job Source/DMS columns were commented out below (8 visible columns remain, action column
+ *     included) - corrected to match what's actually rendered.
  */
 type Props = {
   onSelect: (job: JobSearchResult) => void
@@ -120,8 +137,17 @@ export function JobSearchModal({ onSelect, onClose, onlyWithMaterialTransfer = f
             <label>Chassis Number</label>
             <input value={chassisNo} onChange={(e) => setChassisNo(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && search()} />
           </div>
+          {/* 2026-10-03 ("button are not showing proper") - this field had no <label>, unlike
+             every sibling above - a .field is a flex column of [label, input], so with nothing in
+             that slot the button sat higher than the actual input boxes beside it instead of
+             lining up on the same baseline. A visibility:hidden spacer label (same trick used
+             elsewhere in this app for a button-in-a-field-row) reserves the same vertical space a
+             real label would, without showing "Search" twice. */}
           <div className="field" style={{ justifyContent: 'flex-end' }}>
-            <button className="btn btn-primary" onClick={search} disabled={loading}>{loading ? 'Searching…' : 'Search'}</button>
+            <label style={{ visibility: 'hidden' }}>Search</label>
+            <button className="btn btn-primary" onClick={search} disabled={loading} style={{ whiteSpace: 'nowrap' }}>
+              {loading ? 'Searching…' : 'Search'}
+            </button>
           </div>
         </div>
 
@@ -140,7 +166,9 @@ export function JobSearchModal({ onSelect, onClose, onlyWithMaterialTransfer = f
                 <th>Vehicle Type</th>
                 {/* <th>Job Source</th>
                 <th>DMS</th> */}
-                <th></th>
+                {/* 2026-10-03: fixed width + nowrap so "Select" never wraps onto two lines in a
+                   cramped cell at a narrower modal width. */}
+                <th style={{ width: 90 }}></th>
               </tr>
             </thead>
             <tbody>
@@ -159,12 +187,15 @@ export function JobSearchModal({ onSelect, onClose, onlyWithMaterialTransfer = f
                       {j.isDmsLinked ? 'Synced' : 'Local only'}
                     </span>
                   </td> */}
-                  <td><button className="btn btn-sm btn-primary" onClick={() => onSelect(j)}>Select</button></td>
+                  <td style={{ whiteSpace: 'nowrap' }}><button className="btn btn-sm btn-primary" onClick={() => onSelect(j)}>Select</button></td>
                 </tr>
               ))}
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="muted" style={{ textAlign: 'center', padding: 16 }}>
+                  {/* 2026-10-03: was colSpan={10} - a leftover from before Job Source/DMS were
+                     commented out above. 8 columns are actually rendered now (7 data + 1 action),
+                     so this is corrected to match. */}
+                  <td colSpan={8} className="muted" style={{ textAlign: 'center', padding: 16 }}>
                     {loading
                       ? 'Searching…'
                       : searched

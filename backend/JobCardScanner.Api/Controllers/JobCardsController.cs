@@ -1469,8 +1469,8 @@ public class JobCardsController : ControllerBase
         var technicianGate = RequireAssignedTechnician(jc);
         if (technicianGate is not null) return technicianGate;
         if (string.IsNullOrWhiteSpace(req.ItemCode)) return BadRequest(new { message = "itemCode is required." });
-        if (req.Status != "Paid" && req.Status != "U/W") return BadRequest(new { message = "status must be 'Paid' or 'U/W'." });
-
+        if (req.Status != "Paid" && req.Status != "U/W" && req.Status != "FOC")
+            return BadRequest(new { message = "status must be 'Paid', 'U/W', or 'FOC'." });
         var suggestion = new JobCardPartSuggestion
         {
             JobCardId = id,
@@ -1525,7 +1525,8 @@ public class JobCardsController : ControllerBase
     [Authorize(Policy = Policies.ServiceAdvisorUp)]
     public async Task<IActionResult> UpdatePartSuggestionStatus(Guid suggestionId, UpdatePartSuggestionStatusRequest req)
     {
-        if (req.Status != "Paid" && req.Status != "U/W") return BadRequest(new { message = "status must be 'Paid' or 'U/W'." });
+        if (req.Status != "Paid" && req.Status != "U/W" && req.Status != "FOC")
+            return BadRequest(new { message = "status must be 'Paid', 'U/W', or 'FOC'." });
         var suggestion = await _db.JobCardPartSuggestions.FirstOrDefaultAsync(s => s.Id == suggestionId);
         if (suggestion is null) return NotFound();
         suggestion.Status = req.Status;
