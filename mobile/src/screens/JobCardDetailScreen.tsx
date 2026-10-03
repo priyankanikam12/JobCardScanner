@@ -54,6 +54,16 @@ const photoSrc = (url: string) => (url.startsWith('http') ? url : `${API_BASE_UR
 // cap functionally inert (it can never trigger), which is the actual behavior change you asked
 // for, but the now-dead ₹2000 message/threshold code inside those two files is still there unless
 // you paste them so I can remove it the same way I did on web.
+//
+// 2026-10-03 ("in android also add change swhich issue change we added in web Issue Type foc"):
+// SAME FLAG APPLIES to this round's FOC work - the actual Issue Type Paid/U-W(/now FOC) PICKER for
+// a Part or Labour suggestion lives inside PartSuggestionSection.tsx/LabourSuggestionSection.tsx,
+// not in this file. EstimatesCard and PrintMenu.printEstimate below (the two places THIS file
+// actually computes an Amount from jc.partSuggestions/jc.labourSuggestions) are fixed below to
+// zero out an FOC line's Amount, mirroring JobCardDetailPage.tsx's own EstimatesCard/printEstimate
+// fix exactly - but the picker itself (where FOC actually gets selected in the first place) still
+// needs those two component files pasted before I can add the third option to their own
+// Paid/U-W dropdown/pills, the same way PartSuggestionCard/LabourSuggestionCard got it on web.
 
 /** Mirrors web/src/pages/staff/JobCardDetailPage.tsx's HIDDEN_WORKFLOW_STAGE_KEYS /
  * MERGED_CHECKIN_LABEL - see that file's doc comment for why these three stage keys are hidden
@@ -252,7 +262,11 @@ export function JobCardDetailScreen({ route }: Props) {
          clean the now-dead ₹2000 message text out of these two section components themselves. Also
          now closes on jc.status === 'Closed' (estimatesLocked alone resets to false on a fresh
          screen load and never knew about job-card closure before), matching the same fix applied
-         to EstimatesCard's Done/Edit toggle below. */}
+         to EstimatesCard's Done/Edit toggle below.
+         2026-10-03: see this file's top-of-file doc comment for the FOC flag - these two sections'
+         own Issue Type picker (where FOC would actually be selected for a Part/Labour suggestion)
+         isn't visible/editable from this file; only EstimatesCard/PrintMenu below (which read the
+         result of that picker) are fixed here. */}
       <PartSuggestionSection jc={jc} onChanged={load} estimatesLocked={estimatesLocked || jc.status === 'Closed'} totalLockReached={false} />
       <LabourSuggestionSection jc={jc} onChanged={load} estimatesLocked={estimatesLocked || jc.status === 'Closed'} totalLockReached={false} />
       <EstimatesCard jc={jc} estimatesLocked={estimatesLocked} setEstimatesLocked={setEstimatesLocked} />
@@ -910,7 +924,15 @@ function WorklogCard({ jc, run, profileId }: { jc: JobCardDetail; run: Run; prof
  * reached (backend JobCardsController.ChangeStage). Today only "Invoice Generated" carries
  * IsTerminal=true - so if a job card looks finished but this card's Edit/Done + email box are
  * still showing, check that job card's actual status badge first; its Status field may not have
- * reached 'Closed' yet. */
+ * reached 'Closed' yet.
+ *
+ * 2026-10-03 ("in android also add change swhich issue change we added in web Issue Type foc and
+ * that logic"): partRows/labourRows below used to compute amount as a flat mrp*qty / rate*qty with
+ * no look at the suggestion's own status (Part)/issueType (Labour) at all - this is the exact same
+ * pre-FOC gap web's EstimatesCard had before the fix on JobCardDetailPage.tsx. Both are now zeroed
+ * the same way web does: a Part suggestion with status === 'FOC', or a Labour suggestion with
+ * issueType === 'FOC', shows its real MRP/Rate and Qty but a ₹0 Amount, so the Grand Total matches
+ * what the Repair Bill/Part-Suggestion side already does for an FOC line. */
 function EstimatesCard({
   jc, estimatesLocked, setEstimatesLocked,
 }: {
@@ -941,12 +963,16 @@ function EstimatesCard({
   const partRows = jc.partSuggestions.map((p, i) => {
     const mrp = p.mrp ?? 0
     const qty = p.quantity ?? 1
-    return { sr: i + 1, code: p.itemCode, description: p.description ?? '-', hsn: p.hsnCode ?? '-', rate: mrp, qty, amount: mrp * qty }
+    // 2026-10-03 ("that FOC logic add in android also"): an FOC Part shows its real MRP/Qty but a
+    // ₹0 Amount - mirrors JobCardDetailPage.tsx's own EstimatesCard partRows exactly.
+    const isFoc = p.status === 'FOC'
+    return { sr: i + 1, code: p.itemCode, description: p.description ?? '-', hsn: p.hsnCode ?? '-', rate: mrp, qty, amount: isFoc ? 0 : mrp * qty }
   })
   const labourRows = jc.labourSuggestions.map((l, i) => {
     const rate = l.rateAtSuggestion ?? 0
     const qty = l.quantity ?? 1
-    return { sr: i + 1, code: l.labourCode, description: l.labourDescription ?? '-', hsn: l.hsnCode ?? '-', rate, qty, amount: rate * qty }
+    const isFoc = l.issueType === 'FOC'
+    return { sr: i + 1, code: l.labourCode, description: l.labourDescription ?? '-', hsn: l.hsnCode ?? '-', rate, qty, amount: isFoc ? 0 : rate * qty }
   })
   const partsTotal = partRows.reduce((sum, r) => sum + r.amount, 0)
   const labourTotal = labourRows.reduce((sum, r) => sum + r.amount, 0)
@@ -1112,6 +1138,12 @@ function buildRepairBillInvoicePrintHtml(bill: RepairBillDoc, dealerName?: strin
  *                    write, straight into Print.printAsync({ html }) exactly like Estimate/JobCard
  *                    print already do. If no Billed repair bill exists yet for this job card, a
  *                    clear message is shown instead of a silent/broken download.
+ *
+ * 2026-10-03 ("that FOC logic add in android also"): printEstimate below computes its own
+ * partRows/labourRows independently of EstimatesCard above (same duplication this file already
+ * has elsewhere, e.g. formatElapsedMs/IST formatters) - fixed the same way, so a printed Estimate
+ * shows ₹0 for an FOC line instead of its real amount, matching what's on screen.
+ *
  * A phone has no browser print popup, so each option calls Print.printAsync (`html` straight in
  * for all three now) which opens the OS's own native print dialog (its own "Save as PDF"/pick-a-
  * printer options cover what web's window.print() and Ctrl+P give a desktop user).
@@ -1139,12 +1171,16 @@ function PrintMenu({ jc }: { jc: JobCardDetail }) {
       const partRows = jc.partSuggestions.map((p, i) => {
         const mrp = p.mrp ?? 0
         const qty = p.quantity ?? 1
-        return { sr: i + 1, code: p.itemCode, description: p.description ?? '-', hsn: p.hsnCode ?? '-', mrp, qty, amount: mrp * qty }
+        // 2026-10-03 ("that FOC logic add in android also"): matches EstimatesCard's own fix
+        // above - an FOC Part prints a ₹0 amount, not its real MRP x Qty.
+        const isFoc = p.status === 'FOC'
+        return { sr: i + 1, code: p.itemCode, description: p.description ?? '-', hsn: p.hsnCode ?? '-', mrp, qty, amount: isFoc ? 0 : mrp * qty }
       })
       const labourRows = jc.labourSuggestions.map((l, i) => {
         const rate = l.rateAtSuggestion ?? 0
         const qty = l.quantity ?? 1
-        return { sr: i + 1, code: l.labourCode, description: l.labourDescription ?? '-', hsn: l.hsnCode ?? '-', rate, qty, amount: rate * qty }
+        const isFoc = l.issueType === 'FOC'
+        return { sr: i + 1, code: l.labourCode, description: l.labourDescription ?? '-', hsn: l.hsnCode ?? '-', rate, qty, amount: isFoc ? 0 : rate * qty }
       })
       const partsTotal = partRows.reduce((sum, r) => sum + r.amount, 0)
       const labourTotal = labourRows.reduce((sum, r) => sum + r.amount, 0)

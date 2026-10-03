@@ -10,16 +10,15 @@ namespace JobCardScanner.Api.Controllers;
 /// "Part Upload" sidebar tab (2026-09-21: "new tab add Part Upload using this excel create table
 /// and functionality to upload using this excel file for upload") - see Models/PartUploads.cs's
 /// doc comment for the confirmed source spreadsheet columns and why this writes to
-/// JobCardScannerDb rather than DMS/DMSBAPLDATA. Upload/Edit/Delete are gated to PartsUserUp,
+/// JobCardScannerDb rather than DMS/DMSBAPLDATA. Import/Update/Delete are gated to PartsUserUp,
 /// matching the existing Parts &amp; Inventory page's own policy (PartsController's GET
 /// /api/parts) - a role that already sees the Parts &amp; Inventory nav entry can also use this
-/// one to upload/edit/delete. Get() (the read/list) is separately gated to the wider PartsReadUp -
-/// see its own doc comment below for why, and 2026-09-29 (SECTION 161) for a real bug in how that
-/// used to be wired.
+/// one to upload/edit/delete. Get() (the read/list) is gated far wider - see its own doc comment
+/// below (2026-10-03) for why it was just widened all the way to Policies.Staff.
 ///
 /// 2026-09-29 (SECTION 158, "still parts-upload in that that location data not shown ... no
 /// worries to upload from that login if any login uploaded data shown that linked location"):
-/// Get() below now also scopes by the signed-in user's own Work Area (WorkLocationCodes), the
+/// Get() below also scopes by the signed-in user's own Work Area (WorkLocationCodes), the
 /// same "empty = unrestricted" convention JobCardsController.List already uses. Confirmed real,
 /// not a guess: before this, Get() only ever filtered by DealerId + whatever `locationCode` the
 /// page's own dropdown happened to pass - a Supervisor/Technician whose login is meant to be
@@ -38,14 +37,26 @@ namespace JobCardScanner.Api.Controllers;
 /// ServiceAdvisor. So even though Get()'s own [Authorize(Policy = Policies.PartsReadUp)] DOES
 /// allow Supervisor/ServiceAdvisor, the class-level PartsUserUp gate was ALSO still being enforced
 /// underneath it and rejected them anyway - the combined effective policy on Get() was really just
-/// PartsUserUp's own (narrower) role list the whole time. This is almost certainly also why the
-/// 2026-09-21 "fix" described in Get()'s own doc comment below (adding PartsReadUp so ServiceAdvisor
-/// could read this list for the Repair Bill/Material Transfer Item Code picker) never actually
-/// worked either - that comment's claim that a method-level policy "overrides" the class-level one
-/// was incorrect; recommend re-testing that ServiceAdvisor picker scenario now that this is fixed.
-/// Import/Update/Delete below did NOT have their own [Authorize] before this - they relied purely
-/// on the (now-removed) class-level gate - so each of them gets its own explicit
-/// [Authorize(Policy = Policies.PartsUserUp)] now, to keep their access exactly as it was.
+/// PartsUserUp's own (narrower) role list the whole time. Import/Update/Delete below did NOT have
+/// their own [Authorize] before this - they relied purely on the (now-removed) class-level gate -
+/// so each of them gets its own explicit [Authorize(Policy = Policies.PartsUserUp)] now, to keep
+/// their access exactly as it was.
+///
+/// 2026-10-03 ("in partsupload already uploaded stock for uttamnager but in login of another role
+/// not showing on captain page fix this for all role it will show stock"): FACT, confirmed from
+/// your screenshot - a "Captain" login got the exact generic fallback text
+/// PartUploadPage.tsx's load() shows ONLY when the GET itself errors with no message body
+/// ("Could not load uploaded part data.", not the separate "No uploaded parts yet" empty-state
+/// text a real zero-row result would show) - that is what a bare 403 from [Authorize] looks like
+/// client-side, not a scoping/empty-result case. Root cause: Get() was still gated to
+/// Policies.PartsReadUp, whose role list was fixed before Captain/ViceCaptain/Technician existed
+/// (those three were added later) - so any login under one of those three roles got silently
+/// 403'd here specifically, even though every other page they use works fine. Since the ask is
+/// "for all role it will show stock" (not just Captain), Get() is widened all the way to
+/// Policies.Staff - this app's own broadest baseline policy, already used as the class-level gate
+/// on several other read endpoints (e.g. JobCardsController) - rather than to a hand-maintained
+/// role list that would need updating again every time a new role is added. Import/Update/Delete
+/// below are UNCHANGED and stay restricted to Policies.PartsUserUp - only the read was widened.
 /// </summary>
 [ApiController]
 [Route("api/part-uploads")]
@@ -64,28 +75,34 @@ public class PartUploadController : ControllerBase
 
     /// <summary>2026-09-21 ("why stock not shown in material and repair bill page from
     /// part-upload"): a plain ServiceAdvisor can open Repair Bill/Material Transfer
-    /// (ServiceAdvisorUp) and needs to read this list for the Item Code picker's merge-in, but was
-    /// never granted PartsUserUp, so this GET was 403-ing for that role and the picker silently
-    /// showed zero uploaded-stock rows. See Policies.PartsReadUp's doc comment. NOTE (SECTION 161):
-    /// this policy alone was never actually enough while the class-level PartsUserUp gate was still
-    /// also present above (see the class's own doc comment) - both were being enforced together,
-    /// and the narrower one always won. Fixed by removing the class-level gate; this is now the
-    /// ONLY authorization check on this action.
+    /// (ServiceAdvisorUp) and needs to read this list for the Item Code picker's merge-in. See
+    /// Policies.PartsReadUp's doc comment (historical - this action no longer uses that policy,
+    /// see the 2026-10-03 note below and the class's own doc comment for the full history).
     ///
     /// 2026-09-29 (SECTION 158) - see this controller's own class doc comment above for the full
-    /// fix: `allowedLocations` (this login's own WorkLocationCodes) is now passed into
-    /// GetAsync alongside the existing `locationCode` dropdown filter, so a Work Area-restricted
-    /// login can no longer see another location's uploaded stock, on top of (not instead of) the
+    /// fix: `allowedLocations` (this login's own WorkLocationCodes) is passed into GetAsync
+    /// alongside the existing `locationCode` dropdown filter, so a Work Area-restricted login
+    /// can no longer see another location's uploaded stock, on top of (not instead of) the
     /// existing DealerId scope.
     ///
-    /// 2026-10-03 ("in part upload also add date filter"): new optional `dateFrom`/`dateTo`,
-    /// filtering on PartUpload.ReportDate (the "as of" date picked on the upload form - see
-    /// Models/PartUpload.cs's doc comment) - this grid had NO date filter of any kind before this;
-    /// the only Date field on the page was the required upload-form Date, a separate concept.
-    /// Named arguments used for the same reason the existing allowedLocations call already does -
-    /// see GetAsync's own doc comment for the CS1503 this avoided once before.</summary>
+    /// 2026-10-03 ("in part upload also add date filter"): optional `dateFrom`/`dateTo`, filtering
+    /// on PartUpload.ReportDate (the "as of" date picked on the upload form - see Models/
+    /// PartUpload.cs's doc comment) - this grid had NO date filter of any kind before this; the
+    /// only Date field on the page was the required upload-form Date, a separate concept. Named
+    /// arguments used for the same reason the existing allowedLocations call already does - see
+    /// GetAsync's own doc comment for the CS1503 this avoided once before.
+    ///
+    /// 2026-10-03 ("fix this for all role it will show stock") - WIDENED from
+    /// Policies.PartsReadUp to Policies.Staff: see the class's own doc comment above for the full
+    /// diagnosis (a Captain login was getting a silent 403 here because PartsReadUp's role list
+    /// predates the Captain/ViceCaptain/Technician roles). Staff is this app's own broadest
+    /// authenticated-user policy - viewing stock figures isn't a sensitive action the way
+    /// uploading/editing/deleting them is (those three stay on PartsUserUp below, unchanged), so
+    /// there's no real access-control reason to keep this narrower than "any signed-in staff
+    /// member at this dealer" - and widening it here means a FUTURE new role never needs this same
+    /// fix repeated.</summary>
     [HttpGet]
-    [Authorize(Policy = Policies.PartsReadUp)]
+    [Authorize(Policy = Policies.Staff)]
     public async Task<IActionResult> Get([FromQuery] string? search, [FromQuery] string? locationCode, [FromQuery] DateOnly? dateFrom = null, [FromQuery] DateOnly? dateTo = null)
     {
         if (_currentUser.DealerId is not { } dealerId)
@@ -117,7 +134,7 @@ public class PartUploadController : ControllerBase
     /// 2026-09-29 (SECTION 161): explicit [Authorize] added here - this used to rely solely on the
     /// class-level [Authorize(Policy = Policies.PartsUserUp)], which was removed (see the class's
     /// own doc comment for why). Same policy as before, just declared on the action directly now
-    /// so this endpoint's access is unchanged.</summary>
+    /// so this endpoint's access is unchanged by the 2026-10-03 Get()-only widening above.</summary>
     [HttpPost("import")]
     [RequestSizeLimit(50_000_000)]
     [Authorize(Policy = Policies.PartsUserUp)]
@@ -154,7 +171,7 @@ public class PartUploadController : ControllerBase
     /// doc comment.
     ///
     /// 2026-09-29 (SECTION 161): explicit [Authorize] added - see Import's own note above for why
-    /// (class-level gate removed, access unchanged).</summary>
+    /// (class-level gate removed, access unchanged by the 2026-10-03 Get()-only widening above).</summary>
     [HttpPut("{id:guid}")]
     [Authorize(Policy = Policies.PartsUserUp)]
     public async Task<IActionResult> Update(Guid id, [FromBody] PartUploadUpdateRequest request)
@@ -170,7 +187,8 @@ public class PartUploadController : ControllerBase
     }
 
     /// <summary>2026-09-29 (SECTION 161): explicit [Authorize] added - see Import's own note above
-    /// for why (class-level gate removed, access unchanged).</summary>
+    /// for why (class-level gate removed, access unchanged by the 2026-10-03 Get()-only widening
+    /// above).</summary>
     [HttpDelete("{id:guid}")]
     [Authorize(Policy = Policies.PartsUserUp)]
     public async Task<IActionResult> Delete(Guid id)

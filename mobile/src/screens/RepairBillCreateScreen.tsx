@@ -13,71 +13,17 @@ import type { RootStackParamList } from '../navigation/RootNavigator'
 import type { BaplDmsLabourRow, BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaster, JobSearchResult, LabourMasterPartwise, MaterialTransferItemForJob, RepairBillDoc, RepairBillDocItemType, RepairBillDocStatus } from '../types'
 
 /**
- * "Repair Bill" screen (2026-09-21, "add changes in android also") - the Android counterpart to
- * web/src/pages/staff/RepairBillCreatePage.tsx, posting to the SAME backend endpoint (POST/GET
- * /api/repair-bill-docs...) - no backend change was needed for this round, only this new screen.
- * See MaterialTransferCreateScreen.tsx's doc comment for the shared "one line at a time" phone
- * layout reasoning and the same disclosed simplifications (no Part Upload merge into the picker).
+ * "Repair Bill" screen - the Android counterpart to web/src/pages/staff/RepairBillCreatePage.tsx,
+ * posting to the SAME backend endpoint. See this file's own history of doc comments (reopen-as-
+ * editable, Material Transfer sync, etc.) for the full background.
  *
- * Selecting Type = Labour searches DMS's own Labour Master (GET /api/bapl-dms/labour) instead of
- * the Parts list - the same fix web's RepairBillCreatePage.tsx got this round
- * (LabourSearchInput.tsx there / pickLabourForLine here), so this screen never had the old
- * Parts-only-search gap to begin with.
- *
- * 2026-09-22 ("which labour we added from amterial transfer for Issue Type - Paid that will goin
- * for paid type and which are in U/w that was going in U/w that also going in repair bill ...give
- * proper code like vide functionality in mobile and for web both give proper"): this screen never
- * had ANY Material Transfer sync at all before this round (unlike web's RepairBillCreatePage.tsx,
- * which has always auto-loaded its Part Details List from GET .../for-job/{jobCardId} - see that
- * page's own doc comment) - every line here, Part or Labour, was always manually searched/added.
- * Bringing Material-Transfer-sourced Labour into Repair Bill without also bringing its Part rows
- * would leave this screen showing Labour lines with no matching Part lines for the same
- * transfer - an inconsistent half-mirror of web's own behaviour - so this round ports web's FULL
- * materialTransferItems sync effect (both Part AND Labour rows), not only the new Labour half.
- * See the sync effect's own doc comment further down for the mechanics; `key` changes from a
- * locally-minted number to a string so a synced row can be keyed by its own real
- * MaterialTransferDocItem.Id (a GUID) without colliding with a manually-added "manual-N" line,
- * the same collision-avoidance web's own DraftItem.key already uses.
- *
- * 2026-09-23 ("add grid button and in that that job card shown which will transfer from material
- * transfer to save as proforma using adding labour details add this only this page give me for
- * android and web adding this button"): reopen-as-editable, the Android port of
- * RepairBillCreatePage.tsx's own "click a saved bill, it reopens as this same editable form" flow
- * (web's SECTION 80/81) - see startEditBill below for the full mechanics. Web already has this
- * (a click anywhere on the row); this screen adds an explicit "Edit" button inside a tapped row's
- * expanded detail instead (see the Combined list section further down) - a literal grid BUTTON,
- * matching your wording, rather than repurposing the existing tap-to-expand gesture this screen
- * already had (tapping a row still just expands/collapses its summary, unchanged).
- *
- * Same Part-vs-Labour restoration asymmetry as web, ported as-is and for the same reason: Part
- * lines are DELIBERATELY re-derived FRESH from the Job's CURRENT Material Transfer (the existing
- * sync effect above already does this the moment jobCardId is set) rather than replayed from what
- * the bill happened to save previously - this is the "pull from Material Transfer in the DB"
- * behaviour, not a replay of possibly-stale data. Only Labour lines are restored from the bill's
- * own saved items (a Labour line can also be hand-added, independent of Material Transfer) -
- * restored as manual rows keyed "edit-N" (never colliding with "manual-N" or a real MT GUID), then
- * deduplicated once the fresh Material Transfer fetch resolves (see the dedupe effect below) so a
- * Labour line that WAS Material-Transfer-sourced doesn't show twice. A line's own saved Discount/
- * Issue Type is best-effort restored via editSnapshotByCodeRef (matched by item type + code, since
- * a saved line has no direct link back to the Material Transfer row it came from) once Parts
- * re-derive - same disclosed best-effort limitation as web.
- *
- * 2026-09-23 ("this main in 1 page not on same only which are save in jobcard db that in grid
- * button and which material transfer that jobcard"): the embedded "Combined list" section (own
- * JobCardScanner bills + DMSBAPLDATA-synced ones, tap-to-expand, Edit/Delete) moved OUT of this
- * screen onto its own screen - see RepairBillListScreen.tsx (route "RepairBillList") - confirmed
- * via AskUserQuestion ("Android + Web: both get a separate list screen/page" + "JobCardScanner
- * rows only"), mirroring web's own RepairBillCreatePage.tsx/RepairBillListPage.tsx split. This
- * screen is now the create/edit FORM only, reached either fresh (Dashboard's "Repair Bill" card)
- * or already in edit mode via a navigation param - see the route.params effect below, the Android
- * equivalent of web's ?editId= query param.
- *
- * 2026-10-02 ("for mobile also give this repair bill and material transfer both page report") -
- * added a "View DMS Report" button next to "View List" (new-bill header) - opens
- * RepairBillReportScreen.tsx, the read-only DMSBAPLDATA repair-bill report (NOT this screen's own
- * JobCardScannerDb Performa/Billed data - see that screen's own doc comment for the distinction).
- * Not shown while editing an existing bill (editingBillId set), matching where "View List" itself
- * is hidden, since that header row doesn't render in edit mode either.
+ * 2026-10-03 ("in android also add change swhich issue change we added in web Issue Type foc"):
+ * Issue Type now has a third option, FOC, alongside Paid/U/W, in both places it's picked (the
+ * bill-level default pills AND the per-line draft pills) - see isZeroTaxIssue below, which is the
+ * ONLY calculation change needed: lineEstimate's existing zeroTax branch already zeroes the whole
+ * taxable amount (taxable = zeroTax ? 0 : gross - discountAmt), so adding 'FOC' to the same
+ * zero-tax set makes a picked FOC line's Total read ₹0 with no separate amount override required -
+ * the exact same one-line fix web's RepairBillCreatePage.tsx got.
  */
 type TaxMode = 'Same State (CGST+SGST)' | 'Different State (IGST)'
 type DiscountType = 'None' | 'Percentage' | 'Amount'
@@ -106,7 +52,12 @@ type DraftItem = {
 }
 
 const rateFromMrp = (mrp: number, gstPct: number) => mrp / (1 + gstPct / 100)
-const isZeroTaxIssue = (issueType: string) => issueType === 'U/W' || issueType === 'FSC'
+// 2026-10-03 ("Issue Type foc and that logic"): FOC added alongside the existing U/W/FSC zero-tax
+// set - same one-line extension as web's RepairBillCreatePage.tsx isZeroTaxIssue. Every other
+// calculation (gross, discountAmt, taxable, cgst/sgst/igst split, total) is untouched - a picked
+// FOC line's `taxable` (and therefore its Total) falls to 0 purely because this now returns true
+// for it, same as it already did for U/W.
+const isZeroTaxIssue = (issueType: string) => issueType === 'U/W' || issueType === 'FSC' || issueType === 'FOC'
 
 /** Direct port of web's lineEstimate/splitGst - discount reduces the taxable amount FIRST, then
  * CGST+SGST (same state) or IGST (different state) is added on top of what's left. Deliberately
@@ -733,10 +684,14 @@ export function RepairBillCreateScreen() {
         </View>
       </View>
 
+      {/* 2026-10-03 ("Issue Type foc and that logic add in android also"): FOC added as a third
+         option here, alongside Paid/U/W - this is the bill-level DEFAULT only (each line below can
+         still override it with its own pill). No other change to this field - still plain state,
+         still just prefills a new line's own issueType. */}
       <View style={styles.field}>
         <Text style={styles.label}>Issue Type (default for new lines)</Text>
         <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
-          {(['', 'Paid', 'U/W'] as const).map((t) => (
+          {(['', 'Paid', 'U/W', 'FOC'] as const).map((t) => (
             <TouchableOpacity key={t || 'none'} style={[styles.pill, issueType === t && styles.pillSelected]} onPress={() => setIssueType(t)}>
               <Text style={[styles.pillText, issueType === t && styles.pillTextSelected]}>{t || 'none'}</Text>
             </TouchableOpacity>
@@ -836,10 +791,15 @@ export function RepairBillCreateScreen() {
             </View>
           </View>
 
+          {/* 2026-10-03 ("Issue Type foc and that logic add in android also"): FOC added as a
+             third option here too - this is the PER-LINE override, falling back to the bill-level
+             default above when left at "" (the default pill). Picking FOC here is what actually
+             makes isZeroTaxIssue(it.issueType || issueType) return true for THIS draft once it's
+             added via +Add Line, which is the only thing that zeroes its Taxable/Total below. */}
           <View style={styles.field}>
             <Text style={styles.label}>Issue Type (this line)</Text>
             <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
-              {(['', 'Paid', 'U/W'] as const).map((t) => (
+              {(['', 'Paid', 'U/W', 'FOC'] as const).map((t) => (
                 <TouchableOpacity key={t || 'default'} style={[styles.pill, draft.issueType === t && styles.pillSelected]} onPress={() => setDraft((d) => ({ ...d, issueType: t }))}>
                   <Text style={[styles.pillText, draft.issueType === t && styles.pillTextSelected]}>{t || `default (${issueType || 'none'})`}</Text>
                 </TouchableOpacity>

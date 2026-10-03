@@ -493,7 +493,7 @@ export interface JobCardPartSuggestion {
   id: string
   itemCode: string
   availableQtyAtSuggestion?: number | null
-  status: 'Paid' | 'U/W'
+  status: 'Paid' | 'U/W' | 'FOC'
   quantity: number
   description?: string | null
   hsnCode?: string | null
