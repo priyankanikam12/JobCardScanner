@@ -116,6 +116,7 @@ export function JobCardsListScreen({ navigation, route }: Props) {
                   {isBapl && <Text style={styles.dmsBadge}>DMS</Text>}
                 </View>
                 <Text style={styles.muted}>{item.customerName} - {item.vehicleModel} {item.vehicleRegNo}</Text>
+                <Text style={styles.muted}>{item.vehicleChassisNo ?? '-'}</Text>
                 <Text style={styles.muted}>{isBapl ? '-' : item.stageLabel}</Text>
                 {!isBapl && (item.photoCount ?? 0) > 0 && <Text style={styles.photoCount}>📷 {item.photoCount}</Text>}
               </View>

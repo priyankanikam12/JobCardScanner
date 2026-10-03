@@ -588,6 +588,7 @@ export interface JobCardSummary {
   customerName?: string
   customerMobile?: string
   vehicleModel?: string
+  vehicleChassisNo?: string | null
   vehicleRegNo?: string
   stageLabel?: string | null
   technicianName?: string

@@ -1,3 +1,4 @@
+// web\src\pages\staff\RepairBillListPage.tsx
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { staffApi } from '../../api/client'
@@ -35,7 +36,42 @@ import { RecordDetailModal } from '../../components/RecordDetailModal'
  * RepairBillCreatePage.tsx's own top-of-file doc comment for how that page reads `editId` off the
  * URL on mount and reopens the same edit flow it always had. A Billed/Cancelled row still opens
  * the read-only RecordDetailModal popup right here, same as before (nothing left to edit there).
+ *
+ * 2026-10-03 ("Date From default select start date of month and Date To default today date ...
+ * and below search data" + "in pagination 10 default select"): Date From/Date To now default to
+ * this calendar month's 1st and today respectively (see todayIso()/startOfMonthIso() below) -
+ * computed from the BROWSER's own local date/time, same as AttendancePage.tsx's own todayIso(),
+ * deliberately NOT UTC (new Date().toISOString() would shift the date by the browser's UTC offset
+ * and could silently land on the wrong calendar day near midnight IST). Because these are now the
+ * INITIAL state values rather than '', the existing mount-time loadCombined() effect below picks
+ * them up automatically on first load - no separate change needed there. The Date From/To, Service
+ * Location, Bill No, Job No and Chassis No filters and the Search button were already present and
+ * wired into loadCombined()'s params before this change; if they still don't appear to filter
+ * anything in your running app, check that this file (not a stale copy) is actually the one
+ * deployed/built - the filter wiring itself has not changed here, just these two defaults.
+ *
+ * Pagination's default page size is NOT hardcoded inside the shared usePagination hook here -
+ * ASSUMPTION, flagged: I don't have usePagination.ts's own source in this pass to confirm or
+ * safely change its internal default without risking RepairBillPage.tsx/MaterialTransferPage.tsx/
+ * VehicleSalePage.tsx's own (unrequested) page-size default, which also call usePagination().
+ * Instead, a one-time mount effect below calls setPageSize(10) for JUST this page, which the hook
+ * already exposes for exactly this purpose (the Pagination component's own page-size dropdown
+ * calls the same setter). If usePagination's own built-in default is already 10, this is a no-op.
  */
+function toLocalIso(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+function todayIso(): string {
+  return toLocalIso(new Date())
+}
+function startOfMonthIso(): string {
+  const d = new Date()
+  return toLocalIso(new Date(d.getFullYear(), d.getMonth(), 1))
+}
+
 export function RepairBillListPage() {
   const { profile, hasRole } = useStaffAuth()
   const canDelete = hasRole('SystemAdmin')
@@ -53,8 +89,10 @@ export function RepairBillListPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.dealerId, profile?.workLocationCodes])
 
-  const [listDateFrom, setListDateFrom] = useState('')
-  const [listDateTo, setListDateTo] = useState('')
+  // 2026-10-03: default Date From/To to this month's 1st / today - see this file's top-of-file
+  // doc comment for why local-date math is used instead of toISOString().
+  const [listDateFrom, setListDateFrom] = useState(startOfMonthIso())
+  const [listDateTo, setListDateTo] = useState(todayIso())
   const [listLocation, setListLocation] = useState('')
   const [listBillNo, setListBillNo] = useState('')
   const [listJobNo, setListJobNo] = useState('')
@@ -110,6 +148,10 @@ export function RepairBillListPage() {
   }
 
   const { page, setPage, pageSize, setPageSize, pageCount, pageRows, total } = usePagination(rows)
+  // 2026-10-03 ("pagination 10 default select"): see this file's top-of-file doc comment - a
+  // scoped, one-time default for THIS page only, not a change to usePagination's own internal
+  // default (which RepairBillPage.tsx/MaterialTransferPage.tsx/VehicleSalePage.tsx also rely on).
+  useEffect(() => { setPageSize(10) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const [viewingBill, setViewingBill] = useState<CombinedRepairBillRow | null>(null)
   const fmtBillCell = (v: unknown) => (v == null || v === '' ? '—' : typeof v === 'number' ? v.toLocaleString('en-IN', { maximumFractionDigits: 2 }) : String(v))

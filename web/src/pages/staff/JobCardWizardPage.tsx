@@ -1225,7 +1225,7 @@ export function JobCardWizardPage() {
           <h3 style={{ marginTop: 24 }}>Registered Customer</h3>
           {customerFieldsLocked && (
             <p className="muted" style={{ marginTop: -4, marginBottom: 12 }}>
-              🔒 Name, Mobile, Email, City and Address were auto-fetched from DMS and are locked to prevent accidental changes.{' '}
+              🔒 Name, Mobile, Email, City and Address from DMS and are locked to prevent accidental changes.{' '}
               <a href="#" onClick={(e) => { e.preventDefault(); setUnlockCustomerFields(true) }}>Edit anyway</a>
             </p>
           )}
@@ -1275,7 +1275,7 @@ export function JobCardWizardPage() {
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ background: '#1c64f2', color: '#fff', fontSize: 12, fontWeight: 600, padding: '2px 8px', borderRadius: 999 }}>
-                  DMS
+                  Details
                 </span>
                 {baplVehicleHit.vehiclePrevKms != null && (
                   <span style={{ fontWeight: 700, fontSize: 15 }}>

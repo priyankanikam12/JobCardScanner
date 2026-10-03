@@ -32,7 +32,7 @@ public record PartUploadUpdate(
 
 public interface IPartUploadService
 {
-    Task<IReadOnlyList<PartUpload>> GetAsync(Guid dealerId, string? locationCode, string? search, CancellationToken ct = default, IReadOnlyList<string>? allowedLocations = null);
+    Task<IReadOnlyList<PartUpload>> GetAsync(Guid dealerId, string? locationCode, string? search, CancellationToken ct = default, IReadOnlyList<string>? allowedLocations = null, DateOnly? dateFrom = null, DateOnly? dateTo = null);
     Task<PartUploadImportResult> ImportAsync(Stream excelStream, Guid dealerId, string locationCode, DateOnly reportDate, string fileName, string? actor, CancellationToken ct = default);
     Task<PartUpload?> UpdateAsync(Guid id, Guid dealerId, PartUploadUpdate update, CancellationToken ct = default);
     Task<bool> DeleteAsync(Guid id, Guid dealerId, CancellationToken ct = default);
@@ -75,8 +75,17 @@ public class PartUploadService : IPartUploadService
     /// parameter anyway - it already does its own equivalent WorkLocationCodes filtering in-memory
     /// right after calling GetAsync (see its own `isLocationRestricted` block), so leaving
     /// `allowedLocations` null there is correct, not a regression.
+    ///
+    /// 2026-10-03 ("in part upload also add date filter"): new optional `dateFrom`/`dateTo`,
+    /// added at the END of the parameter list (after `allowedLocations`) for the same reason that
+    /// parameter was placed there - JobCardsController.cs's own existing 4-positional-argument call
+    /// to this method (`_partUploads.GetAsync(dealerId, locationCode, null, HttpContext.
+    /// RequestAborted)`) keeps binding exactly as it did before; both new parameters simply default
+    /// to null there, unchanged behaviour. Filters on PartUpload.ReportDate (the "as of" date
+    /// picked on the upload form), inclusive on both ends, same >=/<= convention every other
+    /// Date From/To filter in this codebase uses (RepairBillDocsController.Combined, etc).
     /// </summary>
-    public async Task<IReadOnlyList<PartUpload>> GetAsync(Guid dealerId, string? locationCode, string? search, CancellationToken ct = default, IReadOnlyList<string>? allowedLocations = null)
+    public async Task<IReadOnlyList<PartUpload>> GetAsync(Guid dealerId, string? locationCode, string? search, CancellationToken ct = default, IReadOnlyList<string>? allowedLocations = null, DateOnly? dateFrom = null, DateOnly? dateTo = null)
     {
         var query = _db.PartUploads.AsNoTracking().Where(p => p.DealerId == dealerId);
         if (!string.IsNullOrWhiteSpace(locationCode))
@@ -90,6 +99,8 @@ public class PartUploadService : IPartUploadService
             var allowedLocationsList = allowedLocations.ToList(); // EF Core translates List<T>.Contains to SQL IN (...) reliably; IReadOnlyList<T> is not guaranteed to
             query = query.Where(p => allowedLocationsList.Contains(p.LocationCode));
         }
+        if (dateFrom is not null) query = query.Where(p => p.ReportDate >= dateFrom);
+        if (dateTo is not null) query = query.Where(p => p.ReportDate <= dateTo);
         if (!string.IsNullOrWhiteSpace(search))
         {
             var s = search.Trim();

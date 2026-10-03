@@ -1,3 +1,4 @@
+// mobile\src\screens\JobCardDetailScreen.tsx
 import { useEffect, useState } from 'react'
 import {
   ActivityIndicator, Alert, Image, Linking, Modal, Pressable, ScrollView, StyleSheet, Text,
@@ -27,7 +28,7 @@ import { LabourSuggestionSection } from '../components/LabourSuggestionSection'
 import { WorkflowTimelineView, type WorkflowTimelineHistoryEntry } from '../components/WorkflowTimelineView'
 import { PickerField, type PickerOption } from '../components/PickerField'
 import { buildEstimatePrintHtml, buildJobCardPrintHtml } from '../utils/printJobCard'
-import type { BaplDmsJobCardHistory, JobCardDetail, RepairBillDoc, StaffRole, Technician, WorkflowStage } from '../types'
+import type { BaplDmsJobCardHistory, JobCardDetail, RepairBillDoc, Technician, WorkflowStage } from '../types'
 import type { RootStackParamList } from '../navigation/RootNavigator'
 import { colors } from '../theme/colors'
 
@@ -186,7 +187,7 @@ export function JobCardDetailScreen({ route }: Props) {
         <Text style={styles.title}>{jc.jobCardNumber}</Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <Badge status={jc.status} />
-          <PrintMenu jc={jc} hasRole={hasRole} />
+          <PrintMenu jc={jc} />
         </View>
       </View>
       <ScrollView style={styles.container}>
@@ -198,6 +199,15 @@ export function JobCardDetailScreen({ route }: Props) {
         <Text>{jc.customer?.mobile}</Text>
         <Text style={{ marginTop: 6 }}>{jc.vehicle?.model} {jc.vehicle?.variant}</Text>
         <Text style={styles.muted}>Reg: {jc.vehicle?.regNo} | Odometer: {jc.odometerAtCheckIn} km</Text>
+        {/* 2026-10-03 ("why technicuan not shown aftrr assign") - mirrors the same fix on web's
+           JobCardDetailPage.tsx: the "Assign Technician" picker further down this screen saves
+           into jc.assignedTechnicianName, but nothing on this screen displayed that field outside
+           the picker itself (gated to WorkshopManager/Supervisor/DealerAdmin/CorporateAdmin/
+           SystemAdmin) - the only "Technician: ..." text anywhere was baplLine's
+           jc.baplTechnicianName, a different, effectively-always-empty field set once at job-card
+           creation (removed from the wizard on 2026-09-25). This line shows the real, live
+           assigned technician to every role that can view this screen. */}
+        <Text style={styles.muted}>Technician: {jc.assignedTechnicianName || 'Not assigned yet'}</Text>
         {/* <Text style={styles.muted}>Tracking link: /track/{jc.trackingToken}</Text> */}
         {jc.customer && hasRole('WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
           <CustomerPasswordResetButton customerId={jc.customer.id} customerName={jc.customer.name} />
@@ -228,7 +238,7 @@ export function JobCardDetailScreen({ route }: Props) {
       </View>
 
       {hasRole('ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
-        <UpdateWorkflowStageCard jc={jc} stages={stages} busy={busy} run={run} canAssignTechnician={hasRole('WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin')} />
+        <UpdateWorkflowStageCard jc={jc} stages={stages} busy={busy} run={run} canAssignTechnician={hasRole('ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin')} />
       )}
 
       <ComplaintsCard jc={jc} run={run} />
@@ -781,8 +791,17 @@ function ComplaintsCard({ jc, run }: { jc: JobCardDetail; run: Run }) {
 // see that file's doc comment for the full reasoning (starting the timer is what causes Work In
 // Progress via StartWorklog's own side effect; the closed-job-card auto-stop effect below stays as
 // a safety net only). All timestamps shown explicitly in IST (Asia/Kolkata), not device locale.
+// 2026-10-03 ("correct timer time utc maharashtra current time") - mirrors the same fix on web's
+// JobCardDetailPage.tsx exactly: StartWorklog/EndWorklog always stamp DateTime.UtcNow on the
+// backend, but StartedAt/EndedAt come back over JSON with no 'Z'/offset (EF Core reads the SQL
+// Server datetime column back as Kind=Unspecified), so JS's `new Date(...)` was treating the raw
+// UTC digits as the DEVICE'S OWN local time instead of UTC - on a device set to IST that silently
+// cancelled out the `timeZone: 'Asia/Kolkata'` conversion below, leaving the Work Log table showing
+// time about 5 hours 30 minutes behind real Maharashtra time while still labeling it "IST".
+// Appending 'Z' when the string has no zone of its own forces the correct UTC interpretation first.
 const IST_TIME_ZONE = 'Asia/Kolkata'
-const formatIST = (iso: string, opts: Intl.DateTimeFormatOptions) => new Date(iso).toLocaleString('en-IN', { timeZone: IST_TIME_ZONE, ...opts })
+const parseUtcIso = (iso: string): Date => new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : `${iso}Z`)
+const formatIST = (iso: string, opts: Intl.DateTimeFormatOptions) => parseUtcIso(iso).toLocaleString('en-IN', { timeZone: IST_TIME_ZONE, ...opts })
 const formatISTTime = (iso: string) => formatIST(iso, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })
 const formatISTDateTime = (iso: string) => formatIST(iso, { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true })
 
@@ -838,7 +857,7 @@ function WorklogCard({ jc, run, profileId }: { jc: JobCardDetail; run: Run; prof
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
           <Text style={styles.muted}>
             ⏱ Timer running since {formatISTTime(openLog.startedAt)} IST - running for{' '}
-            {formatElapsedMs(nowMs - new Date(openLog.startedAt).getTime())}.
+            {formatElapsedMs(nowMs - parseUtcIso(openLog.startedAt).getTime())}.
           </Text>
           <TouchableOpacity style={styles.dangerBtnSm} onPress={stopTimer}>
             <Text style={styles.dangerBtnText}>■ Stop Timer</Text>
@@ -1104,7 +1123,10 @@ function buildRepairBillInvoicePrintHtml(bill: RepairBillDoc, dealerName?: strin
  * chassis-suggestions dropdown fix in JobCardWizardScreen.tsx for the same class of bug on
  * Android) - this sidesteps that entirely.
  */
-function PrintMenu({ jc, hasRole }: { jc: JobCardDetail; hasRole: (...roles: StaffRole[]) => boolean }) {
+// 2026-10-03: `hasRole` prop dropped - PrintMenu no longer role-gates any of its 3 options (see
+// the removed Invoice gate above), so it no longer needs to know who's signed in. Mirrors web's
+// identical cleanup.
+function PrintMenu({ jc }: { jc: JobCardDetail }) {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState<'estimate' | 'jobcard' | 'invoice' | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -1230,11 +1252,14 @@ function PrintMenu({ jc, hasRole }: { jc: JobCardDetail; hasRole: (...roles: Sta
             <TouchableOpacity style={styles.printMenuItem} onPress={printJobCard}>
               <Text style={styles.printMenuItemText}>JobCard print</Text>
             </TouchableOpacity>
-            {hasRole('Cashier', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
-              <TouchableOpacity style={[styles.printMenuItem, { borderBottomWidth: 0 }]} onPress={printInvoice}>
-                <Text style={styles.printMenuItemText}>Invoice</Text>
-              </TouchableOpacity>
-            )}
+            {/* 2026-10-03 ("For all Role its visible" - explicit answer to "after jobcard close im
+               not enable to download invoice ... fix this"), mirrors web's identical change: was
+               gated to hasRole('Cashier','DealerAdmin','CorporateAdmin','SystemAdmin') - a
+               WorkshopManager/Supervisor/ServiceAdvisor closing a job card couldn't even see this
+               option. Gate removed entirely per your explicit choice. */}
+            <TouchableOpacity style={[styles.printMenuItem, { borderBottomWidth: 0 }]} onPress={printInvoice}>
+              <Text style={styles.printMenuItemText}>Invoice</Text>
+            </TouchableOpacity>
           </Pressable>
         </Pressable>
       </Modal>

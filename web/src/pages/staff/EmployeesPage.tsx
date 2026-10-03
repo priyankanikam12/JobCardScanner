@@ -31,6 +31,24 @@ import type { BaplDmsWorkshop, StaffRole } from '../../types'
  * there) rather than picking one dealer arbitrarily - Work Area's LocCodes, not DealerId, are what
  * every enforcement point (JobCardsController, DmsBaplDataController) actually checks, so this
  * costs nothing functionally.
+ *
+ * 2026-10-03 ("from this employees page also ui like technician-employees ... from Designation
+ * hide mechanic and in that also filter add location and search"): matches
+ * TechnicianEmployeesPage.tsx's now-established pattern -
+ *   - The always-visible inline Add/Edit card is replaced with a single "+ Add Employee" button
+ *     in the page header, opening the same form in a styled modal (gradient icon header, rounded
+ *     card, backdrop) - reused for Edit exactly as on the Technician page.
+ *   - A Search box (name/email, client-side) and a Location dropdown (workLocationCodes, also
+ *     client-side here - unlike Technician Employee's GET /api/technicians?locationCode=..., this
+ *     page's GET /api/users has no confirmed location query param in this session, so narrowing
+ *     happens client-side against each row's own workLocationCodes array instead) sit above the
+ *     table, same placement as the Technician page.
+ *   - 'Mechanic' removed from DESIGNATIONS per explicit instruction - every existing employee
+ *     already saved with Designation = 'Mechanic' keeps that value untouched in the database and
+ *     still displays correctly in the grid/expanded-row view; it simply can't be newly selected
+ *     (or re-selected while editing that same employee - the dropdown would show the Designation
+ *     field blank for them until a new value is picked, same as any other no-longer-offered option
+ *     would behave in a plain <select>).
  */
 
 interface StaffUser {
@@ -62,23 +80,9 @@ const INDIA_STATES = [
   'West Bengal',
 ]
 
-// 2026-10-01 ("update my this employeepage which last updated role i was give 'Captain',
-// 'ViceCaptain', 'Technician'"): added these three as selectable Designations. ADDED to the
-// existing list, not replaced - Supervisor/Mechanic are left in place since you didn't say to
-// remove them; tell me if they should come out.
-//
-// StaffRole (web/src/types/index.ts) already lists 'Captain' | 'ViceCaptain' | 'Technician' as
-// valid roles (added earlier in this session), so the TYPE side is ready. But selecting one of
-// these here does NOT yet save as that Role end-to-end - see the role: 'ServiceAdvisor' placeholder
-// a few lines below in save(): on create, this page always sends the hardcoded placeholder
-// `role: 'ServiceAdvisor'` and relies entirely on the backend's UsersController.RoleForDesignation
-// (or equivalent) to re-map Designation -> the real Role; on edit (PUT), this page doesn't send
-// `role` AT ALL, only `designation`, so the SAME backend mapping has to run again there too. I do
-// not have UsersController.cs, the backend StaffRole enum file, or Auth/Policies.cs in this
-// session (never provided) - so I cannot confirm or fix whether Captain/ViceCaptain/Technician
-// actually map through correctly today. Until that mapping is confirmed, selecting these in the
-// dropdown may silently save as the wrong Role (or fail validation) server-side.
-const DESIGNATIONS = ['Supervisor', 'Mechanic', 'Captain', 'ViceCaptain', 'Technician'] as const
+// 2026-10-03 ("hide mechanic"): 'Mechanic' removed from the selectable list - see this file's own
+// top-of-file doc comment for what that does/doesn't affect for an employee already saved with it.
+const DESIGNATIONS = ['Supervisor', 'Captain', 'ViceCaptain', 'Technician'] as const
 type Designation = typeof DESIGNATIONS[number]
 
 const emptyEmployeeForm = {
@@ -116,6 +120,10 @@ export function EmployeesPage() {
   const [locSearch, setLocSearch] = useState('')
   const [employeeError, setEmployeeError] = useState<string | null>(null)
   const [employeeBusy, setEmployeeBusy] = useState(false)
+  // 2026-10-03 ("then open this atrractive page", matching TechnicianEmployeesPage.tsx) - drives
+  // the Add/Edit modal below. Opening it fresh (the header button) resets the form first;
+  // editEmployee (table row) fills the form then opens it, so the same modal serves both.
+  const [showModal, setShowModal] = useState(false)
 
   // Work Area checkbox list - the SAME endpoint Parts & Inventory / Material Transfer already use.
   // Corporate/System Admin get EVERY dealer's workshop locations at once (no dealerId param - see
@@ -145,7 +153,9 @@ export function EmployeesPage() {
   const selectAllWorkLocations = () => setEmployeeForm((f) => ({ ...f, workLocationCodes: Array.from(new Set([...f.workLocationCodes, ...employeeWorkshops.map((w) => w.locCode)])) }))
   const clearAllWorkLocations = () => setEmployeeForm((f) => ({ ...f, workLocationCodes: [] }))
 
+  const openAddModal = () => { setEmployeeForm(emptyEmployeeForm); setLocSearch(''); setEmployeeError(null); setShowModal(true) }
   const resetEmployeeForm = () => { setEmployeeForm(emptyEmployeeForm); setLocSearch(''); setEmployeeError(null) }
+  const closeModal = () => { setShowModal(false); resetEmployeeForm() }
 
   const editEmployee = (u: StaffUser) => {
     setEmployeeForm({
@@ -165,7 +175,7 @@ export function EmployeesPage() {
     })
     setLocSearch('')
     setEmployeeError(null)
-    window.scrollTo({ top: 0, behavior: 'smooth' })
+    setShowModal(true)
   }
 
   const saveEmployee = async () => {
@@ -219,7 +229,7 @@ export function EmployeesPage() {
           workLocationCodes: employeeForm.workLocationCodes,
         })
       }
-      resetEmployeeForm()
+      closeModal()
       load()
     } catch (err: unknown) {
       setEmployeeError(apiErrorMessage(err, 'Could not save this employee.'))
@@ -253,118 +263,50 @@ export function EmployeesPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const workshopNameByCode = new Map(employeeWorkshops.map((w) => [w.locCode, w.locName]))
 
+  // 2026-10-03 ("add filter add location and search"): Search is client-side (name or email);
+  // Location is also client-side here - unlike Technician Employee's GET /api/technicians?
+  // locationCode=..., this page's GET /api/users has no confirmed location query param in this
+  // session, so this filters against each row's own workLocationCodes array instead. A user with
+  // an empty workLocationCodes ("All (unrestricted)") never matches a specific location filter -
+  // only an actual assigned location does, same as the expanded-row view's own "All
+  // (unrestricted)" distinction just above.
+  const [search, setSearch] = useState('')
+  const [locationFilter, setLocationFilter] = useState('')
+  const visibleUsers = users.filter((u) => {
+    const matchesSearch = !search.trim()
+      || u.name.toLowerCase().includes(search.trim().toLowerCase())
+      || u.email.toLowerCase().includes(search.trim().toLowerCase())
+    const matchesLocation = !locationFilter || u.workLocationCodes.includes(locationFilter)
+    return matchesSearch && matchesLocation
+  })
+
   return (
     <div>
-      <h2>Employees</h2>
-
-      <div className="card">
-        <h3>{employeeForm.id ? 'Edit Employee' : 'Add Employee'}</h3>
-        <div className="form-row">
-          <div className="field"><label>Employee Name</label><input value={employeeForm.name} onChange={(e) => setEmployeeForm({ ...employeeForm, name: e.target.value })} /></div>
-          <div className="field">
-            <label>State</label>
-            <select value={employeeForm.state} onChange={(e) => setEmployeeForm({ ...employeeForm, state: e.target.value })}>
-              <option value="">--Select State--</option>
-              {INDIA_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-          <div className="field">
-            <label>City</label>
-            <input list="employee-city-options" value={employeeForm.city} onChange={(e) => setEmployeeForm({ ...employeeForm, city: e.target.value })} placeholder="Type to search / enter city" />
-            {/* No verified India city/pincode master exists in this codebase (see User.State's doc
-                comment in MasterData.cs) - City is a free-text/typeahead field, not a dropdown
-                dependent on State, and Pincode below is entered separately rather than derived. */}
-            <datalist id="employee-city-options" />
-          </div>
-          <div className="field">
-            <label>Pincode</label>
-            <input value={employeeForm.pincode} onChange={(e) => setEmployeeForm({ ...employeeForm, pincode: e.target.value.replace(/[^0-9]/g, '').slice(0, 6) })} placeholder="6-digit PIN" maxLength={6} inputMode="numeric" />
-          </div>
-        </div>
-        <div className="form-row">
-          <div className="field">
-            <label>Mobile No.</label>
-            <input
-              value={employeeForm.mobile}
-              onChange={(e) => setEmployeeForm({ ...employeeForm, mobile: e.target.value.replace(/[^0-9]/g, '').slice(0, 10) })}
-              placeholder="10-digit mobile number"
-              maxLength={10}
-              inputMode="numeric"
-            />
-          </div>
-          <div className="field"><label>DOJ</label><input type="date" value={employeeForm.dateOfJoining} onChange={(e) => setEmployeeForm({ ...employeeForm, dateOfJoining: e.target.value })} /></div>
-          <div className="field">
-            <label>Designation</label>
-            <select value={employeeForm.designation} onChange={(e) => setEmployeeForm({ ...employeeForm, designation: e.target.value as Designation | '' })}>
-              <option value="">--Select--</option>
-              {DESIGNATIONS.map((d) => <option key={d} value={d}>{d}</option>)}
-            </select>
-          </div>
-          <div className="field">
-            <label>Role</label>
-            {/* Read-only - see the `role` field's doc comment on emptyEmployeeForm above. Not an
-                input: there is nothing here for the admin to pick, this only shows what the
-                backend already assigned from Designation. */}
-            <input value={employeeForm.id ? employeeForm.role : 'Set automatically after saving'} disabled />
-          </div>
-        </div>
-
-        <div className="field">
-          <label>Work Area{employeeWorkshopsLoading ? ' (loading…)' : ''}</label>
-          <p className="muted" style={{ marginTop: -2 }}>
-            {isCorporateOrSystem
-              ? 'Every dealer\'s workshop locations - search by dealer or location name/code below.'
-              : 'Your dealer\'s workshop locations.'}
-          </p>
-          {!employeeWorkshopsLoading && employeeWorkshops.length === 0 && (
-            <p className="muted">No DMS workshop locations on file yet.</p>
-          )}
-          {employeeWorkshops.length > 0 && (
-            // overflow: hidden here (in addition to overflowX: hidden on the scrolling list below)
-            // is a deliberate belt-and-braces fix for the horizontal-scrollbar bug reported on this
-            // box - the checkbox list's overflowY: 'auto' alone causes some browsers to compute
-            // overflow-x as 'auto' too per the CSS overflow spec (any axis left at its 'visible'
-            // default becomes 'auto' once the other axis is set to a scrolling value), so a
-            // scrollbar could appear even for content that only barely overflows sideways.
-            <div style={{ border: '1px solid var(--border, #d1d5db)', borderRadius: 6, padding: 10, overflow: 'hidden' }}>
-              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                <button type="button" className="btn btn-sm" onClick={selectAllWorkLocations}>Select All</button>
-                <button type="button" className="btn btn-sm" onClick={clearAllWorkLocations}>Clear All</button>
-                <input style={{ flex: '1 1 180px', minWidth: 140, width: 'auto' }} placeholder="Search Group" value={locSearch} onChange={(e) => setLocSearch(e.target.value)} />
-                <span className="muted" style={{ whiteSpace: 'nowrap' }}>{employeeForm.workLocationCodes.length} of {employeeWorkshops.length} selected</span>
-              </div>
-              <div style={{ maxHeight: 180, overflowY: 'auto', overflowX: 'hidden' }}>
-                {filteredWorkshops.map((w) => (
-                  <label key={w.locCode} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '4px 0', cursor: 'pointer' }}>
-                    <input type="checkbox" checked={employeeForm.workLocationCodes.includes(w.locCode)} onChange={() => toggleWorkLocation(w.locCode)} style={{ width: 'auto', flex: '0 0 auto', marginTop: 3 }} />
-                    <span style={{ overflowWrap: 'anywhere' }}>{w.locName} <span className="muted">({w.locCode})</span></span>
-                  </label>
-                ))}
-                {filteredWorkshops.length === 0 && <p className="muted">No locations match "{locSearch}".</p>}
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="form-row">
-          <div className="field"><label>Email/Login Id.</label><input value={employeeForm.email} disabled={!!employeeForm.id} onChange={(e) => setEmployeeForm({ ...employeeForm, email: e.target.value })} /></div>
-          <div className="field">
-            <label>Password{employeeForm.id ? ' (leave blank to keep unchanged)' : ''}</label>
-            <input type="password" value={employeeForm.password} onChange={(e) => setEmployeeForm({ ...employeeForm, password: e.target.value })} />
-          </div>
-        </div>
-
-        {employeeError && <p className="muted" style={{ color: '#b91c1c' }}>{employeeError}</p>}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <button className="btn btn-primary" disabled={employeeBusy} onClick={saveEmployee}>
-            {employeeBusy ? 'Saving…' : employeeForm.id ? 'Save Changes' : 'Save'}
-          </button>
-          {employeeForm.id && <button className="btn btn-sm" onClick={resetEmployeeForm}>Cancel Edit</button>}
-        </div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+        <h2 style={{ margin: 0 }}>Dealer Employees</h2>
+        <button className="btn btn-primary" onClick={openAddModal}>
+          + Add Employee
+        </button>
       </div>
+      <br/>
 
       <div className="card" style={{ padding: 0 }}>
-        <table>
+        {/* 2026-10-03 - search by name/email + Location dropdown, matching
+            TechnicianEmployeesPage.tsx's placement/pattern. */}
+        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', padding: '14px 14px 0' }}>
+          <div className="field" style={{ marginBottom: 0, flex: 1, minWidth: 200 }}>
+            <label>Search Employee</label>
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by name or email…" />
+          </div>
+          <div className="field" style={{ marginBottom: 0, minWidth: 220 }}>
+            <label>Location</label>
+            <select value={locationFilter} onChange={(e) => setLocationFilter(e.target.value)}>
+              <option value="">All locations</option>
+              {employeeWorkshops.map((w) => <option key={w.locCode} value={w.locCode}>{w.locName} ({w.locCode})</option>)}
+            </select>
+          </div>
+        </div>
+        <table style={{ marginTop: 10 }}>
           <thead>
             <tr>
               <th>Name</th><th>Email</th><th>Designation</th><th>Role</th><th>Dealer</th>
@@ -372,7 +314,7 @@ export function EmployeesPage() {
             </tr>
           </thead>
           <tbody>
-            {users.map((u) => (
+            {visibleUsers.map((u) => (
               <Fragment key={u.id}>
                 <tr>
                   <td>{u.name}</td><td>{u.email}</td><td>{u.designation ?? '-'}</td><td>{u.role}</td><td>{u.dealerName ?? 'All'}</td>
@@ -420,12 +362,174 @@ export function EmployeesPage() {
                 )}
               </Fragment>
             ))}
-            {users.length === 0 && (
-              <tr><td colSpan={9} className="muted">No employees yet - add one above.</td></tr>
+            {visibleUsers.length === 0 && (
+              <tr><td colSpan={9} className="muted">
+                {users.length === 0 ? 'No employees yet - add one above.' : 'No employees match this search/filter.'}
+              </td></tr>
             )}
           </tbody>
         </table>
       </div>
+
+      {/* 2026-10-03 ("then open this atrractive page", matching TechnicianEmployeesPage.tsx) - the
+          same Add/Edit form, now inside a styled modal instead of an always-visible inline card. */}
+      {showModal && (
+        <div
+          role="presentation"
+          onClick={closeModal}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.45)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: 16,
+            overflowY: 'auto',
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: '100%', maxWidth: 680, maxHeight: '90vh', overflowY: 'auto',
+              background: 'var(--surface, #fff)', borderRadius: 14,
+              boxShadow: '0 20px 50px rgba(15, 23, 42, 0.25)',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+                padding: '16px 20px', background: 'linear-gradient(135deg, var(--primary, #2563eb), var(--primary-dark, #1d4ed8))',
+                color: '#fff', position: 'sticky', top: 0, zIndex: 1,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 22 }}>👤</span>
+                <h3 style={{ margin: 0, color: '#fff' }}>{employeeForm.id ? 'Edit Employee' : 'Add Employee'}</h3>
+              </div>
+              <button
+                type="button"
+                onClick={closeModal}
+                aria-label="Close"
+                style={{
+                  background: 'rgba(255,255,255,0.15)', border: 'none', color: '#fff', borderRadius: 8,
+                  width: 28, height: 28, cursor: 'pointer', fontSize: 15, lineHeight: 1,
+                }}
+              >✕</button>
+            </div>
+
+            <div style={{ padding: 20 }}>
+              <div className="form-row">
+                <div className="field"><label>Employee Name</label><input value={employeeForm.name} onChange={(e) => setEmployeeForm({ ...employeeForm, name: e.target.value })} /></div>
+                <div className="field">
+                  <label>State</label>
+                  <select value={employeeForm.state} onChange={(e) => setEmployeeForm({ ...employeeForm, state: e.target.value })}>
+                    <option value="">--Select State--</option>
+                    {INDIA_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>City</label>
+                  <input list="employee-city-options" value={employeeForm.city} onChange={(e) => setEmployeeForm({ ...employeeForm, city: e.target.value })} placeholder="Type to search / enter city" />
+                  {/* No verified India city/pincode master exists in this codebase (see
+                      User.State's doc comment in MasterData.cs) - City is a free-text/typeahead
+                      field, not a dropdown dependent on State, and Pincode below is entered
+                      separately rather than derived. */}
+                  <datalist id="employee-city-options" />
+                </div>
+                <div className="field">
+                  <label>Pincode</label>
+                  <input value={employeeForm.pincode} onChange={(e) => setEmployeeForm({ ...employeeForm, pincode: e.target.value.replace(/[^0-9]/g, '').slice(0, 6) })} placeholder="6-digit PIN" maxLength={6} inputMode="numeric" />
+                </div>
+              </div>
+              <div className="form-row">
+                <div className="field">
+                  <label>Mobile No.</label>
+                  <input
+                    value={employeeForm.mobile}
+                    onChange={(e) => setEmployeeForm({ ...employeeForm, mobile: e.target.value.replace(/[^0-9]/g, '').slice(0, 10) })}
+                    placeholder="10-digit mobile number"
+                    maxLength={10}
+                    inputMode="numeric"
+                  />
+                </div>
+                <div className="field"><label>DOJ</label><input type="date" value={employeeForm.dateOfJoining} onChange={(e) => setEmployeeForm({ ...employeeForm, dateOfJoining: e.target.value })} /></div>
+                <div className="field">
+                  <label>Designation</label>
+                  <select value={employeeForm.designation} onChange={(e) => setEmployeeForm({ ...employeeForm, designation: e.target.value as Designation | '' })}>
+                    <option value="">--Select--</option>
+                    {DESIGNATIONS.map((d) => <option key={d} value={d}>{d}</option>)}
+                    {/* 2026-10-03: if this employee was saved with the now-hidden 'Mechanic'
+                        Designation, keep it selectable here so re-opening Edit doesn't silently
+                        blank/overwrite it - same "keep the pre-existing value selectable" pattern
+                        this app already uses elsewhere (e.g. JobCardDetailPage.tsx's Assign
+                        Technician dropdown for a technician no longer in that location's list). */}
+                    {/* {employeeForm.designation === 'Mechanic' && <option value="Mechanic">Mechanic (no longer assignable - pick a new value)</option>} */}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>Role</label>
+                  {/* Read-only - see the `role` field's doc comment on emptyEmployeeForm above. Not
+                      an input: there is nothing here for the admin to pick, this only shows what
+                      the backend already assigned from Designation. */}
+                  <input value={employeeForm.id ? employeeForm.role : 'Set automatically after saving'} disabled />
+                </div>
+              </div>
+
+              <div className="field">
+                <label>Work Area{employeeWorkshopsLoading ? ' (loading…)' : ''}</label>
+                <p className="muted" style={{ marginTop: -2 }}>
+                  {isCorporateOrSystem
+                    ? 'Every dealer\'s workshop locations - search by dealer or location name/code below.'
+                    : 'Your dealer\'s workshop locations.'}
+                </p>
+                {!employeeWorkshopsLoading && employeeWorkshops.length === 0 && (
+                  <p className="muted">No DMS workshop locations on file yet.</p>
+                )}
+                {employeeWorkshops.length > 0 && (
+                  // overflow: hidden here (in addition to overflowX: hidden on the scrolling list
+                  // below) is a deliberate belt-and-braces fix for the horizontal-scrollbar bug
+                  // reported on this box - the checkbox list's overflowY: 'auto' alone causes some
+                  // browsers to compute overflow-x as 'auto' too per the CSS overflow spec (any
+                  // axis left at its 'visible' default becomes 'auto' once the other axis is set
+                  // to a scrolling value), so a scrollbar could appear even for content that only
+                  // barely overflows sideways.
+                  <div style={{ border: '1px solid var(--border, #d1d5db)', borderRadius: 6, padding: 10, overflow: 'hidden' }}>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                      <button type="button" className="btn btn-sm" onClick={selectAllWorkLocations}>Select All</button>
+                      <button type="button" className="btn btn-sm" onClick={clearAllWorkLocations}>Clear All</button>
+                      <input style={{ flex: '1 1 180px', minWidth: 140, width: 'auto' }} placeholder="Search Group" value={locSearch} onChange={(e) => setLocSearch(e.target.value)} />
+                      <span className="muted" style={{ whiteSpace: 'nowrap' }}>{employeeForm.workLocationCodes.length} of {employeeWorkshops.length} selected</span>
+                    </div>
+                    <div style={{ maxHeight: 180, overflowY: 'auto', overflowX: 'hidden' }}>
+                      {filteredWorkshops.map((w) => (
+                        <label key={w.locCode} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '4px 0', cursor: 'pointer' }}>
+                          <input type="checkbox" checked={employeeForm.workLocationCodes.includes(w.locCode)} onChange={() => toggleWorkLocation(w.locCode)} style={{ width: 'auto', flex: '0 0 auto', marginTop: 3 }} />
+                          <span style={{ overflowWrap: 'anywhere' }}>{w.locName} <span className="muted">({w.locCode})</span></span>
+                        </label>
+                      ))}
+                      {filteredWorkshops.length === 0 && <p className="muted">No locations match "{locSearch}".</p>}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="form-row">
+                <div className="field"><label>Email/Login Id.</label><input value={employeeForm.email} disabled={!!employeeForm.id} onChange={(e) => setEmployeeForm({ ...employeeForm, email: e.target.value })} /></div>
+                <div className="field">
+                  <label>Password{employeeForm.id ? ' (leave blank to keep unchanged)' : ''}</label>
+                  <input type="password" value={employeeForm.password} onChange={(e) => setEmployeeForm({ ...employeeForm, password: e.target.value })} />
+                </div>
+              </div>
+
+              {employeeError && <p className="muted" style={{ color: '#b91c1c' }}>{employeeError}</p>}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10 }}>
+                <button className="btn btn-sm" onClick={closeModal} disabled={employeeBusy}>Cancel</button>
+                <button className="btn btn-primary" disabled={employeeBusy} onClick={saveEmployee}>
+                  {employeeBusy ? 'Saving…' : employeeForm.id ? 'Save Changes' : 'Save'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

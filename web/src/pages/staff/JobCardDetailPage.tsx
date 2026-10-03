@@ -1,3 +1,4 @@
+// web\src\pages\staff\JobCardDetailPage.tsx
 import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { staffApi } from '../../api/client'
@@ -5,7 +6,7 @@ import { useStaffAuth } from '../../auth/StaffAuthContext'
 import { PasswordInput } from '../../components/PasswordInput'
 import { StatusBadge } from '../../components/StatusBadge'
 import { WorkflowTimeline, type WorkflowTimelineHistoryEntry } from '../../components/WorkflowTimeline'
-import type { BaplDmsJobCardHistory, JobCardDetail, JobCardPhoto, JobCardsLabourCatalogRow, JobCardsPartsCatalogRow, RepairBillDoc, StaffRole, Technician, WorkflowStage } from '../../types'
+import type { BaplDmsJobCardHistory, JobCardDetail, JobCardPhoto, JobCardsLabourCatalogRow, JobCardsPartsCatalogRow, RepairBillDoc, Technician, WorkflowStage } from '../../types'
 import { buildEstimatePrintHtml, buildJobCardPrintHtml } from '../../lib/jobCardPrintHtml'
 
 // Photo URLs come back from the API as a relative path (e.g. "/uploads/jobcard-photos/.../x.jpg" -
@@ -273,7 +274,7 @@ function buildRepairBillInvoicePrintHtml(bill: RepairBillDoc, dealerName?: strin
  * dropdown next to the status badge, 3 options per explicit request:
  *   1. Estimate    - customer/dealer/vehicle identity + the Estimates Amount tables only (Part
  *                    Details, Labour Details, Grand Total) - see buildEstimatePrintHtml.
- *   2. JobCard print - the same DMS "Job Card + Gate Pass" paper layout the wizard's own
+ *     JobCard print - the same DMS "Job Card + Gate Pass" paper layout the wizard's own
  *                    pre-creation Print button uses (buildJobCardPrintHtml, now shared - see
  *                    lib/jobCardPrintHtml.ts), but filled from this job card's real saved data
  *                    (and its real Job No/Invoice No once known, instead of the wizard's "-"
@@ -296,7 +297,9 @@ function buildRepairBillInvoicePrintHtml(bill: RepairBillDoc, dealerName?: strin
  *                    not everyone should be pulling repair bills.
  * Notices/errors from the Invoice option are surfaced through the same `setMsg` line the rest of
  * this page already uses for action feedback, rather than a second, separate message area. */
-function PrintMenu({ jc, hasRole, setMsg }: { jc: JobCardDetail; hasRole: (...roles: StaffRole[]) => boolean; setMsg: (m: string | null) => void }) {
+// 2026-10-03: `hasRole` prop dropped - PrintMenu no longer role-gates any of its 3 options (see
+// the removed Invoice gate above), so it no longer needs to know who's signed in.
+function PrintMenu({ jc, setMsg }: { jc: JobCardDetail; setMsg: (m: string | null) => void }) {
   const [open, setOpen] = useState(false)
   const [invoiceBusy, setInvoiceBusy] = useState(false)
   // 2026-09-03 fix ("clicking Print button, no options shown"): this used to close the menu via
@@ -463,9 +466,14 @@ function PrintMenu({ jc, hasRole, setMsg }: { jc: JobCardDetail; hasRole: (...ro
         }}>
           <li><button type="button" className="btn btn-sm" style={{ width: '100%', textAlign: 'left', border: 'none', background: 'transparent' }} onMouseDown={(e) => { e.preventDefault(); printEstimate() }}>Estimate</button></li>
           <li><button type="button" className="btn btn-sm" style={{ width: '100%', textAlign: 'left', border: 'none', background: 'transparent' }} onMouseDown={(e) => { e.preventDefault(); printJobCard() }}>JobCard print</button></li>
-          {hasRole('Cashier', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
-            <li><button type="button" className="btn btn-sm" style={{ width: '100%', textAlign: 'left', border: 'none', background: 'transparent' }} onMouseDown={(e) => { e.preventDefault(); printInvoice() }}>Invoice</button></li>
-          )}
+          {/* 2026-10-03 ("For all Role its visible" - explicit answer to "after jobcard close im
+             not enable to download invoice ... fix this"): was gated to
+             hasRole('Cashier','DealerAdmin','CorporateAdmin','SystemAdmin') - a WorkshopManager/
+             Supervisor/ServiceAdvisor closing a job card couldn't even see this menu item, which
+             looked exactly like "I can't download the invoice." Gate removed entirely per your
+             explicit choice - every signed-in staff role that can open this page can now see and
+             use Invoice. */}
+          <li><button type="button" className="btn btn-sm" style={{ width: '100%', textAlign: 'left', border: 'none', background: 'transparent' }} onMouseDown={(e) => { e.preventDefault(); printInvoice() }}>Invoice</button></li>
         </ul>
       )}
     </div>
@@ -541,7 +549,7 @@ export function JobCardDetailPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h2 style={{ margin: 0 }}>{jc.jobCardNumber}</h2>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <PrintMenu jc={jc} hasRole={hasRole} setMsg={setMsg} />
+          <PrintMenu jc={jc} setMsg={setMsg} />
           <StatusBadge status={jc.status} />
         </div>
       </div>
@@ -552,7 +560,22 @@ export function JobCardDetailPage() {
           <h3>Customer & Vehicle</h3>
           <p><strong>{jc.customer?.name}</strong><br />{jc.customer?.mobile}</p>
           <p>{jc.vehicle?.model} {jc.vehicle?.variant}<br />Reg: {jc.vehicle?.regNo} | Odometer: {jc.odometerAtCheckIn} km</p>
-          {/* <p className="muted">Tracking link: /track/{jc.trackingToken}</p> */}
+          {/* 2026-10-03 ("why technicuan not shown aftrr assign") - CONFIRMED BUG: the "Assign
+             Technician" dropdown further down this page (UpdateWorkflowStageCard) saves into
+             jc.assignedTechnicianName, but the only "Technician: ..." text anywhere on this page
+             was the DMS summary line below, which reads jc.baplTechnicianName instead - a
+             DIFFERENT field, only ever set once at job-card creation time from the wizard's old
+             Technician picker (removed entirely on 2026-09-25 - see JobCardWizardPage.tsx's own
+             comment - so it's effectively always empty on any job card created since). So assigning
+             a technician here never updated anything visible on this card - the only place it showed
+             at all was inside the dropdown itself, which is hidden from every role except
+             WorkshopManager/Supervisor/DealerAdmin/CorporateAdmin/SystemAdmin (canAssignTechnician),
+             so a ServiceAdvisor/Technician had no way to see who was assigned. This line fixes both:
+             it reads the correct, live field, and it's shown to every role that can view this page,
+             not just the ones who can change it. */}
+          <p className="muted" style={{ marginTop: 2 }}>
+            Technician: <strong>{jc.assignedTechnicianName || 'Not assigned yet'}</strong>
+          </p>
           {jc.customer && hasRole('WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
             <CustomerPasswordResetButton customerId={jc.customer.id} customerName={jc.customer.name} />
           )}
@@ -603,7 +626,7 @@ export function JobCardDetailPage() {
       </div>
 
       {hasRole('ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
-        <UpdateWorkflowStageCard jc={jc} stages={stages} busy={busy} run={run} canAssignTechnician={hasRole('WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin')} />
+        <UpdateWorkflowStageCard jc={jc} stages={stages} busy={busy} run={run} canAssignTechnician={hasRole('ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin')} />
       )}
 
       <ComplaintsCard jc={jc} run={run} />
@@ -999,37 +1022,6 @@ function UpdateWorkflowStageCard({
             Mark Ready for Delivery
           </button>
         )}
-        {/* 2026-09-29 (SECTION 156) - see this component's own doc comment above (just before
-           markStage) for the full history/interpretation flag on this button. Same disabled-once-
-           past pattern as the other two buttons; markStage() posts to the same generic
-           /api/jobcards/{id}/stage endpoint the automatic Repair-Bill-Billed trigger's
-           WorkflowStageAutomation call also feeds into, so a job card marked this way ends up in
-           an identical CurrentStage/StageHistory state either way.
-           NOTE - FLAGGED, not yet done: the read-only Workflow Timeline STEPPER further up this
-           page (<WorkflowTimeline stages={buildTimelineStages(stages)} .../>) is a separate
-           component from this button row, and its left-to-right order comes from the `stages`
-           array's own Seq values as seeded on the backend (GET /api/workflow-stages) - I don't have
-           that seed source (DbSeeder.cs or equivalent) or WorkflowTimeline.tsx's own rendering
-           logic in this session, so I have NOT reordered that stepper itself here, only this
-           action-button row. See my reply for what I need from you to also fix the stepper. */}
-        {invoiceGeneratedStage && (
-          <button
-            className="btn btn-sm btn-primary"
-            disabled={busy || currentSeq >= invoiceGeneratedStage.seq}
-            onClick={() => run(() => markStage(invoiceGeneratedStage), 'Marked Invoice Generated. Job card closed.')}
-          >
-            Mark Invoice Generated
-          </button>
-        )}
-        {readyForDeliveryStage && (
-          <button
-            className="btn btn-sm btn-primary"
-            disabled={busy || currentSeq >= readyForDeliveryStage.seq}
-            onClick={() => run(() => markStage(readyForDeliveryStage), 'Marked Ready for Delivery.')}
-          >
-            Mark Ready for Delivery
-          </button>
-        )}
       </div>
     </div>
   )
@@ -1066,7 +1058,17 @@ function ComplaintsCard({ jc, run }: { jc: JobCardDetail; run: (fn: () => Promis
 // (Asia/Kolkata) rather than the browser's own locale/timezone, per explicit request ("dont use utc
 // show actual time current time zone is IST").
 const IST_TIME_ZONE = 'Asia/Kolkata'
-const formatIST = (iso: string, opts: Intl.DateTimeFormatOptions) => new Date(iso).toLocaleString('en-IN', { timeZone: IST_TIME_ZONE, ...opts })
+// 2026-10-03 ("correct timer time utc maharashtra current time") - StartWorklog/EndWorklog always
+// stamp DateTime.UtcNow on the backend, but the JSON that comes back for StartedAt/EndedAt has no
+// 'Z'/offset on it (EF Core reads the SQL Server datetime column back as Kind=Unspecified, so
+// System.Text.Json serializes it as a bare "2026-10-03T05:32:00" with no timezone marker). JS's
+// `new Date(...)` treats an offset-less ISO string as the BROWSER'S OWN local time rather than
+// UTC - on a machine set to IST that silently cancelled out the `timeZone: 'Asia/Kolkata'` below
+// (parse-as-IST then format-as-IST is a no-op), so the table kept showing the raw UTC digits
+// mislabeled "(IST)", about 5 hours 30 minutes behind the real Maharashtra time. Appending 'Z' when
+// the string has no zone of its own forces the correct UTC interpretation before converting to IST.
+const parseUtcIso = (iso: string): Date => new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : `${iso}Z`)
+const formatIST = (iso: string, opts: Intl.DateTimeFormatOptions) => parseUtcIso(iso).toLocaleString('en-IN', { timeZone: IST_TIME_ZONE, ...opts })
 const formatISTTime = (iso: string) => formatIST(iso, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })
 const formatISTDateTime = (iso: string) => formatIST(iso, { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true })
 
@@ -1123,7 +1125,7 @@ function WorklogCard({ jc, run, profileId }: { jc: JobCardDetail; run: (fn: () =
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <p className="muted" style={{ margin: 0 }}>
             ⏱ Timer running since {formatISTTime(openLog.startedAt)} IST - running for{' '}
-            {formatElapsedMs(nowMs - new Date(openLog.startedAt).getTime())}.
+            {formatElapsedMs(nowMs - parseUtcIso(openLog.startedAt).getTime())}.
           </p>
           <button className="btn btn-sm" style={{ background: '#dc2626', color: '#fff', border: '1px solid #dc2626' }} onClick={stopTimer}>■ Stop Timer</button>
         </div>
@@ -1441,7 +1443,7 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
     <div className="card">
       <h3>Part Suggestion</h3>
       <table>
-        <thead><tr><th>Sr no.</th><th>Item Code</th><th>Description</th><th>MRP</th><th>QTY</th><th>Issue Type (Status)</th><th>Picture</th><th></th></tr></thead>
+        <thead><tr><th>Sr no.</th><th>Item Code</th><th>Description</th><th>MRP</th><th>QTY</th><th>Issue Type</th><th>Picture</th><th></th></tr></thead>
         <tbody>
           {jc.partSuggestions.map((p, i) => (
             <tr key={p.id}>
@@ -1556,7 +1558,7 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
           <input type="number" min={1} value={qty} onChange={(e) => setQty(Number(e.target.value))} style={{ width: '4rem' }} />
         </div>
         <div className="field field-compact">
-          <label>Issue Type (Status)</label>
+          <label>Issue Type</label>
           <select value={status} onChange={(e) => setStatus(e.target.value as 'Paid' | 'U/W')}>
             <option value="Paid">Paid</option>
             <option value="U/W">U/W</option>

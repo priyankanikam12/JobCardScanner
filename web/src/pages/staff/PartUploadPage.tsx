@@ -38,6 +38,32 @@ import { usePagination } from '../../lib/usePagination'
  *
  * Also added this round: a Location column and an Edit button (PUT /api/part-uploads/{id}) on the
  * results grid, mirroring LabourMasterPage.tsx's own edit-card pattern.
+ *
+ * 2026-10-03 ("in part upload also add date filter"): new Date From/Date To filter on the results
+ * grid (filterDateFrom/filterDateTo below), wired into the new dateFrom/dateTo params
+ * PartUploadController.Get()/PartUploadService.GetAsync now accept - filters on each row's Report
+ * Date. This grid had NO date filter at all before this (the only Date field on the page was the
+ * required upload-form Date above, a separate concept from a results filter). Both default to
+ * empty/unset (no filter) rather than a date range, unlike RepairBillListPage.tsx/
+ * MaterialTransferListPage.tsx's own "this month" default - not asked for here, and this grid's
+ * rows are "current stock as of last upload" rather than a dated transaction log, so a default
+ * range could easily hide rows the user expects to see by default. Tell me if you'd rather this
+ * default to the same "1st of month to today" range and I'll match it.
+ *
+ * Also separately reported this round, from a screenshot of this page: the file input showing
+ * disabled with "No file chosen" and Date empty while a Location was already picked. That is this
+ * page's EXISTING, intentional "before that 4 feild need to select Date, Location ... otherwise
+ * dont take the file" rule working as designed (canUpload below requires BOTH Date and Location) -
+ * not a bug, since Date was the field still blank in that screenshot. The red "Could not load
+ * uploaded part data." error shown alongside it is a different, separate problem: that message
+ * only ever appears when the GET /api/part-uploads call itself throws (see `load()` below) -
+ * zero rows on their own would show the plain "No uploaded parts yet" empty-state text instead.
+ * I could not reproduce or pin down a code-level cause for that from static review of
+ * PartUploadController.cs/PartUploadService.GetAsync alone (nothing there obviously throws for a
+ * location that has data) - ASSUMPTION GAP, flagged rather than guessed: please check the
+ * browser's Network tab for that failed GET /api/part-uploads request (its status code and
+ * response body) or the backend's own console/log output at the same moment, and share that - I'll
+ * fix the real cause once I can see it rather than patch something I can't confirm is the problem.
  */
 /** Pins the header row to the top of a `maxHeight` + `overflowY: auto` table wrapper - see the
  * grid's own comment below for why. `var(--surface)` (not transparent) so scrolled-under body
@@ -64,6 +90,10 @@ export function PartUploadPage() {
   const [rows, setRows] = useState<PartUpload[]>([])
   const [search, setSearch] = useState('')
   const [filterLocation, setFilterLocation] = useState('')
+  // 2026-10-03 ("in part upload also add date filter"): see this file's top-of-file doc comment -
+  // net new, this grid had no date filter before.
+  const [filterDateFrom, setFilterDateFrom] = useState('')
+  const [filterDateTo, setFilterDateTo] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -80,7 +110,14 @@ export function PartUploadPage() {
     setLoading(true)
     setError(null)
     staffApi
-      .get<PartUpload[]>('/api/part-uploads', { params: { search: search || undefined, locationCode: filterLocation || undefined } })
+      .get<PartUpload[]>('/api/part-uploads', {
+        params: {
+          search: search || undefined,
+          locationCode: filterLocation || undefined,
+          dateFrom: filterDateFrom || undefined,
+          dateTo: filterDateTo || undefined,
+        },
+      })
       .then((res) => setRows(res.data))
       .catch((err) => setError(err?.response?.data?.message ?? 'Could not load uploaded part data.'))
       .finally(() => setLoading(false))
@@ -169,7 +206,17 @@ export function PartUploadPage() {
 
   return (
     <div>
-      <h2>Stock Report</h2>
+      {/* 2026-10-03 ("This 2 button shift here") - Download Excel/Download PDF moved up next to
+          the page heading (top-right), out of the filter row below, per the user's annotated
+          screenshot. */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+        <h2 style={{ margin: 0 }}>Stock Report</h2>
+        <ReportDownloadButtons
+          disabled={rows.length === 0}
+          onExcel={() => exportReportToExcel('Part_Upload', columns, rows)}
+          onPdf={() => exportReportToPdf('Part Upload', 'Part_Upload', columns, rows)}
+        />
+      </div>
       {/* <p className="muted">
         Upload a Stock Summary Detail Report (.xlsx) to build a searchable parts stock table here -
         saved into JobCardScanner's own database, scoped to your dealer. Re-uploading a newer report
@@ -249,11 +296,6 @@ export function PartUploadPage() {
       )}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-        <ReportDownloadButtons
-          disabled={rows.length === 0}
-          onExcel={() => exportReportToExcel('Part_Upload', columns, rows)}
-          onPdf={() => exportReportToPdf('Part Upload', 'Part_Upload', columns, rows)}
-        />
         {workshops.length > 0 && (
           <select value={filterLocation} onChange={(e) => setFilterLocation(e.target.value)} style={{ maxWidth: 220 }}>
             <option value="">All locations</option>
@@ -262,6 +304,25 @@ export function PartUploadPage() {
             ))}
           </select>
         )}
+        {/* 2026-10-03 ("in part upload also add date filter") - filters on Report Date, applied
+            only when Search is clicked/Enter is pressed (same pattern as the free-text search box
+            right below), not on every keystroke/change - avoids a request per date-picker click. */}
+        <input
+          type="date"
+          value={filterDateFrom}
+          onChange={(e) => setFilterDateFrom(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && load()}
+          title="Report Date from"
+          style={{ maxWidth: 160 }}
+        />
+        <input
+          type="date"
+          value={filterDateTo}
+          onChange={(e) => setFilterDateTo(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && load()}
+          title="Report Date to"
+          style={{ maxWidth: 160 }}
+        />
         <input
           type="text"
           placeholder="Search Part No / Description / HSN…"
