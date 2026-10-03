@@ -1805,6 +1805,7 @@ public class JobCardsController : ControllerBase
             customerMobile = hit.CusMob,
             customerEmail = hit.PartyEmail,
             customerCity = hit.City,
+            customerState = hit.State,
             customerAddress = string.Join(", ", new[] { hit.Address1, hit.Address2 }.Where(s => !string.IsNullOrWhiteSpace(s))),
             vehiclePrevKms,
             openJobCardNumber,

@@ -410,6 +410,24 @@ public interface IDmsBaplDataService
     /// model's doc comment) is applied last and always wins, over both DMS_SaleBill's own
     /// reg_number and the DMS_ServiceHistory fallback above, for any chassis that has one.
     /// </summary>
+    
+    /// /// <summary>
+    /// 2026-10-03 ("if i search chassisno. and that chassis customer details not fetched from
+    /// BaplConnection ... fetch from DMSBAPLDATA's DMS_VehicleSales instead, latest modify wins"):
+    /// best-effort fallback/freshness-check against DMSBAPLDATA's own dbo.DMS_VehicleSales
+    /// (DMS_IOT_DATA, via DMSBAPLDATAConnection/ConnStr) - the ORIGINAL data source this page/wizard
+    /// read before the 2026-09-25 migration onto BaplConnection's DMS_SaleBill/DMS_SaleBillCustomer
+    /// (see DmsBaplDataVehicleSaleRow's own doc comment - it kept this table's exact field shape for
+    /// this reason). Used by LookupVehicleForWizardAsync as: (a) a last-resort match when
+    /// DMS_SaleBill has nothing for this chassis at all (e.g. a row that's since been soft-deleted
+    /// there, per your earlier P6DSVFMSPBJ016341 example), and (b) a customer-detail override when
+    /// this table's own UpdatedAt is newer than whatever DMS_SaleBill/DMS_SaleBillCustomer resolved -
+    /// i.e. "customer name changed, latest modify wins". Returns the single most-recently-updated row
+    /// for this chassis, or null on no match/any failure (logged, never thrown - this is a
+    /// supplementary enrichment, not a primary source, same convention as this file's other
+    /// best-effort fallbacks).
+    /// </summary>
+    Task<DmsBaplDataVehicleSaleRow?> GetLatestVehicleSaleFromDmsIotDataAsync(string chassisNo, CancellationToken ct = default);
     Task<IReadOnlyList<DmsBaplDataVehicleSaleRow>> GetVehicleSalesAsync(string? soldToFilter, CancellationToken ct = default);
 
     /// <summary>
@@ -937,6 +955,116 @@ public class DmsBaplDataService : IDmsBaplDataService
         rdr["CreatedOn"] as DateTime?,
         rdr["ModifiedOn"] as DateTime?);
 
+    // CORRECTED 2026-10-03 (your own `select * from DMS_VehicleSales where ChassisNo=...` dump):
+    // the real columns are SGSTAmount/CGSTAmount/IGSTAmount - NOT SGSTAmnt/CGSTAmnt/IGSTAmnt, which
+    // is DMS_SaleBill's own (different) abbreviated naming, wrongly carried over into this table's
+    // query without separately confirming it. Fixed in both the SQL text and the three rdr[...]
+    // lookups below - everything else in this method/mapper already matched your dump exactly.
+
+    public async Task<DmsBaplDataVehicleSaleRow?> GetLatestVehicleSaleFromDmsIotDataAsync(string chassisNo, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(chassisNo)) return null;
+
+        const string sql = @"
+            SELECT TOP 1
+                Id, DealerName, DealerCode, InvoiceNo, InvoiceDate, Location, LocCode, LocationCity,
+                CustDOB, Gender, SoldTo, AccountType, PartyEmail, CusMob, Address1, Address2, City, State,
+                ExecutiveName, Pin, ChassisNo, MotorNo, Remarks, ItemModel, OEMModel, ColorCode,
+                VehicleType, VehicleGroup, HSNSACCode, SaleType, FinancedBy, FinAmount, ItemRate,
+                InsuAmount, RegnAmount, AcsryAmount, PreGSTDiscAmount, DiscTypeName, PostGSTDisc, FameII,
+                StateFameII, SGSTPer, SGSTAmount, CGSTPer, CGSTAmount, IGSTPer, IGSTAmount, NetAmount,
+                ReferenceNo, BookingDate, TotalCount, Battery, BatteryChemical, BatteryCapacity,
+                BatteryMake, ChargerNo, ChargerNo2, Converter, VCU, ControllerNo, FameIIRequired,
+                SegmentName, InstitutionalName, SchemeName, CreatedAt, UpdatedAt
+            FROM [dbo].[DMS_VehicleSales]
+            WHERE LTRIM(RTRIM(ChassisNo)) = @chassisNo
+            ORDER BY UpdatedAt DESC, CreatedAt DESC, Id DESC";
+
+        try
+        {
+            await using var conn = new SqlConnection(ConnStr);
+            await conn.OpenAsync(ct);
+            await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+            cmd.Parameters.AddWithValue("@chassisNo", chassisNo.Trim());
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            return await rdr.ReadAsync(ct) ? MapVehicleSaleRowFromDmsIotData(rdr) : null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not read DMSBAPLDATA's DMS_VehicleSales fallback for chassis {ChassisNo} - continuing without it.", chassisNo);
+            return null;
+        }
+    }
+
+    private static DmsBaplDataVehicleSaleRow MapVehicleSaleRowFromDmsIotData(SqlDataReader rdr) => new(
+        (int)rdr["Id"],
+        rdr["DealerName"] as string,
+        rdr["DealerCode"] as string,
+        rdr["InvoiceNo"] as string,
+        rdr["InvoiceDate"] as DateTime?,
+        rdr["Location"] as string,
+        rdr["LocCode"] as string,
+        rdr["LocationCity"] as string,
+        rdr["CustDOB"] as DateTime?,
+        rdr["Gender"] as string,
+        rdr["SoldTo"] as string,
+        rdr["AccountType"] as string,
+        rdr["PartyEmail"] as string,
+        rdr["CusMob"] as string,
+        rdr["Address1"] as string,
+        rdr["Address2"] as string,
+        rdr["City"] as string,
+        rdr["State"] as string,
+        rdr["ExecutiveName"] as string,
+        rdr["Pin"] as string,
+        rdr["ChassisNo"] as string,
+        null, // RegNo - no such column on this table
+        rdr["MotorNo"] as string,
+        rdr["Remarks"] as string,
+        rdr["ItemModel"] as string,
+        rdr["OEMModel"] as string,
+        rdr["ColorCode"] as string,
+        rdr["VehicleType"] as string,
+        rdr["VehicleGroup"] as string,
+        rdr["HSNSACCode"] as string,
+        rdr["SaleType"] as string,
+        rdr["FinancedBy"] as string,
+        rdr["FinAmount"] as decimal?,
+        rdr["ItemRate"] as decimal?,
+        rdr["InsuAmount"] as decimal?,
+        rdr["RegnAmount"] as decimal?,
+        rdr["AcsryAmount"] as decimal?,
+        rdr["PreGSTDiscAmount"] as decimal?,
+        rdr["DiscTypeName"] as string,
+        rdr["PostGSTDisc"] as decimal?,
+        rdr["FameII"] as decimal?,
+        rdr["StateFameII"] as decimal?,
+        rdr["SGSTPer"] as decimal?,
+        rdr["SGSTAmount"] as decimal?,   // FIXED: was SGSTAmnt
+        rdr["CGSTPer"] as decimal?,
+        rdr["CGSTAmount"] as decimal?,   // FIXED: was CGSTAmnt
+        rdr["IGSTPer"] as decimal?,
+        rdr["IGSTAmount"] as decimal?,   // FIXED: was IGSTAmnt
+        rdr["NetAmount"] as decimal?,
+        rdr["ReferenceNo"] as string,
+        rdr["BookingDate"] as DateTime?,
+        rdr["TotalCount"] as string,
+        rdr["Battery"] as string,
+        rdr["BatteryChemical"] as string,
+        rdr["BatteryCapacity"] as string,
+        rdr["BatteryMake"] as string,
+        rdr["ChargerNo"] as string,
+        rdr["ChargerNo2"] as string,
+        rdr["Converter"] as string,
+        rdr["VCU"] as string,
+        rdr["ControllerNo"] as string,
+        rdr["FameIIRequired"] as string,
+        rdr["SegmentName"] as string,
+        rdr["InstitutionalName"] as string,
+        rdr["SchemeName"] as string,
+        rdr["CreatedAt"] as DateTime?,
+        rdr["UpdatedAt"] as DateTime?);
+
     // 2026-10-01: unchanged signature, kept for any existing caller - delegates to the dealer-aware
     // overload below with dealerCode: null (same "null = every dealer" behavior this method always
     // had, so this is not a behavior change for whatever already calls this exact overload).
@@ -1161,9 +1289,9 @@ public class DmsBaplDataService : IDmsBaplDataService
                 SELECT TOP 1 {VehicleSaleSelectColumns}
                 {VehicleSaleFromJoin}
                 WHERE (sb.IsDelete IS NULL OR sb.IsDelete = 0)
-                  AND (@dealerCode IS NULL OR sb.dealer_code = @dealerCode)
-                  AND (LTRIM(RTRIM(sb.chassis_no)) = @value
-                       OR REPLACE(REPLACE(LTRIM(RTRIM(sb.reg_number)), ' ', ''), '-', '') = @valueNoSpaces)
+                AND (@dealerCode IS NULL OR sb.dealer_code = @dealerCode)
+                AND (LTRIM(RTRIM(sb.chassis_no)) = @value
+                    OR REPLACE(REPLACE(LTRIM(RTRIM(sb.reg_number)), ' ', ''), '-', '') = @valueNoSpaces)
                 ORDER BY sb.CreatedOn DESC, sb.Id DESC";
 
             await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
@@ -1198,8 +1326,8 @@ public class DmsBaplDataService : IDmsBaplDataService
                         SELECT TOP 1 {VehicleSaleSelectColumns}
                         {VehicleSaleFromJoin}
                         WHERE (sb.IsDelete IS NULL OR sb.IsDelete = 0)
-                          AND (@dealerCode IS NULL OR sb.dealer_code = @dealerCode)
-                          AND LTRIM(RTRIM(sb.chassis_no)) = @chassis
+                        AND (@dealerCode IS NULL OR sb.dealer_code = @dealerCode)
+                        AND LTRIM(RTRIM(sb.chassis_no)) = @chassis
                         ORDER BY sb.CreatedOn DESC, sb.Id DESC";
 
                     await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
@@ -1242,8 +1370,8 @@ public class DmsBaplDataService : IDmsBaplDataService
                         SELECT TOP 1 {VehicleSaleSelectColumns}
                         {VehicleSaleFromJoin}
                         WHERE (sb.IsDelete IS NULL OR sb.IsDelete = 0)
-                          AND (@dealerCode IS NULL OR sb.dealer_code = @dealerCode)
-                          AND LTRIM(RTRIM(sb.chassis_no)) = @chassis
+                        AND (@dealerCode IS NULL OR sb.dealer_code = @dealerCode)
+                        AND LTRIM(RTRIM(sb.chassis_no)) = @chassis
                         ORDER BY sb.CreatedOn DESC, sb.Id DESC";
 
                     await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
@@ -1255,6 +1383,53 @@ public class DmsBaplDataService : IDmsBaplDataService
                 catch (Exception ex)
                 {
                     throw new InvalidOperationException($"Could not look up the vehicle in BaplConnection (DMS_SaleBill/DMS_SaleBillCustomer) by the chassis no. resolved from a saved VehicleSaleOverride: {ex.Message}", ex);
+                }
+            }
+        }
+
+        // 2026-10-03 ("chassis customer details not fetched from BaplConnection ... fetch from
+        // DMS_VehicleSales/DMS_IOT_DATA if not found, or if that table was modified more recently
+        // means customer name changes with latest modify then fetch this"): DMS_VehicleSales
+        // (DMS_IOT_DATA, via DMSBAPLDATAConnection - the ORIGINAL source this lookup read before
+        // the 2026-09-25 migration onto BaplConnection's DMS_SaleBill/DMS_SaleBillCustomer) is
+        // checked here as a dedicated fallback/freshness layer, AFTER every DMS_SaleBill-side match
+        // attempt above (direct match, DMS_ServiceHistory chassis resolution, VehicleSaleOverride
+        // chassis resolution) and BEFORE the final Reg No display resolution below. Two cases:
+        //   (a) hit is still null - DMS_SaleBill has nothing usable for this chassis at all (the
+        //       confirmed real case: a soft-deleted DMS_SaleBill row, IsDelete=1, which every query
+        //       above correctly excludes and therefore never finds). Falls all the way back to
+        //       DMS_VehicleSales, keyed by whatever chassis no. was actually typed.
+        //   (b) hit exists, but DMS_VehicleSales has a STRICTLY NEWER UpdatedAt for the same
+        //       chassis than hit's own UpdatedAt - its customer-identity fields win ("latest modify"
+        //       is the explicit rule you gave). Sale/financial fields (Net Amount, GST, etc.) are
+        //       deliberately left exactly as DMS_SaleBill/DMS_SaleBillCustomer reported - those stay
+        //       the current, authoritative sale record; only customer identity is subject to being
+        //       superseded by a more recent edit in the older table.
+        // Best-effort: GetLatestVehicleSaleFromDmsIotDataAsync logs and returns null on any failure
+        // rather than throwing, so a DMSBAPLDATA hiccup here never breaks an otherwise-successful
+        // BaplConnection lookup.
+        var chassisForIotLookup = hit?.ChassisNo ?? trimmed;
+        if (!string.IsNullOrWhiteSpace(chassisForIotLookup))
+        {
+            var iotRow = await GetLatestVehicleSaleFromDmsIotDataAsync(chassisForIotLookup, ct);
+            if (iotRow is not null)
+            {
+                if (hit is null)
+                {
+                    hit = iotRow;
+                }
+                else if (iotRow.UpdatedAt.HasValue && (!hit.UpdatedAt.HasValue || iotRow.UpdatedAt > hit.UpdatedAt))
+                {
+                    hit = hit with
+                    {
+                        SoldTo = iotRow.SoldTo ?? hit.SoldTo,
+                        CusMob = iotRow.CusMob ?? hit.CusMob,
+                        PartyEmail = iotRow.PartyEmail ?? hit.PartyEmail,
+                        Address1 = iotRow.Address1 ?? hit.Address1,
+                        Address2 = iotRow.Address2 ?? hit.Address2,
+                        City = iotRow.City ?? hit.City,
+                        State = iotRow.State ?? hit.State,
+                    };
                 }
             }
         }
@@ -1272,6 +1447,7 @@ public class DmsBaplDataService : IDmsBaplDataService
 
         return hit;
     }
+
 
     /// <summary>
     /// Applies the SAME 3-layer Reg No resolution GetVehicleSalesAsync uses (placeholder detection

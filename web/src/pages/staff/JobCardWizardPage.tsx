@@ -1265,69 +1265,69 @@ export function JobCardWizardPage() {
         </div>
       )}
 
-      {step === 1 && customer && (
-        <div className="card">
-          <h3>Vehicle for {customer.name}</h3>
-          {baplVehicleHit && (
-            <div style={{
-              background: '#eef6ff', border: '1px solid #bfdcff', borderRadius: 8,
-              padding: '10px 14px', marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 4,
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ background: '#1c64f2', color: '#fff', fontSize: 12, fontWeight: 600, padding: '2px 8px', borderRadius: 999 }}>
-                  Details
-                </span>
-                {baplVehicleHit.vehiclePrevKms != null && (
-                  <span style={{ fontWeight: 700, fontSize: 15 }}>
-                    Previous Km: {baplVehicleHit.vehiclePrevKms}
+        {step === 1 && customer && (
+          <div className="card">
+            <h3>Vehicle for {customer.name}</h3>
+            {baplVehicleHit && (
+              <div style={{
+                background: '#eef6ff', border: '1px solid #bfdcff', borderRadius: 8,
+                padding: '10px 14px', marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 4,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ background: '#1c64f2', color: '#fff', fontSize: 12, fontWeight: 600, padding: '2px 8px', borderRadius: 999 }}>
+                    Details
                   </span>
-                )}
+                  {baplVehicleHit.vehiclePrevKms != null && (
+                    <span style={{ fontWeight: 700, fontSize: 15 }}>
+                      Previous Km: {baplVehicleHit.vehiclePrevKms}
+                    </span>
+                  )}
+                </div>
+                <p style={{ margin: 0, fontSize: 13, color: '#1e3a5f' }}>
+                  Battery No.: <strong>{baplVehicleHit.batteryNumber || '—'}</strong>, Motor no.: <strong>{baplVehicleHit.motorNo || '—'}</strong>,
+                  {' '}Controller no.: <strong>{baplVehicleHit.controllerNo || '—'}</strong>, Charger no.: <strong>{baplVehicleHit.chargerNumber || '—'}</strong>.
+                </p>
               </div>
-              <p style={{ margin: 0, fontSize: 13, color: '#1e3a5f' }}>
-                Battery No.: <strong>{baplVehicleHit.batteryNumber || '—'}</strong>, Motor no.: <strong>{baplVehicleHit.motorNo || '—'}</strong>,
-                {' '}Controller no.: <strong>{baplVehicleHit.controllerNo || '—'}</strong>, Charger no.: <strong>{baplVehicleHit.chargerNumber || '—'}</strong>.
+            )}
+            {customer.vehicles && customer.vehicles.length > 0 && (
+              <table>
+                <thead><tr><th>Model</th><th>Reg No</th><th>Odometer</th><th></th></tr></thead>
+                <tbody>
+                  {customer.vehicles.map((v) => (
+                    <tr key={v.id}>
+                      <td>{v.model} {v.variant}</td><td>{v.regNo}</td><td>{v.odometer} km</td>
+                      <td><button className="btn btn-sm btn-primary" onClick={() => { setVehicle(v); setStep(2) }}>Select</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {vehicleFieldsLocked && (
+              <p className="muted" style={{ marginTop: -4, marginBottom: 12 }}>
+                🔒 Model, Reg No and VIN were auto-fetched from DMS and are locked to prevent accidental changes.{' '}
+                <a href="#" onClick={(e) => { e.preventDefault(); setUnlockVehicleFields(true) }}>Edit anyway</a>
               </p>
-            </div>
-          )}
-          {customer.vehicles && customer.vehicles.length > 0 && (
-            <table>
-              <thead><tr><th>Model</th><th>Reg No</th><th>Odometer</th><th></th></tr></thead>
-              <tbody>
-                {customer.vehicles.map((v) => (
-                  <tr key={v.id}>
-                    <td>{v.model} {v.variant}</td><td>{v.regNo}</td><td>{v.odometer} km</td>
-                    <td><button className="btn btn-sm btn-primary" onClick={() => { setVehicle(v); setStep(2) }}>Select</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-          {vehicleFieldsLocked && (
-            <p className="muted" style={{ marginTop: -4, marginBottom: 12 }}>
-              🔒 Model, Reg No and VIN were auto-fetched from DMS and are locked to prevent accidental changes.{' '}
-              <a href="#" onClick={(e) => { e.preventDefault(); setUnlockVehicleFields(true) }}>Edit anyway</a>
-            </p>
-          )}
-          {/* 2026-09-07: explicit inline gridTemplateColumns, not the plain .form-row class -
-             .form-row's default `minmax(200px, 1fr)` only fit 5 of these 6-7 fields per row on a
-             normal desktop width, wrapping Odometer onto its own line by itself. A 130px floor
-             comfortably fits Model/Variant/Reg No/VIN/Coupon No/Job Category/Odometer on one row
-             instead, per explicit request ("in 1 row for web all fields"). */}
-          <div className="form-row" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))' }}>
-            <div className="field">
-              <label>Model{usingBaplVehicle ? '' : ' & Variant'}</label>
-              {usingBaplVehicle ? (
-                // DMS doesn't split Model/Variant into two fields (see the pre-fill effect
-                // above) - a plain text input shows the combined name it sent back (editable once
-                // "Edit anyway" unlocks it), instead of a <select> that would otherwise appear empty
-                // (nothing in the catalog matches a BAPL ItemName one-for-one). The Variant dropdown
-                // never reappears here, even after "Edit anyway" - only Model/Reg No/VIN do.
-                <input value={newVehicle.model} disabled={vehicleFieldsLocked} onChange={(e) => setNewVehicle({ ...newVehicle, model: e.target.value })} />
-              ) : (
-                <select
-                  value={selectedModelId ?? ''}
-                  onChange={(e) => {
-                    const modelId = e.target.value ? Number(e.target.value) : null
+            )}
+            {/* 2026-09-07: explicit inline gridTemplateColumns, not the plain .form-row class -
+              .form-row's default `minmax(200px, 1fr)` only fit 5 of these 6-7 fields per row on a
+              normal desktop width, wrapping Odometer onto its own line by itself. A 130px floor
+              comfortably fits Model/Variant/Reg No/VIN/Coupon No/Job Category/Odometer on one row
+              instead, per explicit request ("in 1 row for web all fields"). */}
+            <div className="form-row" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', alignItems: 'start' }}>
+              <div className="field">
+                <label>Model{usingBaplVehicle ? '' : ' & Variant'}</label>
+                {usingBaplVehicle ? (
+                  // DMS doesn't split Model/Variant into two fields (see the pre-fill effect
+                  // above) - a plain text input shows the combined name it sent back (editable once
+                  // "Edit anyway" unlocks it), instead of a <select> that would otherwise appear empty
+                  // (nothing in the catalog matches a BAPL ItemName one-for-one). The Variant dropdown
+                  // never reappears here, even after "Edit anyway" - only Model/Reg No/VIN do.
+                  <input value={newVehicle.model} disabled={vehicleFieldsLocked} onChange={(e) => setNewVehicle({ ...newVehicle, model: e.target.value })} />
+                ) : (
+                  <select
+                    value={selectedModelId ?? ''}
+                    onChange={(e) => {
+                      const modelId = e.target.value ? Number(e.target.value) : null
                     const modelName = VEHICLE_MODELS.find((m) => m.id === modelId)?.name ?? ''
                     setSelectedModelId(modelId)
                     setNewVehicle({ ...newVehicle, model: modelName, variant: '' })
@@ -1381,16 +1381,14 @@ export function JobCardWizardPage() {
               </div>
             </div>
             <div className="field">
-              <label>Odometer (km)<Req />{previousOdometer != null ? ` (Previous: ${previousOdometer} km)` : ''}</label>
-              {/* 2026-09-07: value was `newVehicle.odometer` directly (a number, defaulting to 0
-                 or the previous-km auto-fill) - backspacing it down to a single digit made
-                 e.target.value "" for one keystroke, Number("") is 0 (not NaN), so the field
-                 immediately re-rendered showing "0" again instead of actually going blank. From
-                 the keyboard it looked like backspace did nothing - "0" could never be erased to
-                 start typing a fresh reading. Showing '' whenever the value is 0 (same pattern
-                 mobile's Odometer field already used) fixes this: 0 is never a valid odometer
-                 reading anyway (see odometerValid below), so there's nothing lost by never
-                 displaying a literal "0" in the box. */}
+              <label>
+                Odometer (km)<Req />
+                {previousOdometer != null && (
+                  <span style={{ display: 'block', fontWeight: 400, fontSize: 11, color: 'var(--muted, #6b7280)' }}>
+                    (Previous: {previousOdometer} km)
+                  </span>
+                )}
+              </label>
               <input
                 type="number"
                 value={newVehicle.odometer || ''}
