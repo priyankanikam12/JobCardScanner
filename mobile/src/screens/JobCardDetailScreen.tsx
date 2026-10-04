@@ -1,4 +1,3 @@
-// mobile\src\screens\JobCardDetailScreen.tsx
 import { useEffect, useState } from 'react'
 import {
   ActivityIndicator, Alert, Image, Linking, Modal, Pressable, ScrollView, StyleSheet, Text,
@@ -28,6 +27,9 @@ import { LabourSuggestionSection } from '../components/LabourSuggestionSection'
 import { WorkflowTimelineView, type WorkflowTimelineHistoryEntry } from '../components/WorkflowTimelineView'
 import { PickerField, type PickerOption } from '../components/PickerField'
 import { buildEstimatePrintHtml, buildJobCardPrintHtml } from '../utils/printJobCard'
+// 2026-10-04: the Invoice print's GST TAX INVOICE builder now lives in a shared util (also used by
+// RepairBillListScreen) instead of being embedded in this screen - see that file's header.
+import { buildRepairBillTaxInvoicePrintHtml, taxInvoiceContextFromJobCard } from '../utils/repairBillInvoicePrintHtml'
 import type { BaplDmsJobCardHistory, JobCardDetail, RepairBillDoc, Technician, WorkflowStage } from '../types'
 import type { RootStackParamList } from '../navigation/RootNavigator'
 import { colors } from '../theme/colors'
@@ -813,11 +815,40 @@ function ComplaintsCard({ jc, run }: { jc: JobCardDetail; run: Run }) {
 // cancelled out the `timeZone: 'Asia/Kolkata'` conversion below, leaving the Work Log table showing
 // time about 5 hours 30 minutes behind real Maharashtra time while still labeling it "IST".
 // Appending 'Z' when the string has no zone of its own forces the correct UTC interpretation first.
-const IST_TIME_ZONE = 'Asia/Kolkata'
 const parseUtcIso = (iso: string): Date => new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : `${iso}Z`)
-const formatIST = (iso: string, opts: Intl.DateTimeFormatOptions) => parseUtcIso(iso).toLocaleString('en-IN', { timeZone: IST_TIME_ZONE, ...opts })
-const formatISTTime = (iso: string) => formatIST(iso, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })
-const formatISTDateTime = (iso: string) => formatIST(iso, { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true })
+// 2026-10-04 ("which timer changed time in web jobcard that changes add in android"): the web
+// timer fix above (parseUtcIso - treat a zone-less backend timestamp as UTC) was already mirrored
+// here; what this adds is making the IST CONVERSION itself independent of the JS engine's Intl
+// support. Web formats with toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }), which a desktop
+// browser handles reliably - but this screen runs on Hermes, where Intl timeZone/hour12 handling
+// has historically been the least dependable part of the runtime, and if it were to ignore
+// `timeZone` the Work Log would silently show the phone's own clock again - the exact bug the web
+// fix removed. IST is a fixed UTC+05:30 offset (no daylight saving), so the conversion is just
+// "shift by 330 minutes, then read the UTC fields" - deterministic on every engine, and it
+// produces the same text web's en-IN formatter does ("04 Oct 2026, 05:25 pm" / "05:25:03 pm").
+const IST_OFFSET_MS = 330 * 60 * 1000
+const IST_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const istParts = (iso: string) => {
+  const d = new Date(parseUtcIso(iso).getTime() + IST_OFFSET_MS)
+  const h = d.getUTCHours()
+  return {
+    day: String(d.getUTCDate()).padStart(2, '0'),
+    month: IST_MONTHS[d.getUTCMonth()],
+    year: d.getUTCFullYear(),
+    hour12: String(h % 12 === 0 ? 12 : h % 12).padStart(2, '0'),
+    minute: String(d.getUTCMinutes()).padStart(2, '0'),
+    second: String(d.getUTCSeconds()).padStart(2, '0'),
+    ampm: h < 12 ? 'am' : 'pm',
+  }
+}
+const formatISTTime = (iso: string) => {
+  const p = istParts(iso)
+  return `${p.hour12}:${p.minute}:${p.second} ${p.ampm}`
+}
+const formatISTDateTime = (iso: string) => {
+  const p = istParts(iso)
+  return `${p.day} ${p.month} ${p.year}, ${p.hour12}:${p.minute} ${p.ampm}`
+}
 
 /** "now i start timer but still another time show current time 11.51 not shown in timer" -
  * formats a millisecond duration as H:MM:SS (or M:SS under an hour) for WorklogCard's live
@@ -1045,85 +1076,15 @@ function EstimatesCard({
   )
 }
 
-/** buildRepairBillInvoicePrintHtml (2026-09-28, SECTION 150) - mirrors web's
- * JobCardDetailPage.tsx function of the same name exactly (plain data-driven HTML/CSS, no
- * browser-only APIs, so it works as-is inside expo-print's Print.printAsync({ html })). See that
- * file's copy for the full reasoning; duplicated here rather than added to the shared
- * utils/printJobCard.ts since I don't have that shared file's source in this session (see
- * PrintMenu's doc comment below). */
-function buildRepairBillInvoicePrintHtml(bill: RepairBillDoc, dealerName?: string, dealerCode?: string): string {
-  const rows = bill.items.map((it, i) => `
-    <tr>
-      <td>${i + 1}</td>
-      <td>${it.itemType}</td>
-      <td>${it.itemCode}</td>
-      <td>${it.itemDescription}</td>
-      <td>${it.hsnCode ?? '-'}</td>
-      <td class="right">${it.qty}</td>
-      <td class="right">₹${Number(it.rate).toFixed(2)}</td>
-      <td>${!it.discountType || it.discountType === 'None' ? '-' : `${it.discountValue}${it.discountType === 'Percentage' ? '%' : ''}`}</td>
-      <td class="right">₹${Number(it.taxableAmount).toFixed(2)}</td>
-      <td class="right">₹${Number(it.cgstAmount).toFixed(2)}</td>
-      <td class="right">₹${Number(it.sgstAmount).toFixed(2)}</td>
-      <td class="right">₹${Number(it.igstAmount).toFixed(2)}</td>
-      <td class="right">₹${Number(it.totalAmount).toFixed(2)}</td>
-    </tr>`).join('')
-  const balance = Number(bill.totalAmount) - Number(bill.amountReceived)
-
-  return `<!doctype html><html><head><meta charset="utf-8" /><title>Invoice ${bill.billNumber}</title>
-<style>
-  body { font-family: Arial, sans-serif; padding: 24px; color: #111; }
-  h1 { font-size: 18px; margin: 0 0 2px; }
-  .muted { color: #555; font-size: 12px; }
-  table { width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 11px; }
-  th, td { border: 1px solid #ccc; padding: 5px 6px; text-align: left; }
-  th { background: #f3f4f6; }
-  .right { text-align: right; }
-  .header-row { display: flex; justify-content: space-between; margin-bottom: 6px; }
-  .totals { margin-top: 14px; width: 320px; margin-left: auto; font-size: 13px; }
-  .totals div { display: flex; justify-content: space-between; padding: 3px 0; }
-  .totals .grand { font-weight: 700; border-top: 1px solid #333; margin-top: 4px; padding-top: 6px; }
-</style></head>
-<body>
-  <div class="header-row">
-    <div>
-      <h1>${dealerName ?? 'Repair Bill Invoice'}</h1>
-      <div class="muted">${dealerCode ?? ''}</div>
-    </div>
-    <div class="muted" style="text-align:right">
-      Bill No: <strong>${bill.billNumber}</strong><br/>
-      Date: ${bill.billDate ? new Date(bill.billDate).toLocaleDateString('en-IN') : '-'}<br/>
-      Status: ${bill.status}
-    </div>
-  </div>
-  <div class="muted">
-    Party: <strong>${bill.partyName}</strong> &nbsp; Reg No: ${bill.regNo ?? '-'} &nbsp; Chassis No: ${bill.chassisNo ?? '-'} &nbsp; Location: ${bill.location ?? '-'}
-    ${bill.jobCardNumber ? `<br/>Job No: ${bill.jobCardNumber}` : ''}
-  </div>
-  <table>
-    <thead><tr><th>Sr</th><th>Type</th><th>Code</th><th>Description</th><th>HSN</th><th class="right">Qty</th><th class="right">Rate</th><th>Discount</th><th class="right">Taxable</th><th class="right">CGST</th><th class="right">SGST</th><th class="right">IGST</th><th class="right">Total</th></tr></thead>
-    <tbody>${rows}</tbody>
-  </table>
-  <div class="totals">
-    <div><span>Taxable Amount</span><span>₹${Number(bill.taxableAmount).toFixed(2)}</span></div>
-    <div><span>CGST</span><span>₹${Number(bill.cgstAmount).toFixed(2)}</span></div>
-    <div><span>SGST</span><span>₹${Number(bill.sgstAmount).toFixed(2)}</span></div>
-    <div><span>IGST</span><span>₹${Number(bill.igstAmount).toFixed(2)}</span></div>
-    <div class="grand"><span>Total Amount</span><span>₹${Number(bill.totalAmount).toFixed(2)}</span></div>
-    <div><span>Amount Received</span><span>₹${Number(bill.amountReceived).toFixed(2)}</span></div>
-    <div><span>Balance</span><span>₹${balance.toFixed(2)}</span></div>
-  </div>
-  ${bill.remarks ? `<div class="muted" style="margin-top:14px">Remarks: ${bill.remarks}</div>` : ''}
-</body></html>`
-}
-
 /** "Print ▾" menu (2026-09-04) - mirrors web/src/pages/staff/JobCardDetailPage.tsx's PrintMenu,
  * next to the status badge: 3 options -
  *   1. Estimate    - customer/dealer/vehicle identity + the Estimates Amount tables only (Part
  *                    Details, Labour Details, Grand Total) - see buildEstimatePrintHtml.
  *   2. JobCard print - the same DMS "Job Card + Gate Pass" paper layout the wizard's own
  *                    pre-creation Print button uses, filled from this job card's real saved data.
- *   3. Invoice     - CHANGED 2026-09-28 (SECTION 150, "in print click download invoioce download
+ *   3. Invoice     - 2026-10-04: now printed in the DMS "GST TAX INVOICE" layout (buildRepairBillTaxInvoicePrintHtml
+ *                    above), same as web - see that function's comment. Data source unchanged (below).
+ *                    CHANGED 2026-09-28 (SECTION 150, "in print click download invoioce download
  *                    then it will not download why?"). FACT: this used to fetch
  *                    GET /api/jobcards/{id}/invoice-pdf, which renders DMS's own repair bill
  *                    (RepairBillHeader/RepairBillDetail, read live from DMS) - but this app now
@@ -1134,7 +1095,7 @@ function buildRepairBillInvoicePrintHtml(bill: RepairBillDoc, dealerName?: strin
  *                    source, print-preview format), this now fetches
  *                    GET /api/repair-bill-docs?jobCardId={id}, finds the row with
  *                    status === 'Billed' (i.e. saved as Invoice, not just Proforma), and renders it
- *                    via the new buildRepairBillInvoicePrintHtml above - no DMS call, no PDF file
+ *                    via buildRepairBillTaxInvoicePrintHtml above - no DMS call, no PDF file
  *                    write, straight into Print.printAsync({ html }) exactly like Estimate/JobCard
  *                    print already do. If no Billed repair bill exists yet for this job card, a
  *                    clear message is shown instead of a silent/broken download.
@@ -1264,7 +1225,7 @@ function PrintMenu({ jc }: { jc: JobCardDetail }) {
         setError('No Repair Bill has been saved as Invoice for this job card yet.')
         return
       }
-      const html = buildRepairBillInvoicePrintHtml(billed, jc.dealer?.name, jc.dealer?.code)
+      const html = buildRepairBillTaxInvoicePrintHtml(billed, taxInvoiceContextFromJobCard(jc))
       await Print.printAsync({ html })
     } catch {
       setError('Could not load the invoice for this job card. Please try again.')

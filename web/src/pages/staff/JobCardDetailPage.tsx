@@ -6,8 +6,13 @@ import { useStaffAuth } from '../../auth/StaffAuthContext'
 import { PasswordInput } from '../../components/PasswordInput'
 import { StatusBadge } from '../../components/StatusBadge'
 import { WorkflowTimeline, type WorkflowTimelineHistoryEntry } from '../../components/WorkflowTimeline'
-import type { BaplDmsJobCardHistory, JobCardDetail, JobCardPhoto, JobCardsLabourCatalogRow, JobCardsPartsCatalogRow, RepairBillDoc, Technician, WorkflowStage } from '../../types'
+import type { BaplDmsJobCardHistory, BaplDmsVehicleLookup, JobCardDetail, JobCardPhoto, JobCardsLabourCatalogRow, JobCardsPartsCatalogRow, RepairBillDoc, Technician, WorkflowStage } from '../../types'
 import { buildEstimatePrintHtml, buildJobCardPrintHtml } from '../../lib/jobCardPrintHtml'
+// 2026-10-04 ("in print button which invoice is there that was repair bill invoice ... we need to
+// print in that same format"): the Invoice print option now uses the DMS "GST TAX INVOICE" layout -
+// see lib/repairBillInvoicePrintHtml.ts. Replaces this file's old flat-table
+// buildRepairBillInvoicePrintHtml (2026-09-28, SECTION 150), which was deleted.
+import { buildRepairBillTaxInvoicePrintHtml, taxInvoiceContextFromJobCard } from '../../lib/repairBillInvoicePrintHtml'
 
 // Photo URLs come back from the API as a relative path (e.g. "/uploads/jobcard-photos/.../x.jpg" -
 // see JobCardsController.UploadPhoto), same origin as the API itself, not the frontend dev server.
@@ -192,116 +197,40 @@ function WorkflowHistoryGrid({ jc }: { jc: JobCardDetail }) {
   )
 }
 
-/** 2026-09-28 (SECTION 150, "in print click download invoioce download then it will not download
- * why?"): builds the "Invoice" print option's HTML from THIS APP'S OWN Repair Bill data (a Billed
- * RepairBillDoc - see this section's own diagnosis in printInvoice below for why the old
- * DMS-sourced version always 404'd for a job billed through the new Repair Bill page). Not shared
- * with lib/jobCardPrintHtml.ts (I don't have that file's source this session, so this is a new,
- * self-contained function here instead of risking a guessed edit to a file I can't see) - same
- * per-file-duplication convention this codebase already uses elsewhere (e.g. formatElapsedMs/IST
- * formatters, duplicated between this file and the mobile screen rather than shared). A plain HTML
- * document meant for a print-preview window (see printInvoice's own printWindow call below), not a
- * server-generated PDF - "Save as PDF" from the browser's print dialog covers that, matching how
- * this same menu's Estimate/JobCard print options already work. */
-function buildRepairBillInvoicePrintHtml(bill: RepairBillDoc, dealerName?: string, dealerCode?: string): string {
-  const rows = bill.items.map((it, i) => `
-    <tr>
-      <td>${i + 1}</td>
-      <td>${it.itemType}</td>
-      <td>${it.itemCode}</td>
-      <td>${it.itemDescription}</td>
-      <td>${it.hsnCode ?? '-'}</td>
-      <td class="right">${it.qty}</td>
-      <td class="right">₹${Number(it.rate).toFixed(2)}</td>
-      <td>${!it.discountType || it.discountType === 'None' ? '-' : `${it.discountValue}${it.discountType === 'Percentage' ? '%' : ''}`}</td>
-      <td class="right">₹${Number(it.taxableAmount).toFixed(2)}</td>
-      <td class="right">₹${Number(it.cgstAmount).toFixed(2)}</td>
-      <td class="right">₹${Number(it.sgstAmount).toFixed(2)}</td>
-      <td class="right">₹${Number(it.igstAmount).toFixed(2)}</td>
-      <td class="right">₹${Number(it.totalAmount).toFixed(2)}</td>
-    </tr>`).join('')
-  const balance = Number(bill.totalAmount) - Number(bill.amountReceived)
-
-  return `<!doctype html><html><head><meta charset="utf-8" /><title>Invoice ${bill.billNumber}</title>
-<style>
-  body { font-family: Arial, sans-serif; padding: 24px; color: #111; }
-  h1 { font-size: 18px; margin: 0 0 2px; }
-  .muted { color: #555; font-size: 12px; }
-  table { width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 11px; }
-  th, td { border: 1px solid #ccc; padding: 5px 6px; text-align: left; }
-  th { background: #f3f4f6; }
-  .right { text-align: right; }
-  .header-row { display: flex; justify-content: space-between; margin-bottom: 6px; }
-  .totals { margin-top: 14px; width: 320px; margin-left: auto; font-size: 13px; }
-  .totals div { display: flex; justify-content: space-between; padding: 3px 0; }
-  .totals .grand { font-weight: 700; border-top: 1px solid #333; margin-top: 4px; padding-top: 6px; }
-</style></head>
-<body>
-  <div class="header-row">
-    <div>
-      <h1>${dealerName ?? 'Repair Bill Invoice'}</h1>
-      <div class="muted">${dealerCode ?? ''}</div>
-    </div>
-    <div class="muted" style="text-align:right">
-      Bill No: <strong>${bill.billNumber}</strong><br/>
-      Date: ${bill.billDate ? new Date(bill.billDate).toLocaleDateString('en-IN') : '-'}<br/>
-      Status: ${bill.status}
-    </div>
-  </div>
-  <div class="muted">
-    Party: <strong>${bill.partyName}</strong> &nbsp; Reg No: ${bill.regNo ?? '-'} &nbsp; Chassis No: ${bill.chassisNo ?? '-'} &nbsp; Location: ${bill.location ?? '-'}
-    ${bill.jobCardNumber ? `<br/>Job No: ${bill.jobCardNumber}` : ''}
-  </div>
-  <table>
-    <thead><tr><th>Sr</th><th>Type</th><th>Code</th><th>Description</th><th>HSN</th><th class="right">Qty</th><th class="right">Rate</th><th>Discount</th><th class="right">Taxable</th><th class="right">CGST</th><th class="right">SGST</th><th class="right">IGST</th><th class="right">Total</th></tr></thead>
-    <tbody>${rows}</tbody>
-  </table>
-  <div class="totals">
-    <div><span>Taxable Amount</span><span>₹${Number(bill.taxableAmount).toFixed(2)}</span></div>
-    <div><span>CGST</span><span>₹${Number(bill.cgstAmount).toFixed(2)}</span></div>
-    <div><span>SGST</span><span>₹${Number(bill.sgstAmount).toFixed(2)}</span></div>
-    <div><span>IGST</span><span>₹${Number(bill.igstAmount).toFixed(2)}</span></div>
-    <div class="grand"><span>Total Amount</span><span>₹${Number(bill.totalAmount).toFixed(2)}</span></div>
-    <div><span>Amount Received</span><span>₹${Number(bill.amountReceived).toFixed(2)}</span></div>
-    <div><span>Balance</span><span>₹${balance.toFixed(2)}</span></div>
-  </div>
-  ${bill.remarks ? `<div class="muted" style="margin-top:14px">Remarks: ${bill.remarks}</div>` : ''}
-</body></html>`
-}
-
-/** "Print" menu (2026-09-03) - replaces the separate standalone "Invoice" card that used to sit
- * further down the page (Download Invoice from DMS - see git history / InvoiceCard) with a single
- * dropdown next to the status badge, 3 options per explicit request:
- *   1. Estimate    - customer/dealer/vehicle identity + the Estimates Amount tables only (Part
- *                    Details, Labour Details, Grand Total) - see buildEstimatePrintHtml.
- *     JobCard print - the same DMS "Job Card + Gate Pass" paper layout the wizard's own
- *                    pre-creation Print button uses (buildJobCardPrintHtml, now shared - see
- *                    lib/jobCardPrintHtml.ts), but filled from this job card's real saved data
- *                    (and its real Job No/Invoice No once known, instead of the wizard's "-"
- *                    placeholders).
- *   3. Invoice     - CHANGED 2026-09-28 (SECTION 150, "in print click download invoioce download
- *                    then it will not download why?"): used to fetch DMS's own repair bill PDF
- *                    (GET /api/jobcards/{id}/invoice-pdf) - FACT, confirmed by re-reading that
- *                    endpoint's own doc comment in JobCardsController.cs: it reads DMS's own
- *                    RepairBillHeader/RepairBillDetail tables LIVE, which this app never writes to
- *                    (repair bills you save from the Repair Bill page go into JobCardScanner's own
- *                    RepairBillDocs table instead - see RepairBillDocsController.cs) - so that
- *                    endpoint 404'd ("no repair bill in DMS") for every job billed through the new
- *                    Repair Bill flow, which is why nothing downloaded. Per your confirmed answer,
- *                    this now reads THIS APP'S OWN Billed Repair Bill for this job card instead
- *                    (GET /api/repair-bill-docs?jobCardId=..., no DMS fallback) and renders it as a
- *                    print-preview window (buildRepairBillInvoicePrintHtml above), same pattern as
- *                    Estimate/JobCard print - not a server-generated PDF, since I don't have
- *                    IInvoicePdfService's source to safely extend it (per your confirmed answer).
- *                    Same role gate as before (Cashier/DealerAdmin/CorporateAdmin/SystemAdmin) -
- *                    not everyone should be pulling repair bills.
- * Notices/errors from the Invoice option are surfaced through the same `setMsg` line the rest of
- * this page already uses for action feedback, rather than a second, separate message area. */
-// 2026-10-03: `hasRole` prop dropped - PrintMenu no longer role-gates any of its 3 options (see
-// the removed Invoice gate above), so it no longer needs to know who's signed in.
+/** "Print" menu - 3 options (Estimate / JobCard print / Invoice). History: 2026-09-03 replaced the
+ * separate standalone "Invoice" card (Download Invoice from DMS - see git history / InvoiceCard)
+ * with this single dropdown next to the status badge.
+ *
+ * 2026-10-04 ("in print button which invoice is there that was repair bill invoice ... we need to
+ * print in that same format" - RepairBillInvoice-Format.pdf / JobcardInvoice-Format.pdf):
+ *   - Invoice       -> prints the DMS "GST TAX INVOICE" layout (dealer header, Customer Details,
+ *                      Vehicle Details, items grid, Amount In Words, Part/Labour/Invoice Total, HSN
+ *                      Summary, Remarks, Customer Signature / Authorized Signatory) from this job
+ *                      card's Billed Repair Bill (GET /api/repair-bill-docs?jobCardId=...) - see
+ *                      lib/repairBillInvoicePrintHtml.ts. (2026-09-28, SECTION 150: the data source
+ *                      is this app's OWN RepairBillDocs, not DMS's RepairBillHeader/Detail - the old
+ *                      GET /api/jobcards/{id}/invoice-pdf 404'd for every job billed through the new
+ *                      Repair Bill flow.) No server-generated PDF: "Save as PDF" from the browser's
+ *                      print dialog covers that, same as the other two options.
+ *   - JobCard print -> the layout was already the JobcardInvoice-Format (same
+ *                      buildJobCardPrintHtml); what differed was DATA: Invoice No, customer State,
+ *                      Sale Date and the Battery Details block printed "-" here because this page
+ *                      never fetched them. They are now filled in: Invoice No from the Billed
+ *                      Repair Bill; Sale Date/Battery Make/Chemical/Capacity (and any missing
+ *                      controller/charger/battery no.) from the same Vehicle Sale lookup the wizard
+ *                      uses. That lookup is best-effort - if it fails (no access, not found, DMS
+ *                      down) the print simply keeps "-" for those fields.
+ *   - Estimate      -> unchanged.
+ * Every option opens its print window synchronously inside the click (before any await) so the
+ * browser popup blocker allows it, then fills it once data arrives. Notices/errors surface through
+ * the same `setMsg` line the rest of this page uses for action feedback.
+ * Role gate: none - all roles can print (2026-10-03, "For all Role its visible": the old
+ * Cashier/DealerAdmin/CorporateAdmin/SystemAdmin gate on Invoice hid it from a WorkshopManager/
+ * Supervisor/ServiceAdvisor closing a job card, which looked exactly like "I can't download the
+ * invoice"), so this component no longer takes a `hasRole` prop. */
 function PrintMenu({ jc, setMsg }: { jc: JobCardDetail; setMsg: (m: string | null) => void }) {
   const [open, setOpen] = useState(false)
-  const [invoiceBusy, setInvoiceBusy] = useState(false)
+  const [busy, setBusy] = useState(false)
   // 2026-09-03 fix ("clicking Print button, no options shown"): this used to close the menu via
   // onBlur on the toggle button itself (setTimeout(() => setOpen(false), 150)), copied from this
   // page's search-box dropdowns (PartSuggestionCard/LabourSuggestionCard) - but those are text
@@ -322,40 +251,51 @@ function PrintMenu({ jc, setMsg }: { jc: JobCardDetail; setMsg: (m: string | nul
     return () => document.removeEventListener('mousedown', onDocMouseDown)
   }, [open])
 
-  const printWindow = (html: string, popupBlockedMsg: string) => {
+  /** Opens the print window immediately - must happen synchronously in the click handler, before
+   * any await (2026-09-03 "invoice not added/opened": once an `await` has run the browser no longer
+   * counts window.open as a direct response to the click and its popup blocker refuses it). */
+  const openLoadingWindow = (loadingText: string, popupBlockedMsg: string): Window | null => {
     const win = window.open('', '_blank', 'width=900,height=650')
-    if (!win) { setMsg(popupBlockedMsg); return }
+    if (!win) { setMsg(popupBlockedMsg); return null }
+    win.document.write(`<p style="font-family:sans-serif;padding:20px;color:#555;">${loadingText}</p>`)
+    return win
+  }
+  /** Replaces the loading text with the real document and opens the native print dialog. The
+   * `win.onload = () => win.print()` line is what makes this feel like a "print" action rather than
+   * just a preview (2026-09-03 "print option not came" - the wizard's own print button always had it). */
+  const showInWindow = (win: Window, html: string) => {
     win.document.open()
     win.document.write(html)
     win.document.close()
     win.focus()
-    // 2026-09-03 fix ("print option not came") - this used to stop at just opening the preview
-    // and left the user to trigger printing themselves (Ctrl+P). The wizard's own print button
-    // (JobCardWizardPage.printPreview, same buildJobCardPrintHtml) always auto-opened the
-    // browser's native print dialog via win.onload = () => win.print() - this menu's Estimate/
-    // JobCard print options were missing that one line, so the preview opened but nothing looked
-    // like a "print" action actually happened.
     win.onload = () => win.print()
+  }
+
+  /** This job card's Billed ("saved as Invoice") Repair Bill, if any. */
+  const fetchBilledBill = async (): Promise<RepairBillDoc | undefined> => {
+    const { data } = await staffApi.get<RepairBillDoc[]>('/api/repair-bill-docs', { params: { jobCardId: jc.id } })
+    return data.find((b) => b.status === 'Billed')
   }
 
   const printEstimate = () => {
     setOpen(false)
-    const money = (n: number) => n
+    const win = openLoadingWindow('Preparing estimate…', 'Please allow popups to print the estimate.')
+    if (!win) return
     const partRows = jc.partSuggestions.map((p, i) => {
       const mrp = p.mrp ?? 0
       const qty = p.quantity ?? 1
       const isFoc = p.status === 'FOC'
-      return { sr: i + 1, code: p.itemCode, description: p.description ?? '-', hsn: p.hsnCode ?? '-', mrp: money(mrp), qty, amount: isFoc ? 0 : mrp * qty }
+      return { sr: i + 1, code: p.itemCode, description: p.description ?? '-', hsn: p.hsnCode ?? '-', mrp, qty, amount: isFoc ? 0 : mrp * qty }
     })
     const labourRows = jc.labourSuggestions.map((l, i) => {
       const rate = l.rateAtSuggestion ?? 0
       const qty = l.quantity ?? 1
       const isFoc = l.issueType === 'FOC'
-      return { sr: i + 1, code: l.labourCode, description: l.labourDescription ?? '-', hsn: l.hsnCode ?? '-', rate: money(rate), qty, amount: isFoc ? 0 : rate * qty }
+      return { sr: i + 1, code: l.labourCode, description: l.labourDescription ?? '-', hsn: l.hsnCode ?? '-', rate, qty, amount: isFoc ? 0 : rate * qty }
     })
     const partsTotal = partRows.reduce((sum, r) => sum + r.amount, 0)
     const labourTotal = labourRows.reduce((sum, r) => sum + r.amount, 0)
-    printWindow(buildEstimatePrintHtml({
+    showInWindow(win, buildEstimatePrintHtml({
       dealerName: jc.dealer?.name,
       dealerCode: jc.dealer?.code,
       jobCardNumber: jc.jobCardNumber,
@@ -374,78 +314,94 @@ function PrintMenu({ jc, setMsg }: { jc: JobCardDetail; setMsg: (m: string | nul
       partsTotal,
       labourTotal,
       grandTotal: partsTotal + labourTotal,
-    }), 'Please allow popups to print the estimate.')
+    }))
   }
 
-  const printJobCard = () => {
+  const printJobCard = async () => {
     setOpen(false)
-    printWindow(buildJobCardPrintHtml({
-      dealerName: jc.dealer?.name,
-      dealerCode: jc.dealer?.code,
-      location: jc.baplServiceLocation,
-      jobinDate: jc.createdAt ?? new Date().toISOString(),
-      jobtype: jc.baplJobType,
-      jobsource: jc.baplJobSourceName,
-      serviceHead: jc.baplServiceHeadName,
-      serviceType: jc.baplServiceTypeName,
-      estdelDate: jc.expectedDeliveryAt,
-      vehiclekms: jc.odometerAtCheckIn,
-      manualjobNo: jc.baplManualJobNo,
-      supervisor: jc.baplSupervisorName,
-      technician: jc.baplTechnicianName,
-      customerName: jc.customer?.name,
-      customerMobile: jc.customer?.mobile,
-      address: jc.customer?.address,
-      city: jc.customer?.city,
-      chassisNo: jc.vehicle?.vin,
-      batteryNo: jc.vehicle?.batteryNo,
-      chargerNo: jc.vehicle?.chargerNo,
-      controllerNo: jc.vehicle?.controllerNo,
-      registerNo: jc.vehicle?.regNo,
-      modelName: jc.vehicle?.model,
-      colour: jc.vehicle?.color,
-      insuranceExpiry: jc.vehicle?.insuranceExpiry,
-      complaints: jc.complaints.map((c) => c.description),
-      jobNo: jc.baplJobNo != null ? String(jc.baplJobNo) : jc.jobCardNumber,
-      invoiceNo: jc.invoice?.invoiceNumber,
-    }), 'Please allow popups to print the job card.')
+    setBusy(true)
+    setMsg(null)
+    const win = openLoadingWindow('Preparing job card…', 'Please allow popups to print the job card.')
+    if (!win) { setBusy(false); return }
+    try {
+      const vin = jc.vehicle?.vin
+      // Both lookups are best-effort and independent - a failure in either just leaves its fields "-".
+      const [billed, lookup] = await Promise.all([
+        fetchBilledBill().catch(() => undefined),
+        vin
+          ? staffApi.get<BaplDmsVehicleLookup>('/api/jobcards/vehicle-lookup', { params: { value: vin, dealerId: jc.dealer?.id } })
+              .then((r) => r.data)
+              .catch(() => undefined)
+          : Promise.resolve(undefined),
+      ])
+      // Not every app type declares these two yet - loose reads, same approach as the invoice context.
+      const customerState = (jc.customer as unknown as { state?: string | null } | null | undefined)?.state
+      const purchaseDate = (jc.vehicle as unknown as { purchaseDate?: string | null } | null | undefined)?.purchaseDate
+
+      showInWindow(win, buildJobCardPrintHtml({
+        dealerName: jc.dealer?.name,
+        dealerCode: jc.dealer?.code,
+        location: jc.baplServiceLocation,
+        jobinDate: jc.createdAt ?? new Date().toISOString(),
+        jobtype: jc.baplJobType,
+        jobsource: jc.baplJobSourceName,
+        serviceHead: jc.baplServiceHeadName,
+        serviceType: jc.baplServiceTypeName,
+        estdelDate: jc.expectedDeliveryAt,
+        vehiclekms: jc.odometerAtCheckIn,
+        manualjobNo: jc.baplManualJobNo,
+        supervisor: jc.baplSupervisorName,
+        technician: jc.assignedTechnicianName ?? jc.baplTechnicianName,
+        customerName: jc.customer?.name,
+        customerMobile: jc.customer?.mobile,
+        customerState, // needs the customerState edit in lib/jobCardPrintHtml.ts (delivered with this file)
+        address: jc.customer?.address,
+        city: jc.customer?.city,
+        chassisNo: jc.vehicle?.vin,
+        batteryNo: jc.vehicle?.batteryNo ?? lookup?.batteryNumber,
+        chargerNo: jc.vehicle?.chargerNo ?? lookup?.chargerNumber,
+        controllerNo: jc.vehicle?.controllerNo ?? lookup?.controllerNo,
+        registerNo: jc.vehicle?.regNo,
+        modelName: jc.vehicle?.model,
+        colour: jc.vehicle?.color,
+        saleDate: lookup?.saleDate ?? purchaseDate,
+        insuranceExpiry: jc.vehicle?.insuranceExpiry ?? lookup?.insuranceExpDate,
+        batteryChemical: lookup?.batteryChemical,
+        batteryCapacity: lookup?.batteryCapacity,
+        batteryMake: lookup?.batteryMake,
+        complaints: jc.complaints.map((c) => c.description),
+        jobNo: jc.baplJobNo != null ? String(jc.baplJobNo) : jc.jobCardNumber,
+        // The header's "Invoice No" is the Billed Repair Bill's number (this app's invoices live in
+        // RepairBillDocs); jc.invoice is the legacy Invoice record, kept only as a fallback.
+        invoiceNo: billed?.billNumber ?? jc.invoice?.invoiceNumber,
+      }))
+    } catch {
+      win.close()
+      setMsg('Could not prepare the job card for printing. Please try again.')
+    } finally {
+      setBusy(false)
+    }
   }
 
-  // 2026-09-28 (SECTION 150) - see this component's own doc comment above ("3. Invoice - CHANGED
-  // ...") for the full diagnosis. Keeps the exact same "open the window synchronously first, before
-  // any await" fix the 2026-09-03 comment below documents (still true and still needed - only the
-  // data source changed, not this popup-blocker workaround).
   const printInvoice = async () => {
     setOpen(false)
-    setInvoiceBusy(true)
+    setBusy(true)
     setMsg(null)
-    // 2026-09-03 fix ("invoice not added/opened") - opening a new window/tab is only ever reliably
-    // allowed by the browser's popup blocker when it happens synchronously inside the click handler
-    // that started it - once an `await` has run, the browser no longer counts it as a direct
-    // response to the click. Opening the window FIRST, synchronously, then loading content into it
-    // once the fetch finishes - same pattern printWindow above uses - sidesteps the whole issue.
-    const win = window.open('', '_blank', 'width=900,height=650')
-    if (!win) { setMsg('Please allow popups to view/print the invoice.'); setInvoiceBusy(false); return }
-    win.document.write('<p style="font-family:sans-serif;padding:20px;color:#555;">Loading invoice…</p>')
+    const win = openLoadingWindow('Loading invoice…', 'Please allow popups to view/print the invoice.')
+    if (!win) { setBusy(false); return }
     try {
-      const { data } = await staffApi.get<RepairBillDoc[]>('/api/repair-bill-docs', { params: { jobCardId: jc.id } })
-      const billed = data.find((b) => b.status === 'Billed')
+      const billed = await fetchBilledBill()
       if (!billed) {
         win.close()
         setMsg('No Repair Bill has been saved as Invoice for this job card yet.')
         return
       }
-      const html = buildRepairBillInvoicePrintHtml(billed, jc.dealer?.name, jc.dealer?.code)
-      win.document.open()
-      win.document.write(html)
-      win.document.close()
-      win.focus()
-      win.onload = () => win.print()
+      showInWindow(win, buildRepairBillTaxInvoicePrintHtml(billed, taxInvoiceContextFromJobCard(jc)))
     } catch {
       win.close()
       setMsg('Could not load the invoice for this job card. Please try again.')
     } finally {
-      setInvoiceBusy(false)
+      setBusy(false)
     }
   }
 
@@ -456,9 +412,9 @@ function PrintMenu({ jc, setMsg }: { jc: JobCardDetail; setMsg: (m: string | nul
         className="btn"
         style={{ border: '1px solid var(--border)' }}
         onClick={() => setOpen((o) => !o)}
-        disabled={invoiceBusy}
+        disabled={busy}
       >
-        🖨️ {invoiceBusy ? 'Opening…' : 'Print'} ▾
+        🖨️ {busy ? 'Opening…' : 'Print'} ▾
       </button>
       {open && (
         <ul style={{
@@ -468,13 +424,6 @@ function PrintMenu({ jc, setMsg }: { jc: JobCardDetail; setMsg: (m: string | nul
         }}>
           <li><button type="button" className="btn btn-sm" style={{ width: '100%', textAlign: 'left', border: 'none', background: 'transparent' }} onMouseDown={(e) => { e.preventDefault(); printEstimate() }}>Estimate</button></li>
           <li><button type="button" className="btn btn-sm" style={{ width: '100%', textAlign: 'left', border: 'none', background: 'transparent' }} onMouseDown={(e) => { e.preventDefault(); printJobCard() }}>JobCard print</button></li>
-          {/* 2026-10-03 ("For all Role its visible" - explicit answer to "after jobcard close im
-             not enable to download invoice ... fix this"): was gated to
-             hasRole('Cashier','DealerAdmin','CorporateAdmin','SystemAdmin') - a WorkshopManager/
-             Supervisor/ServiceAdvisor closing a job card couldn't even see this menu item, which
-             looked exactly like "I can't download the invoice." Gate removed entirely per your
-             explicit choice - every signed-in staff role that can open this page can now see and
-             use Invoice. */}
           <li><button type="button" className="btn btn-sm" style={{ width: '100%', textAlign: 'left', border: 'none', background: 'transparent' }} onMouseDown={(e) => { e.preventDefault(); printInvoice() }}>Invoice</button></li>
         </ul>
       )}

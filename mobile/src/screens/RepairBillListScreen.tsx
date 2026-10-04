@@ -3,12 +3,16 @@ import { useEffect, useState } from 'react'
 import { ActivityIndicator, Alert, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'
 import { useNavigation } from '@react-navigation/native'
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
+// OS print dialog - the Android equivalent of web's window.open + window.print() (a phone has no
+// browser print popup). Same expo-print call JobCardDetailScreen's PrintMenu already uses.
+import * as Print from 'expo-print'
 import { apiClient } from '../api/client'
 import { useStaffAuth } from '../auth/StaffAuthContext'
 import { PickerField } from '../components/PickerField'
 import { colors } from '../theme/colors'
 import type { RootStackParamList } from '../navigation/RootNavigator'
-import type { BaplDmsWorkshop, CombinedRepairBillRow } from '../types'
+import type { BaplDmsWorkshop, CombinedRepairBillRow, JobCardDetail, RepairBillDoc } from '../types'
+import { buildRepairBillTaxInvoicePrintHtml, taxInvoiceContextFromJobCard, type TaxInvoiceContext } from '../utils/repairBillInvoicePrintHtml'
 
 /**
  * "Repair Bill List" screen (2026-09-23, "this main in 1 page not on same only which are save in
@@ -31,6 +35,15 @@ import type { BaplDmsWorkshop, CombinedRepairBillRow } from '../types'
  * - and, for parity with web's read-only RecordDetailModal popup (which offers "Save as Invoice"
  * for a Performa row too), a "Save as Invoice" button right here so that action isn't lost by
  * moving off the create screen. canDelete-gated Delete, same SystemAdmin-only rule as before.
+ *
+ * 2026-10-04 (Print Invoice, mirrors web's RepairBillListPage.tsx): an expanded BILLED row gets a
+ * "🖨 Print Invoice" button that prints the bill in the DMS "GST TAX INVOICE" layout (same document
+ * as JobCardDetailScreen's Print -> Invoice; shared builder in utils/repairBillInvoicePrintHtml.ts).
+ * Billed-only on purpose - a Performa bill isn't an invoice yet and shouldn't print under a "GST TAX
+ * INVOICE" heading. The list row isn't guaranteed to carry every column the invoice needs, so
+ * printInvoice() re-fetches the full RepairBillDoc (GET /api/repair-bill-docs/{id}) and, when the
+ * bill is linked to a job card, that job card too (customer address/state, vehicle, job type/source,
+ * technician). If the job card can't be loaded the invoice still prints with those fields "-".
  */
 type RepairBillListNav = NativeStackNavigationProp<RootStackParamList, 'RepairBillList'>
 
@@ -62,6 +75,7 @@ export function RepairBillListScreen() {
   const [loading, setLoading] = useState(false)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [convertingId, setConvertingId] = useState<string | null>(null)
+  const [printingId, setPrintingId] = useState<string | null>(null)
 
   const loadCombined = () => {
     setLoading(true)
@@ -111,6 +125,32 @@ export function RepairBillListScreen() {
         },
       ],
     )
+  }
+
+  // 2026-10-04 (Print Invoice) - see this screen's doc comment. Billed bills only.
+  const printInvoice = async (r: CombinedRepairBillRow) => {
+    setPrintingId(r.id)
+    try {
+      const { data: bill } = await apiClient.get<RepairBillDoc>(`/api/repair-bill-docs/${r.id}`)
+      // Fallback context (no linked job card, or it can't be loaded): dealer name from the signed-in
+      // profile when the app's profile type carries one; everything else comes from the bill itself.
+      const profileDealerName = (profile as unknown as { dealerName?: string | null } | null | undefined)?.dealerName
+      let ctx: TaxInvoiceContext = { dealerName: profileDealerName }
+      if (bill.jobCardId) {
+        try {
+          const { data: jc } = await apiClient.get<JobCardDetail>(`/api/jobcards/${bill.jobCardId}`)
+          const fromJob = taxInvoiceContextFromJobCard(jc)
+          ctx = { ...fromJob, dealerName: fromJob.dealerName ?? profileDealerName }
+        } catch {
+          /* best-effort - the invoice still prints without the job card's customer/vehicle extras */
+        }
+      }
+      await Print.printAsync({ html: buildRepairBillTaxInvoicePrintHtml(bill, ctx) })
+    } catch (err: unknown) {
+      Alert.alert('Could not print', (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not load this invoice for printing.')
+    } finally {
+      setPrintingId(null)
+    }
   }
 
   return (
@@ -188,6 +228,15 @@ export function RepairBillListScreen() {
                     <Text style={styles.smallBtnText}>{convertingId === r.id ? 'Saving…' : 'Save as Invoice'}</Text>
                   </TouchableOpacity>
                 )}
+                {r.status === 'Billed' && (
+                  <TouchableOpacity
+                    style={[styles.addBtn, styles.inlineBtn, printingId === r.id && styles.btnDisabled]}
+                    disabled={printingId === r.id}
+                    onPress={(e) => { e.stopPropagation(); printInvoice(r) }}
+                  >
+                    <Text style={styles.addBtnText}>{printingId === r.id ? 'Loading…' : '🖨 Print Invoice'}</Text>
+                  </TouchableOpacity>
+                )}
                 {canDelete && (
                   <TouchableOpacity style={styles.removeBtn} onPress={(e) => { e.stopPropagation(); deleteBill(r.id) }}><Text style={styles.removeBtnText}>Delete</Text></TouchableOpacity>
                 )}
@@ -215,6 +264,7 @@ const styles = StyleSheet.create({
   addBtn: { backgroundColor: colors.primary, borderRadius: 8, paddingVertical: 10, alignItems: 'center' },
   inlineBtn: { paddingHorizontal: 16 },
   addBtnText: { color: '#fff', fontWeight: '700' },
+  btnDisabled: { opacity: 0.5 },
   row: { backgroundColor: colors.surface, borderRadius: 10, borderWidth: 1, borderColor: colors.border, padding: 12, marginBottom: 8 },
   removeBtn: { backgroundColor: colors.danger, borderRadius: 6, paddingHorizontal: 10, paddingVertical: 8, justifyContent: 'center' },
   removeBtnText: { color: '#fff', fontWeight: '700', fontSize: 12 },

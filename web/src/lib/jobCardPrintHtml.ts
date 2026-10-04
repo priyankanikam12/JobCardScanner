@@ -1,3 +1,4 @@
+// web\src\lib\jobCardPrintHtml.ts
 // Shared print-HTML builders for the "DMS Job Card + Gate Pass" paper layout.
 //
 // 2026-09-03: extracted out of JobCardWizardPage.tsx (which originally owned
@@ -8,6 +9,10 @@
 // buildJobCardPrintHtml so an "Estimate" print looks like the same document family as a "JobCard
 // print" - same header/section chrome, just fewer sections - per explicit request rather than a
 // one-off layout of its own.
+//
+// 2026-10-04: the "Invoice" print option no longer lives in this file - it is the DMS "GST TAX
+// INVOICE" layout in lib/repairBillInvoicePrintHtml.ts. buildJobCardPrintHtml below gained an
+// optional `customerState` (the Customer Details "State" row used to be a hard-coded "-").
 
 export const dash = (v: unknown) => (v !== null && v !== undefined && String(v).trim() !== '' ? String(v) : '-')
 
@@ -93,10 +98,11 @@ body{font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#111;background
  * DMS's own Job No./Invoice No - actually exist, so jobNo/invoiceNo are left undefined there and
  * show "-"), and JobCardDetailPage's "Print" menu -> "JobCard print" (after creation, with the
  * real jobNo/invoiceNo passed in once known). Fields DMS's own print shows that
- * JobCardScanner genuinely has nowhere to source (GST No., Alt. Mobile, customer State, OEM
+ * JobCardScanner genuinely has nowhere to source (GST No., Alt. Mobile, OEM
  * Model, and every Battery Details voltage/capacity test reading - DMS's
  * ChassisBatteryDetails table doesn't carry those, only serial numbers and Make/Chemical/
- * Capacity, which this DOES now print) show as "-" rather than being guessed.
+ * Capacity, which this DOES now print) show as "-" rather than being guessed. Customer State is
+ * printed when the caller passes `customerState` (2026-10-04) and "-" otherwise.
  */
 export function buildJobCardPrintHtml(d: {
   dealerName?: string | null
@@ -114,6 +120,9 @@ export function buildJobCardPrintHtml(d: {
   technician?: string | null
   customerName?: string | null
   customerMobile?: string | null
+  // 2026-10-04: the Customer Details "State" row used to be a hard-coded "-" - callers that know the
+  // customer's state (JobCardDetailPage's Print menu; the wizard's Review step) now pass it here.
+  customerState?: string | null
   address?: string | null
   city?: string | null
   chassisNo?: string | null
@@ -209,7 +218,7 @@ export function buildJobCardPrintHtml(d: {
       <tr><td class="k">Customer Name</td><td class="v">${dash(d.customerName)}</td></tr>
       <tr><td class="k">Address</td><td class="v">${dash(d.address)}</td></tr>
       <tr><td class="k">City &amp; Pin</td><td class="v">${dash(d.city)}</td></tr>
-      <tr><td class="k">State</td><td class="v">-</td></tr>
+      <tr><td class="k">State</td><td class="v">${dash(d.customerState)}</td></tr>
       <tr><td class="k">GST No.</td><td class="v">-</td></tr>
       <tr><td class="k">Mobile</td><td class="v">${dash(d.customerMobile)}</td></tr>
       <tr><td class="k">Alt. Mobile</td><td class="v">-</td></tr>

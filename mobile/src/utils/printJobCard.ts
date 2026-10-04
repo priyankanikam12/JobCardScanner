@@ -1,3 +1,4 @@
+// mobile\src\utils\printJobCard.ts
 // Builds the same DMS "Job Card + Gate Pass" HTML the web app's print preview uses (see
 // web/src/pages/staff/JobCardWizardPage.tsx's buildJobCardPrintHtml) - ported verbatim so the PDF
 // mobile shares (via expo-print + expo-sharing, since a phone has no browser print popup) looks

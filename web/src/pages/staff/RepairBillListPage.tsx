@@ -3,10 +3,11 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
-import type { BaplDmsWorkshop, CombinedRepairBillRow } from '../../types'
+import type { BaplDmsWorkshop, CombinedRepairBillRow, JobCardDetail, RepairBillDoc } from '../../types'
 import { Pagination } from '../../components/Pagination'
 import { usePagination } from '../../lib/usePagination'
 import { RecordDetailModal } from '../../components/RecordDetailModal'
+import { buildRepairBillTaxInvoicePrintHtml, taxInvoiceContextFromJobCard, type TaxInvoiceContext } from '../../lib/repairBillInvoicePrintHtml'
 
 /**
  * "Repair Bill List" page (2026-09-23, "Source SR.No Bill No Date Party Name Reg No Chassis No
@@ -57,6 +58,20 @@ import { RecordDetailModal } from '../../components/RecordDetailModal'
  * Instead, a one-time mount effect below calls setPageSize(10) for JUST this page, which the hook
  * already exposes for exactly this purpose (the Pagination component's own page-size dropdown
  * calls the same setter). If usePagination's own built-in default is already 10, this is a no-op.
+ *
+ * 2026-10-04 (Print Invoice): a 🖨 button on every BILLED row (and a "Print Invoice" button in the
+ * Billed detail popup) prints that bill in the DMS "GST TAX INVOICE" layout - the same document
+ * JobCardDetailPage's Print -> Invoice produces (lib/repairBillInvoicePrintHtml.ts). Deliberately
+ * Billed-only: a Performa bill isn't an invoice yet, and printing it under a "GST TAX INVOICE"
+ * heading would be wrong. The grid's combined-list row (CombinedRepairBillRow) isn't guaranteed to
+ * carry every column the invoice needs (per-line CGST/SGST/IGST amounts, discount type, job card
+ * id), so printInvoice() below re-fetches the full RepairBillDoc by id (GET
+ * /api/repair-bill-docs/{id} - the same call RepairBillCreatePage's edit flow uses), then - when
+ * that bill is linked to a job card - the job card too (customer address/state, vehicle, job
+ * type/source, technician) via the shared taxInvoiceContextFromJobCard. If the job card can't be
+ * loaded (older unlinked bill, or no access) the invoice still prints, with those fields "-" and
+ * the dealer name taken from the signed-in profile. The print window is opened synchronously in the
+ * click (before any await) so the browser popup blocker allows it.
  */
 function toLocalIso(d: Date): string {
   const y = d.getFullYear()
@@ -147,6 +162,42 @@ export function RepairBillListPage() {
       .finally(() => setConvertingId(null))
   }
 
+  // 2026-10-04 (Print Invoice) - see this file's top-of-file doc comment. Billed bills only.
+  const [printingId, setPrintingId] = useState<string | null>(null)
+  const printInvoice = async (row: CombinedRepairBillRow) => {
+    // Must be opened synchronously inside the click handler, before any await, or the browser's
+    // popup blocker refuses it (same reasoning as JobCardDetailPage's PrintMenu).
+    const win = window.open('', '_blank', 'width=900,height=650')
+    if (!win) { alert('Please allow popups to print the invoice.'); return }
+    win.document.write('<p style="font-family:sans-serif;padding:20px;color:#555;">Loading invoice…</p>')
+    setPrintingId(row.id)
+    try {
+      const { data: bill } = await staffApi.get<RepairBillDoc>(`/api/repair-bill-docs/${row.id}`)
+      // Fallback context (no linked job card, or it can't be loaded): dealer name from the signed-in
+      // profile, everything else comes from the bill itself inside the builder.
+      let ctx: TaxInvoiceContext = { dealerName: profile?.dealerName }
+      if (bill.jobCardId) {
+        try {
+          const { data: jc } = await staffApi.get<JobCardDetail>(`/api/jobcards/${bill.jobCardId}`)
+          const fromJob = taxInvoiceContextFromJobCard(jc)
+          ctx = { ...fromJob, dealerName: fromJob.dealerName ?? profile?.dealerName }
+        } catch {
+          /* best-effort - the invoice still prints without the job card's customer/vehicle extras */
+        }
+      }
+      win.document.open()
+      win.document.write(buildRepairBillTaxInvoicePrintHtml(bill, ctx))
+      win.document.close()
+      win.focus()
+      win.onload = () => win.print()
+    } catch (err: unknown) {
+      win.close()
+      alert((err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not load this invoice for printing.')
+    } finally {
+      setPrintingId(null)
+    }
+  }
+
   const { page, setPage, pageSize, setPageSize, pageCount, pageRows, total } = usePagination(rows)
   // 2026-10-03 ("pagination 10 default select"): see this file's top-of-file doc comment - a
   // scoped, one-time default for THIS page only, not a change to usePagination's own internal
@@ -167,6 +218,7 @@ export function RepairBillListPage() {
       <p className="muted">
         Every repair bill saved in JobCardScanner's own database - click a still-Performa bill (or
         its ✎ button) to open and edit it, or a Billed/Cancelled one to view its full details.
+        Billed bills can be printed as a GST Tax Invoice with the 🖨 button.
       </p>
 
       <div className="card">
@@ -260,6 +312,16 @@ export function RepairBillListPage() {
                     {r.status === 'Performa' && (
                       <button className="btn btn-icon" onClick={() => navigate(`/repair-bill-new?editId=${r.id}`)} title="Edit this Proforma bill">✎</button>
                     )}
+                    {r.status === 'Billed' && (
+                      <button
+                        className="btn btn-icon"
+                        disabled={printingId === r.id}
+                        onClick={() => printInvoice(r)}
+                        title="Print GST Tax Invoice"
+                      >
+                        {printingId === r.id ? '…' : '🖨'}
+                      </button>
+                    )}
                     {canDelete && (
                       <button className="btn btn-icon btn-danger" onClick={() => deleteBill(r.id)} title="Delete (SystemAdmin only)">✕</button>
                     )}
@@ -307,6 +369,14 @@ export function RepairBillListPage() {
                 onClick={() => saveAsInvoice(viewingBill)}
               >
                 {convertingId === viewingBill.id ? 'Saving…' : 'Save as Invoice'}
+              </button>
+            ) : viewingBill.status === 'Billed' ? (
+              <button
+                className="btn btn-primary btn-sm"
+                disabled={printingId === viewingBill.id}
+                onClick={() => printInvoice(viewingBill)}
+              >
+                {printingId === viewingBill.id ? 'Loading…' : '🖨 Print Invoice'}
               </button>
             ) : undefined
           }

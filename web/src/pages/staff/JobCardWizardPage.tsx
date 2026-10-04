@@ -1351,36 +1351,26 @@ export function JobCardWizardPage() {
                 </select>
               </div>
             )}
-            <div className="field"><label>Reg No</label><input value={newVehicle.regNo} disabled={vehicleFieldsLocked} onChange={(e) => setNewVehicle({ ...newVehicle, regNo: e.target.value })} /></div>
-            <div className="field"><label>VIN</label><input value={newVehicle.vin} disabled={vehicleFieldsLocked} onChange={(e) => setNewVehicle({ ...newVehicle, vin: e.target.value })} /></div>
-            {/* 2026-09-07: Coupon No. + Job Category, matching DMS's own form - see the
-               couponNo/jobCategory state declared above for the auto-fill/default rules. */}
-            <div className="field">
+            <div className="field" style={{ flex: '1 1 130px', minWidth: 130 }}>
+              <label>Reg No</label>
+              <input value={newVehicle.regNo} disabled={vehicleFieldsLocked} onChange={(e) => setNewVehicle({ ...newVehicle, regNo: e.target.value })} />
+            </div>
+            <div className="field" style={{ flex: '1 1 130px', minWidth: 130 }}>
+              <label>VIN</label>
+              <input value={newVehicle.vin} disabled={vehicleFieldsLocked} onChange={(e) => setNewVehicle({ ...newVehicle, vin: e.target.value })} />
+            </div>
+            <div className="field" style={{ flex: '1 1 130px', minWidth: 130 }}>
               <label>Coupon No</label>
               <input value={couponNo} onChange={(e) => { setCouponNo(e.target.value); setCouponNoTouched(true) }} />
             </div>
-            <div className="field">
+            <div className="field" style={{ flex: '1 1 130px', minWidth: 130 }}>
               <label>Job Category</label>
               <div style={{ display: 'flex', gap: 6 }}>
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  style={jobCategory === 'B2C' ? { background: '#2563eb', color: '#fff', border: '1px solid #2563eb' } : undefined}
-                  onClick={() => setJobCategory('B2C')}
-                >
-                  B2C
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  style={jobCategory === 'B2B' ? { background: '#2563eb', color: '#fff', border: '1px solid #2563eb' } : undefined}
-                  onClick={() => setJobCategory('B2B')}
-                >
-                  B2B
-                </button>
+                <button type="button" className="btn btn-sm" style={jobCategory === 'B2C' ? { background: '#2563eb', color: '#fff', border: '1px solid #2563eb' } : undefined} onClick={() => setJobCategory('B2C')}>B2C</button>
+                <button type="button" className="btn btn-sm" style={jobCategory === 'B2B' ? { background: '#2563eb', color: '#fff', border: '1px solid #2563eb' } : undefined} onClick={() => setJobCategory('B2B')}>B2B</button>
               </div>
             </div>
-            <div className="field">
+            <div className="field" style={{ flex: '1 1 130px', minWidth: 130 }}>
               <label>
                 Odometer (km)<Req />
                 {previousOdometer != null && (
