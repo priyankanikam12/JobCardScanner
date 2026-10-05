@@ -47,6 +47,15 @@ import { buildRepairBillTaxInvoicePrintHtml, taxInvoiceContextFromJobCard, type 
  */
 type RepairBillListNav = NativeStackNavigationProp<RootStackParamList, 'RepairBillList'>
 
+// 2026-10-05 (mirrors web's RepairBillListPage.tsx): Date From / Date To default to THIS MONTH'S 1st /
+// TODAY, computed from the phone's own local date (not UTC, which can land on the wrong day near
+// midnight IST). A bill dated in an earlier month is therefore outside the default range - use the
+// "All dates" button to search every date.
+const pad2 = (n: number) => String(n).padStart(2, '0')
+const toLocalIso = (d: Date) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+const todayIso = () => toLocalIso(new Date())
+const startOfMonthIso = () => { const d = new Date(); return toLocalIso(new Date(d.getFullYear(), d.getMonth(), 1)) }
+
 export function RepairBillListScreen() {
   const { profile, hasRole } = useStaffAuth()
   const canDelete = hasRole('SystemAdmin')
@@ -64,8 +73,8 @@ export function RepairBillListScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.dealerId, profile?.workLocationCodes])
 
-  const [listDateFrom, setListDateFrom] = useState('')
-  const [listDateTo, setListDateTo] = useState('')
+  const [listDateFrom, setListDateFrom] = useState(startOfMonthIso())
+  const [listDateTo, setListDateTo] = useState(todayIso())
   const [listLocation, setListLocation] = useState('')
   const [listBillNo, setListBillNo] = useState('')
   const [listJobNo, setListJobNo] = useState('')
@@ -77,7 +86,12 @@ export function RepairBillListScreen() {
   const [convertingId, setConvertingId] = useState<string | null>(null)
   const [printingId, setPrintingId] = useState<string | null>(null)
 
-  const loadCombined = () => {
+  // 2026-10-05: takes the two dates as arguments (defaulting to the current state) so "All dates" can
+  // reload with empty dates immediately - reading state right after setState would still see the old
+  // dates. Because of that, EVERY call site must call it as loadCombined() with NO arguments - never
+  // pass it directly as an event handler (onPress={loadCombined}, onSubmitEditing={loadCombined},
+  // .then(loadCombined)), which would hand the event/response in as the first argument.
+  const loadCombined = (fromVal: string = listDateFrom, toVal: string = listDateTo) => {
     setLoading(true)
     apiClient
       .get<{ rows: CombinedRepairBillRow[]; dmsBaplDataError: string | null }>('/api/repair-bill-docs/combined', {
@@ -87,20 +101,30 @@ export function RepairBillListScreen() {
           jobNo: listJobNo || undefined,
           chassisNo: listChassisNo || undefined,
           locationCode: listLocation || undefined,
-          dateFrom: listDateFrom || undefined,
-          dateTo: listDateTo || undefined,
+          dateFrom: fromVal || undefined,
+          dateTo: toVal || undefined,
         },
       })
       .then((r) => { setRows(r.data.rows.filter((row) => row.source === 'JobCardScanner')); setLoadError(null) })
-      .catch(() => { setRows([]); setLoadError('Could not load the repair bill list.') })
+      .catch((err: { response?: { status?: number; data?: { message?: string } } }) => {
+        setRows([])
+        // Say WHY: a 403 (this login's role isn't allowed to read repair bills) used to look exactly
+        // like "no bills". The status code is the first thing to check when a bill that exists in the
+        // database isn't showing.
+        const status = err?.response?.status
+        setLoadError(
+          status === 403 ? 'Your login is not allowed to view Repair Bills (HTTP 403) - ask an admin to allow your role.'
+          : `Could not load the repair bill list${status ? ` (HTTP ${status})` : ''}${err?.response?.data?.message ? ` - ${err.response.data.message}` : ''}.`,
+        )
+      })
       .finally(() => setLoading(false))
   }
-  useEffect(loadCombined, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadCombined() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const deleteBill = (id: string) => {
     Alert.alert('Delete this repair bill?', 'This cannot be undone.', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: () => apiClient.delete(`/api/repair-bill-docs/${id}`).then(loadCombined).catch((err) => Alert.alert('Could not delete', err?.response?.data?.message ?? 'Could not delete the repair bill.')) },
+      { text: 'Delete', style: 'destructive', onPress: () => apiClient.delete(`/api/repair-bill-docs/${id}`).then(() => loadCombined()).catch((err) => Alert.alert('Could not delete', err?.response?.data?.message ?? 'Could not delete the repair bill.')) },
     ])
   }
 
@@ -154,7 +178,7 @@ export function RepairBillListScreen() {
   }
 
   return (
-    <ScrollView style={styles.screen} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={loading} onRefresh={loadCombined} />}>
+    <ScrollView style={styles.screen} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={loading} onRefresh={() => loadCombined()} />}>
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
         <Text style={styles.sectionTitle}>Repair Bill List</Text>
         <TouchableOpacity style={styles.smallBtn} onPress={() => navigation.navigate('RepairBillCreate')}>
@@ -166,17 +190,17 @@ export function RepairBillListScreen() {
       <View style={styles.formRow}>
         <View style={{ flex: 1 }}>
           <Text style={styles.label}>Bill No.</Text>
-          <TextInput style={styles.input} value={listBillNo} onChangeText={setListBillNo} onSubmitEditing={loadCombined} placeholder="Enter Bill No." />
+          <TextInput style={styles.input} value={listBillNo} onChangeText={setListBillNo} onSubmitEditing={() => loadCombined()} placeholder="Enter Bill No." />
         </View>
         <View style={{ flex: 1 }}>
           <Text style={styles.label}>Job No.</Text>
-          <TextInput style={styles.input} value={listJobNo} onChangeText={setListJobNo} onSubmitEditing={loadCombined} placeholder="Enter Job No." />
+          <TextInput style={styles.input} value={listJobNo} onChangeText={setListJobNo} onSubmitEditing={() => loadCombined()} placeholder="Enter Job No." />
         </View>
       </View>
       <View style={styles.formRow}>
         <View style={{ flex: 1 }}>
           <Text style={styles.label}>Chassis No.</Text>
-          <TextInput style={styles.input} value={listChassisNo} onChangeText={setListChassisNo} onSubmitEditing={loadCombined} placeholder="Enter Chassis No." />
+          <TextInput style={styles.input} value={listChassisNo} onChangeText={setListChassisNo} onSubmitEditing={() => loadCombined()} placeholder="Enter Chassis No." />
         </View>
       </View>
       <PickerField
@@ -196,7 +220,13 @@ export function RepairBillListScreen() {
           <TextInput style={styles.input} value={listDateTo} onChangeText={setListDateTo} placeholder="YYYY-MM-DD" />
         </View>
       </View>
-      <TouchableOpacity style={styles.smallBtn} onPress={loadCombined}><Text style={styles.smallBtnText}>{loading ? 'Loading…' : 'Search'}</Text></TouchableOpacity>
+      <View style={{ flexDirection: 'row', gap: 8 }}>
+        <TouchableOpacity style={styles.smallBtn} onPress={() => loadCombined()}><Text style={styles.smallBtnText}>{loading ? 'Loading…' : 'Search'}</Text></TouchableOpacity>
+        {/* The list opens on THIS MONTH only, so a bill dated in an earlier month looks missing - one tap searches every date. */}
+        <TouchableOpacity style={styles.smallBtn} disabled={loading} onPress={() => { setListDateFrom(''); setListDateTo(''); loadCombined('', '') }}>
+          <Text style={styles.smallBtnText}>All dates</Text>
+        </TouchableOpacity>
+      </View>
       {loadError && <Text style={styles.error}>{loadError}</Text>}
       {loading && <ActivityIndicator style={{ marginVertical: 8 }} color={colors.primary} />}
 
@@ -245,7 +275,13 @@ export function RepairBillListScreen() {
           </View>
         </TouchableOpacity>
       ))}
-      {rows.length === 0 && !loading && <Text style={styles.muted}>No repair bills yet.</Text>}
+      {rows.length === 0 && !loading && (
+        <Text style={styles.muted}>
+          {listDateFrom || listDateTo
+            ? `No repair bills dated ${listDateFrom || 'any date'} to ${listDateTo || 'any date'} - bills outside this range are hidden. Tap "All dates" to search every date.`
+            : 'No repair bills yet.'}
+        </Text>
+      )}
     </ScrollView>
   )
 }

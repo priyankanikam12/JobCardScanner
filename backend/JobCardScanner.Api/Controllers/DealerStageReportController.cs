@@ -51,6 +51,9 @@ public class DealerStageReportController : ControllerBase
     /// <summary>Cap on the flat job-card list (counts are always exact; only this detail list is capped).</summary>
     private const int MaxJobCardRows = 5000;
 
+    /// <summary>Cap on the documents list for one dealer (the exact count is always returned alongside).</summary>
+    private const int MaxDocRows = 500;
+
     private readonly JobCardScannerDbContext _db;
 
     public DealerStageReportController(JobCardScannerDbContext db) => _db = db;
@@ -157,17 +160,43 @@ public class DealerStageReportController : ControllerBase
             total.Add(j.Status, bucket);
         }
 
+        // 2026-10-05 ("Material Transfer, Repair Bill" cards on the dashboard): how many Material Transfer
+        // and Repair Bill DOCUMENTS each dealer has. Dated by the DOCUMENT's own date (TransferDate /
+        // BillDate - plain dates, so no IST shift is needed), never by the job card's created/closed date,
+        // so dateBasis does not affect these two numbers. Every document counts, whatever its status
+        // (Draft/Confirmed/Cancelled, Performa/Billed...); only a soft-deleted Repair Bill is left out.
+        // Tell me if cancelled ones should be excluded.
+        var rbQuery = _db.RepairBillDocs.AsNoTracking().Where(r => !r.IsDeleted && dealerIdList.Contains(r.DealerId));
+        var mtQuery = _db.MaterialTransferDocs.AsNoTracking().Where(m => dealerIdList.Contains(m.DealerId));
+        if (dateFrom is not null)
+        {
+            var f = dateFrom.Value;
+            rbQuery = rbQuery.Where(r => r.BillDate >= f);
+            mtQuery = mtQuery.Where(m => m.TransferDate >= f);
+        }
+        if (dateTo is not null)
+        {
+            var t = dateTo.Value;
+            rbQuery = rbQuery.Where(r => r.BillDate <= t);
+            mtQuery = mtQuery.Where(m => m.TransferDate <= t);
+        }
+        var rbByDealer = (await rbQuery.GroupBy(r => r.DealerId).Select(g => new { DealerId = g.Key, Count = g.Count() }).ToListAsync())
+            .ToDictionary(x => x.DealerId, x => x.Count);
+        var mtByDealer = (await mtQuery.GroupBy(m => m.DealerId).Select(g => new { DealerId = g.Key, Count = g.Count() }).ToListAsync())
+            .ToDictionary(x => x.DealerId, x => x.Count);
+
         return Ok(new
         {
             generatedAt = DateTime.UtcNow,
             dateFrom,
             dateTo,
             dateBasis = byClosed ? "closed" : "created",
-            totals = ToCounts(total),
+            totals = ToCounts(total, mtByDealer.Values.Sum(), rbByDealer.Values.Sum()),
             dealers = dealers.Select(d =>
             {
                 var c = perDealer[d.Id];
-                return new DealerStageRow(d.Id, d.Name, d.Code, c.Created, c.Open, c.InProgress, c.ReadyForDelivery, c.Invoiced, c.Closed, c.Other, c.NotClosed);
+                return new DealerStageRow(d.Id, d.Name, d.Code, c.Created, c.Open, c.InProgress, c.ReadyForDelivery, c.Invoiced, c.Closed, c.Other, c.NotClosed,
+                    mtByDealer.GetValueOrDefault(d.Id), rbByDealer.GetValueOrDefault(d.Id));
             }).ToList(),
         });
     }
@@ -291,10 +320,70 @@ public class DealerStageReportController : ControllerBase
         });
     }
 
+    // ------------------------------------------------------------------ one dealer's documents (dashboard Material Transfer / Repair Bill cards)
+
+    /// <summary>
+    /// GET .../repair-bills?dealerId=&amp;dateFrom=&amp;dateTo= and GET .../material-transfers?... - 2026-10-05: the
+    /// documents behind the dashboard's "Repair Bill" / "Material Transfer" cards, for ONE dealer, so that
+    /// clicking a dealer card on the report page opens that dealer's documents the way the other cards open its
+    /// job cards. Dated by the DOCUMENT's own date (BillDate / TransferDate - plain dates, no IST shift needed).
+    /// Needed as its own endpoint: the dealer-scoped GET /api/repair-bill-docs and /api/material-transfer-docs
+    /// scope to the SIGNED-IN user's dealer, and a Corporate/System Admin has none, so they cannot read another
+    /// dealer's documents through those. Read-only, newest first, capped at 500 rows (`total` is the exact count,
+    /// `truncated` says the list was cut). Each row carries its item lines so the page can expand it in place.
+    /// </summary>
+    [HttpGet("repair-bills")]
+    public async Task<IActionResult> RepairBillsForDealer([FromQuery] Guid dealerId, [FromQuery] DateOnly? dateFrom, [FromQuery] DateOnly? dateTo)
+    {
+        var dealer = await _db.Dealers.AsNoTracking().Where(d => d.Id == dealerId).Select(d => new { d.Id, d.Name, d.Code }).FirstOrDefaultAsync();
+        if (dealer is null) return NotFound(new { message = "Dealer not found." });
+
+        var q = _db.RepairBillDocs.AsNoTracking().Where(r => r.DealerId == dealerId && !r.IsDeleted);
+        if (dateFrom is not null) { var f = dateFrom.Value; q = q.Where(r => r.BillDate >= f); }
+        if (dateTo is not null) { var t = dateTo.Value; q = q.Where(r => r.BillDate <= t); }
+        var total = await q.CountAsync();
+
+        var bills = await q.Include(r => r.Items).Include(r => r.JobCard).Include(r => r.CreatedBy)
+            .OrderByDescending(r => r.BillDate).ThenByDescending(r => r.CreatedAt)
+            .Take(MaxDocRows).ToListAsync();
+
+        var rows = bills.Select(b => new DocRow(
+            b.Id, b.BillNumber, b.BillDate, b.Status.ToString(), b.PartyName, b.RegNo, b.ChassisNo, b.Location, b.BillType,
+            b.JobCard?.JobCardNumber, b.Items.Count, b.TotalAmount, b.CreatedBy?.Name,
+            b.Items.Select(i => new DocItemRow(i.ItemCode, i.ItemDescription, i.ItemType.ToString(), (decimal)i.Qty, i.Rate, i.TotalAmount)).ToList())).ToList();
+
+        return Ok(new { dealer, generatedAt = DateTime.UtcNow, dateFrom, dateTo, total, truncated = total > rows.Count, rows });
+    }
+
+    [HttpGet("material-transfers")]
+    public async Task<IActionResult> MaterialTransfersForDealer([FromQuery] Guid dealerId, [FromQuery] DateOnly? dateFrom, [FromQuery] DateOnly? dateTo)
+    {
+        var dealer = await _db.Dealers.AsNoTracking().Where(d => d.Id == dealerId).Select(d => new { d.Id, d.Name, d.Code }).FirstOrDefaultAsync();
+        if (dealer is null) return NotFound(new { message = "Dealer not found." });
+
+        var q = _db.MaterialTransferDocs.AsNoTracking().Where(m => m.DealerId == dealerId);
+        if (dateFrom is not null) { var f = dateFrom.Value; q = q.Where(m => m.TransferDate >= f); }
+        if (dateTo is not null) { var t = dateTo.Value; q = q.Where(m => m.TransferDate <= t); }
+        var total = await q.CountAsync();
+
+        var docs = await q.Include(m => m.Items).Include(m => m.JobCard)
+            .OrderByDescending(m => m.TransferDate).ThenByDescending(m => m.CreatedAt)
+            .Take(MaxDocRows).ToListAsync();
+
+        var rows = docs.Select(m => new DocRow(
+            m.Id, m.TransferNumber, m.TransferDate, m.Status.ToString(), m.PartyName, null, null, m.Location, m.TransferType.ToString(),
+            m.JobCard?.JobCardNumber, m.Items.Count, m.TotalAmount, null,
+            m.Items.Select(i => new DocItemRow(i.ItemCode, i.ItemDescription, i.ItemType.ToString(), (decimal)i.Qty, i.Rate, i.Amount)).ToList())).ToList();
+
+        return Ok(new { dealer, generatedAt = DateTime.UtcNow, dateFrom, dateTo, total, truncated = total > rows.Count, rows });
+    }
+
     // ------------------------------------------------------------------ helpers / DTOs
 
-    private static object ToCounts(Counter c) => new
+    private static object ToCounts(Counter c, int materialTransfers = 0, int repairBills = 0) => new
     {
+        materialTransfers,
+        repairBills,
         created = c.Created,
         open = c.Open,
         inProgress = c.InProgress,
@@ -313,8 +402,10 @@ public class DealerStageReportController : ControllerBase
 
     // PascalCase record members serialize as camelCase JSON (same global naming policy every other
     // controller relies on) - matching web/src/lib/dealerRoleReportExport.ts exactly.
-    private sealed record DealerStageRow(Guid DealerId, string DealerName, string? DealerCode, int Created, int Open, int InProgress, int ReadyForDelivery, int Invoiced, int Closed, int Other, int NotClosed);
+    private sealed record DealerStageRow(Guid DealerId, string DealerName, string? DealerCode, int Created, int Open, int InProgress, int ReadyForDelivery, int Invoiced, int Closed, int Other, int NotClosed, int MaterialTransfers, int RepairBills);
     private sealed record PersonRow(Guid? UserId, string Name, string? Designation, bool Active, int Created, int Open, int InProgress, int ReadyForDelivery, int Invoiced, int Closed, int Other, int NotClosed);
     private sealed record RoleRow(string Role, int Users, int Created, int Open, int InProgress, int ReadyForDelivery, int Invoiced, int Closed, int Other, int NotClosed, List<PersonRow> People);
+    private sealed record DocItemRow(string? Code, string? Description, string? ItemType, decimal Qty, decimal Rate, decimal Amount);
+    private sealed record DocRow(Guid Id, string Number, DateOnly Date, string Status, string? Party, string? RegNo, string? ChassisNo, string? Location, string? Type, string? JobNo, int ItemCount, decimal TotalAmount, string? PreparedBy, List<DocItemRow> Items);
     private sealed record JobRow(Guid Id, string JobCardNumber, DateTime CreatedAt, string Status, string? Stage, string Bucket, DateTime? ClosedAt, Guid? CreatedById, string CreatedBy, string Role, string? RegNo, string? CustomerName);
 }

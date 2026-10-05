@@ -38,7 +38,7 @@ namespace JobCardScanner.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/dashboard/dealer-role-report")]
-[Authorize(Policy = Policies.CorporateAdminUp)]
+[Authorize(Policy = Policies.Staff)]
 public class DealerRoleReportController : ControllerBase
 {
     /// <summary>Cap on the flat job-card list returned for the export (counts are always exact;

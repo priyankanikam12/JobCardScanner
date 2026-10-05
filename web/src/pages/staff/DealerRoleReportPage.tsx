@@ -6,8 +6,8 @@ import { staffApi } from '../../api/client'
 import { isReportDealer } from '../../lib/reportDealers'
 import {
   STAGE_COLUMNS, exportDealerRoleReportExcel, exportDealerRoleReportPdf, exportDealerSummaryExcel, exportDealerSummaryPdf,
-  fmtDateTime, periodLabel,
-  type DealerStageReport, type DealerStageSummary, type StageCounts,
+  fmtDateOnly, fmtDateTime, periodLabel,
+  type DealerDocList, type DealerStageReport, type DealerStageSummary, type DocCounts, type StageCounts,
 } from '../../lib/dealerRoleReportExport'
 
 /**
@@ -49,15 +49,29 @@ interface DrillFilter {
 const STAGES: { key: StageKey; label: string; icon: string; accent: string }[] = [
   { key: 'created', label: 'Job Cards Created', icon: '📋', accent: 'kpi-a1' },
   // Every job card that is not Closed/Cancelled - the SAME number as the dashboard's "Open Job Cards Count".
-  { key: 'notClosed', label: 'Not Closed (all open)', icon: '📂', accent: 'kpi-a4' },
+  // { key: 'notClosed', label: 'Not Closed (Open + In Progress)', icon: '📂', accent: 'kpi-a4' },
   { key: 'open', label: 'Open', icon: '📂', accent: 'kpi-a4' },
   { key: 'inProgress', label: 'In Progress', icon: '🔧', accent: 'kpi-a3' },
   { key: 'readyForDelivery', label: 'Ready for Delivery', icon: '🏁', accent: 'kpi-a5' },
-  { key: 'invoiced', label: 'Invoiced', icon: '🧾', accent: 'kpi-a2' },
-  { key: 'closed', label: 'Closed', icon: '✅', accent: 'kpi-a6' },
+  // { key: 'invoiced', label: 'Invoiced', icon: '🧾', accent: 'kpi-a2' },
+  // { key: 'closed', label: 'Closed', icon: '✅', accent: 'kpi-a6' },
 ]
 const STAGE_KEYS = STAGES.map((s) => s.key) as string[]
 const stageLabel = (k: DrillStage): string => (k === 'other' ? 'Other' : STAGES.find((s) => s.key === k)?.label ?? k)
+
+// Material Transfer / Repair Bill DOCUMENT counts (the dashboard's Material Transfer and Repair Bill cards).
+// A document has no roles / people / job cards, so clicking a dealer card for one of these opens THAT DEALER'S
+// DOCUMENTS (a list, each expandable to its lines) instead of the role report - see the documents view below.
+type DocKey = 'materialTransfers' | 'repairBills'
+type SummaryKey = StageKey | DocKey
+const DOC_STAGES: { key: DocKey; label: string; icon: string; accent: string }[] = [
+  { key: 'materialTransfers', label: 'Material Transfers', icon: '🔄', accent: 'kpi-a3' },
+  { key: 'repairBills', label: 'Repair Bills', icon: '🧾', accent: 'kpi-a2' },
+]
+const SUMMARY_KEYS = [...STAGE_KEYS, ...DOC_STAGES.map((d) => d.key)] as string[]
+const isDocKey = (k: SummaryKey): k is DocKey => k === 'materialTransfers' || k === 'repairBills'
+const summaryLabel = (k: SummaryKey): string => (isDocKey(k) ? DOC_STAGES.find((d) => d.key === k)?.label ?? k : stageLabel(k))
+const summaryCount = (c: StageCounts & Partial<DocCounts>, k: SummaryKey): number => (isDocKey(k) ? c[k] ?? 0 : c[k])
 
 const CHART_BARS: { key: 'open' | 'inProgress' | 'readyForDelivery' | 'invoiced' | 'other'; name: string; color: string }[] = [
   { key: 'open', name: 'Open', color: '#f59e0b' },
@@ -116,10 +130,14 @@ export function DealerRoleReportPage() {
   const [dealersLoaded, setDealersLoaded] = useState(false)
   const [dealersError, setDealersError] = useState<string | null>(null)
   const [dealerId, setDealerId] = useState('') // '' = all dealers
-  const [status, setStatus] = useState<StageKey>(urlStatus && STAGE_KEYS.includes(urlStatus) ? (urlStatus as StageKey) : 'created')
+  const [status, setStatus] = useState<SummaryKey>(urlStatus && SUMMARY_KEYS.includes(urlStatus) ? (urlStatus as SummaryKey) : 'created')
   // From the dashboard cards the dates arrive in the URL (today..today); otherwise this month -> today.
-  const [dateFrom, setDateFrom] = useState(params.get('from') ?? startOfMonthIso())
-  const [dateTo, setDateTo] = useState(params.get('to') ?? todayIso())
+  // const [dateFrom, setDateFrom] = useState(params.get('from') ?? startOfMonthIso())
+  // const [dateTo, setDateTo] = useState(params.get('to') ?? todayIso())
+  // Created from / Created to ALWAYS open on the 1st of this month -> today, however you arrive on this page
+  // (including from a dashboard card). Both are still editable, and the Today / This month / All time buttons work as before.
+  const [dateFrom, setDateFrom] = useState(startOfMonthIso())
+  const [dateTo, setDateTo] = useState(todayIso())
   // Which job-card date the range filters on. The dashboard's "Closed today"/"Invoiced today" cards arrive with
   // basis=closed (closed that day); everything else filters on the created date.
   const [dateBasis, setDateBasis] = useState<'created' | 'closed'>(params.get('basis') === 'closed' ? 'closed' : 'created')
@@ -129,6 +147,10 @@ export function DealerRoleReportPage() {
   const [summaryError, setSummaryError] = useState<string | null>(null)
 
   const [report, setReport] = useState<DealerStageReport | null>(null)
+  const [docs, setDocs] = useState<DealerDocList | null>(null)
+  const [docsLoading, setDocsLoading] = useState(false)
+  const [docsError, setDocsError] = useState<string | null>(null)
+  const [docOpen, setDocOpen] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -177,6 +199,24 @@ export function DealerRoleReportPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dealersLoaded, allDealers, showAll, dateFrom, dateTo, dateBasis])
 
+  // ---- one dealer's documents (Material Transfer / Repair Bill) ----
+  useEffect(() => {
+    if (!dealerId || !isDocKey(status)) { setDocs(null); return }
+    setDocsLoading(true)
+    setDocsError(null)
+    setDocOpen(null)
+    staffApi
+      .get<DealerDocList>(`/api/dashboard/dealer-stage-report/${status === 'repairBills' ? 'repair-bills' : 'material-transfers'}`, {
+        params: { dealerId, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined },
+      })
+      .then((res) => setDocs(res.data))
+      .catch((err: { response?: { data?: { message?: string } } }) => {
+        setDocs(null)
+        setDocsError(err?.response?.data?.message ?? 'Could not load the documents for this dealer.')
+      })
+      .finally(() => setDocsLoading(false))
+  }, [dealerId, status, dateFrom, dateTo])
+
   // ---- one dealer's report ----
   useEffect(() => {
     if (!dealerId) { setReport(null); return }
@@ -222,7 +262,8 @@ export function DealerRoleReportPage() {
   }
 
   const openDealerFromCard = (id: string) => {
-    autoDrillRef.current = status
+    // A document stage opens the dealer's documents; a job-card stage opens the role report already drilled to it.
+    autoDrillRef.current = isDocKey(status) ? null : status
     setDealerId(id)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
@@ -244,7 +285,8 @@ export function DealerRoleReportPage() {
 
   const clickable = { cursor: 'pointer' } as const
   const isDefaultDates = dateFrom === startOfMonthIso() && dateTo === todayIso()
-  const hasData = dealerId ? !!report && !loading : !!summary && !summaryLoading
+  // Excel/PDF cover the dealer-wise summary and one dealer's role report; the documents list has no export.
+  const hasData = dealerId ? !isDocKey(status) && !!report && !loading : !!summary && !summaryLoading
   const selectedDealerName = dealers.find((d) => d.id === dealerId)?.name
 
   const download = (kind: 'excel' | 'pdf') => {
@@ -262,17 +304,17 @@ export function DealerRoleReportPage() {
 
   return (
     <div>
-      {/* <p style={{ margin: '0 0 6px' }}>
+      <p style={{ margin: '0 0 6px' }}>
         {dealerId
           ? <a href="#all-dealers" onClick={(e) => { e.preventDefault(); autoDrillRef.current = null; setDealerId('') }}>&larr; All dealers</a>
-          : <Link to="/dashboard">&larr; Back to Dashboard</Link>}
-      </p> */}
+          : <Link to="/dashboard"></Link>}
+      </p>
       <h2 style={{ marginBottom: 4 }}>Dealer Role Report</h2>
-      <p className="muted" style={{ marginTop: 0 }}>
+      {/* <p className="muted" style={{ marginTop: 0 }}>
         {dealerId
           ? 'Every role under this dealer, the people in each role, and their job cards. Click any number, tile, bar or person to open those job cards.'
           : 'Job cards across the dealers below for the dates you choose. Click a tile to see it dealer by dealer, then a dealer to see its roles, people and job cards.'}
-      </p>
+      </p> */}
 
       <div className="card">
         {/* .form-row is an equal-width grid that squeezed the Dealer select into one narrow column -
@@ -338,7 +380,7 @@ export function DealerRoleReportPage() {
                 <strong>{dealers.length} dealers{showAll ? ' (all)' : ''}</strong> · Period: {periodLabel(summary)} · Generated {fmtDateTime(summary.generatedAt)} IST
               </p>
               <div className="kpi-grid" style={{ margin: '8px 0 16px' }}>
-                {STAGES.map((s) => (
+                {[...STAGES, ...DOC_STAGES].map((s) => (
                   <div
                     key={s.key}
                     className={`kpi ${s.accent}`}
@@ -350,17 +392,21 @@ export function DealerRoleReportPage() {
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setStatus(s.key) }}
                   >
                     <div className="kpi-icon">{s.icon}</div>
-                    <div className="value">{countOf(summary.totals, s.key)}</div>
+                    <div className="value">{summaryCount(summary.totals, s.key)}</div>
                     <div className="label">{s.label}</div>
                   </div>
                 ))}
               </div>
 
-              <h3 style={{ marginBottom: 2 }}>{stageLabel(status)} - by dealer</h3>
-              <p className="muted" style={{ marginTop: 0 }}>Click a dealer to see its roles, people and job cards.</p>
+              <h3 style={{ marginBottom: 2 }}>{summaryLabel(status)} - by dealer</h3>
+              <p className="muted" style={{ marginTop: 0 }}>
+                {isDocKey(status)
+                  ? 'Documents dated in the period. Click a dealer to see its documents.'
+                  : 'Click a dealer to see its roles, people and job cards.'}
+              </p>
               <div className="kpi-grid" style={{ margin: '8px 0 16px' }}>
                 {[...summary.dealers]
-                  .sort((a, b) => countOf(b, status) - countOf(a, status) || a.dealerName.localeCompare(b.dealerName))
+                  .sort((a, b) => summaryCount(b, status) - summaryCount(a, status) || a.dealerName.localeCompare(b.dealerName))
                   .map((d) => (
                     <div
                       key={d.dealerId}
@@ -373,11 +419,12 @@ export function DealerRoleReportPage() {
                       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') openDealerFromCard(d.dealerId) }}
                     >
                       <div className="kpi-icon">🏢</div>
-                      <div className="value">{countOf(d, status)}</div>
+                      <div className="value">{summaryCount(d, status)}</div>
                       <div className="label">{d.dealerName.replace(/^MAGNEMITE MOTO LLP-/i, '')}</div>
                       <div className="muted" style={{ fontSize: 11, marginTop: 4, lineHeight: 1.5 }}>
                         Created {d.created} · Open {d.open} · In Progress {d.inProgress}<br />
-                        Ready {d.readyForDelivery} · Invoiced {d.invoiced} · Closed {d.closed}
+                        Ready {d.readyForDelivery} · Invoiced {d.invoiced} · Closed {d.closed}<br />
+                        Material Transfers {d.materialTransfers} · Repair Bills {d.repairBills}
                       </div>
                     </div>
                   ))}
@@ -392,10 +439,95 @@ export function DealerRoleReportPage() {
       )}
 
       {/* =============================== LEVEL 2: one dealer =============================== */}
-      {dealerId && loading && <p className="muted">Loading report…</p>}
-      {dealerId && error && <p className="error-text">{error}</p>}
+      {dealerId && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '4px 0 12px' }}>
+          <button className={`btn btn-sm${!isDocKey(status) ? ' btn-primary' : ''}`} onClick={() => { if (isDocKey(status)) setStatus('created') }}>Job cards &amp; roles</button>
+          {DOC_STAGES.map((d) => (
+            <button key={d.key} className={`btn btn-sm${status === d.key ? ' btn-primary' : ''}`} onClick={() => setStatus(d.key)}>{d.icon} {d.label}</button>
+          ))}
+        </div>
+      )}
 
-      {dealerId && report && t && !loading && (
+      {dealerId && isDocKey(status) && (
+        <>
+          {docsLoading && <p className="muted">Loading {summaryLabel(status)}…</p>}
+          {docsError && <p className="error-text">{docsError}</p>}
+          {docs && !docsLoading && (
+            <>
+              <p className="muted" style={{ marginBottom: 8 }}>
+                <strong>{docs.dealer.name || selectedDealerName}</strong>{docs.dealer.code ? ` (${docs.dealer.code})` : ''} · Period: {periodLabel(docs)} · {docs.total} {summaryLabel(status)}
+                {docs.truncated ? ` - showing the latest ${docs.rows.length}` : ''} · Generated {fmtDateTime(docs.generatedAt)} IST
+              </p>
+              <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Sr</th><th>{status === 'repairBills' ? 'Bill No' : 'Transfer No'}</th><th>Date</th><th>Status</th><th>Party</th>
+                      {status === 'repairBills' && <><th>Reg No</th><th>Chassis No</th></>}
+                      <th>Location</th><th>{status === 'repairBills' ? 'Bill Type' : 'Type'}</th><th>Job No</th>
+                      <th className="text-end">Items</th><th className="text-end">Amount</th>
+                      {status === 'repairBills' && <th>Prepared by</th>}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {docs.rows.map((d, i) => {
+                      const open = docOpen === d.id
+                      return (
+                        <Fragment key={d.id}>
+                          <tr onClick={() => setDocOpen(open ? null : d.id)} style={clickable} title="Click to show / hide the lines">
+                            <td>{i + 1}</td>
+                            <td><strong>{open ? '▾' : '▸'} {d.number}</strong></td>
+                            <td>{fmtDateOnly(d.date)}</td>
+                            <td>{d.status}</td>
+                            <td>{d.party ?? '-'}</td>
+                            {status === 'repairBills' && <><td>{d.regNo ?? '-'}</td><td>{d.chassisNo ?? '-'}</td></>}
+                            <td>{d.location ?? '-'}</td>
+                            <td>{d.type ?? '-'}</td>
+                            <td>{d.jobNo ?? '-'}</td>
+                            <td className="text-end">{d.itemCount}</td>
+                            <td className="text-end">₹{d.totalAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                            {status === 'repairBills' && <td>{d.preparedBy ?? '-'}</td>}
+                          </tr>
+                          {open && (
+                            <tr style={{ background: '#f8fafc' }}>
+                              <td colSpan={status === 'repairBills' ? 13 : 10} style={{ paddingLeft: 32 }}>
+                                {d.items.length === 0 ? <span className="muted">No lines.</span> : (
+                                  <table>
+                                    <thead><tr><th>Code</th><th>Description</th><th>Type</th><th className="text-end">Qty</th><th className="text-end">Rate</th><th className="text-end">Amount</th></tr></thead>
+                                    <tbody>
+                                      {d.items.map((it, k) => (
+                                        <tr key={k}>
+                                          <td>{it.code ?? '-'}</td><td>{it.description ?? '-'}</td><td>{it.itemType ?? '-'}</td>
+                                          <td className="text-end">{it.qty}</td>
+                                          <td className="text-end">{it.rate.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</td>
+                                          <td className="text-end">{it.amount.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                )}
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      )
+                    })}
+                    {docs.rows.length === 0 && (
+                      <tr><td colSpan={status === 'repairBills' ? 13 : 10} className="muted" style={{ textAlign: 'center', padding: 16 }}>No {summaryLabel(status).toLowerCase()} in this period.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <p className="muted" style={{ marginTop: 6 }}>Dated by the document&apos;s own date. Every status is counted; deleted Repair Bills are left out.</p>
+            </>
+          )}
+        </>
+      )}
+
+      {dealerId && !isDocKey(status) && loading && <p className="muted">Loading report…</p>}
+      {dealerId && !isDocKey(status) && error && <p className="error-text">{error}</p>}
+
+      {dealerId && !isDocKey(status) && report && t && !loading && (
         <>
           <p className="muted" style={{ marginBottom: 8 }}>
             <strong>{report.dealer.name || selectedDealerName}</strong>{report.dealer.code ? ` (${report.dealer.code})` : ''} · Period: {periodLabel(report)} · Generated {fmtDateTime(report.generatedAt)} IST

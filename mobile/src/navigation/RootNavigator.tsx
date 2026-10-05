@@ -61,6 +61,8 @@ export type JobCardsListFilter = {
   pendingBucket?: boolean
 }
 
+export type DealerRoleReportParams = { status?: string; scope?: string; basis?: string; from?: string; to?: string }
+
 export type RootStackParamList = {
   Dashboard: undefined
   JobCardsList: JobCardsListFilter | undefined
@@ -90,7 +92,8 @@ export type RootStackParamList = {
   // MaterialTransferCreate rather than reusing those names.
   RepairBillReport: undefined
   MaterialTransferReport: undefined
-  DealerRoleReport: undefined
+  // DealerRoleReport: undefined
+  DealerRoleReport: DealerRoleReportParams | undefined
 }
 
 const Stack = createNativeStackNavigator<RootStackParamList>()

@@ -29,6 +29,18 @@ namespace JobCardScanner.Api.Controllers;
 /// ServiceAdvisorUp is shared with JobCardsController (which Supervisor keeps), but this controller
 /// is unrelated to Job Cards, so narrowing THIS controller's own policy doesn't touch that one. The
 /// separate SystemAdminOnly-gated action further down (Delete, line ~533) is untouched.
+///
+/// 2026-10-05 ("for systemadmin and corporate admin dont have dealerid but they will show all"):
+/// CorporateAdmin and SystemAdmin have NO dealer of their own, and every READ below used to be
+/// hard-wired to `DealerId == the caller's dealer` - a null for these two roles, so their lists were
+/// empty or failed outright (a bare `Forbid()` with no usable authentication scheme can even surface
+/// as an HTTP 500). Reads (List, Combined, Get) and the SystemAdmin-only Delete now cover EVERY dealer
+/// for those two roles (IsOrgWideRole below), the same convention JobCardsController.List already
+/// uses; every other role is still scoped to its own dealer exactly as before. WRITES (Create,
+/// Update, UpdateStatus) are deliberately left dealer-scoped - a bill is created under a dealer, and
+/// an org-wide login has none to create it under - and now answer with a plain 403 + message instead
+/// of a bare Forbid(). The list actions also catch a failed database read and return its real
+/// message, so a missing column shows up on the page instead of an anonymous 500.
 /// </summary>
 [ApiController]
 [Route("api/repair-bill-docs")]
@@ -57,6 +69,11 @@ public class RepairBillDocsController : ControllerBase
         _logger = logger;
     }
 
+    /// <summary>2026-10-05: CorporateAdmin / SystemAdmin have no dealer of their own and read EVERY
+    /// dealer's repair bills (same convention as JobCardsController.List's isOrgWideRole). Writes stay
+    /// dealer-scoped - see this controller's doc comment.</summary>
+    private bool IsOrgWideRole => _currentUser.Role is StaffRole.CorporateAdmin or StaffRole.SystemAdmin;
+
     /// <summary>GET /api/repair-bill-docs - this dealer's own JobCardScannerDb-native bills only
     /// (newest first), IsDeleted rows excluded (reference: DeleteRepairbill soft-deletes and the
     /// reference's own list query excludes IsDelete rows too). Search filters mirror the reference
@@ -74,7 +91,10 @@ public class RepairBillDocsController : ControllerBase
     /// through THIS controller instead (this app never writes bills back to DMS - see this
     /// controller's own top-of-file doc comment). Also now Includes JobCard, so ToRow's own
     /// JobCardNumber projection (previously always null from this action - JobCard was never
-    /// loaded here, only Get()/Combined() below ever Included it) actually returns a value.</summary>
+    /// loaded here, only Get()/Combined() below ever Included it) actually returns a value.
+    ///
+    /// 2026-10-05: CorporateAdmin/SystemAdmin (no dealer of their own) get EVERY dealer's bills; other
+    /// roles are scoped to their own dealer as before.</summary>
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] string? billNo = null, [FromQuery] string? regNo = null,
@@ -82,10 +102,11 @@ public class RepairBillDocsController : ControllerBase
         [FromQuery] Guid? jobCardId = null)
     {
         var dealerId = _currentUser.DealerId;
-        if (dealerId is null) return Forbid();
+        if (dealerId is null && !IsOrgWideRole)
+            return StatusCode(403, new { message = "This login is not linked to a dealer, so it has no repair bill list of its own." });
 
-        var query = _db.RepairBillDocs.AsNoTracking()
-            .Where(r => r.DealerId == dealerId && !r.IsDeleted);
+        var query = _db.RepairBillDocs.AsNoTracking().Where(r => !r.IsDeleted);
+        if (!IsOrgWideRole) query = query.Where(r => r.DealerId == dealerId);
 
         if (!string.IsNullOrWhiteSpace(billNo)) query = query.Where(r => r.BillNumber.Contains(billNo));
         if (!string.IsNullOrWhiteSpace(regNo)) query = query.Where(r => r.RegNo != null && r.RegNo.Contains(regNo));
@@ -94,7 +115,16 @@ public class RepairBillDocsController : ControllerBase
         if (dateTo is not null) query = query.Where(r => r.BillDate <= dateTo);
         if (jobCardId is not null) query = query.Where(r => r.JobCardId == jobCardId);
 
-        var bills = await query.Include(r => r.Items).Include(r => r.JobCard).OrderByDescending(r => r.CreatedAt).ToListAsync();
+        List<RepairBillDoc> bills;
+        try
+        {
+            bills = await query.Include(r => r.Items).Include(r => r.JobCard).OrderByDescending(r => r.CreatedAt).ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Repair bill list: could not read RepairBillDocs.");
+            return StatusCode(500, new { message = $"Could not read the repair bills: {ex.GetBaseException().Message}" });
+        }
 
         return Ok(bills.Select(ToRow));
     }
@@ -118,6 +148,9 @@ public class RepairBillDocsController : ControllerBase
     /// narrow the DMSBAPLDATA half, since IDmsBaplDataService has no location/date/bill-no/job-no
     /// filtering capability to call into, and inventing one here would mean guessing at a query
     /// shape DmsBaplDataService.cs was never built to support.
+    ///
+    /// 2026-10-05: CorporateAdmin/SystemAdmin (no dealer of their own) get EVERY dealer's own bills here;
+    /// other roles are scoped to their own dealer as before.
     /// </summary>
     [HttpGet("combined")]
     public async Task<IActionResult> Combined(
@@ -134,10 +167,11 @@ public class RepairBillDocsController : ControllerBase
         [FromQuery] bool ownOnly = false)
     {
         var dealerId = _currentUser.DealerId;
-        if (dealerId is null) return Forbid();
+        if (dealerId is null && !IsOrgWideRole)
+            return StatusCode(403, new { message = "This login is not linked to a dealer, so it has no repair bill list of its own." });
 
-        var localQuery = _db.RepairBillDocs.AsNoTracking()
-            .Where(r => r.DealerId == dealerId && !r.IsDeleted);
+        var localQuery = _db.RepairBillDocs.AsNoTracking().Where(r => !r.IsDeleted);
+        if (!IsOrgWideRole) localQuery = localQuery.Where(r => r.DealerId == dealerId);
         if (!string.IsNullOrWhiteSpace(billNo)) localQuery = localQuery.Where(r => r.BillNumber.Contains(billNo));
         if (!string.IsNullOrWhiteSpace(jobNo)) localQuery = localQuery.Where(r => r.JobCard != null && r.JobCard.JobCardNumber.Contains(jobNo));
         if (!string.IsNullOrWhiteSpace(chassisNo)) localQuery = localQuery.Where(r => r.ChassisNo != null && r.ChassisNo.Contains(chassisNo));
@@ -145,13 +179,24 @@ public class RepairBillDocsController : ControllerBase
         if (dateFrom is not null) localQuery = localQuery.Where(r => r.BillDate >= dateFrom);
         if (dateTo is not null) localQuery = localQuery.Where(r => r.BillDate <= dateTo);
 
-        var localBills = await localQuery
-            .Include(r => r.Items)
-            .Include(r => r.JobCard)
-            .Include(r => r.CreatedBy)
-            .Include(r => r.UpdatedBy)
-            .OrderByDescending(r => r.CreatedAt)
-            .ToListAsync();
+        List<RepairBillDoc> localBills;
+        try
+        {
+            localBills = await localQuery
+                .Include(r => r.Items)
+                .Include(r => r.JobCard)
+                .Include(r => r.CreatedBy)
+                .Include(r => r.UpdatedBy)
+                .OrderByDescending(r => r.CreatedAt)
+                .ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            // 2026-10-05: return the database's own message (e.g. "Invalid column name ...") so a missing
+            // column is visible on the page instead of an anonymous HTTP 500.
+            _logger.LogError(ex, "Repair bill list: could not read RepairBillDocs.");
+            return StatusCode(500, new { message = $"Could not read the repair bills: {ex.GetBaseException().Message}" });
+        }
 
         var combined = new List<CombinedRepairBillRow>(localBills.Select(ToCombinedRow));
 
@@ -196,12 +241,16 @@ public class RepairBillDocsController : ControllerBase
     // Material Transfer items) when a Performa bill is reopened for editing. Neither field was
     // exposed here before since nothing previously needed to reconstruct a bill's Job link from
     // this endpoint alone.
+    //
+    // 2026-10-05: CorporateAdmin/SystemAdmin can open ANY dealer's bill (so Print Invoice works from the
+    // all-dealers list); other roles only their own dealer's.
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id)
     {
         var dealerId = _currentUser.DealerId;
+        var orgWide = IsOrgWideRole;
         var bill = await _db.RepairBillDocs.AsNoTracking().Include(r => r.Items).Include(r => r.JobCard)
-            .FirstOrDefaultAsync(r => r.Id == id && r.DealerId == dealerId && !r.IsDeleted);
+            .FirstOrDefaultAsync(r => r.Id == id && (orgWide || r.DealerId == dealerId) && !r.IsDeleted);
         return bill is null ? NotFound() : Ok(ToRow(bill));
     }
 
@@ -236,7 +285,8 @@ public class RepairBillDocsController : ControllerBase
     public async Task<IActionResult> Create(CreateRepairBillRequest req)
     {
         var dealerId = _currentUser.DealerId;
-        if (dealerId is null) return Forbid();
+        if (dealerId is null)
+            return StatusCode(403, new { message = "A repair bill is created under a dealer - this login is not linked to one." });
         if (string.IsNullOrWhiteSpace(req.PartyName)) return BadRequest(new { message = "Party Name is required." });
         if (req.Items is null || req.Items.Count == 0) return BadRequest(new { message = "Add at least one item or labour line." });
 
@@ -310,7 +360,8 @@ public class RepairBillDocsController : ControllerBase
     public async Task<IActionResult> Update(Guid id, CreateRepairBillRequest req)
     {
         var dealerId = _currentUser.DealerId;
-        if (dealerId is null) return Forbid();
+        if (dealerId is null)
+            return StatusCode(403, new { message = "A repair bill is edited under its dealer - this login is not linked to one." });
         if (string.IsNullOrWhiteSpace(req.PartyName)) return BadRequest(new { message = "Party Name is required." });
         if (req.Items is null || req.Items.Count == 0) return BadRequest(new { message = "Add at least one item or labour line." });
 
@@ -536,14 +587,19 @@ public class RepairBillDocsController : ControllerBase
     /// page"): same restore as MaterialTransferDocsController.Delete, for this bill's own Part
     /// lines - see that method's doc comment. Applied on this soft delete too, not just a hard
     /// row removal, since IsDeleted = true is this app's real "undo" for a bill.
+    ///
+    /// 2026-10-05: SystemAdmin has no dealer of their own, so this now finds ANY dealer's bill (the
+    /// all-dealers list shows them all) and restores stock against the BILL's own dealer
+    /// (bill.DealerId), not the caller's.
     /// </summary>
     [HttpDelete("{id:guid}")]
     [Authorize(Policy = Policies.SystemAdminOnly)]
     public async Task<IActionResult> Delete(Guid id)
     {
         var dealerId = _currentUser.DealerId;
+        var orgWide = IsOrgWideRole;
         var bill = await _db.RepairBillDocs.Include(r => r.Items)
-            .FirstOrDefaultAsync(r => r.Id == id && r.DealerId == dealerId && !r.IsDeleted);
+            .FirstOrDefaultAsync(r => r.Id == id && (orgWide || r.DealerId == dealerId) && !r.IsDeleted);
         if (bill is null) return NotFound();
 
         if (!string.IsNullOrWhiteSpace(bill.Location))
@@ -552,7 +608,7 @@ public class RepairBillDocsController : ControllerBase
             {
                 if (string.IsNullOrWhiteSpace(it.ItemCode)) continue;
                 var pu = await _db.PartUploads.FirstOrDefaultAsync(
-                    p => p.DealerId == dealerId && p.LocationCode == bill.Location && p.PartNo == it.ItemCode, HttpContext.RequestAborted);
+                    p => p.DealerId == bill.DealerId && p.LocationCode == bill.Location && p.PartNo == it.ItemCode, HttpContext.RequestAborted);
                 if (pu is not null) pu.BalQty = (pu.BalQty ?? 0) + (decimal)it.Qty;
             }
         }

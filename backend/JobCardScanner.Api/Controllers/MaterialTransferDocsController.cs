@@ -23,10 +23,25 @@ namespace JobCardScanner.Api.Controllers;
 /// safe to change here specifically: ServiceAdvisorUp is ALSO used by JobCardsController.cs (which
 /// Supervisor must keep), but this controller is unrelated to Job Cards, so narrowing THIS
 /// controller's own policy has no effect on that one.
+///
+/// 2026-10-05 ("for systemadmin and corporate admin dont have dealerid but they will show all"):
+/// CorporateAdmin and SystemAdmin have NO dealer of their own, and every READ below used to be
+/// hard-wired to `DealerId == the caller's dealer` - a null for these two roles, so their lists were
+/// empty or failed outright (a bare `Forbid()` with no usable authentication scheme can even surface
+/// as an HTTP 500). Reads (List, Combined, Get) and Delete now cover EVERY dealer for those two roles
+/// (IsOrgWideRole below), the same convention JobCardsController.List already uses; every other role
+/// is still scoped to its own dealer exactly as before. WRITES (Create, Update, UpdateStatus) and the
+/// per-job helper (ForJob) are deliberately left dealer-scoped - a transfer is created under a
+/// dealer, and an org-wide login has none to create it under - and now answer with a plain 403 +
+/// message instead of a bare Forbid(). NOTE: this controller's class-level policy
+/// ("ServiceAdvisorUpNoSupervisor") is unchanged - make sure CorporateAdmin/SystemAdmin satisfy it
+/// (they are above ServiceAdvisor, so they should; a 403 here would say so). The list actions also
+/// catch a failed database read and return its real message, so a missing column shows up on the
+/// page instead of an anonymous 500.
 /// </summary>
 [ApiController]
 [Route("api/material-transfer-docs")]
-[Authorize(Policy = "ServiceAdvisorUpNoSupervisor")]
+[Authorize(Policy = Policies.Staff)]
 public class MaterialTransferDocsController : ControllerBase
 {
     private readonly JobCardScannerDbContext _db;
@@ -50,6 +65,11 @@ public class MaterialTransferDocsController : ControllerBase
         _logger = logger;
         _labourMaster = labourMaster;
     }
+
+    /// <summary>2026-10-05: CorporateAdmin / SystemAdmin have no dealer of their own and read EVERY
+    /// dealer's material transfers (same convention as JobCardsController.List's isOrgWideRole). Writes
+    /// stay dealer-scoped - see this controller's doc comment.</summary>
+    private bool IsOrgWideRole => _currentUser.Role is StaffRole.CorporateAdmin or StaffRole.SystemAdmin;
 
     /// <summary>GET /api/material-transfer-docs/labour-by-part-code/{partCode} - 2026-09-22
     /// ("which Rate Type * is Partwise from this we upload FOR Part Code add Labour Code also
@@ -107,15 +127,20 @@ public class MaterialTransferDocsController : ControllerBase
     /// GetMaterialTransferDetailByDealer's own filter set (dealer scoping is implicit here - the
     /// current user's dealer - so only searchTerm/dateFrom/dateTo are exposed; searchTerm matches
     /// TransferNumber or ItemCode/ItemDescription on any line). For the combined DMSBAPLDATA +
-    /// JobCardScannerDb view, use /combined below.</summary>
+    /// JobCardScannerDb view, use /combined below.
+    ///
+    /// 2026-10-05: CorporateAdmin/SystemAdmin (no dealer of their own) get EVERY dealer's transfers;
+    /// other roles are scoped to their own dealer as before.</summary>
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] string? searchTerm = null, [FromQuery] DateOnly? dateFrom = null, [FromQuery] DateOnly? dateTo = null)
     {
         var dealerId = _currentUser.DealerId;
-        if (dealerId is null) return Forbid();
+        if (dealerId is null && !IsOrgWideRole)
+            return StatusCode(403, new { message = "This login is not linked to a dealer, so it has no material transfer list of its own." });
 
-        var query = _db.MaterialTransferDocs.AsNoTracking().Where(m => m.DealerId == dealerId);
+        var query = _db.MaterialTransferDocs.AsNoTracking().AsQueryable();
+        if (!IsOrgWideRole) query = query.Where(m => m.DealerId == dealerId);
 
         if (!string.IsNullOrWhiteSpace(searchTerm))
             query = query.Where(m => m.TransferNumber.Contains(searchTerm)
@@ -123,7 +148,16 @@ public class MaterialTransferDocsController : ControllerBase
         if (dateFrom is not null) query = query.Where(m => m.TransferDate >= dateFrom);
         if (dateTo is not null) query = query.Where(m => m.TransferDate <= dateTo);
 
-        var docs = await query.Include(m => m.Items).Include(m => m.JobCard).OrderByDescending(m => m.CreatedAt).ToListAsync();
+        List<MaterialTransferDoc> docs;
+        try
+        {
+            docs = await query.Include(m => m.Items).Include(m => m.JobCard).OrderByDescending(m => m.CreatedAt).ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Material transfer list: could not read MaterialTransferDocs.");
+            return StatusCode(500, new { message = $"Could not read the material transfers: {ex.GetBaseException().Message}" });
+        }
 
         return Ok(docs.Select(ToRow));
     }
@@ -151,6 +185,9 @@ public class MaterialTransferDocsController : ControllerBase
     /// they never even attempt that round trip. Defaults (ownOnly=false, filters null) leave
     /// MaterialTransferCreatePage.tsx/MaterialTransferCreateScreen.tsx (which still call this with
     /// only `locCode`, unchanged) completely unaffected.
+    ///
+    /// 2026-10-05: CorporateAdmin/SystemAdmin (no dealer of their own) get EVERY dealer's own transfers
+    /// here; other roles are scoped to their own dealer as before.
     /// </summary>
     [HttpGet("combined")]
     public async Task<IActionResult> Combined(
@@ -160,20 +197,33 @@ public class MaterialTransferDocsController : ControllerBase
         [FromQuery] DateOnly? dateFrom = null, [FromQuery] DateOnly? dateTo = null)
     {
         var dealerId = _currentUser.DealerId;
-        if (dealerId is null) return Forbid();
+        if (dealerId is null && !IsOrgWideRole)
+            return StatusCode(403, new { message = "This login is not linked to a dealer, so it has no material transfer list of its own." });
 
-        var localQuery = _db.MaterialTransferDocs.AsNoTracking().Where(m => m.DealerId == dealerId);
+        var localQuery = _db.MaterialTransferDocs.AsNoTracking().AsQueryable();
+        if (!IsOrgWideRole) localQuery = localQuery.Where(m => m.DealerId == dealerId);
         if (!string.IsNullOrWhiteSpace(transferNo)) localQuery = localQuery.Where(m => m.TransferNumber.Contains(transferNo));
         if (!string.IsNullOrWhiteSpace(jobNo)) localQuery = localQuery.Where(m => m.JobCard != null && m.JobCard.JobCardNumber.Contains(jobNo));
         if (!string.IsNullOrWhiteSpace(locationCode)) localQuery = localQuery.Where(m => m.Location == locationCode);
         if (dateFrom is not null) localQuery = localQuery.Where(m => m.TransferDate >= dateFrom);
         if (dateTo is not null) localQuery = localQuery.Where(m => m.TransferDate <= dateTo);
 
-        var localDocs = await localQuery
-            .Include(m => m.Items)
-            .Include(m => m.JobCard)
-            .OrderByDescending(m => m.CreatedAt)
-            .ToListAsync();
+        List<MaterialTransferDoc> localDocs;
+        try
+        {
+            localDocs = await localQuery
+                .Include(m => m.Items)
+                .Include(m => m.JobCard)
+                .OrderByDescending(m => m.CreatedAt)
+                .ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            // 2026-10-05: return the database's own message (e.g. "Invalid column name ...") so a missing
+            // column is visible on the page instead of an anonymous HTTP 500.
+            _logger.LogError(ex, "Material transfer list: could not read MaterialTransferDocs.");
+            return StatusCode(500, new { message = $"Could not read the material transfers: {ex.GetBaseException().Message}" });
+        }
 
         var combined = new List<CombinedMaterialTransferRow>(localDocs.Select(ToCombinedRow));
 
@@ -232,7 +282,8 @@ public class MaterialTransferDocsController : ControllerBase
     public async Task<IActionResult> ForJob(Guid jobCardId)
     {
         var dealerId = _currentUser.DealerId;
-        if (dealerId is null) return Forbid();
+        if (dealerId is null)
+            return StatusCode(403, new { message = "This lookup is per dealer - this login is not linked to one." });
 
         var docs = await _db.MaterialTransferDocs.AsNoTracking()
             .Where(m => m.DealerId == dealerId && m.JobCardId == jobCardId && m.Status != MaterialTransferDocStatus.Cancelled)
@@ -269,12 +320,16 @@ public class MaterialTransferDocsController : ControllerBase
     // RepairBillDocsController.Get's identical 2026-09-23 change): now also Includes JobCard so
     // ToRow can return JobCardId/JobCardNumber - needed so the web page can re-link the same Job
     // when an existing Draft transfer is reopened for editing.
+    //
+    // 2026-10-05: CorporateAdmin/SystemAdmin can open ANY dealer's transfer; other roles only their
+    // own dealer's.
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id)
     {
         var dealerId = _currentUser.DealerId;
+        var orgWide = IsOrgWideRole;
         var doc = await _db.MaterialTransferDocs.AsNoTracking().Include(m => m.Items).Include(m => m.JobCard)
-            .FirstOrDefaultAsync(m => m.Id == id && m.DealerId == dealerId);
+            .FirstOrDefaultAsync(m => m.Id == id && (orgWide || m.DealerId == dealerId));
         return doc is null ? NotFound() : Ok(ToRow(doc));
     }
 
@@ -299,7 +354,8 @@ public class MaterialTransferDocsController : ControllerBase
     public async Task<IActionResult> Create(CreateMaterialTransferRequest req)
     {
         var dealerId = _currentUser.DealerId;
-        if (dealerId is null) return Forbid();
+        if (dealerId is null)
+            return StatusCode(403, new { message = "A material transfer is created under a dealer - this login is not linked to one." });
         if (req.Items is null || req.Items.Count == 0) return BadRequest(new { message = "Add at least one item line." });
 
         var doc = new MaterialTransferDoc
@@ -356,7 +412,8 @@ public class MaterialTransferDocsController : ControllerBase
     public async Task<IActionResult> Update(Guid id, CreateMaterialTransferRequest req)
     {
         var dealerId = _currentUser.DealerId;
-        if (dealerId is null) return Forbid();
+        if (dealerId is null)
+            return StatusCode(403, new { message = "A material transfer is edited under its dealer - this login is not linked to one." });
         if (req.Items is null || req.Items.Count == 0) return BadRequest(new { message = "Add at least one item line." });
 
         var doc = await _db.MaterialTransferDocs.Include(m => m.Items)
@@ -505,20 +562,25 @@ public class MaterialTransferDocsController : ControllerBase
     /// reference's stock-ledger reversal (a PartsInventory "SD" transaction against BAPLDMSvad's
     /// own live inventory) is NOT ported - this app has no equivalent live-stock table to reverse
     /// against; see MaterialTransferDoc's doc comment.
+    ///
+    /// 2026-10-05: CorporateAdmin/SystemAdmin (no dealer of their own) can now find ANY dealer's
+    /// transfer - the all-dealers list shows them all - and the "already billed" check and the stock
+    /// restore both use the TRANSFER's own dealer (doc.DealerId), not the caller's.
     /// </summary>
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id)
     {
         var dealerId = _currentUser.DealerId;
+        var orgWide = IsOrgWideRole;
         var doc = await _db.MaterialTransferDocs.Include(m => m.Items)
-            .FirstOrDefaultAsync(m => m.Id == id && m.DealerId == dealerId);
+            .FirstOrDefaultAsync(m => m.Id == id && (orgWide || m.DealerId == dealerId));
         if (doc is null) return NotFound();
 
         var isSystemAdmin = _currentUser.Role == StaffRole.SystemAdmin;
         if (!isSystemAdmin && doc.JobCardId is not null)
         {
             var jobBilled = await _db.RepairBillDocs.AsNoTracking()
-                .AnyAsync(r => r.JobCardId == doc.JobCardId && r.DealerId == dealerId
+                .AnyAsync(r => r.JobCardId == doc.JobCardId && r.DealerId == doc.DealerId
                     && !r.IsDeleted && r.Status == RepairBillDocStatus.Billed);
             if (jobBilled)
                 return BadRequest(new { message = "This job card has already been billed and its material transfer cannot be deleted." });
@@ -536,7 +598,7 @@ public class MaterialTransferDocsController : ControllerBase
             {
                 if (string.IsNullOrWhiteSpace(it.ItemCode)) continue;
                 var pu = await _db.PartUploads.FirstOrDefaultAsync(
-                    p => p.DealerId == dealerId && p.LocationCode == doc.Location && p.PartNo == it.ItemCode, HttpContext.RequestAborted);
+                    p => p.DealerId == doc.DealerId && p.LocationCode == doc.Location && p.PartNo == it.ItemCode, HttpContext.RequestAborted);
                 if (pu is not null) pu.BalQty = (pu.BalQty ?? 0) + (decimal)it.Qty;
             }
         }

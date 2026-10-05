@@ -301,25 +301,36 @@ const CORPORATE_ACTION_CARDS: { label: string; subtitle: string; icon: string; t
   { label: 'Admin: Workflow', subtitle: 'Configure job card stages', icon: '⚙️', to: '/admin/workflow' },
 ]
 
+// 2026-10-05 ("Today" and "Overall" rows): the five cards shown in BOTH rows, in this order. `key` is the
+// field read from the stage-report summary's totals (backend DealerStageReportController.Summary) and is
+// also the `status` the Dealer Role Report opens on when the card is clicked.
+const DASH_CARDS = [
+  { key: 'created', label: 'Job cards created', icon: '📋', accent: 'kpi-a1' },
+  { key: 'inProgress', label: 'In Progress', icon: '🔧', accent: 'kpi-a3' },
+  { key: 'materialTransfers', label: 'Material Transfer', icon: '🔄', accent: 'kpi-a4' },
+  { key: 'repairBills', label: 'Repair Bill', icon: '🧾', accent: 'kpi-a6' },
+  { key: 'readyForDelivery', label: 'Ready For Delivery', icon: '🏁', accent: 'kpi-a5' },
+] as const
+
 function CorporateDashboard() {
   const { isVisibleForCurrentRole } = useMenuAccess() // SECTION 171 - used by the "All Pages" grid's filter below
   const [filterOptions, setFilterOptions] = useState<CorporateDashboardFilters | null>(null)
-  const [liveSummary, setLiveSummary] = useState<DealerStageSummary | null>(null)
-  const [closedTodaySummary, setClosedTodaySummary] = useState<DealerStageSummary | null>(null)
-  const [todayError, setTodayError] = useState(false)
-  const [createdTodaySummary, setCreatedTodaySummary] = useState<DealerStageSummary | null>(null)
-  const todayStr = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` })()
-  useEffect(() => {
-    staffApi.get<DealerStageSummary>('/api/dashboard/dealer-stage-report/summary')
-       .then((res) => setLiveSummary(res.data)).catch(() => setTodayError(true))
-    staffApi.get<DealerStageSummary>('/api/dashboard/dealer-stage-report/summary', { params: { dateFrom: todayStr, dateTo: todayStr } })
-       .then((res) => setCreatedTodaySummary(res.data)).catch(() => setTodayError(true))
-    staffApi.get<DealerStageSummary>('/api/dashboard/dealer-stage-report/summary', { params: { dateFrom: todayStr, dateTo: todayStr, dateBasis: 'closed' } })
-       .then((res) => setClosedTodaySummary(res.data)).catch(() => setTodayError(true))
-  }, [todayStr])
   const [filters, setFilters] = useState<CorporateFilterState>(EMPTY_FILTERS)
   const [data, setData] = useState<CorporateDashboardData | null>(null)
   const [loading, setLoading] = useState(true)
+
+  // Today row = documents / job cards dated today; Overall row = every date (In Progress and Ready For
+  // Delivery there are what is in that stage right now). Both across ALL dealers.
+  const [todaySummary, setTodaySummary] = useState<DealerStageSummary | null>(null)
+  const [overallSummary, setOverallSummary] = useState<DealerStageSummary | null>(null)
+  const [todayError, setTodayError] = useState(false)
+  const todayStr = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` })()
+  useEffect(() => {
+    staffApi.get<DealerStageSummary>('/api/dashboard/dealer-stage-report/summary', { params: { dateFrom: todayStr, dateTo: todayStr } })
+      .then((res) => setTodaySummary(res.data)).catch(() => setTodayError(true))
+    staffApi.get<DealerStageSummary>('/api/dashboard/dealer-stage-report/summary')
+      .then((res) => setOverallSummary(res.data)).catch(() => setTodayError(true))
+  }, [todayStr])
 
   useEffect(() => {
     staffApi.get<CorporateDashboardFilters>('/api/dashboard/corporate/filters').then((res) => setFilterOptions(res.data))
@@ -344,21 +355,9 @@ function CorporateDashboard() {
 
   // 2026-10-02 ("in dashboard of systemadmin ... kpi cards app like other dashboard ... other
   // role ... Parts stocks") - confirmed via AskUserQuestion: "other role" = total staff across
-  // every role, combined into one number. ASSUMPTION FLAGGED: I don't have EmployeesController.cs
-  // (or whichever controller backs NAV_ITEMS' "employees"/"technician-employees" pages) in this
-  // session, so GET /api/employees with no params is a best guess at the endpoint, not confirmed -
-  // same "try it, degrade to a dash on failure" pattern this file already uses for the Dealer
-  // Dashboard's Stock Qty tile below. If this shows "—", tell me the real endpoint/shape and I'll
-  // fix it rather than guess again.
-  //
-  // 2026-10-02 ("that card clickable dealerwise can check how much dealer how his under role and
-  // that role dealtail") - the FULL employee array is now kept (not just its length), so the
-  // Dealers card's click-through breakdown below can group these same rows by dealer + role
-  // without a second network call. ASSUMPTION FLAGGED (separate from the endpoint path itself):
-  // each row is assumed to carry `role` and `dealerId` fields (camelCase, matching every other
-  // confirmed JSON response this session, e.g. AttendanceController.List's `role: s.Role.ToString()`
-  // and `dealerId`) - if the breakdown panel below comes up empty/wrong, this field-shape guess is
-  // the first thing to check once the real controller is pasted.
+  // every role, combined into one number. ASSUMPTION FLAGGED: GET /api/employees with no params is a
+  // best guess at the endpoint, not confirmed - same "try it, degrade to a dash on failure" pattern as
+  // the Dealer Dashboard's Stock Qty tile. If this shows "—", tell me the real endpoint/shape.
   interface EmployeeRow {
     id?: string
     name?: string
@@ -376,35 +375,10 @@ function CorporateDashboard() {
   }, [])
   const staffCount = employees?.length ?? null
 
-  // Toggled by clicking the "Dealers" KPI tile - see that tile's own render below.
-  // const [showDealerBreakdown, setShowDealerBreakdown] = useState(false)
-
-  // Groups the same `employees` array above by dealer, then by role within each dealer - built
-  // once per employees/filterOptions change rather than on every render.
-  // const dealerRoleBreakdown = useMemo(() => {
-  //   if (!employees) return null
-  //   const byDealer = new Map<string, { dealerName: string; roles: Map<string, number>; total: number }>()
-  //   for (const e of employees) {
-  //     const dealerKey = e.dealerId ?? '__unassigned__'
-  //     const dealerName =
-  //       e.dealerName ||
-  //       filterOptions?.dealers.find((d) => d.id === e.dealerId)?.name ||
-  //       (e.dealerId ? e.dealerId : 'Unassigned / no dealer')
-  //     const role = e.role || 'Unknown role'
-  //     if (!byDealer.has(dealerKey)) byDealer.set(dealerKey, { dealerName, roles: new Map(), total: 0 })
-  //     const entry = byDealer.get(dealerKey)!
-  //     entry.roles.set(role, (entry.roles.get(role) ?? 0) + 1)
-  //     entry.total += 1
-  //   }
-  //   return Array.from(byDealer.values()).sort((a, b) => a.dealerName.localeCompare(b.dealerName))
-  // }, [employees, filterOptions])
-
   // 2026-10-02 - confirmed via AskUserQuestion: Parts Stock = quantity summed across every dealer.
-  // Same GET /api/part-uploads + sum(balQty) approach already used for the Dealer Dashboard's own
-  // Stock Qty tile (see that tile's doc comment), called here with no dealer filter. ASSUMPTION
-  // FLAGGED: I don't have PartUploadsController.cs in this session to confirm it actually returns
-  // every dealer's rows (not just one) when called by a Corporate/System Admin - if the number
-  // looks like a single dealer's stock rather than the org total, that controller needs a look.
+  // Same GET /api/part-uploads + sum(balQty) approach as the Dealer Dashboard's own Stock Qty tile.
+  // ASSUMPTION FLAGGED: if the number looks like a single dealer's stock rather than the org total,
+  // the part-uploads controller needs a look.
   const [orgStockQty, setOrgStockQty] = useState<number | null>(null)
   const [orgStockError, setOrgStockError] = useState(false)
   useEffect(() => {
@@ -416,66 +390,57 @@ function CorporateDashboard() {
 
   return (
     <div>
-      <h2 style={{ marginBottom: 4 }}>Corporate Dashboard</h2>
-      <p className="muted" style={{ marginTop: 0 }}>Consolidated visibility across all dealers</p>
-                <h3 style={{ margin: '16px 0 2px' }}>Job cards - all dealers</h3>
-        <p className="muted" style={{ margin: 0 }}>Created, Closed and Invoiced show today. Open, In Progress and Ready for Delivery are live counts - click a card for the dealer-wise detail.</p>
-        <div className="kpi-grid" style={{ margin: '8px 0 16px' }}>
-          {([
-            ['created', 'Job cards created today', '📋', 'kpi-a1', 'created'],
-            ['inProgress', 'In Progress', '🔧', 'kpi-a3', 'live'],
-            ['open', 'Open', '📂', 'kpi-a4', 'live'],
-            ['readyForDelivery', 'Ready for Delivery', '🏁', 'kpi-a5', 'live'],
-            ['closed', 'Closed today', '✅', 'kpi-a2', 'closed'],
-            ['invoiced', 'Invoiced today', '🧾', 'kpi-a6', 'closed'],
-          ] as const).map(([key, label, icon, accent, source]) => {
-            const src = source === 'created' ? createdTodaySummary : source === 'closed' ? closedTodaySummary : liveSummary
-            const to =
-              source === 'closed' ? `/dealer-role-report?status=${key}&scope=all&basis=closed&from=${todayStr}&to=${todayStr}`
-              : source === 'created' ? `/dealer-role-report?status=${key}&scope=all&from=${todayStr}&to=${todayStr}`
-              : `/dealer-role-report?status=${key}&scope=all&from=&to=`
-            return (
-              <Link key={key} to={to} className={`kpi ${accent}`} style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
-                <div className="kpi-icon">{icon}</div>
-                <div className="value">{todayError ? '—' : src ? src.totals[key] : '…'}</div>
-                <div className="label">{label}</div>
-              </Link>
-            )
-          })}
-        </div>
-      {/* 2026-10-02 ("in dashboard of systemadmin ... kpi cards app like other dashboard ... Open
-         Job Cards Count / Dealer Wise count of job cards / Dealer / other role / Parts stocks ...
-         all main after login in starting like after other role login") - mirrors the Dealer
-         Dashboard's own 2026-09-28 reorder (KPI tiles first, All Pages/action cards below), so a
-         SystemAdmin/CorporateAdmin login lands on the same kind of overview row other roles get,
-         instead of two card grids and a filter bar first.
+      <h2 style={{ marginBottom: 4 }}>Dashboard</h2>
+      <p className="muted" style={{ marginTop: 0 }}></p>
 
-         INTERPRETATION, not a new/duplicate number: "Open Job Cards Count" below reuses
-         data.pendingVehicles rather than adding a second count. Its own Link already points at
-         /jobcards?excludeClosed=true - the exact same filter the Dealer Dashboard's "Open Job
-         Cards" tile uses - and this component's own prior comment on this tile ("there's no
-         /jobcards filter that actually reproduces those numbers the way there is for Pending
-         Vehicles") confirms it really is a live job-card count server-side, unlike
-         Revenue/Warranty Cost/CSAT. "Dealer Wise count of job cards" is the existing "Job Card
-         Volume by Dealer" chart, just moved up here instead of being duplicated as a second
-         per-dealer number - see that chart below. */}
+      {/* 2026-10-05 ("row wise show Today and Overall ... horizontal like this, not vertical"): each of
+         Today and Overall is its OWN full-width row - a heading, a thin divider, then the five cards side by
+         side in ONE line (auto-fit columns: five across on a normal screen, wrapping only if the window is
+         too narrow for five). Today sits above Overall. These two rows deliberately do NOT use the shared
+         .kpi-grid class and are NOT nested inside another grid - an earlier version wrapped both blocks in
+         one .kpi-grid, which is what laid Today and Overall out as two columns beside each other. */}
+      {([
+        { title: 'Today', note: '', src: todaySummary, query: `&from=${todayStr}&to=${todayStr}` },
+        { title: 'Overall', note: '', src: overallSummary, query: '&from=&to=' },
+      ] as const).map((row) => (
+        <div key={row.title} style={{ marginBottom: 20 }}>
+          <h3 style={{ margin: '16px 0 2px' }}>{row.title}</h3>
+          <p className="muted" style={{ margin: 0 }}>{row.note}</p>
+          <hr style={{ border: 'none', borderTop: '1px solid var(--border, #e5e7eb)', margin: '10px 0 12px' }} />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16 }}>
+            {DASH_CARDS.map((c) => (
+              <Link
+                key={c.key}
+                to={`/dealer-role-report?status=${c.key}&scope=all${row.query}`}
+                className={`kpi ${c.accent}`}
+                style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}
+              >
+                <div className="kpi-icon">{c.icon}</div>
+                <div className="value">{todayError ? '—' : row.src ? row.src.totals[c.key] : '…'}</div>
+                <div className="label">{c.label}</div>
+              </Link>
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {/* 2026-10-02 ("in dashboard of systemadmin ... Open Job Cards Count / Dealer / other role / Parts
+         stocks"): the overview tiles below. "Open Job Cards Count" is data.pendingVehicles - every job card
+         that is not Closed/Cancelled, across all dealers - and opens the Dealer Role Report on "Not Closed"
+         for ALL dealers and ALL dates, so the report shows the same number (2026-10-05). */}
       <div className="kpi-grid" style={{ margin: '16px 0' }}>
-        <Link to="/jobcards?excludeClosed=true" className="kpi kpi-a4" style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
+        <Link to="/dealer-role-report?status=notClosed&scope=all&from=&to=" className="kpi kpi-a4" style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
           <span className="kpi-badge-action">Action Needed</span>
           <div className="kpi-icon">📋</div>
           <div className="value">{loading || !data ? '…' : data.pendingVehicles}</div>
           <div className="label">Open Job Cards Count</div>
         </Link>
-        {/* 2026-10-02 ("that card clickable dealerwise can check how much dealer how his under
-           role and that role dealtail") - toggles the role-breakdown panel below instead of
-           navigating, so this is a <div onClick> (matching the Staff/Parts Stock tiles' look) with
-           keyboard support, not a <Link>. */}
-          <Link to="/dealer-role-report" className="kpi kpi-a2" style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
-            <div className="kpi-icon">🏢</div>
-            <div className="value">{filterOptions ? filterOptions.dealers.length : '…'}</div>
-            <div className="label">Dealers</div>
-            <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>Open dealer role report →</div>
-          </Link>
+        <Link to="/dealer-role-report" className="kpi kpi-a2" style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
+          <div className="kpi-icon">🏢</div>
+          <div className="value">{filterOptions ? filterOptions.dealers.length : '…'}</div>
+          <div className="label">Dealers</div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>Open dealer role report →</div>
+        </Link>
         <div className="kpi kpi-a3">
           <div className="kpi-icon">👥</div>
           <div className="value">{staffError ? '—' : staffCount === null ? '…' : staffCount}</div>
@@ -487,43 +452,6 @@ function CorporateDashboard() {
           <div className="label">Parts Stock</div>
         </Link>
       </div>
-
-      {/* 2026-10-02 - the Dealers tile's click-through breakdown: how many staff, by role, under
-         each dealer. Built client-side from the same /api/employees fetch as the Staff (All
-         Roles) tile above - see that tile's own doc comment for the flagged endpoint/shape
-         assumption this inherits. */}
-      {/* {showDealerBreakdown && (
-        <div className="card" style={{ marginBottom: 20 }}>
-          <h3>Dealers - Role-wise Staff</h3>
-          {staffError ? (
-            <p className="muted">Could not load staff details to build this breakdown ({'/api/employees'} failed - see this tile's own code comment).</p>
-          ) : !dealerRoleBreakdown ? (
-            <p className="muted">Loading...</p>
-          ) : dealerRoleBreakdown.length === 0 ? (
-            <p className="muted">No staff records found.</p>
-          ) : (
-            <table>
-              <thead>
-                <tr><th>Dealer</th><th>Total Staff</th><th>Role-wise Count</th></tr>
-              </thead>
-              <tbody>
-                {dealerRoleBreakdown.map((d) => (
-                  <tr key={d.dealerName}>
-                    <td>{d.dealerName}</td>
-                    <td>{d.total}</td>
-                    <td className="muted">
-                      {Array.from(d.roles.entries())
-                        .sort((a, b) => b[1] - a[1])
-                        .map(([role, count]) => `${role}: ${count}`)
-                        .join(', ')}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      )} */}
 
       <div className="card" style={{ marginBottom: 20 }}>
         <h3>Job Card Volume by Dealer</h3>
@@ -562,10 +490,8 @@ function CorporateDashboard() {
         <p className="muted" style={{ marginTop: 0 }}>Every page you have access to, in one place.</p>
       </div>
       <div className="action-card-grid">
-        {/* SECTION 171: now goes through the same isVisibleForCurrentRole check the sidebar and the
-           Dealer Dashboard's own grid use (see ALL_PAGES' doc comment above) - CorporateAdmin/
-           SystemAdmin are extremely unlikely to ever be put in "only show checked" allow-list mode,
-           but this keeps the three grids/sidebar from ever being able to drift apart again. */}
+        {/* SECTION 171: goes through the same isVisibleForCurrentRole check the sidebar and the Dealer
+           Dashboard's own grid use (see ALL_PAGES' doc comment above), so the three can't drift apart. */}
         {ALL_PAGES.filter(isVisibleForCurrentRole).map((n, i) => (
           <Link key={n.to} to={n.to} className={`action-card aa-a${(i % 6) + 1}`}>
             <div className="action-card-icon">{n.icon}</div>
@@ -626,8 +552,6 @@ function CorporateDashboard() {
               <div className="label">CSAT{data.csat.average == null ? ' (no ratings yet)' : ''}</div>
             </div>
           </div>
-          {/* Pending Vehicles / Job Card Volume by Dealer moved up to the top overview row/card
-             (2026-10-02) - see this component's own doc comment above. Not duplicated here. */}
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: 16 }}>
             <div className="card">

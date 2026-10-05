@@ -8,6 +8,7 @@ import type { DashboardKpis } from '../types'
 import type { JobCardsListFilter, RootStackParamList } from '../navigation/RootNavigator'
 import { colors } from '../theme/colors'
 import { DealerRoleReportScreen } from './DealerRoleReportScreen'
+import type { DealerStageSummary } from '../utils/dealerRoleReportExport'
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Dashboard'>
 
@@ -49,10 +50,29 @@ const TILES: { key: keyof DashboardKpis; label: string; icon: string; to: JobCar
 ]
 
 export function DashboardScreen({ navigation }: Props) {
+  const ADMIN_CARDS = [
+    { key: 'created', label: 'Job cards created', icon: '📋' },
+    { key: 'inProgress', label: 'In Progress', icon: '🔧' },
+    { key: 'materialTransfers', label: 'Material Transfer', icon: '🔄' },
+    { key: 'repairBills', label: 'Repair Bill', icon: '🧾' },
+    { key: 'readyForDelivery', label: 'Ready For Delivery', icon: '🏁' },
+  ] as const
   // SECTION 172 (2026-09-30) - hasRole is no longer used here: Technician Employee (the one card
   // that read it, to gate Supervisor+) was removed from this screen's Actions list per your "show
   // only menu 1-6" request - see the Actions block below.
   const { profile } = useStaffAuth()
+  const isAdmin = profile?.role === 'SystemAdmin' || profile?.role === 'CorporateAdmin'
+  const [todaySummary, setTodaySummary] = useState<DealerStageSummary | null>(null)
+  const [overallSummary, setOverallSummary] = useState<DealerStageSummary | null>(null)
+  const [todayError, setTodayError] = useState(false)
+  const todayStr = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` })()
+  useEffect(() => {
+    if (!isAdmin) return
+    apiClient.get<DealerStageSummary>('/api/dashboard/dealer-stage-report/summary', { params: { dateFrom: todayStr, dateTo: todayStr } })
+      .then((r) => setTodaySummary(r.data)).catch(() => setTodayError(true))
+    apiClient.get<DealerStageSummary>('/api/dashboard/dealer-stage-report/summary')
+      .then((r) => setOverallSummary(r.data)).catch(() => setTodayError(true))
+  }, [isAdmin, todayStr])
   const [kpis, setKpis] = useState<DashboardKpis | null>(null)
   const [refreshing, setRefreshing] = useState(false)
 
@@ -210,6 +230,28 @@ export function DashboardScreen({ navigation }: Props) {
           </View>
           <Image source={SCOOTER} style={styles.heroScooter} resizeMode="contain" />
         </View>
+
+        {isAdmin && ([
+          { title: 'Today', note: 'Job cards, Material Transfers and Repair Bills dated today, across all dealers.', src: todaySummary, from: todayStr, to: todayStr },
+          { title: 'Overall', note: 'All dates. In Progress and Ready For Delivery are what is in that stage right now.', src: overallSummary, from: '', to: '' },
+        ] as const).map((row) => (
+          <View key={row.title} style={styles.card}>
+            <Text style={styles.cardTitle}>{row.title}</Text>
+            <Text style={styles.cardSubtitle}>{row.note} Tap a card for the dealer-wise detail.</Text>
+            <View style={[styles.grid, { marginTop: 10, marginBottom: 0 }]}>
+              {ADMIN_CARDS.map((c, i) => (
+                <Kpi
+                  key={c.key}
+                  icon={c.icon}
+                  label={c.label}
+                  value={todayError ? '—' : row.src ? row.src.totals[c.key] : '…'}
+                  accent={ACCENTS[i % ACCENTS.length]}
+                  onPress={() => navigation.navigate('DealerRoleReport', { status: c.key, scope: 'all', from: row.from, to: row.to })}
+                />
+              ))}
+            </View>
+          </View>
+        ))}
 
         {!kpis ? (
           <View style={styles.loading}>

@@ -66,7 +66,12 @@ export interface DealerStageReport {
   jobCards: StageJobCard[]
   jobCardsTruncated: boolean
 }
-export interface DealerStageSummaryRow extends StageCounts {
+/** Document counts on the all-dealers summary (not available per role / person): Material Transfer and Repair Bill documents. */
+export interface DocCounts {
+  materialTransfers: number
+  repairBills: number
+}
+export interface DealerStageSummaryRow extends StageCounts, DocCounts {
   dealerId: string
   dealerName: string
   dealerCode: string | null
@@ -76,8 +81,46 @@ export interface DealerStageSummary {
   dateFrom: string | null
   dateTo: string | null
   dateBasis?: string
-  totals: StageCounts
+  totals: StageCounts & DocCounts
   dealers: DealerStageSummaryRow[]
+}
+
+/** One Material Transfer / Repair Bill line (GET .../repair-bills and .../material-transfers). */
+export interface DealerDocItem {
+  code: string | null
+  description: string | null
+  itemType: string | null
+  qty: number
+  rate: number
+  amount: number
+}
+/** One Material Transfer / Repair Bill document of a dealer. `type` = Bill Type (repair bill) or Transfer Type (material transfer). */
+export interface DealerDocRow {
+  id: string
+  number: string
+  /** Date-only, YYYY-MM-DD. */
+  date: string
+  status: string
+  party: string | null
+  regNo: string | null
+  chassisNo: string | null
+  location: string | null
+  type: string | null
+  jobNo: string | null
+  itemCount: number
+  totalAmount: number
+  preparedBy: string | null
+  items: DealerDocItem[]
+}
+export interface DealerDocList {
+  dealer: { id: string; name: string; code: string | null }
+  generatedAt: string
+  dateFrom: string | null
+  dateTo: string | null
+  /** Exact number of documents in the period; `rows` is capped (see `truncated`). */
+  total: number
+  truncated: boolean
+  rows: DealerDocRow[]
 }
 
 /** Column order/labels used everywhere (page, Excel, PDF). */
@@ -112,7 +155,7 @@ export function fmtDateTime(iso?: string | null): string {
 }
 
 /** "2026-10-05" (a date-only value from the API) -> DD.MM.YYYY, no timezone shifting. */
-const fmtDateOnly = (v: string | null): string => {
+export const fmtDateOnly = (v: string | null): string => {
   if (!v) return ''
   const [y, m, d] = v.split('-')
   return d && m && y ? `${d}.${m}.${y}` : v
@@ -154,14 +197,15 @@ const jobRows = (r: DealerStageReport, limit?: number): (string | number)[][] =>
     j.createdBy, j.role, j.regNo ?? '-', j.customerName ?? '-',
   ])
 
-const SUMMARY_HEAD = ['Dealer', 'Code', ...STAGE_LABELS]
-const summaryRows = (s: DealerStageSummary): (string | number)[][] => s.dealers.map((d) => [d.dealerName, d.dealerCode ?? '-', ...countsRow(d)])
-const summaryTotalRow = (s: DealerStageSummary): (string | number)[] => ['TOTAL', '', ...countsRow(s.totals)]
+const SUMMARY_HEAD = ['Dealer', 'Code', ...STAGE_LABELS, 'Material Transfers', 'Repair Bills']
+const summaryRows = (s: DealerStageSummary): (string | number)[][] => s.dealers.map((d) => [d.dealerName, d.dealerCode ?? '-', ...countsRow(d), d.materialTransfers, d.repairBills])
+const summaryTotalRow = (s: DealerStageSummary): (string | number)[] => ['TOTAL', '', ...countsRow(s.totals), s.totals.materialTransfers, s.totals.repairBills]
 
 const DEFINITION_NOTES = [
   'Created = job cards created in the period. Open / In Progress / Ready for Delivery / Invoiced / Other split them with no overlap.',
   'Open = work not started · In Progress = technician timer started · Ready for Delivery / Invoiced = current workflow stage · Other = cancelled, pending or closed without an invoice.',
   'Closed = Status Closed (an Invoiced job card is closed, so Closed overlaps Invoiced and is not part of the split).',
+  'Material Transfers / Repair Bills = documents dated in the period (any status; deleted Repair Bills excluded) - dated by the document, not the job card.',
   'Not Closed = every job card that is neither Closed nor Cancelled (the dashboard\'s Open Job Cards Count) - it overlaps the buckets and is not part of the split.',
 ]
 
@@ -215,7 +259,7 @@ export function exportDealerSummaryExcel(s: DealerStageSummary): void {
     [],
     ['Notes'],
     ...DEFINITION_NOTES.map((n) => [n]),
-  ], [46, 12, 10, 8, 12, 18, 10, 8, 8])
+  ], [46, 12, 10, 8, 12, 18, 10, 8, 8, 11, 18, 13])
   XLSX.writeFile(wb, `DealerSummary_${stamp(s.generatedAt)}.xlsx`)
 }
 
@@ -307,7 +351,7 @@ export function exportDealerRoleReportPdf(r: DealerStageReport): void {
 export function exportDealerSummaryPdf(s: DealerStageSummary): void {
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
   pdfHeader(doc, 'Dealer-wise Job Card Summary', [`Period: ${periodLabel(s)}`], s.generatedAt)
-  pdfTiles(doc, STAGE_COLUMNS.map((c) => [c.label, s.totals[c.key]] as [string, number]), 30)
+  pdfTiles(doc, [...STAGE_COLUMNS.map((c) => [c.label, s.totals[c.key]] as [string, number]), ['Material Transfers', s.totals.materialTransfers], ['Repair Bills', s.totals.repairBills]], 30)
   autoTable(doc, {
     ...tableBase, startY: 54, head: [SUMMARY_HEAD], body: summaryRows(s).map((row) => row.map(String)),
     foot: [summaryTotalRow(s).map(String)], footStyles: { fillColor: [232, 238, 247], textColor: 30, fontStyle: 'bold' },
