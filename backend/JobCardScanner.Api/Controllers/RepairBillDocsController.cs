@@ -32,7 +32,7 @@ namespace JobCardScanner.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/repair-bill-docs")]
-[Authorize(Policy = "ServiceAdvisorUpNoSupervisor")]
+[Authorize(Policy = Policies.Staff)]
 public class RepairBillDocsController : ControllerBase
 {
     private readonly JobCardScannerDbContext _db;

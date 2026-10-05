@@ -172,7 +172,7 @@ public class AttendanceController : ControllerBase
         var staff = await _db.Users.AsNoTracking()
             .Where(u => u.Active && u.DealerId == effectiveDealerId)
             .OrderBy(u => u.Name)
-            .Select(u => new { u.Id, u.Name, u.Role, u.WorkLocationCodes })
+            .Select(u => new { u.Id, u.Name, u.Role, u.Designation, u.WorkLocationCodes })
             .ToListAsync();
         if (staff.Count == 0) return Ok(new { date = day, dealerId = effectiveDealerId, items = Array.Empty<object>() });
 
@@ -198,6 +198,7 @@ public class AttendanceController : ControllerBase
             {
                 employeeId = s.Id,
                 employeeName = s.Name,
+                designation = s.Designation, 
                 role = s.Role.ToString(),
                 location,
                 status = rec?.Status.ToString(),

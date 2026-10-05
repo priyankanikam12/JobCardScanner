@@ -66,6 +66,7 @@ import { PortalLoginPage } from './pages/portal/PortalLoginPage'
 import { PortalMyJobCardsPage } from './pages/portal/PortalMyJobCardsPage'
 import { PortalTrackPage } from './pages/portal/PortalTrackPage'
 import { AttendancePage } from './pages/staff/AttendancePage'
+import { DealerRoleReportPage } from './pages/staff/DealerRoleReportPage'
 export default function App() {
   return (
     <Routes>
@@ -397,6 +398,14 @@ export default function App() {
           element={
             <RequireRole roles={['ServiceAdvisor', 'WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin', 'Captain', 'ViceCaptain', 'Technician']}>
               <MenuAccessPage />
+            </RequireRole>
+          }
+        />
+       <Route
+          path="/dealer-role-report"
+          element={
+            <RequireRole roles={['CorporateAdmin', 'SystemAdmin']}>
+              <DealerRoleReportPage />
             </RequireRole>
           }
         />

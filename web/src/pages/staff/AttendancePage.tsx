@@ -33,6 +33,20 @@
  * NOT wired up (needs your input, not guessed): no route was added to your router (I don't have
  * that file) and no nav link was added to your sidebar - see README SECTION 98 for the one line to
  * add. No CSV export, no monthly view, no leave-approval workflow.
+ *
+ * 2026-10-05 DESIGNATION COLUMN ("in that web and android attendance page add Designation
+ * column"): the manager roster table now shows a Designation column right after Name, ahead of
+ * the existing Role column. FACT: Designation is its own field on the Users table (User.Designation,
+ * the Supervisor / Captain / ViceCaptain / Technician display label set on the Employees page) -
+ * it is NOT the same thing as `role`, which is the login role Designation gets mapped onto at save
+ * time (e.g. a "Supervisor" designation saves with role WorkshopManager), so the two columns can
+ * legitimately read differently and are both kept. The roster endpoint (GET /api/attendance) is
+ * what has to send it: this page reads `designation` off each StaffRow and prints "-" when the
+ * backend doesn't include it (or the user has none set) - it deliberately does NOT fall back to
+ * `role`, because showing a role under a "Designation" heading would be wrong data. See the
+ * delivery note for the one backend line (AttendanceController's roster projection) that supplies
+ * it. The self view (My Attendance) is unchanged: it lists one person's own days, so a per-row
+ * Designation column would just repeat the same value.
  */
 import { useEffect, useState, type ReactNode } from 'react'
 import { staffApi } from '../../api/client'
@@ -61,6 +75,10 @@ interface DealerSummaryRow {
 interface StaffRow {
   employeeId: string
   employeeName: string
+  // 2026-10-05: User.Designation (Supervisor / Captain / ViceCaptain / Technician ...) - optional
+  // because it only appears once AttendanceController's roster response includes it, and any user
+  // with no designation set comes back null. See this file's own Designation doc comment above.
+  designation?: string | null
   role: string
   location: string | null
   status: AttendanceStatus | null
@@ -482,6 +500,7 @@ export function AttendancePage() {
                 <thead>
                   <tr>
                     <th>Name</th>
+                    <th>Designation</th>
                     <th>Role</th>
                     <th>Location</th>
                     <th>Status</th>
@@ -493,6 +512,9 @@ export function AttendancePage() {
                   {staff.map((s) => (
                     <tr key={s.employeeId}>
                       <td>{s.employeeName}</td>
+                      {/* 2026-10-05: Designation column - see this file's own Designation doc
+                         comment. "-" (not the role) when the roster response has none. */}
+                      <td>{s.designation && s.designation.trim() ? s.designation : <span className="muted">-</span>}</td>
                       <td className="muted">{s.role}</td>
                       <td className="muted">{formatLocation(s.location)}</td>
                       {/* 2026-09-29 (SECTION 159, "make attractive and small table ... this much

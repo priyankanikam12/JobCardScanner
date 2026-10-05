@@ -332,10 +332,10 @@ export function MenuAccessPage() {
   return (
     <div>
       <h2>Admin: Menu Access</h2>
-      <p className="muted">
+      {/* <p className="muted">
         Choose which roles can see each sidebar page. A page with "Restrict to specific roles" off is visible to
         every signed-in staff member - the same as leaving it unset in code.
-      </p>
+      </p> */}
 
       {loading && <p className="muted">Loading…</p>}
       {/* 2026-10-02: all three banners (error/Save success/Apply confirmation) now render in this
@@ -350,11 +350,11 @@ export function MenuAccessPage() {
       {!loading && (
         <div className="card" style={{ marginBottom: 16 }}>
           <h3 style={{ marginTop: 0 }}>Quick setup by role</h3>
-          <p className="muted" style={{ marginTop: -4 }}>
+          {/* <p className="muted" style={{ marginTop: -4 }}>
             Pick a role, check only the pages it should see, then Apply. That fills in the per-item table and Role
             Sidebar Mode toggle below for you - review or adjust by hand if you like, then click Save at the bottom
             to actually commit it.
-          </p>
+          </p> */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
             <label className="muted" style={{ fontWeight: 600 }}>Role</label>
             <select value={quickRole} onChange={(e) => setQuickRole(e.target.value as StaffRole)}>
@@ -467,11 +467,11 @@ export function MenuAccessPage() {
       {!loading && (
         <div className="card" style={{ marginTop: 16 }}>
           <h3 style={{ marginTop: 0 }}>Role Sidebar Mode</h3>
-          <p className="muted" style={{ marginTop: -4 }}>
+          {/* <p className="muted" style={{ marginTop: -4 }}>
             Off (default): this role sees every page above unless you've restricted it away. On: this role sees
             ONLY the pages above where you've checked it - everything else, including any new page added later,
             stays hidden until you check it too.
-          </p>
+          </p> */}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 20px' }}>
             {ROLE_SIDEBAR_MODE_ROLES.map((role) => (
               <label key={role} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

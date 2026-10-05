@@ -45,7 +45,7 @@ import AttendanceScreen from '../screens/AttendanceScreen'
 import { RepairBillReportScreen } from '../screens/RepairBillReportScreen'
 import { MaterialTransferReportScreen } from '../screens/MaterialTransferReportScreen'
 import { colors } from '../theme/colors'
-
+import { DealerRoleReportScreen } from '../screens/DealerRoleReportScreen'
 /** Optional /jobcards-equivalent filters the Dashboard's KPI cards deep-link with - each name
  * matches JobCardsController.List's own dashboard-filter query params 1:1 (see
  * DashboardScreen.tsx's KPIS array and web/src/pages/staff/DashboardPage.tsx's same mapping). */
@@ -90,6 +90,7 @@ export type RootStackParamList = {
   // MaterialTransferCreate rather than reusing those names.
   RepairBillReport: undefined
   MaterialTransferReport: undefined
+  DealerRoleReport: undefined
 }
 
 const Stack = createNativeStackNavigator<RootStackParamList>()
@@ -153,6 +154,7 @@ export function RootNavigator() {
              by navigation.navigate('RepairBillReport' | 'MaterialTransferReport') for now. */}
           <Stack.Screen name="RepairBillReport" component={RepairBillReportScreen} options={{ title: 'Repair Bill Report' }} />
           <Stack.Screen name="MaterialTransferReport" component={MaterialTransferReportScreen} options={{ title: 'Material Transfer Report' }} />
+          <Stack.Screen name="DealerRoleReport" component={DealerRoleReportScreen} options={{ title: 'Dealer Role Report' }} />
         </Stack.Navigator>
       )}
     </NavigationContainer>
