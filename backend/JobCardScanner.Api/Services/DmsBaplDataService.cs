@@ -872,7 +872,7 @@ public class DmsBaplDataService : IDmsBaplDataService
     private const string VehicleSaleFromJoin = @"
         FROM [dbo].[DMS_SaleBill] sb
         LEFT JOIN [dbo].[DMS_SaleBillCustomer] c
-            ON c.Id = sb.Id AND (c.IsDelete IS NULL OR c.IsDelete = 0)";
+            ON c.Id = sb.CustId AND (c.IsDelete IS NULL OR c.IsDelete = 0)";
 
     // Maps one row of VehicleSaleSelectColumns/VehicleSaleFromJoin's result set - see
     // DmsBaplDataVehicleSaleRow's own doc comment for which fields have no source column on
