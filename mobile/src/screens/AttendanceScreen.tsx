@@ -1,3 +1,4 @@
+// mobile\src\screens\AttendanceScreen.tsx
 /**
  * Attendance screen (Android/Expo) - 2026-09-25, same request/build as web's AttendancePage.tsx
  * (see that file's doc comment for the full "morning scenario not found, standard design" context
@@ -51,6 +52,18 @@
  * distinction real rather than deleting the manager code path outright, in case a future
  * "Mark Staff Attendance" entry point is added back later - see AttendanceScreen's own admin-side
  * marking UI further down, all still intact).
+ *
+ * 2026-10-05 DESIGNATION ("in that web and android attendance page add Designation column") -
+ * mirrors web's AttendancePage.tsx: each manager-roster card now shows the person's Designation
+ * (User.Designation - Supervisor / Captain / ViceCaptain / Technician, the display label set on the
+ * Employees page; NOT the same as `role`, which is the login role that label gets mapped onto) as
+ * its own labelled line directly under the name, above the existing "role - location" line. A phone
+ * has no table columns, so "column" here means that dedicated labelled line on every row. It reads
+ * `designation` off the roster response and prints "-" when the backend doesn't send one - it does
+ * NOT fall back to `role`, since a role under a "Designation" label would be wrong data. The
+ * backend roster projection (AttendanceController) has to include it - see web's doc comment. The
+ * personal "My Attendance" list is unchanged (one person's own days - a repeated Designation per
+ * day would add nothing).
  */
 import { useEffect, useState, useCallback } from 'react'
 import {
@@ -95,6 +108,9 @@ interface DealerSummaryRow {
 interface StaffRow {
   employeeId: string
   employeeName: string
+  // 2026-10-05: User.Designation - optional until AttendanceController's roster response includes
+  // it; null when the user has none set. See this file's own Designation doc comment above.
+  designation?: string | null
   role: string
   location: string | null
   status: AttendanceStatus | null
@@ -389,6 +405,11 @@ export default function AttendanceScreen({ route }: Props) {
         renderItem={({ item }) => (
           <View style={styles.staffCard}>
             <Text style={styles.staffName}>{item.employeeName}</Text>
+            {/* 2026-10-05: Designation line - see this file's own Designation doc comment. "-"
+               (not the role) when the roster response has none. */}
+            <Text style={styles.designationLine}>
+              Designation: <Text style={styles.designationValue}>{item.designation && item.designation.trim() ? item.designation : '-'}</Text>
+            </Text>
             <Text style={styles.muted}>{item.role}{item.location ? ` - ${item.location}` : ''}</Text>
             <View style={styles.statusRow}>
               {STATUS_OPTIONS.map(([value, label]) => (
@@ -441,6 +462,8 @@ const styles = StyleSheet.create({
   dealerName: { fontSize: 16, fontWeight: '500' },
   staffCard: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#eee' },
   staffName: { fontSize: 16, fontWeight: '500' },
+  designationLine: { fontSize: 13, color: '#666', marginTop: 2 },
+  designationValue: { fontSize: 13, color: '#101828', fontWeight: '600' },
   statusRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
   statusButton: {
     paddingVertical: 6,

@@ -116,7 +116,11 @@ export function RepairBillListPage() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
-  const loadCombined = () => {
+  // 2026-10-05: takes the two dates as arguments (defaulting to the current state) so the new "All
+  // dates" button can reload with empty dates immediately - reading state right after setState would
+  // still see the old dates. Every call site below therefore calls it as loadCombined() with NO
+  // arguments (never `onClick={loadCombined}`, which would pass the click event as the first argument).
+  const loadCombined = (fromVal: string = listDateFrom, toVal: string = listDateTo) => {
     setLoading(true)
     staffApi
       .get<{ rows: CombinedRepairBillRow[]; dmsBaplDataError: string | null }>('/api/repair-bill-docs/combined', {
@@ -126,15 +130,25 @@ export function RepairBillListPage() {
           jobNo: listJobNo || undefined,
           chassisNo: listChassisNo || undefined,
           locationCode: listLocation || undefined,
-          dateFrom: listDateFrom || undefined,
-          dateTo: listDateTo || undefined,
+          dateFrom: fromVal || undefined,
+          dateTo: toVal || undefined,
         },
       })
       // ownOnly=true already means every row back is source: 'JobCardScanner' - the .filter is a
       // defensive belt-and-braces in case that ever isn't true (e.g. a future backend change),
       // rather than trusting the query param silently.
       .then((r) => { setRows(r.data.rows.filter((row) => row.source === 'JobCardScanner')); setLoadError(null) })
-      .catch(() => { setRows([]); setLoadError('Could not load the repair bill list.') })
+      .catch((err: { response?: { status?: number; data?: { message?: string } } }) => {
+        setRows([])
+        // 2026-10-05: say WHY - a 403 (this login's role isn't allowed to read repair bills) looked
+        // exactly like "no bills" before. The status code is the first thing to check when a bill
+        // that exists in the database isn't showing.
+        const status = err?.response?.status
+        setLoadError(
+          status === 403 ? 'Your login is not allowed to view Repair Bills (HTTP 403) - ask an admin to allow your role.'
+          : `Could not load the repair bill list${status ? ` (HTTP ${status})` : ''}${err?.response?.data?.message ? ` - ${err.response.data.message}` : ''}.`,
+        )
+      })
       .finally(() => setLoading(false))
   }
   useEffect(() => { loadCombined() }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -215,11 +229,11 @@ export function RepairBillListPage() {
   return (
     <div>
       <h2>Repair Bill List</h2>
-      <p className="muted">
+      {/* <p className="muted">
         Every repair bill saved in JobCardScanner's own database - click a still-Performa bill (or
         its ✎ button) to open and edit it, or a Billed/Cancelled one to view its full details.
         Billed bills can be printed as a GST Tax Invoice with the 🖨 button.
-      </p>
+      </p> */}
 
       <div className="card">
         <div className="form-row">
@@ -258,7 +272,11 @@ export function RepairBillListPage() {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn btn-primary btn-sm" onClick={loadCombined} disabled={loading}>{loading ? 'Loading…' : 'Search'}</button>
+          <button className="btn btn-primary btn-sm" onClick={() => loadCombined()} disabled={loading}>{loading ? 'Loading…' : 'Search'}</button>
+          {/* 2026-10-05: the list opens on THIS MONTH only (2026-10-03 default), so a bill dated in an
+             earlier month - e.g. one billed on 28.09.2026 - is simply outside the range and looks
+             missing. One click searches every date. */}
+          <button className="btn btn-sm" disabled={loading} onClick={() => { setListDateFrom(''); setListDateTo(''); loadCombined('', '') }}>All dates</button>
           <button className="btn btn-sm" onClick={() => navigate('/repair-bill-new')}>+ New Repair Bill</button>
         </div>
         {loadError && <p className="muted" style={{ color: '#b91c1c' }}>{loadError}</p>}
@@ -330,7 +348,11 @@ export function RepairBillListPage() {
               </tr>
             ))}
             {rows.length === 0 && !loading && (
-              <tr><td colSpan={15} className="muted" style={{ textAlign: 'center', padding: 16 }}>No repair bills yet.</td></tr>
+              <tr><td colSpan={15} className="muted" style={{ textAlign: 'center', padding: 16 }}>
+                {listDateFrom || listDateTo
+                  ? `No repair bills dated ${listDateFrom || 'any date'} to ${listDateTo || 'any date'} - bills outside this range are hidden. Click "All dates" to search every date.`
+                  : 'No repair bills yet.'}
+              </td></tr>
             )}
           </tbody>
         </table>

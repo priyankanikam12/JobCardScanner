@@ -397,9 +397,17 @@ function PrintMenu({ jc, setMsg }: { jc: JobCardDetail; setMsg: (m: string | nul
         return
       }
       showInWindow(win, buildRepairBillTaxInvoicePrintHtml(billed, taxInvoiceContextFromJobCard(jc)))
-    } catch {
+    } catch (err: unknown) {
       win.close()
-      setMsg('Could not load the invoice for this job card. Please try again.')
+      // 2026-10-05: the print window used to just flash open and shut with a generic line, which hid
+      // WHY. A 403 means this login's role isn't allowed to read repair bills at all (the Invoice
+      // option needs GET /api/repair-bill-docs); say so, with the code, instead of "try again".
+      const e = err as { response?: { status?: number; data?: { message?: string } } }
+      const status = e?.response?.status
+      setMsg(
+        status === 403 ? 'Your login is not allowed to read Repair Bills (HTTP 403), so the invoice cannot be opened - ask an admin to allow your role.'
+        : `Could not load the invoice for this job card${status ? ` (HTTP ${status})` : ''}${e?.response?.data?.message ? ` - ${e.response.data.message}` : ''}.`,
+      )
     } finally {
       setBusy(false)
     }

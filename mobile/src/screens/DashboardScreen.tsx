@@ -7,6 +7,7 @@ import { useStaffAuth } from '../auth/StaffAuthContext'
 import type { DashboardKpis } from '../types'
 import type { JobCardsListFilter, RootStackParamList } from '../navigation/RootNavigator'
 import { colors } from '../theme/colors'
+import { DealerRoleReportScreen } from './DealerRoleReportScreen'
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Dashboard'>
 
@@ -311,6 +312,9 @@ export function DashboardScreen({ navigation }: Props) {
              longer reachable from this particular card. */}
           {menuVisible('attendance') && (
             <ActionCard title="Attendance" subtitle="Mark your own attendance" onPress={() => navigation.navigate('Attendance', { onlyMine: true })} />
+          )}
+          {(profile?.role === 'SystemAdmin' || profile?.role === 'CorporateAdmin') && (
+            <ActionCard title="Dealer Role Report" subtitle="Dealer & role-wise job cards: submitted / open / closed" onPress={() => navigation.navigate('DealerRoleReport')} />
           )}
         </View>
       </ScrollView>
