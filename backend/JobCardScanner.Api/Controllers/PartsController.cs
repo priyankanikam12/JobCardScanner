@@ -22,10 +22,11 @@ public class PartsController : ControllerBase
     private readonly IBaplItemPricingService _baplPricing;
     private readonly IAuditLogService _audit;
     private readonly ILogger<PartsController> _logger;
+    private readonly ILocalItemMasterService _localItemMaster;
 
     public PartsController(
         JobCardScannerDbContext db, ICurrentUserService currentUser, IDmsClient dms, IBaplDmsService baplDms,
-        IBaplItemPricingService baplPricing, IAuditLogService audit, ILogger<PartsController> logger)
+        IBaplItemPricingService baplPricing, IAuditLogService audit, ILogger<PartsController> logger, ILocalItemMasterService localItemMaster)
     {
         _db = db;
         _currentUser = currentUser;
@@ -34,6 +35,7 @@ public class PartsController : ControllerBase
         _baplPricing = baplPricing;
         _audit = audit;
         _logger = logger;
+        _localItemMaster = localItemMaster;
     }
 
     /// <summary>
@@ -84,8 +86,9 @@ public class PartsController : ControllerBase
             {
                 try
                 {
-                    baplPricing = await _baplPricing.GetItemsPricingAsync(
-                        dmsParts.Select(p => p.ItemCode).ToList(), HttpContext.RequestAborted);
+                    var priceCodes = dmsParts.Select(p => p.ItemCode).ToList();
+                    baplPricing = await _localItemMaster.GetPricingByCodesAsync(priceCodes, HttpContext.RequestAborted)
+                        ?? await _baplPricing.GetItemsPricingAsync(priceCodes, HttpContext.RequestAborted);
                 }
                 catch (InvalidOperationException ex)
                 {

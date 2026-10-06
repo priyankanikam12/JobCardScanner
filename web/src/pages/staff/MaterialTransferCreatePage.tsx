@@ -515,10 +515,17 @@ export function MaterialTransferCreatePage() {
   const [dmsParts, setDmsParts] = useState<BaplDmsPartStock[]>([])
   const [uploadedParts, setUploadedParts] = useState<BaplDmsPartStock[]>([])
   useEffect(() => {
-    if (!location) { setDmsParts([]); return }
-    staffApi.get<BaplDmsPartStock[]>('/api/bapl-dms/parts', { params: { locationCode: location } })
-      .then(({ data }) => setDmsParts(data))
-      .catch(() => setDmsParts([]))
+    if (!location) { setUploadedParts([]); return }
+    staffApi.get<PartUpload[]>('/api/part-uploads', { params: { locationCode: location } })
+      .then(({ data }) => setUploadedParts(data.map((u): BaplDmsPartStock => ({
+        itemCode: u.partNo,
+        availableQty: u.balQty ?? 0,
+        description: u.description,
+        hsnCode: u.hsnSacCode,
+        source: 'partUpload',
+        billPrice: u.billPrice,
+      }))))
+      .catch(() => setUploadedParts([]))
   }, [location])
   useEffect(() => {
     if (!location) { setUploadedParts([]); return }
@@ -571,49 +578,37 @@ export function MaterialTransferCreatePage() {
   // until one was) left the Item Code search with nothing to find. Item Master itself needs neither.
   const [itemMasterCatalog, setItemMasterCatalog] = useState<BaplItemMaster[]>([])
   useEffect(() => {
-    staffApi.get<BaplItemMaster[]>('/api/item-master')
+    staffApi.get<BaplItemMaster[]>('/api/item-master', { params: { activeOnly: true } })
       .then(({ data }) => setItemMasterCatalog(data))
       .catch(() => setItemMasterCatalog([]))
   }, [])
 
   const parts: BaplDmsPartStock[] = (() => {
-    const byCode: Record<string, BaplDmsPartStock> = {}
-    // 1. Primary source - the full Item Master catalog, so every real item can be found and
-    //    picked regardless of Location/live-stock state. availableQty starts at 0 (unknown, not
-    //    "0 in stock" - see BaplDmsPartStock.source's doc comment) until overlaid below.
+    // Balance qty per part code at this Location (a later row for the same code wins, as before).
+    const stockByCode = new Map<string, BaplDmsPartStock>()
+    uploadedParts.forEach((u) => stockByCode.set(u.itemCode.trim().toUpperCase(), u))
+    const seen = new Set<string>()
+    const out: BaplDmsPartStock[] = []
     itemMasterCatalog.forEach((im) => {
-      const code = im.itemCode.trim().toUpperCase()
-      byCode[code] = {
+      const key = im.itemCode.trim().toUpperCase()
+      if (seen.has(key)) return // the catalogue's ItemCode is not unique - one picker row per part
+      seen.add(key)
+      const stock = stockByCode.get(key)
+      out.push({
         itemCode: im.itemCode,
         description: im.itemName || im.displayName || im.itemCode,
-        hsnCode: im.hsnCode,
-        availableQty: 0,
+        hsnCode: stock?.hsnCode || im.hsnCode,
+        // Real balance when Part Upload has the part at this Location; otherwise 0 = "unknown", not "out of stock" (source 'itemMaster').
+        availableQty: stock ? stock.availableQty : 0,
         dlrPrice: im.dlrPrice,
         sgstPct: im.sgst,
         cgstPct: im.cgst,
         igstPct: im.igst,
-        source: 'itemMaster',
-      }
+        source: stock ? 'partUpload' : 'itemMaster',
+        billPrice: stock?.billPrice,
+      })
     })
-    // 2. Overlay live DMS stock / Part Upload rows for the CURRENT Location on top - real
-    //    availableQty replaces the placeholder 0, and each row's own itemMasterByCode match (a
-    //    precise by-code lookup, not capped at 1000 rows like the catalog preload above) still
-    //    wins for Dealer Price/GST, same enrichment as before this round.
-    ;[...dmsParts.filter((p) => !uploadedCodes.has(p.itemCode.trim().toUpperCase())), ...uploadedParts].forEach((p) => {
-      const code = p.itemCode.trim().toUpperCase()
-      const im = itemMasterByCode[code]
-      const existing = byCode[code]
-      byCode[code] = {
-        ...existing,
-        ...p,
-        dlrPrice: im?.dlrPrice ?? existing?.dlrPrice ?? p.mrp,
-        sgstPct: im?.sgst ?? existing?.sgstPct,
-        cgstPct: im?.cgst ?? existing?.cgstPct,
-        igstPct: im?.igst ?? existing?.igstPct,
-        hsnCode: p.hsnCode || im?.hsnCode || existing?.hsnCode,
-      }
-    })
-    return Object.values(byCode)
+    return out
   })()
 
   // 2026-09-22 ("which dealer price are there in item-master that will not came in material

@@ -9,9 +9,8 @@ import { WorkflowTimeline, type WorkflowTimelineHistoryEntry } from '../../compo
 import type { BaplDmsJobCardHistory, BaplDmsVehicleLookup, JobCardDetail, JobCardPhoto, JobCardsLabourCatalogRow, JobCardsPartsCatalogRow, RepairBillDoc, Technician, WorkflowStage } from '../../types'
 import { buildEstimatePrintHtml, buildJobCardPrintHtml } from '../../lib/jobCardPrintHtml'
 // 2026-10-04 ("in print button which invoice is there that was repair bill invoice ... we need to
-// print in that same format"): the Invoice print option now uses the DMS "GST TAX INVOICE" layout -
-// see lib/repairBillInvoicePrintHtml.ts. Replaces this file's old flat-table
-// buildRepairBillInvoicePrintHtml (2026-09-28, SECTION 150), which was deleted.
+// print in that same format"): the Invoice print option uses the DMS "GST TAX INVOICE" layout -
+// see lib/repairBillInvoicePrintHtml.ts.
 import { buildRepairBillTaxInvoicePrintHtml, taxInvoiceContextFromJobCard } from '../../lib/repairBillInvoicePrintHtml'
 
 // Photo URLs come back from the API as a relative path (e.g. "/uploads/jobcard-photos/.../x.jpg" -
@@ -19,17 +18,9 @@ import { buildRepairBillTaxInvoicePrintHtml, taxInvoiceContextFromJobCard } from
 const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL
 const photoSrc = (url: string) => (url.startsWith('http') ? url : `${API_BASE_URL}${url}`)
 
-// 2026-09-28 (SECTION 137) - "0301-A01-1025 exists in Item Master and Part Upload but search says
-// it does not exist": PartSuggestionCard's search fetch below used a blanket
-// `.catch(() => setAvailableParts([]))` - a REAL backend failure (e.g. the parts-catalog endpoint's
-// own 502 when BAPL's C_ItemMaster connection has a problem - see JobCardsController.PartsCatalog's
-// try/catch around SearchItemMasterAsync) looked EXACTLY like "zero parts matched your search",
-// which is how a genuine, real-part search could show "does not exist" even though the SQL itself
-// (WHERE ItemCode LIKE '%...%' - confirmed from your real IBaplDealerService.cs, no Status filter
-// at all, contradicting my earlier guess in SECTION 136 that Status='N' explained this - that guess
-// is now WITHDRAWN, this is the corrected diagnosis) would normally match it fine. Same
-// describeError pattern already used for Attendance (SECTION 125) - used here so a real failure
-// now says so explicitly instead of masquerading as "not found".
+// 2026-09-28 (SECTION 137): the part-search fetch used to use a blanket `.catch(() => setAvailableParts([]))`,
+// so a REAL backend failure looked exactly like "zero parts matched your search". describeSearchError makes a
+// real failure say so explicitly instead of masquerading as "not found".
 function describeSearchError(err: unknown, fallback: string): string {
   const e = err as { response?: { status?: number; data?: { message?: string } } }
   const detail = e?.response?.data?.message
@@ -40,21 +31,15 @@ function describeSearchError(err: unknown, fallback: string): string {
 }
 
 // 2026-10-01 REMOVED (per explicit request - "Remove the cap entirely"): the ₹2000 Grand Total
-// hard-stop that used to block Part Suggestion/Labour Suggestion from accepting new entries once
-// the Estimates Amount Grand Total reached ESTIMATE_TOTAL_LOCK_THRESHOLD has been taken out, along
-// with the calcEstimateGrandTotal(jc) helper that only existed to compute that gate (EstimatesCard
-// below computes its own displayed Grand Total inline from partRows/labourRows, unaffected by this
-// removal). There is now no maximum - Part/Labour Suggestion only locks on the manual Done/Edit
-// toggle on the Estimates Amount card (see EstimatesCard / `estimatesLocked` below), same as before
-// 2026-09-07.
+// hard-stop that used to block Part/Labour Suggestion once the Estimates Amount reached a threshold.
+// There is now no maximum - Part/Labour Suggestion only locks on the manual Done/Edit toggle on the
+// Estimates Amount card (see EstimatesCard / `estimatesLocked` below).
 
-/** "Set/reset customer portal password" - the dealer/admin side of the new customer password
- * login (POST /api/customers/{id}/admin-reset-password), which runs alongside the customer's
- * existing OTP-based portal login rather than replacing it (see CustomerPortalController.Login's
- * doc comment). Only visible to WorkshopManager and up, matching the backend policy exactly. This
- * SETS the password to whatever the admin/dealer types here (never reveals or "checks" the
- * existing one - only a PBKDF2 hash is ever stored, same as staff Users), so share it with the
- * customer directly afterwards. */
+/** "Set/reset customer portal password" - the dealer/admin side of the customer password login
+ * (POST /api/customers/{id}/admin-reset-password), which runs alongside the customer's existing
+ * OTP-based portal login. Only visible to WorkshopManager and up, matching the backend policy. This
+ * SETS the password to whatever the admin/dealer types here (never reveals or "checks" the existing
+ * one - only a PBKDF2 hash is ever stored), so share it with the customer directly afterwards. */
 function CustomerPasswordResetButton({ customerId, customerName }: { customerId: string; customerName: string }) {
   const [open, setOpen] = useState(false)
   const [newPassword, setNewPassword] = useState('')
@@ -101,28 +86,18 @@ function CustomerPasswordResetButton({ customerId, customerName }: { customerId:
 }
 
 /** Of the app's 15 workflow stages (see DbSeeder's default template), these 3 are hidden from both
- * the read-only Workflow Timeline below and the Update Workflow Stage dropdown further down - NOT
- * removed from the backend, purely a display filter:
+ * the read-only Workflow Timeline below and the Update Workflow Stage dropdown - NOT removed from the
+ * backend, purely a display filter:
  *  - "job_card_created" is folded into "check_in" as one combined "Vehicle Check-In / Job Card
- *    Created" step (see buildTimelineStages) - the wizard's new combined check-in flow means these
- *    are no longer two meaningfully separate moments for a user to see as separate rows.
- *  - "quality_check" and "rework" are hidden as effectively-unused stubs: grepping both web/src and
- *    backend/ for each of the 15 stage keys turned up real, stage-specific business logic for only
- *    "parts_requested", "in_repair" and "ready_for_delivery" (all three used in DashboardController's
- *    KPI counts) - every other stage, these two included, is referenced nowhere but the seed data
- *    and the timeline's icon lookup. "rework" doubly so: nothing in this app ever transitions a job
- *    card into it automatically (no "send back for rework" action exists anywhere), so from the
- *    UI's perspective it is a pure stub. "quality_check" is hidden for the same "least wired up"
- *    reason, and now doubly so since the Quality Check panel itself is hidden below (see QcCard's
- *    usage) - nothing on this page produces or consumes a "quality_check" visit any more either. */
+ *    Created" step (see buildTimelineStages);
+ *  - "quality_check" and "rework" are hidden as effectively-unused stubs (nothing on this page
+ *    produces or consumes them any more). */
 const HIDDEN_WORKFLOW_STAGE_KEYS = new Set(['job_card_created', 'quality_check', 'rework'])
 const MERGED_CHECKIN_LABEL = 'Vehicle Check-In / Job Card Created'
 
-/** Quality Check panel toggle - see its usage below. A `const false`, not a literal `false`
- * inline in the JSX: TypeScript's control-flow narrowing of `jc` (JobCardDetail | null -> non-null
- * further up this file) does not survive an inline `{false && <QcCard jc={jc} .../>}` - a real,
- * reproducible TS narrowing gap for JSX attributes on the right of a literal-`false` `&&` - so this
- * named constant is used instead purely to keep the file type-checking cleanly. */
+/** Quality Check panel toggle - see its usage below. A `const false`, not a literal `false` inline in
+ * the JSX: TypeScript's control-flow narrowing of `jc` does not survive an inline
+ * `{false && <QcCard jc={jc} .../>}`, so this named constant keeps the file type-checking cleanly. */
 const SHOW_QUALITY_CHECK_PANEL = false
 
 /** The WorkflowStage list actually shown in the timeline - see HIDDEN_WORKFLOW_STAGE_KEYS. */
@@ -133,9 +108,8 @@ function buildTimelineStages(stages: WorkflowStage[]): WorkflowStage[] {
 }
 
 /** Stage-history entries for the timeline, with "check_in" and "job_card_created" entries combined
- * into one - using the earliest enteredAt and latest exitedAt of the two, so the merged step shows
- * "reached" as soon as either underlying stage's timestamp is set - and "quality_check"/"rework"
- * entries dropped entirely (see HIDDEN_WORKFLOW_STAGE_KEYS). */
+ * into one - using the earliest enteredAt and latest exitedAt of the two - and "quality_check"/
+ * "rework" entries dropped entirely (see HIDDEN_WORKFLOW_STAGE_KEYS). */
 function buildTimelineHistory(jc: JobCardDetail): WorkflowTimelineHistoryEntry[] {
   const out: WorkflowTimelineHistoryEntry[] = []
   let merged: WorkflowTimelineHistoryEntry | null = null
@@ -157,9 +131,9 @@ function buildTimelineHistory(jc: JobCardDetail): WorkflowTimelineHistoryEntry[]
   return out
 }
 
-/** currentStageId to pass to WorkflowTimeline: unchanged unless the job card's real current stage
- * is one of the hidden ones, in which case this redirects to the nearest earlier stage that IS
- * still shown (for "job_card_created" that's always "check_in", i.e. the merged step). */
+/** currentStageId to pass to WorkflowTimeline: unchanged unless the job card's real current stage is
+ * one of the hidden ones, in which case this redirects to the nearest earlier stage that IS still
+ * shown (for "job_card_created" that's always "check_in", i.e. the merged step). */
 function resolveTimelineCurrentStageId(stages: WorkflowStage[], currentStage?: WorkflowStage): string | undefined {
   if (!currentStage) return undefined
   if (!HIDDEN_WORKFLOW_STAGE_KEYS.has(currentStage.stageKey)) return currentStage.id
@@ -168,11 +142,10 @@ function resolveTimelineCurrentStageId(stages: WorkflowStage[], currentStage?: W
 }
 
 /** Raw chronological stage-history log ("grid") shown below the visual Workflow Timeline stepper -
- * unlike the stepper (one row per DEFINED stage, showing only the latest visit), this shows every
- * row that's actually happened, in order, including remarks and who made each change. Worth having
- * now that most stage changes are auto-triggered (see backend WorkflowStageAutomation) and carry a
- * system-generated remark like "Auto-advanced: part suggested." that the stepper alone doesn't
- * surface - this is the audit trail of exactly what moved the job card forward and when. */
+ * unlike the stepper (one row per DEFINED stage, showing only the latest visit), this shows every row
+ * that's actually happened, in order, including remarks and who made each change - the audit trail of
+ * what moved the job card forward and when (most stage changes are auto-triggered, see backend
+ * WorkflowStageAutomation). */
 function WorkflowHistoryGrid({ jc }: { jc: JobCardDetail }) {
   const rows = [...jc.stageHistory].sort((a, b) => new Date(a.enteredAt).getTime() - new Date(b.enteredAt).getTime())
   if (rows.length === 0) return null
@@ -197,50 +170,26 @@ function WorkflowHistoryGrid({ jc }: { jc: JobCardDetail }) {
   )
 }
 
-/** "Print" menu - 3 options (Estimate / JobCard print / Invoice). History: 2026-09-03 replaced the
- * separate standalone "Invoice" card (Download Invoice from DMS - see git history / InvoiceCard)
- * with this single dropdown next to the status badge.
+/** "Print" menu - 3 options (Estimate / JobCard print / Invoice).
  *
- * 2026-10-04 ("in print button which invoice is there that was repair bill invoice ... we need to
- * print in that same format" - RepairBillInvoice-Format.pdf / JobcardInvoice-Format.pdf):
- *   - Invoice       -> prints the DMS "GST TAX INVOICE" layout (dealer header, Customer Details,
- *                      Vehicle Details, items grid, Amount In Words, Part/Labour/Invoice Total, HSN
- *                      Summary, Remarks, Customer Signature / Authorized Signatory) from this job
- *                      card's Billed Repair Bill (GET /api/repair-bill-docs?jobCardId=...) - see
- *                      lib/repairBillInvoicePrintHtml.ts. (2026-09-28, SECTION 150: the data source
- *                      is this app's OWN RepairBillDocs, not DMS's RepairBillHeader/Detail - the old
- *                      GET /api/jobcards/{id}/invoice-pdf 404'd for every job billed through the new
- *                      Repair Bill flow.) No server-generated PDF: "Save as PDF" from the browser's
- *                      print dialog covers that, same as the other two options.
- *   - JobCard print -> the layout was already the JobcardInvoice-Format (same
- *                      buildJobCardPrintHtml); what differed was DATA: Invoice No, customer State,
- *                      Sale Date and the Battery Details block printed "-" here because this page
- *                      never fetched them. They are now filled in: Invoice No from the Billed
- *                      Repair Bill; Sale Date/Battery Make/Chemical/Capacity (and any missing
- *                      controller/charger/battery no.) from the same Vehicle Sale lookup the wizard
- *                      uses. That lookup is best-effort - if it fails (no access, not found, DMS
- *                      down) the print simply keeps "-" for those fields.
- *   - Estimate      -> unchanged.
+ *   - Invoice       -> prints the DMS "GST TAX INVOICE" layout from this job card's Billed Repair Bill
+ *                      (GET /api/repair-bill-docs?jobCardId=...) - see lib/repairBillInvoicePrintHtml.ts.
+ *                      The data source is this app's OWN RepairBillDocs, not DMS's RepairBillHeader/Detail.
+ *   - JobCard print -> buildJobCardPrintHtml; Invoice No comes from the Billed Repair Bill; Sale Date/
+ *                      Battery Make/Chemical/Capacity (and any missing controller/charger/battery no.)
+ *                      come from the same Vehicle Sale lookup the wizard uses - best-effort, a failed
+ *                      lookup just leaves "-" for those fields.
+ *   - Estimate      -> buildEstimatePrintHtml from the Part/Labour Suggestions.
  * Every option opens its print window synchronously inside the click (before any await) so the
- * browser popup blocker allows it, then fills it once data arrives. Notices/errors surface through
- * the same `setMsg` line the rest of this page uses for action feedback.
- * Role gate: none - all roles can print (2026-10-03, "For all Role its visible": the old
- * Cashier/DealerAdmin/CorporateAdmin/SystemAdmin gate on Invoice hid it from a WorkshopManager/
- * Supervisor/ServiceAdvisor closing a job card, which looked exactly like "I can't download the
- * invoice"), so this component no longer takes a `hasRole` prop. */
+ * browser popup blocker allows it, then fills it once data arrives. Notices/errors surface through the
+ * same `setMsg` line the rest of this page uses for action feedback.
+ * Role gate: none - all roles can print (2026-10-03, "For all Role its visible"). */
 function PrintMenu({ jc, setMsg }: { jc: JobCardDetail; setMsg: (m: string | null) => void }) {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
-  // 2026-09-03 fix ("clicking Print button, no options shown"): this used to close the menu via
-  // onBlur on the toggle button itself (setTimeout(() => setOpen(false), 150)), copied from this
-  // page's search-box dropdowns (PartSuggestionCard/LabourSuggestionCard) - but those are text
-  // INPUTS, which reliably hold focus while the user interacts with them. A plain <button> doesn't
-  // reliably take focus on click in every browser (notably Safari, which by default only focuses a
-  // button via keyboard navigation, not a mouse click) - without focus, onBlur never fires to have
-  // opened anything to begin with in some environments, and in others the focus/blur timing raced
-  // against the click that was meant to open it. A click-outside listener has none of that
-  // timing/focus dependency - it opens on click and closes only when a real click lands outside
-  // this container, regardless of how the browser handles button focus.
+  // Closes on a click OUTSIDE this container rather than via the toggle button's onBlur: a plain
+  // <button> doesn't reliably take focus on click in every browser (notably Safari), so an onBlur-based
+  // close raced against the click that was meant to open the menu (2026-09-03 fix).
   const containerRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!open) return
@@ -251,18 +200,16 @@ function PrintMenu({ jc, setMsg }: { jc: JobCardDetail; setMsg: (m: string | nul
     return () => document.removeEventListener('mousedown', onDocMouseDown)
   }, [open])
 
-  /** Opens the print window immediately - must happen synchronously in the click handler, before
-   * any await (2026-09-03 "invoice not added/opened": once an `await` has run the browser no longer
-   * counts window.open as a direct response to the click and its popup blocker refuses it). */
+  /** Opens the print window immediately - must happen synchronously in the click handler, before any
+   * await (once an `await` has run the browser no longer counts window.open as a direct response to the
+   * click and its popup blocker refuses it). */
   const openLoadingWindow = (loadingText: string, popupBlockedMsg: string): Window | null => {
     const win = window.open('', '_blank', 'width=900,height=650')
     if (!win) { setMsg(popupBlockedMsg); return null }
     win.document.write(`<p style="font-family:sans-serif;padding:20px;color:#555;">${loadingText}</p>`)
     return win
   }
-  /** Replaces the loading text with the real document and opens the native print dialog. The
-   * `win.onload = () => win.print()` line is what makes this feel like a "print" action rather than
-   * just a preview (2026-09-03 "print option not came" - the wizard's own print button always had it). */
+  /** Replaces the loading text with the real document and opens the native print dialog. */
   const showInWindow = (win: Window, html: string) => {
     win.document.open()
     win.document.write(html)
@@ -354,7 +301,7 @@ function PrintMenu({ jc, setMsg }: { jc: JobCardDetail; setMsg: (m: string | nul
         technician: jc.assignedTechnicianName ?? jc.baplTechnicianName,
         customerName: jc.customer?.name,
         customerMobile: jc.customer?.mobile,
-        customerState, // needs the customerState edit in lib/jobCardPrintHtml.ts (delivered with this file)
+        customerState, // needs the customerState edit in lib/jobCardPrintHtml.ts
         address: jc.customer?.address,
         city: jc.customer?.city,
         chassisNo: jc.vehicle?.vin,
@@ -399,8 +346,7 @@ function PrintMenu({ jc, setMsg }: { jc: JobCardDetail; setMsg: (m: string | nul
       showInWindow(win, buildRepairBillTaxInvoicePrintHtml(billed, taxInvoiceContextFromJobCard(jc)))
     } catch (err: unknown) {
       win.close()
-      // 2026-10-05: the print window used to just flash open and shut with a generic line, which hid
-      // WHY. A 403 means this login's role isn't allowed to read repair bills at all (the Invoice
+      // 2026-10-05: a 403 means this login's role isn't allowed to read repair bills at all (the Invoice
       // option needs GET /api/repair-bill-docs); say so, with the code, instead of "try again".
       const e = err as { response?: { status?: number; data?: { message?: string } } }
       const status = e?.response?.status
@@ -446,9 +392,9 @@ export function JobCardDetailPage() {
   const [stages, setStages] = useState<WorkflowStage[]>([])
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
-  // Estimates Amount "Done"/"Edit" toggle - lifted up here (rather than local to EstimatesCard)
-  // because "Done" also hides PartSuggestionCard/LabourSuggestionCard's add-new-suggestion forms,
-  // not just EstimatesCard's own UI. See EstimatesCard's doc comment for the full feature.
+  // Estimates Amount "Done"/"Edit" toggle - lifted up here (rather than local to EstimatesCard) because
+  // "Done" also hides PartSuggestionCard/LabourSuggestionCard's add-new-suggestion forms, not just
+  // EstimatesCard's own UI. See EstimatesCard.
   const [estimatesLocked, setEstimatesLocked] = useState(false)
 
   const load = async () => {
@@ -463,11 +409,10 @@ export function JobCardDetailPage() {
 
   useEffect(() => { load() }, [id])
 
-  // Item 7 (wizard): "Continue to Job Card" after creation links straight to
-  // /jobcards/{id}#workflow-timeline. Item 10 (list page): a job card's photo count links straight
-  // to /jobcards/{id}#photos. Both scroll that section into view once the page (and the matching
-  // id) has actually rendered, rather than relying on the browser's own same-navigation hash scroll
-  // (which can miss it here since the content loads asynchronously after mount).
+  // "Continue to Job Card" after creation links straight to /jobcards/{id}#workflow-timeline, and a job
+  // card's photo count on the list page links straight to /jobcards/{id}#photos. Both scroll that
+  // section into view once the page (and the matching id) has actually rendered, rather than relying on
+  // the browser's own same-navigation hash scroll (which can miss it since the content loads async).
   const scrolledToHashRef = useRef(false)
   useEffect(() => {
     if (scrolledToHashRef.current || !jc || !window.location.hash) return
@@ -480,10 +425,6 @@ export function JobCardDetailPage() {
 
   if (!jc) return <p className="muted">Loading...</p>
 
-  // 2026-10-01: the parent-level estimateGrandTotal that used to gate Part/Labour Suggestion via
-  // ESTIMATE_TOTAL_LOCK_THRESHOLD has been removed along with that cap (see calcEstimateGrandTotal's
-  // doc comment above). EstimatesCard still computes its own Grand Total internally for display.
-
   const run = async (fn: () => Promise<unknown>, successMsg?: string) => {
     setBusy(true)
     setMsg(null)
@@ -492,10 +433,9 @@ export function JobCardDetailPage() {
       await load()
       if (successMsg) setMsg(successMsg)
     } catch (err: unknown) {
-      // Surface both the friendly message and the raw exception detail when the backend sends one
-      // (see JobCardsController.AddPartSuggestion/AddLabourSuggestion's catch blocks) - this is
-      // what actually tells apart "migration wasn't run against this database" from a genuinely
-      // new bug, without needing to open DevTools' Network tab.
+      // Surface both the friendly message and the raw exception detail when the backend sends one (see
+      // JobCardsController.AddPartSuggestion/AddLabourSuggestion's catch blocks) - this is what tells
+      // apart "migration wasn't run against this database" from a genuinely new bug.
       const data = (err as { response?: { data?: { message?: string; detail?: string } } })?.response?.data
       setMsg(data ? [data.message, data.detail].filter(Boolean).join(' — ') || 'Action failed.' : 'Action failed.')
     } finally {
@@ -583,9 +523,8 @@ export function JobCardDetailPage() {
   )
 }
 
-/** DMS's own service/job-card history for this vehicle's chassis (GET
- * /api/bapl-dms/service-history) - a read-only reference panel, kept but unused - see
- * JobCardDetailPage's own doc comments history for why it's no longer rendered. */
+/** DMS's own service/job-card history for this vehicle's chassis (GET /api/bapl-dms/service-history) -
+ * a read-only reference panel, kept but currently unused (not rendered above). */
 function BaplServiceHistoryCard({ chassisNo, dealerCode }: { chassisNo?: string | null; dealerCode?: string | null }) {
   const [rows, setRows] = useState<BaplDmsJobCardHistory[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -1093,6 +1032,41 @@ function EstimatesCard({
   )
 }
 
+// ---------------- Part Suggestion helpers (2026-10-06) ----------------
+// GST % and stock shown next to each part. GET /api/jobcards/parts-catalog returns sgst / cgst / igst, availableQty
+// (the part's Part Upload balance COMBINED across every location this login may access - e.g. 17 + 10 = 27 for a login
+// with access to both workshops; a login restricted to one location sees that location's own quantity) and
+// stockByLocation [{ locationCode, qty }]. Read loosely (a cast) so this file keeps compiling whatever fields
+// JobCardsPartsCatalogRow already declares in types.
+
+type PartCatalogRow = JobCardsPartsCatalogRow & {
+  sgst?: number | null
+  cgst?: number | null
+  igst?: number | null
+  stockByLocation?: { locationCode: string; qty: number }[] | null
+}
+
+/** GST % of a parts-catalog row: SGST + CGST when present, otherwise IGST ('—' for an upload-only part, which carries no GST rate). */
+function partGstText(p: JobCardsPartsCatalogRow): string {
+  const g = p as PartCatalogRow
+  const split = (g.sgst ?? 0) + (g.cgst ?? 0)
+  const total = split > 0 ? split : (g.igst ?? 0)
+  return total > 0 ? `${total}%` : '—'
+}
+
+/** "avail. 27" - the combined balance (see above). */
+function partAvailText(p: JobCardsPartsCatalogRow): string {
+  return `avail. ${p.availableQty ?? '—'}`
+}
+
+/** Where the balance is held: "Stock: CUS0270W1 17 + CUS0270W3 10 = 27" (one location: "Stock: CUS0270W1 17"; none: "Available 0"). */
+function partStockLines(p: JobCardsPartsCatalogRow): string {
+  const x = p as PartCatalogRow
+  const parts = (x.stockByLocation ?? []).map((s) => `${s.locationCode || '—'} ${s.qty}`)
+  if (parts.length === 0) return `Available ${x.availableQty ?? 0}`
+  return parts.length === 1 ? `Stock: ${parts[0]}` : `Stock: ${parts.join(' + ')} = ${x.availableQty ?? 0}`
+}
+
 function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => void; estimatesLocked: boolean }) {
   const [availableParts, setAvailableParts] = useState<JobCardsPartsCatalogRow[]>([])
   const [search, setSearch] = useState('')
@@ -1106,9 +1080,8 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
     const handle = setTimeout(() => {
       const trimmed = search.trim()
       if (trimmed.length === 0) { setAvailableParts([]); setSearchError(null); return }
-      staffApi.get<JobCardsPartsCatalogRow[]>('/api/jobcards/parts-catalog', {
-        params: { q: trimmed, ...(jc.baplServiceLocationCode ? { locationCode: jc.baplServiceLocationCode } : {}) },
-      })
+      // No locationCode: the quantity is the combined Part Upload balance across the locations this login may access.
+      staffApi.get<JobCardsPartsCatalogRow[]>('/api/jobcards/parts-catalog', { params: { q: trimmed } })
         .then(({ data }) => { setAvailableParts(data); setSearchError(null) })
         .catch((err) => {
           setAvailableParts([])
@@ -1116,7 +1089,7 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
         })
     }, 300)
     return () => clearTimeout(handle)
-  }, [search, jc.baplServiceLocationCode])
+  }, [search])
 
   const [selectedPart, setSelectedPart] = useState<JobCardsPartsCatalogRow | null>(null)
   const q = search.trim()
@@ -1201,22 +1174,11 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
         </p>
       ) : (
       <>
-      <h4>Suggest a part (from Item Master{jc.baplServiceLocationCode ? ' / Part Upload' : ''})</h4>
-      {!jc.baplServiceLocationCode && <p className="muted">No Service Location on this job card - Available Qty won't be shown (the part list itself still works).</p>}
-      {/* 2026-10-03 ("in 1 row line all and ui make proper"): the Issue Type <select> used to sit
-         directly inside .suggest-row with no wrapping .field/.field-compact div and no label -
-         unlike every other control in this same row (Item Code/Description's own .field-grow,
-         QTY's own .field-compact) - so it had no fixed sizing and no visual grouping with its
-         neighbours, which is what made the row read as uneven/overflowing rather than one tidy
-         line. Wrapped it in the same .field.field-compact pattern QTY/Add already use, with its
-         own "Issue Type" label so all three (QTY/Issue Type/Add) read the same way, and the whole
-         row is now wrapped in an overflowX:auto container with flexWrap:'nowrap' forced on
-         .suggest-row - the exact same single-line fix already applied to RepairBillCreatePage.tsx's
-         Labour staging row (see that file's own 2026-09-23 "SECOND correction" doc comment for the
-         full reasoning: .suggest-row's shared flex-wrap:wrap in global.css is left untouched, so
-         other .suggest-row users such as Labour Suggestion's own row below are unaffected - this
-         override is local to this one row only). No field, data, or save behaviour changed - same
-         state (search/itemCode/qty/status), same addSuggestion() call. */}
+      <h4>Suggest a part (from Item Master / Part Upload)</h4>
+      {/* 2026-10-03: the whole row is wrapped in an overflowX:auto container with flexWrap:'nowrap' so
+         Item Code/QTY/Issue Type/Add read as one tidy line (the same single-line fix as
+         RepairBillCreatePage's Labour staging row). .suggest-row's shared flex-wrap:wrap in global.css is
+         left untouched, so other .suggest-row users (Labour Suggestion's own row below) are unaffected. */}
       <div style={{ overflowX: 'auto' }}>
       <div className="suggest-row" style={{ flexWrap: 'nowrap' }}>
         <div className="field field-grow" style={{ position: 'relative' }}>
@@ -1244,7 +1206,7 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
                       style={{ width: '100%', textAlign: 'left', border: 'none', background: 'transparent', padding: '6px 8px' }}
                       onMouseDown={(e) => { e.preventDefault(); pickPart(p) }}
                     >
-                      <strong>{p.itemCode}</strong>{p.description ? ` — ${p.description}` : ''} <span className="muted">(avail. {p.availableQty ?? '—'})</span>
+                      <strong>{p.itemCode}</strong>{p.description ? ` — ${p.description}` : ''} <span className="muted">({partAvailText(p)} · GST {partGstText(p)})</span>
                     </button>
                   </li>
                 ))}
@@ -1287,7 +1249,7 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
       </div>
       </div>
       {selectedPart && (
-        <p className="muted">MRP {selectedPart.mrp != null ? `₹${selectedPart.mrp}` : '-'} · HSN {selectedPart.hsnCode ?? '-'} · Available {selectedPart.availableQty}</p>
+        <p className="muted">MRP {selectedPart.mrp != null ? `₹${selectedPart.mrp}` : '-'} · GST {partGstText(selectedPart)} · HSN {selectedPart.hsnCode ?? '-'} · {partStockLines(selectedPart)}</p>
       )}
       </>
       )}

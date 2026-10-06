@@ -47,6 +47,7 @@ public class JobCardsController : ControllerBase
     // _baplDms (BAPLDMSvad)'s VehicleLookupAsync/VehicleSuggestionsAsync for this purpose - _baplDms
     // itself is unchanged and still used elsewhere in this controller (workshops, etc.).
     private readonly IDmsBaplDataService _dmsBaplData;
+    private readonly ILocalItemMasterService _localItemMaster;
 
     public JobCardsController(
         JobCardScannerDbContext db, ICurrentUserService currentUser, IJobCardNumberingService numbering,
@@ -54,7 +55,7 @@ public class JobCardsController : ControllerBase
         IWebHostEnvironment env, IBaplDmsService baplDms, IInvoicePdfService invoicePdf,
         IEstimatePdfService estimatePdf, IEmailClient email, ILogger<JobCardsController> logger,
         IBaplDealerService baplDealer, ILabourMasterImportService labourMaster, IPartUploadService partUploads,
-        IDmsBaplDataService dmsBaplData)
+        IDmsBaplDataService dmsBaplData,ILocalItemMasterService localItemMaster)
     {
         _db = db;
         _currentUser = currentUser;
@@ -73,6 +74,7 @@ public class JobCardsController : ControllerBase
         _labourMaster = labourMaster;
         _partUploads = partUploads;
         _dmsBaplData = dmsBaplData;
+        _localItemMaster = localItemMaster;
     }
 
     // ---------------- Part Suggestion / Labour Suggestion picker data (2026-09-24) ----------------
@@ -99,13 +101,13 @@ public class JobCardsController : ControllerBase
     /// stock guarantee. Picking a Service Location on the job card (still optional) gives the exact
     /// per-workshop number instead of this fallback.</summary>
     [HttpGet("parts-catalog")]
-    [Authorize(Policy = Policies.ServiceAdvisorUp)]
-    public async Task<IActionResult> PartsCatalog([FromQuery] string? q, [FromQuery] string? locationCode)
+    [Authorize(Policy = Policies.Staff)]
+    public async Task<IActionResult> PartsCatalog([FromQuery] string? q, [FromQuery] string? locationCode /* accepted for compatibility; stock is no longer narrowed to one location */)
     {
-        IReadOnlyList<BaplItemMasterRow> items;
+        IReadOnlyList<LocalItemMasterRow> items;
         try
         {
-            items = await _baplDealer.SearchItemMasterAsync(q, HttpContext.RequestAborted);
+            items = await _localItemMaster.SearchAsync(q, 5000, HttpContext.RequestAborted, activeOnly: true);
         }
         catch (InvalidOperationException ex)
         {
@@ -113,144 +115,76 @@ public class JobCardsController : ControllerBase
             return StatusCode(502, new { message = ex.Message });
         }
 
-        // 2026-09-28 ("for dealeradmin have all location access ... but under this dealer which
-        // location have access only that location item/part code shown"): same Work Area location
-        // scoping List()/Get() above already apply to job cards (see WorkLocationCodes' own doc
-        // comment there, "Employees" page, 2026-09-17) - empty list = unrestricted (DealerAdmin,
-        // and any other account with no Work Area assigned); a non-empty list restricts to those
-        // specific workshop location(s) under this dealer.
-        //
-        // FACT/INTERPRETATION split, please confirm: BAPL's C_ItemMaster (the Item Master catalog
-        // `items` above comes from) is dealer-wide reference data - one shared parts catalog, not
-        // one row per workshop location - so there is no confirmed location field on it to filter
-        // by. Only Part Upload (this dealer's own uploaded STOCK, which genuinely does have a
-        // LocationCode per row - see Models/PartUpload.cs) can be scoped by location today. So a
-        // location-restricted user below still sees the full Item Master catalog list (same as
-        // DealerAdmin), but: (a) their Available Qty hint only counts stock uploaded at THEIR
-        // allowed location(s), and (b) a part that exists ONLY because of an upload (no Item
-        // Master match - see the 2026-09-28 fix below) is hidden unless that upload is at one of
-        // their allowed locations. If you actually need the Item Master catalog LIST itself
-        // narrowed per location (not just the stock/qty), tell me and I'll ask what field on
-        // C_ItemMaster carries that, since I don't have that schema confirmed.
+        // Work Area scoping of the Part Upload STOCK (unchanged from before): DealerAdmin / CorporateAdmin / SystemAdmin always see every
+        // location; any other account with a Work Area only counts stock uploaded at its own location(s).
         var allowedLocations = _currentUser.WorkLocationCodes;
-        // 2026-09-28 FIX - your real screenshots: Part Upload shows BalQty 9 (UTTAM NAGAR) + 24
-        // (OKHLA) = 33 for 22C12110150AS, but Job Card's Part Suggestion showed "avail. 0" for the
-        // exact same part right after the location-scoping above shipped. FACT/ASSUMPTION
-        // correction: the version just above treated ANY account with a non-empty
-        // WorkLocationCodes as location-restricted, on the ASSUMPTION that a DealerAdmin account
-        // would normally carry an EMPTY WorkLocationCodes (unrestricted). That assumption looks
-        // wrong for the account you tested with - Work Area locations on Admin -> Users appear
-        // settable per ACCOUNT regardless of role, not tied to being DealerAdmin - so an account
-        // whose Work Area doesn't happen to include CUS0288W1/W2 (where this part's stock was
-        // actually uploaded) got zeroed out here, even though "dealeradmin have all location
-        // access" was the explicit ask. FIXED: DealerAdmin now ALWAYS bypasses this restriction
-        // regardless of what WorkLocationCodes happens to contain on that specific account -
-        // same for CorporateAdmin/SystemAdmin, matching the existing isOrgWideRole convention
-        // List()/Get()/Technicians() above already use - matching your literal request instead of
-        // an assumption about how accounts are normally configured.
-        //
-        // If qty still shows 0 after this for a DealerAdmin (or non-restricted) account, the cause
-        // is something else - most likely this account's DealerId not matching the PartUpload
-        // rows' DealerId. Tell me the role you tested with, or open DevTools -> Network on this
-        // page and paste the raw JSON GET /api/jobcards/parts-catalog?q=22C12110150AS returns (you
-        // already have a second tab open here) so I can see availableQty directly instead of
-        // guessing further.
         var isDealerAdminOrAbove = _currentUser.Role is StaffRole.DealerAdmin or StaffRole.CorporateAdmin or StaffRole.SystemAdmin;
         var isLocationRestricted = allowedLocations.Count > 0 && !isDealerAdminOrAbove;
 
-        Dictionary<string, decimal> availableQtyByCode = new(StringComparer.OrdinalIgnoreCase);
-        // 2026-09-28 CORRECTION - your real compiler error (CS0234: "the type or namespace name
-        // 'PartUploadRow' does not exist in the namespace 'JobCardScanner.Api.Dtos'"): my previous
-        // pass here declared `uploads` as `List<Dtos.PartUploadRow>`, a type name I invented rather
-        // than confirmed - it doesn't exist. Fixed by not naming the type at all (`var` below lets
-        // the compiler infer whatever `_partUploads.GetAsync` actually returns) - `partUploadOnlyRows`
-        // is declared outside the dealer-check block, defaulting to empty, so it's usable either way.
+        var availableQtyByCode = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);     // combined across the locations this login may access
+        var stockByCode = new Dictionary<string, Dictionary<string, decimal>>(StringComparer.OrdinalIgnoreCase);
         var partUploadOnlyRows = new List<PartsCatalogRow>();
         if (_currentUser.DealerId.HasValue)
         {
-            // locationCode narrows to one workshop when the job card has one; null/blank returns
-            // this dealer's uploads across every location (see this method's doc comment above) -
-            // summed per PartNo rather than a plain overwrite, since more than one location's row
-            // can now match the same PartNo once locationCode isn't filtering them down to one.
-            var uploads = await _partUploads.GetAsync(_currentUser.DealerId.Value, locationCode, null, HttpContext.RequestAborted);
-
-            // Work Area location scoping (see this method's 2026-09-28 doc comment above) -
-            // INTERPRETATION: PartUpload.LocationCode is a confirmed real column (Models/
-            // PartUpload.cs), but whether IPartUploadService.GetAsync's return projection exposes
-            // it as `.LocationCode` is inferred, not confirmed the same way PartNo/BalQty/
-            // Description/HsnSacCode/BillPrice already were earlier in this file - if this doesn't
-            // compile (a CS1061 naming the missing member), tell me the real property name.
+            // ALL of this dealer's locations, limited below to the user's Work Area when it has one - the quantity is the SUM over what is left.
+            var uploads = await _partUploads.GetAsync(_currentUser.DealerId.Value, null, null, HttpContext.RequestAborted);
             if (isLocationRestricted)
                 uploads = uploads.Where(u => u.LocationCode != null && allowedLocations.Contains(u.LocationCode, StringComparer.OrdinalIgnoreCase)).ToList();
 
             foreach (var u in uploads)
-                if (!string.IsNullOrWhiteSpace(u.PartNo) && u.BalQty.HasValue)
-                    availableQtyByCode[u.PartNo] = (availableQtyByCode.TryGetValue(u.PartNo, out var existing) ? existing : 0m) + u.BalQty.Value;
+            {
+                var code = u.PartNo?.Trim();
+                if (string.IsNullOrEmpty(code) || !u.BalQty.HasValue) continue;
+                var loc = (u.LocationCode ?? "").Trim();
+                var bal = u.BalQty.Value;
 
-            // FACT, root cause of the bug you originally reported: this endpoint's item LIST only
-            // ever came from SearchItemMasterAsync above (BAPL's external C_ItemMaster) - Part
-            // Upload was only ever used to enrich availableQty on a PartNo that ALREADY matched an
-            // Item Master row, never to add a part that exists ONLY in Part Upload. A part you've
-            // uploaded (real stock, in JobCardScannerDb's own PartUploads table) but which BAPL's
-            // Item Master has no entry for was invisible here even though Part Upload's own page
-            // shows it correctly - "does not exist in Item Master" was a true statement about the
-            // wrong list. FIXED: any uploaded PartNo with no Item Master match is appended below.
-            //
-            // Description/HsnCode/Mrp now filled in too (upgraded from the previous pass, which
-            // left them blank) - now that you've pasted the real Models/PartUpload.cs, u.Description/
-            // u.HsnSacCode/u.BillPrice are confirmed real properties on that entity, and they match
-            // the exact camelCase field names PartUploadPage.tsx's own `PartUpload` TS type already
-            // uses (description/hsnSacCode/billPrice) - so GetAsync's return type very likely
-            // exposes the same members. INTERPRETATION, not certainty: if GetAsync returns a
-            // slimmer projection that's missing one of these three, you'll get one more CS0117-style
-            // error naming exactly which - tell me and I'll drop just that one field.
-            // Sgst/Cgst/Igst stay null - PartUpload.cs's own class doc comment confirms this sheet
-            // has no GST/tax-rate column at all, so there is nothing to fill in there, not a gap.
-            var itemMasterCodes = new HashSet<string>(items.Select(i => i.ItemCode), StringComparer.OrdinalIgnoreCase);
+                availableQtyByCode[code] = (availableQtyByCode.TryGetValue(code, out var total) ? total : 0m) + bal;
+                if (!stockByCode.TryGetValue(code, out var perLoc))
+                    stockByCode[code] = perLoc = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+                perLoc[loc] = (perLoc.TryGetValue(loc, out var atLoc) ? atLoc : 0m) + bal;
+            }
+
+            // Upload-only rows: stock the dealer uploaded for a part that is NOT in the (active, continuing) list above. A code the Item Master
+            // DOES know - but excluded as inactive / discontinued / another group - must stay hidden, so ask the master which of these codes it
+            // knows (an unfiltered lookup) and only keep the ones it has never heard of.
+            var activeCodes = new HashSet<string>(items.Select(i => i.ItemCode.Trim()), StringComparer.OrdinalIgnoreCase);
+            var candidateCodes = uploads
+                .Where(u => !string.IsNullOrWhiteSpace(u.PartNo))
+                .Select(u => u.PartNo.Trim())
+                .Where(c => !activeCodes.Contains(c))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(2000)
+                .ToList();
+            var knownCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (candidateCodes.Count > 0)
+            {
+                try
+                {
+                    var known = await _localItemMaster.GetByCodesAsync(candidateCodes, HttpContext.RequestAborted);
+                    if (known is not null) foreach (var k in known.Keys) knownCodes.Add(k);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "PartsCatalog: could not check which uploaded part codes the Item Master knows - treating them as unknown.");
+                }
+            }
+
             partUploadOnlyRows = uploads
-                .Where(u => !string.IsNullOrWhiteSpace(u.PartNo) && !itemMasterCodes.Contains(u.PartNo))
-                .GroupBy(u => u.PartNo, StringComparer.OrdinalIgnoreCase)
+                .Where(u => !string.IsNullOrWhiteSpace(u.PartNo) && candidateCodes.Contains(u.PartNo.Trim(), StringComparer.OrdinalIgnoreCase) && !knownCodes.Contains(u.PartNo.Trim()))
+                .GroupBy(u => u.PartNo.Trim(), StringComparer.OrdinalIgnoreCase)
                 .Select(g => g.OrderByDescending(u => u.UploadedAt).First())
                 .Select(u => new PartsCatalogRow(
-                    ItemCode: u.PartNo,
+                    ItemCode: u.PartNo.Trim(),
                     Description: u.Description,
                     HsnCode: u.HsnSacCode,
                     Mrp: u.BillPrice,
-                    Sgst: null,
+                    Sgst: null,   // the Part Upload sheet carries no GST rate, so none is shown for an upload-only part
                     Cgst: null,
                     Igst: null,
-                    // 2026-09-28 ("if there is no qty then show 0"): 0, not null, when nothing
-                    // matched - see this method's final Select/Ok below for the same default on
-                    // Item Master rows.
-                    AvailableQty: (int)(availableQtyByCode.TryGetValue(u.PartNo, out var puQty) ? puQty : 0m)))
+                    AvailableQty: (int)(availableQtyByCode.TryGetValue(u.PartNo.Trim(), out var puQty) ? puQty : 0m),
+                    StockByLocation: StockAt(u.PartNo.Trim())))
                 .ToList();
 
-            // 2026-09-28 FIX ("which i search that will exactly item available then why this
-            // shown and excat serach give" - your real 0301-A01-1025 example, confirmed by you in
-            // both C_ItemMaster and PartUploads): unlike itemMasterRows above (already narrowed
-            // server-side by SearchItemMasterAsync's own `q` handling), partUploadOnlyRows was
-            // never filtered by `q` at all - GetAsync's third parameter (always passed null here)
-            // is a PartNo lookup filter, not a free-text search, so this list was always either
-            // this dealer's ENTIRE not-in-Item-Master upload set (when q was blank) or - just as
-            // wrong - that same full set even when you HAD typed a specific search, with nothing
-            // here ever comparing it against what you actually typed. FIXED: same defensive
-            // re-filter pattern already used for LabourCatalog's own near-identical bug (see that
-            // method's 2026-09-28 doc comment above) - when `q` is non-blank, keep only rows whose
-            // ItemCode or Description actually contains it.
-            //
-            // SEPARATE, FLAGGED - INTERPRETATION not FACT (I don't have IBaplDealerService.
-            // SearchItemMasterAsync's own source this session to confirm): your real C_ItemMaster
-            // row for 0301-A01-1025 has Status = 'N' and its own ItemName literally says
-            // "Discontinue -Alt-22GE050020AS" - i.e. BAPL's own catalog already marks this part
-            // discontinued, pointing to 22GE050020AS as its replacement. If SearchItemMasterAsync
-            // filters out inactive/Status<>'Y' items (a common, reasonable ERP convention - you
-            // generally don't want a discontinued part suggested on a new job card), then Item
-            // Master search correctly NOT finding "0301-A01-1025" is by design, not a bug - the
-            // fix above is what makes sure your actual uploaded stock for it (BalQty 9 at
-            // CUS0288W1, per your real PartUploads row) still surfaces via the Part Upload
-            // fallback instead of disappearing entirely. If it still doesn't show after this,
-            // paste IBaplDealerService.cs (specifically SearchItemMasterAsync) and I'll confirm
-            // instead of guessing further.
             if (!string.IsNullOrWhiteSpace(q))
             {
                 var needle = q.Trim();
@@ -261,37 +195,39 @@ public class JobCardsController : ControllerBase
             }
         }
 
-        // 2026-09-28 ("in that qty show if there is no qty then show 0 ... order where qty are
-        // there in that order from other item show"): AvailableQty defaults to 0 (never null) for
-        // every row now - both here and on partUploadOnlyRows above - and the combined list is
-        // sorted qty-first (descending), ties broken alphabetically by ItemCode for a stable,
-        // predictable order instead of whatever order SearchItemMasterAsync/Concat happened to
-        // return.
-        var itemMasterRows = items.Select(i => new PartsCatalogRow(
-            ItemCode: i.ItemCode,
-            Description: i.DisplayName ?? i.ItemName,
-            HsnCode: i.HsnCode,
-            Mrp: (decimal?)i.DlrPrice,
-            Sgst: (decimal?)i.Sgst,
-            Cgst: (decimal?)i.Cgst,
-            Igst: (decimal?)i.Igst,
-            AvailableQty: (int)(availableQtyByCode.TryGetValue(i.ItemCode, out var qty) ? qty : 0m)));
+        IReadOnlyList<PartStockAt>? StockAt(string code) =>
+            stockByCode.TryGetValue(code, out var d)
+                ? d.Where(kv => kv.Value != 0).OrderByDescending(kv => kv.Value).Select(kv => new PartStockAt(kv.Key, (int)kv.Value)).ToList()
+                : null;
+
+        // One row per part code, qty-first then by code. AvailableQty is 0 (never null) when nothing was uploaded.
+        var itemMasterRows = items
+            .GroupBy(i => i.ItemCode.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .Select(i => new PartsCatalogRow(
+                ItemCode: i.ItemCode.Trim(),
+                Description: !string.IsNullOrWhiteSpace(i.ItemName) ? i.ItemName : i.DisplayName,
+                HsnCode: i.HsnCode,
+                Mrp: (decimal?)i.DlrPrice,
+                Sgst: (decimal?)i.Sgst,
+                Cgst: (decimal?)i.Cgst,
+                Igst: (decimal?)i.Igst,
+                AvailableQty: (int)(availableQtyByCode.TryGetValue(i.ItemCode.Trim(), out var qty) ? qty : 0m),
+                StockByLocation: StockAt(i.ItemCode.Trim())));
 
         return Ok(itemMasterRows.Concat(partUploadOnlyRows)
             .OrderByDescending(r => r.AvailableQty)
             .ThenBy(r => r.ItemCode, StringComparer.OrdinalIgnoreCase));
     }
 
-    /// <summary>Shared response shape for PartsCatalog above, covering both an Item-Master-backed
-    /// row and a Part-Upload-only row (see that method's 2026-09-28 doc comment) - a named record
-    /// instead of two separately-shaped anonymous objects so the compiler doesn't need the two
-    /// Select projections above to infer an identical anonymous type before Concat can unify them.
-    /// PascalCase here serializes as camelCase JSON (same global naming policy every other
-    /// controller's ToRow-style projections already rely on), matching JobCardsPartsCatalogRow on
-    /// the frontend exactly as the pre-existing lowercase anonymous object did.</summary>
+    /// <summary>Shared response shape for PartsCatalog - an Item-Master-backed row or a Part-Upload-only row. PascalCase serializes as
+    /// camelCase JSON (itemCode / description / hsnCode / mrp / sgst / cgst / igst / availableQty / stockByLocation).</summary>
+    private record PartStockAt(string LocationCode, int Qty);
+
     private record PartsCatalogRow(
         string ItemCode, string? Description, string? HsnCode,
-        decimal? Mrp, decimal? Sgst, decimal? Cgst, decimal? Igst, int? AvailableQty);
+        decimal? Mrp, decimal? Sgst, decimal? Cgst, decimal? Igst, int? AvailableQty,
+        IReadOnlyList<PartStockAt>? StockByLocation = null);
 
     /// <summary>GET /api/jobcards/labour-catalog?search= - replaces the old
     /// GET /api/bapl-dms/labour as Labour Suggestion's search source. Unions LabourMaster

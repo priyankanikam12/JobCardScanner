@@ -224,10 +224,7 @@ const [stockQty, setStockQty] = useState<number | null>(null)
         ))}
       </div>
 
-      <div className="kpi-grid">
-        {/* Revenue/turnaround are both driven by CLOSED (invoiced) job cards - the closest
-           equivalent /jobcards filter, even though neither is an exact reproduction of the
-           number shown (revenue/turnaround are computed off Invoices, not a job-card count). */}
+      {/* <div className="kpi-grid">
         <Link to="/jobcards?status=Closed" className="kpi kpi-a2" style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
           <div className="kpi-icon">₹</div>
           <div className="value">₹{kpis.revenuePaidInvoices.toLocaleString()}</div>
@@ -238,9 +235,6 @@ const [stockQty, setStockQty] = useState<number | null>(null)
           <div className="value">{kpis.avgTurnaroundHours} hrs</div>
           <div className="label">Avg. Service Time</div>
         </Link>
-        {/* Not a Link - there's no rating/feedback capture in the schema yet (see
-           DashboardController.Kpis' own comment on this), so no job-card filter actually
-           corresponds to this number. */}
         <div className="kpi kpi-a5">
           <div className="kpi-icon">⭐</div>
           <div className="value">{kpis.csat.average != null ? `${kpis.csat.average.toFixed(1)} / 5` : '—'}</div>
@@ -248,7 +242,7 @@ const [stockQty, setStockQty] = useState<number | null>(null)
             Customer Satisfaction{kpis.csat.ratingsCount > 0 ? ` (${kpis.csat.ratingsCount} ratings)` : ' (no ratings yet)'}
           </div>
         </div>
-      </div>
+      </div> */}
 
       <div className="card">
         <h3>Job Cards by Status</h3>
@@ -428,7 +422,7 @@ function CorporateDashboard() {
          stocks"): the overview tiles below. "Open Job Cards Count" is data.pendingVehicles - every job card
          that is not Closed/Cancelled, across all dealers - and opens the Dealer Role Report on "Not Closed"
          for ALL dealers and ALL dates, so the report shows the same number (2026-10-05). */}
-      <div className="kpi-grid" style={{ margin: '16px 0' }}>
+      {/* <div className="kpi-grid" style={{ margin: '16px 0' }}>
         <Link to="/dealer-role-report?status=notClosed&scope=all&from=&to=" className="kpi kpi-a4" style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
           <span className="kpi-badge-action">Action Needed</span>
           <div className="kpi-icon">📋</div>
@@ -451,7 +445,7 @@ function CorporateDashboard() {
           <div className="value">{orgStockError ? '—' : orgStockQty === null ? '…' : orgStockQty.toLocaleString('en-IN')}</div>
           <div className="label">Parts Stock</div>
         </Link>
-      </div>
+      </div> */}
 
       <div className="card" style={{ marginBottom: 20 }}>
         <h3>Job Card Volume by Dealer</h3>

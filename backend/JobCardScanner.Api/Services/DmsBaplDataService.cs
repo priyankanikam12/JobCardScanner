@@ -429,7 +429,7 @@ public interface IDmsBaplDataService
     /// </summary>
     Task<DmsBaplDataVehicleSaleRow?> GetLatestVehicleSaleFromDmsIotDataAsync(string chassisNo, CancellationToken ct = default);
     Task<IReadOnlyList<DmsBaplDataVehicleSaleRow>> GetVehicleSalesAsync(string? soldToFilter, CancellationToken ct = default);
-
+    Task<(IReadOnlyList<DmsBaplDataVehicleSaleRow> Rows, int Total)> GetVehicleSalesPageAsync(string? search, string? dealerCode, int page, int pageSize, CancellationToken ct = default);
     /// <summary>
     /// 2026-10-01 ADDED ("with location this data not match" - a Dombivli dealer's logged-in user
     /// was shown a Delhi dealer's Zomato sale row): same query as the method above, PLUS dealer
@@ -664,6 +664,94 @@ public class DmsBaplDataService : IDmsBaplDataService
 
         // Re-attach each header's items (headers were built before the items query ran, above).
         return headers.Select(h => h with { Items = itemsByBillId.TryGetValue(h.Id, out var items) ? items : Array.Empty<DmsBaplDataRepairBillItemRow>() }).ToList();
+    }
+
+    public async Task<(IReadOnlyList<DmsBaplDataVehicleSaleRow> Rows, int Total)> GetVehicleSalesPageAsync(string? search, string? dealerCode, int page, int pageSize, CancellationToken ct = default)
+    {
+        page = Math.Max(1, page);
+        pageSize = pageSize is > 0 and <= 5000 ? pageSize : 10;
+        var q = string.IsNullOrWhiteSpace(search) ? null : search.Trim();
+
+        // Chassis numbers the typed text can reach through a Reg No that DMS_SaleBill itself does not hold (it is often a "TEMP####"
+        // placeholder): a hand-corrected Reg No (our own VehicleSaleOverride table) and the real one in DMS_ServiceHistory. Both best-effort.
+        var extraChassis = new List<string>();
+        if (q is not null)
+        {
+            extraChassis.AddRange(await FindChassisNumbersByServiceHistoryMatchAsync(q, 200, ct));
+            try
+            {
+                extraChassis.AddRange(await _db.VehicleSaleOverrides.AsNoTracking()
+                    .Where(o => o.RegNo.Contains(q) || o.ChassisNo.Contains(q))
+                    .Select(o => o.ChassisNo).Take(200).ToListAsync(ct));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Vehicle sale page: could not search JobCardScannerDb's VehicleSaleOverride table - searching DMS_SaleBill only.");
+            }
+            extraChassis = extraChassis.Where(c => !string.IsNullOrWhiteSpace(c)).Select(c => c.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase).Take(400).ToList();
+        }
+        var extraIn = extraChassis.Count > 0
+            ? " OR LTRIM(RTRIM(sb.chassis_no)) IN (" + string.Join(",", extraChassis.Select((_, i) => $"@ch{i}")) + ")"
+            : "";
+
+        var where = $@"
+            WHERE (sb.IsDelete IS NULL OR sb.IsDelete = 0)
+              AND (@dealerCode IS NULL OR sb.dealer_code = @dealerCode)
+              AND (@q IS NULL OR sb.chassis_no LIKE @q OR sb.reg_number LIKE @q OR sb.salebill_no LIKE @q
+                   OR sb.Item_Modl LIKE @q OR c.first_name LIKE @q OR c.mobile LIKE @q{extraIn})";
+
+        void AddParams(SqlCommand cmd)
+        {
+            cmd.Parameters.AddWithValue("@dealerCode", string.IsNullOrWhiteSpace(dealerCode) ? DBNull.Value : dealerCode.Trim());
+            cmd.Parameters.AddWithValue("@q", q is null ? DBNull.Value : $"%{q}%");
+            for (var i = 0; i < extraChassis.Count; i++) cmd.Parameters.AddWithValue($"@ch{i}", extraChassis[i]);
+        }
+
+        var rows = new List<DmsBaplDataVehicleSaleRow>();
+        int total;
+        try
+        {
+            await using var conn = new SqlConnection(BaplConnStr);
+            await conn.OpenAsync(ct);
+
+            await using (var countCmd = new SqlCommand($"SELECT COUNT(*) {VehicleSaleFromJoin} {where}", conn) { CommandTimeout = 120 })
+            {
+                AddParams(countCmd);
+                total = Convert.ToInt32(await countCmd.ExecuteScalarAsync(ct));
+            }
+
+            var pageSql = $@"
+                SELECT {VehicleSaleSelectColumns}
+                {VehicleSaleFromJoin}
+                {where}
+                ORDER BY sb.CreatedOn DESC, sb.Id DESC
+                OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY";
+            await using var cmd = new SqlCommand(pageSql, conn) { CommandTimeout = 120 };
+            AddParams(cmd);
+            cmd.Parameters.AddWithValue("@skip", (page - 1) * pageSize);
+            cmd.Parameters.AddWithValue("@take", pageSize);
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            while (await rdr.ReadAsync(ct)) rows.Add(MapVehicleSaleRow(rdr));
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Could not read BaplConnection's vehicle sales (DMS_SaleBill/DMS_SaleBillCustomer): {ex.Message}", ex);
+        }
+
+        // Same Reg No resolution the Vehicle Sale page and the Job Card wizard use (placeholder -> DMS_ServiceHistory -> manual override), but
+        // for just these rows.
+        var pairs = rows.Where(r => !string.IsNullOrWhiteSpace(r.ChassisNo)).Select(r => (r.ChassisNo!, r.RegNo)).ToList();
+        if (pairs.Count > 0)
+        {
+            var display = await ResolveDisplayRegNosAsync(pairs, ct);
+            rows = rows.Select(r =>
+                r.ChassisNo != null && display.TryGetValue(r.ChassisNo, out var regNo) && !string.IsNullOrWhiteSpace(regNo)
+                    ? r with { RegNo = regNo }
+                    : r).ToList();
+        }
+
+        return (rows, total);
     }
 
     public async Task<IReadOnlyList<DmsBaplDataMaterialTransferRow>> GetMaterialTransfersAsync(string? locCode, CancellationToken ct = default)

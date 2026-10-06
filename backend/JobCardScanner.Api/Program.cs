@@ -226,6 +226,7 @@ builder.Services.AddScoped<IInvoicePdfService, InvoicePdfService>();
 builder.Services.AddScoped<IEstimatePdfService, EstimatePdfService>();
 builder.Services.AddScoped<IExcelExportService, ExcelExportService>();
 builder.Services.AddScoped<IAuditLogService, AuditLogService>();
+builder.Services.AddScoped<ILocalItemMasterService, LocalItemMasterService>();
 // 2026-09-22 "create warenty table in jobcardscanner db" - shared formula used by both
 // ExtendedBatteryWarrantySchemesController's GET .../eligible and RepairBillDocsController.Create's
 // non-destructive per-line tagging, see IExtendedBatteryWarrantyEligibilityService's own doc comment.

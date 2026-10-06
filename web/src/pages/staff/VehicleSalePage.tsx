@@ -10,7 +10,7 @@ import { usePagination } from '../../lib/usePagination'
 // 2026-09-18 "download report excel pdf download button insert in starting row" - the flat column
 // set both the Excel and PDF export use, a superset of what the on-screen table shows (a report
 // download is expected to carry more than the compact list view). Shared between both formats so
-// they never drift apart. Works for both DMSBAPLDATA-sourced and imported rows since both fill the
+// they never drift apart. Works for both server-sourced and imported rows since both fill the
 // same DmsBaplDataVehicleSale shape.
 const REPORT_COLUMNS: ReportColumn<DmsBaplDataVehicleSale>[] = [
   { header: 'Invoice No', value: (s) => s.invoiceNo ?? '' },
@@ -60,19 +60,13 @@ function makeRowGetter(headerRow: unknown[]) {
 
 /**
  * Maps one row of a real DMS / ERP "Vehicle Sale Report" export (2026-09-18: "this excel
- * format i want to import in my project" - you uploaded a 53,000+ row report with columns like
- * Model Code/Chasis No/Reg No/Dealer Name/Sale Date/Total Amount) onto this page's own
- * DmsBaplDataVehicleSale shape, so imported rows render in exactly the same table/detail-panel/
- * export as DMSBAPLDATA-sourced ones.
+ * format i want to import in my project" - a 53,000+ row report with columns like Model Code/
+ * Chasis No/Reg No/Dealer Name/Sale Date/Total Amount) onto this page's own DmsBaplDataVehicleSale
+ * shape, so imported rows render in exactly the same table/detail-panel/export as server rows.
  *
- * FACT: this is a genuinely different report from DMSBAPLDATA's own DMS_VehicleSales table (which
- * you separately confirmed live via your own `select *`, matching what GET /api/dms-bapl-data/
- * vehicle-sales already returns) - different columns, many more rows, no shared key to reconcile
- * them by. INTERPRETATION: the mapping below is a best-effort field-by-field match between the two
- * shapes, not a verified 1:1 correspondence - a few fields are approximated (e.g. `soldTo` from the
- * report's "Name" column, since it has no explicit "Sold To" column the way DMS_VehicleSales does;
- * `saleType` falls back to "Type" when "Bill Type" is blank). Please spot-check a few imported rows
- * against the source report before relying on the numbers here.
+ * INTERPRETATION: a best-effort field-by-field match, not a verified 1:1 correspondence - a few
+ * fields are approximated (e.g. `soldTo` from the report's "Name" column; `saleType` falls back to
+ * "Type" when "Bill Type" is blank). Spot-check a few imported rows against the source report.
  */
 function mapVsrRow(dataRow: unknown[], get: ReturnType<typeof makeRowGetter>, index: number): DmsBaplDataVehicleSale {
   const g = (...candidates: string[]) => get(dataRow, ...candidates)
@@ -83,7 +77,7 @@ function mapVsrRow(dataRow: unknown[], get: ReturnType<typeof makeRowGetter>, in
     return Number.isFinite(n) ? n : null
   }
   return {
-    id: -(index + 1), // negative + synthesized - imported rows have no DMSBAPLDATA Id
+    id: -(index + 1), // negative + synthesized - imported rows have no database Id
     isImported: true,
     dealerName: g('Dealer Name'),
     dealerCode: g('Dealer Code'),
@@ -154,67 +148,34 @@ function mapVsrRow(dataRow: unknown[], get: ReturnType<typeof makeRowGetter>, in
   }
 }
 
+/** Largest number of matching rows the Excel / PDF download asks the server for. */
+const EXPORT_LIMIT = 5000
+
 /**
- * "Vehicle Sale" sidebar page (2026-09-18: "i want 1 option in sidebar that was Vehicle sale from
- * DMSBAPLDATA select * from DMS_VehicleSales where SoldTo like '%Zomato%' ... add in that after
- * jobcards sidebar menu") - shows DMSBAPLDATA's vehicle sale data by default (see GET
- * /api/dms-bapl-data/vehicle-sales and DmsBaplDataVehicleSaleRow's doc comment in
- * DmsBaplDataService.cs - that schema is now independently confirmed against a live `select *` you
- * ran yourself).
+ * "Vehicle Sale" sidebar page.
  *
- * 2026-09-18 additions:
- *  - The "Sold To" search box is gone from view per your request ("Sold To zomato hide this") -
- *    the page originally still only ever asked DMSBAPLDATA for Zomato's sales (soldTo stayed
- *    hardcoded), just without a visible, editable field for it.
+ * 2026-10-06 ("when SystemAdmin and CorporateAdmin open this page it needs to show all vehicle sale
+ * data but it does not load"): the list is now SERVER-PAGED. It used to call
+ * GET /api/dms-bapl-data/vehicle-sales once, receive EVERY sale bill (tens of thousands of rows -
+ * what CorporateAdmin / SystemAdmin get, since they have no dealer filter) and filter / page them in
+ * the browser, which timed out / froze. It now asks GET /api/vehicle-sales
+ * (VehicleSalesController.cs) for one page at a time, with the search done by the server:
+ *  - CorporateAdmin / SystemAdmin get every dealer's sales; every other role only its own dealer's;
+ *  - Reg No (placeholder -> DMS_ServiceHistory -> manual override) is resolved by the server for
+ *    just the page on screen;
+ *  - Excel / PDF download the first 5,000 rows matching the current search.
+ * "Import Vehicle Sale Report" still reads a report file entirely in the browser and swaps the page
+ * over to those rows (searched and paged in the browser, since that file is its own dataset).
  *
- * 2026-09-30 CHANGE ("remove condition soldto = zomato all data show"): the Sold To=Zomato filter
- * is REMOVED - this page now asks DMSBAPLDATA for every vehicle sale, not just Zomato's. The
- * "Sold To" column (and its value in the search/export) is unaffected - it still shows whatever
- * DMSBAPLDATA returns per row, it's just no longer used to filter the query itself. A plain
- * Refresh button re-runs the same (now unfiltered) query. NOT CONFIRMED: I don't have
- * DmsBaplDataController.cs/DmsBaplDataService.cs in this session, so whether GET
- * /api/dms-bapl-data/vehicle-sales actually returns everything when soldTo is omitted (vs.
- * erroring, vs. defaulting to something else server-side) is unverified - flag it if Refresh
- * starts failing or still only shows Zomato after this deploys.
- *  - "Import Vehicle Sale Report" reads a real DMS/ERP report export (see mapVsrRow's doc
- *    comment above) entirely in the browser and SWAPS the page over to showing that file's rows
- *    instead of DMSBAPLDATA's - not a bulk filter over the DMSBAPLDATA results like Repair Bill/
- *    Material Transfer's Import Excel buttons still are, since this file is a full alternate
- *    dataset with its own rows, not a short list of ids to filter by. Nothing is written back to
- *    DMSBAPLDATA or anywhere else - purely client-side, purely for viewing/exporting.
- *  - Pagination defaults to 100 rows/page (was 25) with a selector, since an imported report can run
- *    into the tens of thousands of rows.
- *
- * 2026-09-28 CHANGES:
- *  - Pagination now defaults to 10 rows/page (was 100), per explicit request. Forced via a
- *    setPageSize(10) on mount rather than editing usePagination's own default - I don't have
- *    lib/usePagination.ts in this session, and that hook is shared by Repair Bill/Material
- *    Transfer/Service History too, so changing its internal default would silently change their
- *    page sizes as well. This only touches Vehicle Sale. Paste usePagination.ts if you'd rather
- *    the shared default itself changed to 10 for every page that uses it.
- *  - New inline "Edit" control on the Reg No column: lets you correct a row's Reg No by hand and
- *    save it - see the doc comment on saveRegNoOverride below for exactly what this does and does
- *    NOT do. Backed by the new POST /api/vehicle-sale-overrides endpoint
- *    (VehicleSaleOverridesController.cs) and a new VehicleSaleOverride table in JobCardScannerDb -
- *    see sql/2026-09-28_create_vehicle_sale_overrides_table.sql and README SECTION 114.
- *    INTERPRETATION: only Reg No is editable here, since that's the concrete example you gave
- *    ("edit details like reg no.") - tell me which other fields should also become editable and
- *    I'll extend the same mechanism (the table/endpoint are generic enough to grow more override
- *    columns) rather than guessing further fields now. Also built as an inline edit on this same
- *    page/table (not a separate routed page) since I don't have your router file to safely wire a
- *    new route - say so if you specifically want a dedicated edit page/URL instead.
+ * Earlier history (kept short): Sold To=Zomato filter removed 2026-09-30; default page size 10
+ * since 2026-09-28; inline Reg No correction (POST /api/vehicle-sale-overrides, saved in
+ * JobCardScannerDb, wins over DMS_SaleBill / DMS_ServiceHistory) since 2026-09-28.
  */
 export function VehicleSalePage() {
   const [sales, setSales] = useState<DmsBaplDataVehicleSale[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<number | null>(null)
-  // 2026-09-25 ("add search option"): a client-side filter over whatever's currently loaded
-  // (DMSBAPLDATA's results, or an imported report - same "everything downstream reads from
-  // effectiveSales" convention this page already uses below). Not a new server call/param - it
-  // just narrows what's already on screen (see SECTION 181 above: the underlying DMSBAPLDATA
-  // query itself is unfiltered now, not Sold To=Zomato any more). Matches across the same fields
-  // the on-screen table + report export show, case-insensitive substring.
   const [query, setQuery] = useState('')
 
   const [importedRows, setImportedRows] = useState<DmsBaplDataVehicleSale[] | null>(null)
@@ -223,28 +184,55 @@ export function VehicleSalePage() {
   const [importing, setImporting] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // 2026-09-28: Reg No inline-edit state - see saveRegNoOverride's doc comment below.
+  // Reg No inline-edit state - see saveRegNoOverride below.
   const [editingChassisNo, setEditingChassisNo] = useState<string | null>(null)
   const [editRegNoValue, setEditRegNoValue] = useState('')
   const [savingOverrideChassisNo, setSavingOverrideChassisNo] = useState<string | null>(null)
   const [overrideError, setOverrideError] = useState<string | null>(null)
 
+  // ---------------- Server-paged list ----------------
+  const [serverPage, setServerPage] = useState(1)
+  const [serverPageSize, setServerPageSize] = useState(10)
+  const [serverTotal, setServerTotal] = useState(0)
+  const [debouncedQuery, setDebouncedQuery] = useState('')
+  const [reloadTick, setReloadTick] = useState(0)
+
+  // Typing in the search box searches the SERVER, after a short pause, from page 1.
+  useEffect(() => {
+    const handle = setTimeout(() => { setDebouncedQuery(query.trim()); setServerPage(1) }, 400)
+    return () => clearTimeout(handle)
+  }, [query])
+
+  // "Refresh" - also drops an imported report, like before.
   const search = () => {
-    setLoading(true)
-    setError(null)
-    setImportedRows(null) // a fresh DMSBAPLDATA refresh drops any imported report currently shown
+    setImportedRows(null)
     setImportedFileName(null)
-    staffApi
-      .get<DmsBaplDataVehicleSale[]>('/api/dms-bapl-data/vehicle-sales')
-      .then((r) => setSales(r.data))
-      .catch((err) => {
-        setSales([])
-        setError(err?.response?.data?.message ?? 'Could not reach DMSBAPLDATA - check the connection and try again.')
-      })
-      .finally(() => setLoading(false))
+    setReloadTick((t) => t + 1)
   }
 
-  useEffect(() => { search() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (importedRows) return // an imported report is on screen - it is paged in the browser instead
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    staffApi
+      .get<{ total: number; rows: DmsBaplDataVehicleSale[] }>('/api/vehicle-sales', {
+        params: { search: debouncedQuery || undefined, page: serverPage, pageSize: serverPageSize },
+      })
+      .then((r) => {
+        if (cancelled) return
+        setSales(r.data.rows)
+        setServerTotal(r.data.total)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setSales([])
+        setServerTotal(0)
+        setError(err?.response?.data?.message ?? 'Could not load the vehicle sales - check the connection and try again.')
+      })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [importedRows, debouncedQuery, serverPage, serverPageSize, reloadTick])
 
   const handleImportFile = (file: File) => {
     setImportError(null)
@@ -253,11 +241,8 @@ export function VehicleSalePage() {
     reader.onload = (e) => {
       const data = e.target?.result
       if (!data) { setImporting(false); return }
-      // A real report export like the one you tested with runs 50,000+ rows - parsing that is a
-      // genuinely slow (several-second), CPU-bound loop, so it's deferred one tick past the
-      // `setImporting(true)` above (setTimeout 0) purely so the browser gets a chance to paint the
-      // "Parsing…" state before the page locks up doing it - without this, the button click would
-      // otherwise freeze the tab with no visible feedback for however long the parse takes.
+      // A real report export runs 50,000+ rows - parsing is a slow, CPU-bound loop, so it is deferred
+      // one tick (setTimeout 0) purely so the browser can paint the "Parsing…" state first.
       setTimeout(() => {
         try {
           const workbook = XLSX.read(data, { type: 'array' })
@@ -283,45 +268,52 @@ export function VehicleSalePage() {
     reader.readAsArrayBuffer(file)
   }
 
-  // Everything downstream (table, pagination, export) reads from whichever source is active -
-  // the imported report when one's loaded, DMSBAPLDATA's own results otherwise.
-  const effectiveSales = importedRows ?? sales
-
-  // 2026-09-25 ("add search option"): narrows effectiveSales by a free-text query across the
-  // fields visible in the table plus a few more someone's likely to search by (Invoice No,
-  // Chassis No, Reg No, Dealer, Model, Sold To, Sale Type, City, State, Executive, Customer
-  // Mobile). Excel/PDF export downloads whatever's currently filtered/visible, same as the
-  // on-screen table - not a hidden "export everything regardless of search" surprise.
-  const filteredSales = useMemo(() => {
+  // ---------------- Imported report: searched and paged in the browser ----------------
+  const importedFiltered = useMemo(() => {
+    if (!importedRows) return []
     const q = query.trim().toLowerCase()
-    if (!q) return effectiveSales
-    return effectiveSales.filter((s) =>
+    if (!q) return importedRows
+    return importedRows.filter((s) =>
       [s.invoiceNo, s.chassisNo, s.regNo, s.dealerName, s.dealerCode, s.itemModel, s.oemmodel,
         s.colorCode, s.soldTo, s.saleType, s.locationCity, s.city, s.state, s.executiveName, s.cusMob]
         .some((v) => v != null && String(v).toLowerCase().includes(q)))
-  }, [effectiveSales, query])
+  }, [importedRows, query])
+  const clientPaging = usePagination(importedFiltered)
+  // Default page size 10 for the imported report too (forced here, not inside the shared usePagination hook).
+  useEffect(() => { clientPaging.setPageSize(10) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const { page, setPage, pageSize, setPageSize, pageCount, pageRows, total } = usePagination(filteredSales)
+  // One set of names for the table / Pagination below, whichever source is active.
+  const usingImport = importedRows !== null
+  const page = usingImport ? clientPaging.page : serverPage
+  const setPage = usingImport ? clientPaging.setPage : setServerPage
+  const pageSize = usingImport ? clientPaging.pageSize : serverPageSize
+  const setPageSize = usingImport ? clientPaging.setPageSize : (n: number) => { setServerPageSize(n); setServerPage(1) }
+  const total = usingImport ? clientPaging.total : serverTotal
+  const pageCount = usingImport ? clientPaging.pageCount : Math.max(1, Math.ceil(serverTotal / serverPageSize))
+  const pageRows = usingImport ? clientPaging.pageRows : sales
 
-  // 2026-09-28 ("in vehicle sale pagination default 10"): forces this page's initial page size to
-  // 10 rows, once, right after the shared usePagination hook sets up its own default (100, per the
-  // 2026-09-18 doc note above). See this component's own doc comment for why this is done here
-  // rather than inside usePagination itself.
-  useEffect(() => { setPageSize(10) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // Excel / PDF: an imported report exports what is filtered; the normal list exports up to the first
+  // EXPORT_LIMIT rows matching the search (a PDF of every sale bill is not practical).
+  const rowsForExport = async (): Promise<DmsBaplDataVehicleSale[]> => {
+    if (usingImport) return importedFiltered
+    try {
+      const r = await staffApi.get<{ rows: DmsBaplDataVehicleSale[] }>('/api/vehicle-sales', {
+        params: { search: debouncedQuery || undefined, page: 1, pageSize: EXPORT_LIMIT },
+      })
+      return r.data.rows
+    } catch {
+      setError('Could not prepare the download - try again.')
+      return []
+    }
+  }
 
   const fmtDate = (d?: string | null) => (d ? new Date(d).toLocaleDateString('en-IN') : '—')
   const fmtAmt = (n?: number | null) => (n == null ? '—' : `₹${n.toFixed(2)}`)
 
-  // 2026-09-28 ("edit button for new page where we can edit details like reg no. we can edit and
-  // that was save in our jobcard db that will data reflect on ui"): saves a hand-corrected Reg No
-  // for one chassis into JobCardScannerDb (POST /api/vehicle-sale-overrides), NOT into
-  // DMSBAPLDATA/BaplConnection - this app stays read-only against both of those, same as every
-  // other page here. The saved override is keyed by ChassisNo (the one stable identifier shared
-  // across DMS_SaleBill/DMS_ServiceHistory/imported reports) and, per DmsBaplDataService.
-  // GetVehicleSalesAsync's own 2026-09-28 update, is re-applied as the FINAL/highest-priority layer
-  // on every future load of this page - it wins over both DMS_SaleBill's own reg_number and
-  // anything SECTION 113's DMS_ServiceHistory fallback finds. Updated locally right after a
-  // successful save too, so the table reflects it immediately without waiting for a refresh.
+  // Saves a hand-corrected Reg No for one chassis into JobCardScannerDb (POST /api/vehicle-sale-overrides),
+  // NOT into DMSBAPLDATA/BaplConnection. Keyed by ChassisNo; the server re-applies it as the final,
+  // highest-priority Reg No layer on every future load. Updated locally right after a successful save so the
+  // table reflects it immediately.
   const saveRegNoOverride = async (row: DmsBaplDataVehicleSale) => {
     const chassisNo = row.chassisNo?.trim()
     const regNo = editRegNoValue.trim()
@@ -346,12 +338,6 @@ export function VehicleSalePage() {
   return (
     <div>
       <h2>Vehicle Sale</h2>
-      {/* <p className="muted">
-        {importedRows
-          ? <>Showing {total} rows imported from <strong>{importedFileName}</strong> - not from DMSBAPLDATA.</>
-          : <>Synced vehicle sale data from DMSBAPLDATA. Read-only - this app never writes to DMSBAPLDATA.</>}
-        {' '}Click a row for the full details. Use the ✎ next to Reg No to correct it by hand.
-      </p> */}
 
       <div className="card">
         <div className="form-row">
@@ -360,7 +346,7 @@ export function VehicleSalePage() {
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Invoice No, Chassis No, Reg No, Dealer, Model, Sold To…"
+              placeholder="Invoice No, Chassis No, Reg No, Model, Customer, Mobile…"
             />
           </div>
         </div>
@@ -368,9 +354,15 @@ export function VehicleSalePage() {
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
         <ReportDownloadButtons
-          disabled={filteredSales.length === 0}
-          onExcel={() => exportReportToExcel('Vehicle_Sale_Report', REPORT_COLUMNS, filteredSales)}
-          onPdf={() => exportReportToPdf('Vehicle Sale Report', 'Vehicle_Sale_Report', REPORT_COLUMNS, filteredSales)}
+          disabled={total === 0}
+          onExcel={async () => {
+            const rows = await rowsForExport()
+            if (rows.length) exportReportToExcel('Vehicle_Sale_Report', REPORT_COLUMNS, rows)
+          }}
+          onPdf={async () => {
+            const rows = await rowsForExport()
+            if (rows.length) exportReportToPdf('Vehicle Sale Report', 'Vehicle_Sale_Report', REPORT_COLUMNS, rows)
+          }}
         />
         <button type="button" className="btn btn-sm btn-import" onClick={() => fileInputRef.current?.click()} disabled={importing}>
           {importing ? 'Parsing…' : '⬆ Import Vehicle Sale Report'}
@@ -387,14 +379,16 @@ export function VehicleSalePage() {
           }}
         />
         {importing && <span className="muted">Parsing file - large reports (50,000+ rows) can take several seconds…</span>}
-        <button type="button" className="btn btn-sm" onClick={search} disabled={loading} title="Re-fetch from DMSBAPLDATA">
+        <button type="button" className="btn btn-sm" onClick={search} disabled={loading} title="Reload the vehicle sales">
           {loading ? 'Loading…' : '↻ Refresh'}
         </button>
         {importedRows && (
           <span className="muted">
-            <a href="#" onClick={(e) => { e.preventDefault(); setImportedRows(null); setImportedFileName(null) }}>Clear import - show DMSBAPLDATA results</a>
+            Showing {total} rows imported from <strong>{importedFileName}</strong> ·{' '}
+            <a href="#" onClick={(e) => { e.preventDefault(); setImportedRows(null); setImportedFileName(null) }}>Clear import - show the live list</a>
           </span>
         )}
+        {!importedRows && total > 0 && <span className="muted">{total.toLocaleString('en-IN')} vehicle sales{debouncedQuery ? ' match your search' : ''}</span>}
       </div>
       {importError && <p className="muted" style={{ color: '#b91c1c' }}>{importError}</p>}
       {error && !importedRows && <p className="muted" style={{ color: '#b91c1c' }}>{error}</p>}
@@ -454,15 +448,8 @@ export function VehicleSalePage() {
                             className="btn btn-sm"
                             title="Correct this Reg No"
                             style={{ border: 'none', background: 'transparent', padding: '0 4px' }}
-                            // 2026-09-28 FIX - your real compiler error (TS2345: "Argument of type
-                            // 'string | null | undefined' is not assignable to parameter of type
-                            // 'SetStateAction<string | null>'"): DmsBaplDataVehicleSale.chassisNo is
-                            // typed as `string | null | undefined`, one notch wider than
-                            // editingChassisNo's own `useState<string | null>` above - the `?? null`
-                            // here collapses `undefined` down to `null` so it fits that type. This
-                            // is inside the `!!s.chassisNo &&` guard just above, so this line only
-                            // ever runs when chassisNo is already truthy anyway - purely a type-level
-                            // fix, no behavior change.
+                            // `?? null`: chassisNo is typed `string | null | undefined`, one notch wider than editingChassisNo's
+                            // `string | null` (TS2345 fix from 2026-09-28) - purely a type-level narrowing.
                             onClick={() => { setEditingChassisNo(s.chassisNo ?? null); setEditRegNoValue(s.regNo ?? ''); setOverrideError(null) }}
                           >
                             ✎
@@ -509,7 +496,7 @@ export function VehicleSalePage() {
                 )}
               </Fragment>
             ))}
-            {filteredSales.length === 0 && !loading && !error && (
+            {pageRows.length === 0 && !loading && !error && (
               <tr><td colSpan={10} className="muted" style={{ textAlign: 'center', padding: 16 }}>
                 {query.trim()
                   ? <>No vehicle sales match "{query.trim()}".</>

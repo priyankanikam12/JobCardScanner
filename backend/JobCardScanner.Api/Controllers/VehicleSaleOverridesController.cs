@@ -40,7 +40,7 @@ public class VehicleSaleOverridesController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Policy = Policies.ServiceAdvisorUp)]
+    [Authorize(Policy = Policies.Staff)]
     public async Task<IActionResult> Save(SaveVehicleSaleOverrideRequest req)
     {
         var chassisNo = req.ChassisNo?.Trim();
