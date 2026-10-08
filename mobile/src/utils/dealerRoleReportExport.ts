@@ -56,6 +56,8 @@ export interface StageJobCard {
   createdBy: string
   role: string
   regNo: string | null
+  /** 2026-10-07: the vehicle's chassis no. (Vehicle.Vin), shown before Reg No. */
+  chassisNo: string | null
   customerName: string | null
 }
 export interface DealerStageReport {
@@ -185,11 +187,11 @@ const personRows = (r: DealerStageReport): (string | number)[][] =>
   r.roles.flatMap((role) =>
     role.people.map((p) => [role.role, p.name, p.designation ?? '-', p.active ? 'Active' : 'Inactive', ...countsRow(p)]),
   )
-const JOB_HEAD = ['Sr', 'Job Card No', 'Created (IST)', 'Stage', 'Status', 'Closed (IST)', 'Created By', 'Role', 'Reg No', 'Customer']
+const JOB_HEAD = ['Sr', 'Job Card No', 'Created (IST)', 'Stage', 'Status', 'Closed (IST)', 'Created By', 'Role', 'Chassis No', 'Reg No', 'Customer']
 const jobRows = (r: DealerStageReport, limit?: number): (string | number)[][] =>
   (limit ? r.jobCards.slice(0, limit) : r.jobCards).map((j, i) => [
     i + 1, j.jobCardNumber, fmtDateTime(j.createdAt), j.stage ?? '-', j.status, fmtDateTime(j.closedAt),
-    j.createdBy, j.role, j.regNo ?? '-', j.customerName ?? '-',
+    j.createdBy, j.role, j.chassisNo ?? '-', j.regNo ?? '-', j.customerName ?? '-',
   ])
 const SUMMARY_HEAD = ['Dealer', 'Code', ...STAGE_LABELS, 'Material Transfers', 'Repair Bills']
 const summaryRows = (s: DealerStageSummary): (string | number)[][] => s.dealers.map((d) => [d.dealerName, d.dealerCode ?? '-', ...countsRow(d), d.materialTransfers, d.repairBills])

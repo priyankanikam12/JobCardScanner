@@ -266,9 +266,16 @@ function PrintMenu({ jc, setMsg }: { jc: JobCardDetail; setMsg: (m: string | nul
   }
 
   /** This job card's Billed ("saved as Invoice") Repair Bill, if any. */
+  // 2026-10-07 ("why in Print button Invoice not download for all role?"): reads GET /api/jobcards/{id}/billed-bill (JobCardInvoiceController - any staff role that can open this
+  // job card) instead of the Repair Bill module's own list, which is role-gated and answered 403 to roles without Repair Bill access. 404 = no Billed bill yet.
   const fetchBilledBill = async (): Promise<RepairBillDoc | undefined> => {
-    const { data } = await staffApi.get<RepairBillDoc[]>('/api/repair-bill-docs', { params: { jobCardId: jc.id } })
-    return data.find((b) => b.status === 'Billed')
+    try {
+      const { data } = await staffApi.get<RepairBillDoc>(`/api/jobcards/${jc.id}/billed-bill`)
+      return data
+    } catch (err) {
+      if ((err as { response?: { status?: number } })?.response?.status === 404) return undefined
+      throw err
+    }
   }
 
   const printEstimate = () => {
@@ -743,6 +750,20 @@ function UpdateWorkflowStageCard({
   const [notes, setNotes] = useState('')
   const [technicianOptions, setTechnicianOptions] = useState<Technician[]>([])
 
+  // 2026-10-07 ("after Estimate Created ... Mark Repair Completed / Mark Invoice Generated / Mark Ready for Delivery - do MT and RB first, before that can't click"): those three buttons
+  // need a Material Transfer and a Repair Bill on this job card. GET /api/jobcards/{id}/stage-prerequisites says whether they exist (null = not known yet / that endpoint isn't there, in
+  // which case nothing is greyed out on screen and the server's own check in ChangeStage still refuses the click).
+  const [prereq, setPrereq] = useState<{ hasMaterialTransfer: boolean; hasRepairBill: boolean } | null>(null)
+  const loadPrereq = () => {
+    staffApi.get<{ hasMaterialTransfer: boolean; hasRepairBill: boolean }>(`/api/jobcards/${jc.id}/stage-prerequisites`)
+      .then(({ data }) => setPrereq(data))
+      .catch(() => setPrereq(null))
+  }
+  useEffect(() => { loadPrereq() }, [jc.id, jc.currentStage?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  const missingPrereqs = prereq ? [!prereq.hasMaterialTransfer && 'Material Transfer', !prereq.hasRepairBill && 'Repair Bill'].filter((x): x is string => !!x) : []
+  const stageBlocked = missingPrereqs.length > 0
+  const blockedMessage = `Please do ${missingPrereqs.join(' and ')} for this job card first - Repair Completed, Ready for Delivery and Invoice Generated can't be marked before that.`
+
   useEffect(() => {
     setTechnicianName(jc.assignedTechnicianName ?? '')
     setExpectedDeliveryAt(jc.expectedDeliveryAt ? jc.expectedDeliveryAt.slice(0, 16) : '')
@@ -802,12 +823,21 @@ function UpdateWorkflowStageCard({
         <label>Remarks (attached to the buttons below)</label>
         <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Stage remarks…" />
       </div>
+      {stageBlocked && (
+        <div style={{ background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', borderRadius: 8, padding: '8px 12px', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span>⚠ {blockedMessage}</span>
+          <button type="button" className="btn btn-sm" style={{ marginLeft: 'auto' }} onClick={loadPrereq}>Re-check</button>
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        {/* A blocked button is greyed out but still clickable - clicking it shows the notice (an alert plus the note above) instead of doing nothing, and never calls the server. */}
         {repairCompletedStage && (
           <button
             className="btn btn-sm btn-primary"
+            style={stageBlocked ? { opacity: 0.55 } : undefined}
+            title={stageBlocked ? blockedMessage : undefined}
             disabled={busy || currentSeq >= repairCompletedStage.seq}
-            onClick={() => run(() => markStage(repairCompletedStage), 'Marked Repair Completed.')}
+            onClick={() => { if (stageBlocked) { alert(blockedMessage); return } run(() => markStage(repairCompletedStage), 'Marked Repair Completed.') }}
           >
             Mark Repair Completed
           </button>
@@ -815,8 +845,10 @@ function UpdateWorkflowStageCard({
         {invoiceGeneratedStage && (
           <button
             className="btn btn-sm btn-primary"
+            style={stageBlocked ? { opacity: 0.55 } : undefined}
+            title={stageBlocked ? blockedMessage : undefined}
             disabled={busy || currentSeq >= invoiceGeneratedStage.seq}
-            onClick={() => run(() => markStage(invoiceGeneratedStage), 'Marked Invoice Generated. Job card closed.')}
+            onClick={() => { if (stageBlocked) { alert(blockedMessage); return } run(() => markStage(invoiceGeneratedStage), 'Marked Invoice Generated. Job card closed.') }}
           >
             Mark Invoice Generated
           </button>
@@ -824,13 +856,16 @@ function UpdateWorkflowStageCard({
         {readyForDeliveryStage && (
           <button
             className="btn btn-sm btn-primary"
+            style={stageBlocked ? { opacity: 0.55 } : undefined}
+            title={stageBlocked ? blockedMessage : undefined}
             disabled={busy || currentSeq >= readyForDeliveryStage.seq}
-            onClick={() => run(() => markStage(readyForDeliveryStage), 'Marked Ready for Delivery.')}
+            onClick={() => { if (stageBlocked) { alert(blockedMessage); return } run(() => markStage(readyForDeliveryStage), 'Marked Ready for Delivery.') }}
           >
             Mark Ready for Delivery
           </button>
         )}
       </div>
+
     </div>
   )
 }

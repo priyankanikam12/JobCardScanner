@@ -65,6 +65,16 @@ interface LedgerTypeRow {
   id: number
   customerType: string
 }
+// 2026-10-07 ("last Registered Customer details we save for this chassis ... fetch with this chassis and reg no, like last Odometer"): GET /api/jobcards/vehicle-lookup now also
+// returns the customer saved on this chassis's LAST job card in our own database (it overrides the Vehicle Sale customer in customerName / customerMobile / ...), plus
+// customerFromJobCard (that job card's number) and vehicleSaleCustomer (what Vehicle Sale itself says, so "Use Vehicle Sale details" can still go back to it). Read through a
+// loose cast so this file compiles whether or not types/index.ts declares these two fields yet.
+interface LookupCustomerExtras {
+  customerFromJobCard?: string | null
+  vehicleSaleCustomer?: { name: string | null; mobile: string | null; email: string | null; city: string | null; state: string | null; address: string | null } | null
+}
+const customerExtrasOf = (hit: BaplDmsVehicleLookup | null): LookupCustomerExtras => (hit ?? {}) as LookupCustomerExtras
+
 /** First-seen-wins de-dup, preserving whatever order `items` is already sorted in - used to turn
  * the flat ServiceMenuRow list into the three cascading dropdowns' distinct option sets. */
 function dedupeBy<T, K>(items: T[], keyFn: (item: T) => K): T[] {
@@ -324,6 +334,10 @@ export function JobCardWizardPage() {
   // The ledger whose details currently fill the Registered Customer fields (null = the Vehicle Sale customer).
   const [selectedLedger, setSelectedLedger] = useState<PartyLedgerRow | null>(null)
   const partyTypeIdRef = useRef<number | null>(null)
+  // true once "Use Vehicle Sale details" is clicked - the customer then shows what Vehicle Sale says instead of the last job card's customer for this chassis.
+  const [useVehicleSaleCustomer, setUseVehicleSaleCustomer] = useState(false)
+  const lastJobCardNo = customerExtrasOf(baplVehicleHit).customerFromJobCard ?? null
+  const customerIsFromLastJobCard = !!lastJobCardNo && !useVehicleSaleCustomer && !selectedLedger
 
   // Loads the Party ledgers each time the panel opens (so a ledger just added in Ledger Master shows up), and again - debounced - as the search box
   // changes. A dealer login is scoped to its own dealer's ledgers (plus ones shared with every dealer) by the server; CorporateAdmin / SystemAdmin
@@ -386,15 +400,22 @@ export function JobCardWizardPage() {
   const revertToVehicleSaleCustomer = () => {
     setSelectedLedger(null)
     setShowLedgerPicker(false)
+    setUseVehicleSaleCustomer(true)
     if (!baplVehicleHit) return
+    // when the lookup replaced the customer with the last job card's, vehicleSaleCustomer still holds what Vehicle Sale itself says
+    const sale = customerExtrasOf(baplVehicleHit).vehicleSaleCustomer
+    const src = sale ?? {
+      name: baplVehicleHit.customerName ?? null, mobile: baplVehicleHit.customerMobile ?? null, email: baplVehicleHit.customerEmail ?? null,
+      city: baplVehicleHit.customerCity ?? null, state: baplVehicleHit.customerState ?? null, address: baplVehicleHit.customerAddress ?? null,
+    }
     setNewCustomer((c) => ({
       ...c,
-      name: baplVehicleHit.customerName ?? '',
-      mobile: baplVehicleHit.customerMobile ? baplVehicleHit.customerMobile.replace(/\D/g, '').slice(0, 10) : '',
-      city: baplVehicleHit.customerCity ?? '',
-      email: baplVehicleHit.customerEmail ?? '',
-      address: baplVehicleHit.customerAddress ?? '',
-      state: baplVehicleHit.customerState ?? '',
+      name: src.name ?? '',
+      mobile: src.mobile ? src.mobile.replace(/\D/g, '').slice(0, 10) : '',
+      city: src.city ?? '',
+      email: src.email ?? '',
+      address: src.address ?? '',
+      state: src.state ?? '',
     }))
   }
 
@@ -419,6 +440,7 @@ export function JobCardWizardPage() {
   // backend file this session - see my reply for what I need to fix that part.
   const applyVehicleHit = (data: BaplDmsVehicleLookup) => {
     setBaplVehicleHit(data)
+    setUseVehicleSaleCustomer(false)
     // a fresh Vehicle Sale hit means a fresh customer - drop any ledger picked for the previous chassis
     setSelectedLedger(null)
     setShowLedgerPicker(false)
@@ -1346,7 +1368,9 @@ export function JobCardWizardPage() {
             <p className="muted" style={{ marginTop: -4, marginBottom: 12 }}>
               🔒 {selectedLedger
                 ? 'Customer details come from the Ledger Master and are locked.'
-                : 'Name, Mobile, Email, City, Address and State come from Vehicle Sale and are locked.'}{' '}
+                : customerIsFromLastJobCard
+                  ? `Customer details are the last ones saved for this chassis (job card ${lastJobCardNo}) and are locked.`
+                  : 'Name, Mobile, Email, City, Address and State come from Vehicle Sale and are locked.'}{' '}
               {/* 2026-10-07: no manual unlock any more - "Edit anyway" opens the Party-ledger list. */}
               <a href="#" onClick={(e) => { e.preventDefault(); setShowLedgerPicker((open) => !open) }}>{showLedgerPicker ? 'Close' : 'Edit anyway'}</a>
             </p>
@@ -1416,6 +1440,18 @@ export function JobCardWizardPage() {
           )}
 
           {/* ---------- the ledger currently filling the fields below ---------- */}
+          {customerIsFromLastJobCard && (
+            <div style={{
+              background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '8px 12px', marginBottom: 12,
+              display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+            }}>
+              <span style={{ background: '#1c64f2', color: '#fff', fontSize: 12, fontWeight: 600, padding: '2px 8px', borderRadius: 999 }}>Last job card</span>
+              <span>Customer taken from job card <strong>{lastJobCardNo}</strong> of this chassis.</span>
+              <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                <button type="button" className="btn btn-sm" onClick={revertToVehicleSaleCustomer}>Use Vehicle Sale details</button>
+              </span>
+            </div>
+          )}
           {selectedLedger && (
             <div style={{
               background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 8, padding: '8px 12px', marginBottom: 12,

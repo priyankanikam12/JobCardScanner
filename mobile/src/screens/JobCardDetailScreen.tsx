@@ -1219,8 +1219,10 @@ function PrintMenu({ jc }: { jc: JobCardDetail }) {
     setBusy('invoice')
     setError(null)
     try {
-      const { data } = await apiClient.get<RepairBillDoc[]>('/api/repair-bill-docs', { params: { jobCardId: jc.id } })
-      const billed = data.find((b) => b.status === 'Billed')
+      // 2026-10-07: GET /api/jobcards/{id}/billed-bill (any staff role that can open this job card) instead of the role-gated Repair Bill list - 404 = no Billed bill yet.
+      const billed = await apiClient.get<RepairBillDoc>(`/api/jobcards/${jc.id}/billed-bill`)
+        .then((r) => r.data)
+        .catch((err) => { if (err?.response?.status === 404) return undefined; throw err })
       if (!billed) {
         setError('No Repair Bill has been saved as Invoice for this job card yet.')
         return

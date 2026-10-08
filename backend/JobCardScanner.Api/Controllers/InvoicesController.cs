@@ -35,8 +35,18 @@ public class InvoicesController : ControllerBase
         _audit = audit;
     }
 
+    /// <summary>2026-10-07: who may read an invoice. A customer: only their own. Staff: CorporateAdmin / SystemAdmin any invoice; every other role only its own dealer's
+    /// (an invoice of another dealer answers 404, not 403 - it doesn't reveal that the invoice exists). Before this, any signed-in staff login could open any dealer's invoice.</summary>
+    private bool CanRead(Invoice invoice)
+    {
+        if (_currentUser.IsCustomer) return _currentUser.CustomerId == invoice.CustomerId;
+        if (!_currentUser.IsStaff) return false;
+        if (_currentUser.Role is StaffRole.CorporateAdmin or StaffRole.SystemAdmin) return true;
+        return _currentUser.DealerId is not null && invoice.DealerId == _currentUser.DealerId;
+    }
+
     [HttpPost("jobcards/{jobCardId:guid}/invoice")]
-    [Authorize(Policy = Policies.CashierUp)]
+    [Authorize(Policy = Policies.Staff)]
     public async Task<IActionResult> Generate(Guid jobCardId, GenerateInvoiceRequest req)
     {
         var jc = await _db.JobCards.Include(j => j.Parts).Include(j => j.Worklogs).Include(j => j.Customer)
@@ -86,7 +96,7 @@ public class InvoicesController : ControllerBase
     }
 
     [HttpPost("invoices/{id:guid}/payment")]
-    [Authorize(Policy = Policies.CashierUp)]
+    [Authorize(Policy = Policies.Staff)]
     public async Task<IActionResult> RecordPayment(Guid id, RecordPaymentRequest req)
     {
         var invoice = await _db.Invoices.FirstOrDefaultAsync(i => i.Id == id);
@@ -100,16 +110,19 @@ public class InvoicesController : ControllerBase
         return Ok(invoice);
     }
 
+    // 2026-10-07: DealerJwt added to both GETs below. A staff member who signs in with the "Dealer / Workshop Login" (not Microsoft) is authenticated by the DealerJwt scheme, which
+    // these two actions did not accept - so they got 401 on an invoice any other staff login could open. (Every staff policy in Program.cs already accepts both schemes.)
     [HttpGet("invoices/{id:guid}")]
-    [Authorize(AuthenticationSchemes = AuthSchemes.AzureAd + "," + AuthSchemes.CustomerPortal)]
+    [Authorize(AuthenticationSchemes = AuthSchemes.AzureAd + "," + AuthSchemes.DealerJwt + "," + AuthSchemes.CustomerPortal)]
     public async Task<IActionResult> Get(Guid id)
     {
         var invoice = await _db.Invoices.AsNoTracking().FirstOrDefaultAsync(i => i.Id == id);
-        return invoice is null ? NotFound() : Ok(invoice);
+        if (invoice is null || !CanRead(invoice)) return NotFound();
+        return Ok(invoice);
     }
 
     [HttpGet("invoices/{id:guid}/pdf")]
-    [Authorize(AuthenticationSchemes = AuthSchemes.AzureAd + "," + AuthSchemes.CustomerPortal)]
+    [Authorize(AuthenticationSchemes = AuthSchemes.AzureAd + "," + AuthSchemes.DealerJwt + "," + AuthSchemes.CustomerPortal)]
     public async Task<IActionResult> DownloadPdf(Guid id)
     {
         var invoice = await _db.Invoices.AsNoTracking()
@@ -117,12 +130,11 @@ public class InvoicesController : ControllerBase
             .FirstOrDefaultAsync(i => i.Id == id);
         if (invoice is null) return NotFound();
 
+        // Authorize: the customer this invoice belongs to, or staff of the invoicing dealer (CorporateAdmin / SystemAdmin: any dealer) - see CanRead.
+        if (!CanRead(invoice)) return NotFound();
+
         var jc = await _db.JobCards.AsNoTracking().Include(j => j.Vehicle).FirstOrDefaultAsync(j => j.Id == invoice.JobCardId);
         if (jc is null) return NotFound();
-
-        // Authorize: either staff of the invoicing dealer, or the customer this invoice belongs to.
-        if (_currentUser.IsCustomer && _currentUser.CustomerId != invoice.CustomerId) return Forbid();
-        if (!_currentUser.IsCustomer && !_currentUser.IsStaff) return Forbid();
 
         var parts = await _db.JobCardParts.AsNoTracking().Include(p => p.Part)
             .Where(p => p.JobCardId == jc.Id && p.Status == JobCardPartStatus.Issued).ToListAsync();

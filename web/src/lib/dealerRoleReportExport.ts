@@ -52,6 +52,8 @@ export interface StageJobCard {
   createdBy: string
   role: string
   regNo: string | null
+  /** 2026-10-07: the vehicle's chassis no. (Vehicle.Vin), shown before Reg No. */
+  chassisNo: string | null
   customerName: string | null
 }
 export interface DealerStageReport {
@@ -190,11 +192,11 @@ const personRows = (r: DealerStageReport): (string | number)[][] =>
     role.people.map((p) => [role.role, p.name, p.designation ?? '-', p.active ? 'Active' : 'Inactive', ...countsRow(p)]),
   )
 
-const JOB_HEAD = ['Sr', 'Job Card No', 'Created (IST)', 'Stage', 'Status', 'Closed (IST)', 'Created By', 'Role', 'Reg No', 'Customer']
+const JOB_HEAD = ['Sr', 'Job Card No', 'Created (IST)', 'Stage', 'Status', 'Closed (IST)', 'Created By', 'Role', 'Chassis No', 'Reg No', 'Customer']
 const jobRows = (r: DealerStageReport, limit?: number): (string | number)[][] =>
   (limit ? r.jobCards.slice(0, limit) : r.jobCards).map((j, i) => [
     i + 1, j.jobCardNumber, fmtDateTime(j.createdAt), j.stage ?? '-', j.status, fmtDateTime(j.closedAt),
-    j.createdBy, j.role, j.regNo ?? '-', j.customerName ?? '-',
+    j.createdBy, j.role, j.chassisNo ?? '-', j.regNo ?? '-', j.customerName ?? '-',
   ])
 
 const SUMMARY_HEAD = ['Dealer', 'Code', ...STAGE_LABELS, 'Material Transfers', 'Repair Bills']
@@ -239,7 +241,7 @@ export function exportDealerRoleReportExcel(r: DealerStageReport): void {
   ], [34, 40])
   addSheet(wb, 'By Role', [ROLE_HEAD, ...roleRows(r), roleTotalRow(r)], [46, 8, 10, 8, 12, 18, 10, 8, 8])
   addSheet(wb, 'By Person', [PERSON_HEAD, ...personRows(r)], [24, 26, 16, 10, 10, 8, 12, 18, 10, 8, 8])
-  addSheet(wb, 'Job Cards', [JOB_HEAD, ...jobRows(r)], [6, 24, 18, 22, 16, 18, 24, 18, 16, 28])
+  addSheet(wb, 'Job Cards', [JOB_HEAD, ...jobRows(r)], [6, 24, 18, 22, 16, 18, 24, 18, 22, 16, 28])
   XLSX.writeFile(wb, `DealerRoleReport_${safeFile(r.dealer.name) || 'Dealer'}_${stamp(r.generatedAt)}.xlsx`)
 }
 

@@ -940,6 +940,21 @@ public class JobCardsController : ControllerBase
         var technicianGate = RequireAssignedTechnician(jc);
         if (technicianGate is not null) return technicianGate;
 
+        // 2026-10-07 ("after Estimate Created ... Mark Repair Completed / Mark Invoice Generated / Mark Ready for Delivery - do MT and RB first, before that can't click"): these three
+        // stages need at least one Material Transfer (not Cancelled) and one Repair Bill (not deleted / Cancelled) on this job card.
+        if (stage.StageKey is "repair_completed" or "ready_for_delivery" or "invoice_generated")
+        {
+            var hasMaterialTransfer = await _db.MaterialTransferDocs.AnyAsync(m => m.JobCardId == jc.Id && m.Status != MaterialTransferDocStatus.Cancelled);
+            var hasRepairBill = await _db.RepairBillDocs.AnyAsync(r => r.JobCardId == jc.Id && !r.IsDeleted && r.Status != RepairBillDocStatus.Cancelled);
+            if (!hasMaterialTransfer || !hasRepairBill)
+            {
+                var missing = new List<string>();
+                if (!hasMaterialTransfer) missing.Add("Material Transfer");
+                if (!hasRepairBill) missing.Add("Repair Bill");
+                return BadRequest(new { message = $"{string.Join(" and ", missing)} must be done for this job card before it can be moved to {stage.Label}." });
+            }
+        }
+
         var openHistory = jc.StageHistory.Where(h => h.ExitedAt == null).OrderByDescending(h => h.EnteredAt).FirstOrDefault();
         if (openHistory is not null) openHistory.ExitedAt = DateTime.UtcNow;
 
@@ -1721,6 +1736,27 @@ public class JobCardsController : ControllerBase
             if (!string.IsNullOrWhiteSpace(overrideRegNo)) registerNo = overrideRegNo;
         }
 
+        // 2026-10-07 ("which last Registered Customer details we save in db for this chassis that fetch with this chassis and reg no like last Odometer"): the customer saved on
+        // this chassis's most recent job card (any status, this dealer's own) wins over Vehicle Sale's customer - so a customer picked from Ledger Master on an earlier job card
+        // comes back the next time. Vehicle Sale's own customer is still returned in vehicleSaleCustomer so the wizard can offer "Use Vehicle Sale details".
+        var saleAddress = string.Join(", ", new[] { hit.Address1, hit.Address2 }.Where(s => !string.IsNullOrWhiteSpace(s)));
+        var lastCustomer = dealerId.HasValue && !string.IsNullOrWhiteSpace(hit.ChassisNo)
+            ? await _db.JobCards.AsNoTracking()
+                .Where(j => j.DealerId == dealerId && j.Customer != null && j.Vehicle != null && j.Vehicle.Vin == hit.ChassisNo)
+                .OrderByDescending(j => j.CreatedAt)
+                .Select(j => new
+                {
+                    j.JobCardNumber,
+                    j.Customer!.Name,
+                    j.Customer.Mobile,
+                    j.Customer.Email,
+                    j.Customer.City,
+                    j.Customer.State,
+                    j.Customer.Address,
+                })
+                .FirstOrDefaultAsync()
+            : null;
+
         return Ok(new
         {
             chassisNo = hit.ChassisNo,
@@ -1737,12 +1773,15 @@ public class JobCardsController : ControllerBase
             batteryChemical = hit.BatteryChemical,
             batteryCapacity = hit.BatteryCapacity,
             batteryMake = hit.BatteryMake,
-            customerName = hit.SoldTo,
-            customerMobile = hit.CusMob,
-            customerEmail = hit.PartyEmail,
-            customerCity = hit.City,
-            customerState = hit.State,
-            customerAddress = string.Join(", ", new[] { hit.Address1, hit.Address2 }.Where(s => !string.IsNullOrWhiteSpace(s))),
+            customerName = lastCustomer?.Name ?? hit.SoldTo,
+            customerMobile = lastCustomer?.Mobile ?? hit.CusMob,
+            customerEmail = lastCustomer?.Email ?? hit.PartyEmail,
+            customerCity = lastCustomer?.City ?? hit.City,
+            customerState = lastCustomer?.State ?? hit.State,
+            customerAddress = lastCustomer?.Address ?? saleAddress,
+            // the job card the customer above was taken from (null = it is Vehicle Sale's own customer) and what Vehicle Sale itself says
+            customerFromJobCard = lastCustomer?.JobCardNumber,
+            vehicleSaleCustomer = lastCustomer is null ? null : new { name = hit.SoldTo, mobile = hit.CusMob, email = hit.PartyEmail, city = hit.City, state = hit.State, address = saleAddress },
             vehiclePrevKms,
             openJobCardNumber,
             openJobCardSource = openJobCardNumber != null ? "local" : null,

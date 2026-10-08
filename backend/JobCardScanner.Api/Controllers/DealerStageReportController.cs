@@ -232,6 +232,7 @@ public class DealerStageReportController : ControllerBase
                 StageLabel = j.CurrentStage != null ? j.CurrentStage.Label : null,
                 CreatedById = (Guid?)j.CreatedById,
                 RegNo = j.Vehicle != null ? j.Vehicle.RegNo : null,
+                ChassisNo = j.Vehicle != null ? j.Vehicle.Vin : null,   // 2026-10-07: Chassis No column in the job card list / Excel / PDF
                 CustomerName = j.Customer != null ? j.Customer.Name : null,
             })
             .ToListAsync();
@@ -303,7 +304,7 @@ public class DealerStageReportController : ControllerBase
                 role = u.Role.ToString();
             }
             return new JobRow(j.Id, j.JobCardNumber, j.CreatedAt, j.Status.ToString(), j.StageLabel,
-                JobCardStageBuckets.Classify(j.Status, j.StageKey), j.ClosedAt, j.CreatedById, createdBy, role, j.RegNo, j.CustomerName);
+                JobCardStageBuckets.Classify(j.Status, j.StageKey), j.ClosedAt, j.CreatedById, createdBy, role, j.RegNo, j.ChassisNo, j.CustomerName);
         }).ToList();
 
         return Ok(new
@@ -407,5 +408,5 @@ public class DealerStageReportController : ControllerBase
     private sealed record RoleRow(string Role, int Users, int Created, int Open, int InProgress, int ReadyForDelivery, int Invoiced, int Closed, int Other, int NotClosed, List<PersonRow> People);
     private sealed record DocItemRow(string? Code, string? Description, string? ItemType, decimal Qty, decimal Rate, decimal Amount);
     private sealed record DocRow(Guid Id, string Number, DateOnly Date, string Status, string? Party, string? RegNo, string? ChassisNo, string? Location, string? Type, string? JobNo, int ItemCount, decimal TotalAmount, string? PreparedBy, List<DocItemRow> Items);
-    private sealed record JobRow(Guid Id, string JobCardNumber, DateTime CreatedAt, string Status, string? Stage, string Bucket, DateTime? ClosedAt, Guid? CreatedById, string CreatedBy, string Role, string? RegNo, string? CustomerName);
+    private sealed record JobRow(Guid Id, string JobCardNumber, DateTime CreatedAt, string Status, string? Stage, string Bucket, DateTime? ClosedAt, Guid? CreatedById, string CreatedBy, string Role, string? RegNo, string? ChassisNo, string? CustomerName);
 }

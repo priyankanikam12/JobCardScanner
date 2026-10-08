@@ -49,12 +49,12 @@ interface DrillFilter {
 const STAGES: { key: StageKey; label: string; icon: string; accent: string }[] = [
   { key: 'created', label: 'Job Cards Created', icon: '📋', accent: 'kpi-a1' },
   // Every job card that is not Closed/Cancelled - the SAME number as the dashboard's "Open Job Cards Count".
-  // { key: 'notClosed', label: 'Not Closed (Open + In Progress)', icon: '📂', accent: 'kpi-a4' },
+  { key: 'notClosed', label: 'Not Closed (all open)', icon: '📂', accent: 'kpi-a4' },
   { key: 'open', label: 'Open', icon: '📂', accent: 'kpi-a4' },
   { key: 'inProgress', label: 'In Progress', icon: '🔧', accent: 'kpi-a3' },
   { key: 'readyForDelivery', label: 'Ready for Delivery', icon: '🏁', accent: 'kpi-a5' },
-  // { key: 'invoiced', label: 'Invoiced', icon: '🧾', accent: 'kpi-a2' },
-  // { key: 'closed', label: 'Closed', icon: '✅', accent: 'kpi-a6' },
+  { key: 'invoiced', label: 'Invoiced', icon: '🧾', accent: 'kpi-a2' },
+  { key: 'closed', label: 'Closed', icon: '✅', accent: 'kpi-a6' },
 ]
 const STAGE_KEYS = STAGES.map((s) => s.key) as string[]
 const stageLabel = (k: DrillStage): string => (k === 'other' ? 'Other' : STAGES.find((s) => s.key === k)?.label ?? k)
@@ -132,12 +132,8 @@ export function DealerRoleReportPage() {
   const [dealerId, setDealerId] = useState('') // '' = all dealers
   const [status, setStatus] = useState<SummaryKey>(urlStatus && SUMMARY_KEYS.includes(urlStatus) ? (urlStatus as SummaryKey) : 'created')
   // From the dashboard cards the dates arrive in the URL (today..today); otherwise this month -> today.
-  // const [dateFrom, setDateFrom] = useState(params.get('from') ?? startOfMonthIso())
-  // const [dateTo, setDateTo] = useState(params.get('to') ?? todayIso())
-  // Created from / Created to ALWAYS open on the 1st of this month -> today, however you arrive on this page
-  // (including from a dashboard card). Both are still editable, and the Today / This month / All time buttons work as before.
-  const [dateFrom, setDateFrom] = useState(startOfMonthIso())
-  const [dateTo, setDateTo] = useState(todayIso())
+  const [dateFrom, setDateFrom] = useState(params.get('from') ?? startOfMonthIso())
+  const [dateTo, setDateTo] = useState(params.get('to') ?? todayIso())
   // Which job-card date the range filters on. The dashboard's "Closed today"/"Invoiced today" cards arrive with
   // basis=closed (closed that day); everything else filters on the created date.
   const [dateBasis, setDateBasis] = useState<'created' | 'closed'>(params.get('basis') === 'closed' ? 'closed' : 'created')
@@ -307,14 +303,14 @@ export function DealerRoleReportPage() {
       <p style={{ margin: '0 0 6px' }}>
         {dealerId
           ? <a href="#all-dealers" onClick={(e) => { e.preventDefault(); autoDrillRef.current = null; setDealerId('') }}>&larr; All dealers</a>
-          : <Link to="/dashboard"></Link>}
+          : <Link to="/dashboard">&larr; Back to Dashboard</Link>}
       </p>
       <h2 style={{ marginBottom: 4 }}>Dealer Role Report</h2>
-      {/* <p className="muted" style={{ marginTop: 0 }}>
+      <p className="muted" style={{ marginTop: 0 }}>
         {dealerId
           ? 'Every role under this dealer, the people in each role, and their job cards. Click any number, tile, bar or person to open those job cards.'
           : 'Job cards across the dealers below for the dates you choose. Click a tile to see it dealer by dealer, then a dealer to see its roles, people and job cards.'}
-      </p> */}
+      </p>
 
       <div className="card">
         {/* .form-row is an equal-width grid that squeezed the Dealer select into one narrow column -
@@ -662,7 +658,7 @@ export function DealerRoleReportPage() {
                 <table>
                   <thead>
                     <tr>
-                      <th>Sr</th><th>Job Card No</th><th>Created (IST)</th><th>Stage</th><th>Status</th><th>Created By</th><th>Role</th><th>Reg No</th><th>Customer</th>
+                      <th>Sr</th><th>Job Card No</th><th>Created (IST)</th><th>Stage</th><th>Status</th><th>Created By</th><th>Role</th><th>Chassis No</th><th>Reg No</th><th>Customer</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -675,12 +671,13 @@ export function DealerRoleReportPage() {
                         <td>{j.status}</td>
                         <td>{j.createdBy}</td>
                         <td className="muted">{j.role}</td>
+                        <td>{j.chassisNo ?? '-'}</td>
                         <td>{j.regNo ?? '-'}</td>
                         <td>{j.customerName ?? '-'}</td>
                       </tr>
                     ))}
                     {drillJobs.length === 0 && (
-                      <tr><td colSpan={9} className="muted" style={{ textAlign: 'center', padding: 16 }}>No job cards in this selection.</td></tr>
+                      <tr><td colSpan={10} className="muted" style={{ textAlign: 'center', padding: 16 }}>No job cards in this selection.</td></tr>
                     )}
                   </tbody>
                 </table>
