@@ -86,6 +86,7 @@ public class JobCardScannerDbContext : DbContext
     // 2026-10-02 (SECTION 188) - "Ledger Master" (Party/Insurance only - Company/Dealer are ERP-
     // sourced, not stored here) - see Models/LedgerMaster.cs for the full reasoning.
     public DbSet<LedgerMaster> LedgerMasters => Set<LedgerMaster>();
+    public DbSet<LedgerTypeMaster> LedgerTypeMasters => Set<LedgerTypeMaster>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -496,7 +497,8 @@ public class JobCardScannerDbContext : DbContext
         b.Entity<LedgerMaster>(e =>
         {
             e.HasIndex(x => x.LedgerCode).IsUnique();
-            e.HasIndex(x => new { x.DealerId, x.LedgerType });
+            e.HasIndex(x => new { x.DealerId, x.LedgerTypeId });
+            e.HasOne(x => x.LedgerTypeMaster).WithMany().HasForeignKey(x => x.LedgerTypeId).OnDelete(DeleteBehavior.Restrict);
             e.HasOne<Dealer>().WithMany().HasForeignKey(x => x.DealerId).OnDelete(DeleteBehavior.Restrict);
             e.HasOne<User>().WithMany().HasForeignKey(x => x.CreatedById).OnDelete(DeleteBehavior.Restrict);
             e.HasOne<User>().WithMany().HasForeignKey(x => x.UpdatedById).OnDelete(DeleteBehavior.Restrict);
@@ -526,6 +528,12 @@ public class JobCardScannerDbContext : DbContext
         {
             e.ToTable("VehicleSaleOverride");
             e.HasIndex(x => x.ChassisNo).IsUnique();
+        });
+
+        // ----- LedgerTypeMaster (2026-10-06, Id / CustomerType: 1 Dealer, 5 Company, 3 Insurance, 4 Party) -----
+        b.Entity<LedgerTypeMaster>(e =>
+        {
+            e.HasIndex(x => x.CustomerType).IsUnique();   // matches UX_LedgerTypeMasters_CustomerType in the SQL script
         });
     }
 }

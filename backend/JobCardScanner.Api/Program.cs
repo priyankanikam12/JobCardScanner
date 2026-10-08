@@ -227,6 +227,7 @@ builder.Services.AddScoped<IEstimatePdfService, EstimatePdfService>();
 builder.Services.AddScoped<IExcelExportService, ExcelExportService>();
 builder.Services.AddScoped<IAuditLogService, AuditLogService>();
 builder.Services.AddScoped<ILocalItemMasterService, LocalItemMasterService>();
+builder.Services.AddScoped<IBaplLedgerService, BaplLedgerService>();
 // 2026-09-22 "create warenty table in jobcardscanner db" - shared formula used by both
 // ExtendedBatteryWarrantySchemesController's GET .../eligible and RepairBillDocsController.Create's
 // non-destructive per-line tagging, see IExtendedBatteryWarrantyEligibilityService's own doc comment.
@@ -438,845 +439,845 @@ if (app.Environment.IsDevelopment())
 // why), so running this on every startup is safe and cheap - a few sub-millisecond metadata
 // lookups once the columns already exist, everywhere except the one real run that actually adds
 // them.
-async Task RunColumnMigrationsAsync()
-{
-    using var scope = app.Services.CreateScope();
-    var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
-    try
-    {
-        await db.Database.ExecuteSqlRawAsync(@"
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[JobCardPartSuggestions]') AND name = 'Quantity')
-                ALTER TABLE [dbo].[JobCardPartSuggestions] ADD [Quantity] int NOT NULL CONSTRAINT DF_JobCardPartSuggestions_Quantity DEFAULT (1);
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[JobCardPartSuggestions]') AND name = 'Description')
-                ALTER TABLE [dbo].[JobCardPartSuggestions] ADD [Description] nvarchar(400) NULL;
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[JobCardPartSuggestions]') AND name = 'HsnCode')
-                ALTER TABLE [dbo].[JobCardPartSuggestions] ADD [HsnCode] nvarchar(20) NULL;
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[JobCardPartSuggestions]') AND name = 'Mrp')
-                ALTER TABLE [dbo].[JobCardPartSuggestions] ADD [Mrp] decimal(12,2) NULL;
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Customers]') AND name = 'State')
-                ALTER TABLE [dbo].[Customers] ADD [State] nvarchar(100) NULL;
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Customers]') AND name = 'PasswordHash')
-                ALTER TABLE [dbo].[Customers] ADD [PasswordHash] nvarchar(300) NULL;
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Customers]') AND name = 'PasswordResetTokenHash')
-                ALTER TABLE [dbo].[Customers] ADD [PasswordResetTokenHash] nvarchar(100) NULL;
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Customers]') AND name = 'PasswordResetExpiresAt')
-                ALTER TABLE [dbo].[Customers] ADD [PasswordResetExpiresAt] datetime2 NULL;
-            -- 2026-09-17 ""Employees"" page (Admin -> Users) - employee profile + work-area
-            -- location scoping columns on Users. See MasterData.cs's User class doc comments.
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Users]') AND name = 'State')
-                ALTER TABLE [dbo].[Users] ADD [State] nvarchar(100) NULL;
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Users]') AND name = 'City')
-                ALTER TABLE [dbo].[Users] ADD [City] nvarchar(100) NULL;
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Users]') AND name = 'Pincode')
-                ALTER TABLE [dbo].[Users] ADD [Pincode] nvarchar(10) NULL;
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Users]') AND name = 'DateOfJoining')
-                ALTER TABLE [dbo].[Users] ADD [DateOfJoining] date NULL;
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Users]') AND name = 'Designation')
-                ALTER TABLE [dbo].[Users] ADD [Designation] nvarchar(50) NULL;
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Users]') AND name = 'WorkLocationCodes')
-                ALTER TABLE [dbo].[Users] ADD [WorkLocationCodes] nvarchar(2000) NULL;
-        ");
-        Console.WriteLine("[Startup] Self-healing column migrations checked/applied.");
-    }
-    catch (Exception ex)
-    {
-        // Never let a migration hiccup take the whole app down - log it loudly instead, same
-        // reasoning as every other best-effort block in this file. Worst case, the app starts with
-        // the same "missing column" 500 it already had, now at least logged clearly at startup
-        // instead of only surfacing later as an opaque request failure.
-        Console.WriteLine($"[Startup] WARNING: self-healing column migrations failed - {ex.Message}");
-    }
-}
+// async Task RunColumnMigrationsAsync()
+// {
+//     using var scope = app.Services.CreateScope();
+//     var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
+//     try
+//     {
+//         await db.Database.ExecuteSqlRawAsync(@"
+//             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[JobCardPartSuggestions]') AND name = 'Quantity')
+//                 ALTER TABLE [dbo].[JobCardPartSuggestions] ADD [Quantity] int NOT NULL CONSTRAINT DF_JobCardPartSuggestions_Quantity DEFAULT (1);
+//             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[JobCardPartSuggestions]') AND name = 'Description')
+//                 ALTER TABLE [dbo].[JobCardPartSuggestions] ADD [Description] nvarchar(400) NULL;
+//             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[JobCardPartSuggestions]') AND name = 'HsnCode')
+//                 ALTER TABLE [dbo].[JobCardPartSuggestions] ADD [HsnCode] nvarchar(20) NULL;
+//             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[JobCardPartSuggestions]') AND name = 'Mrp')
+//                 ALTER TABLE [dbo].[JobCardPartSuggestions] ADD [Mrp] decimal(12,2) NULL;
+//             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Customers]') AND name = 'State')
+//                 ALTER TABLE [dbo].[Customers] ADD [State] nvarchar(100) NULL;
+//             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Customers]') AND name = 'PasswordHash')
+//                 ALTER TABLE [dbo].[Customers] ADD [PasswordHash] nvarchar(300) NULL;
+//             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Customers]') AND name = 'PasswordResetTokenHash')
+//                 ALTER TABLE [dbo].[Customers] ADD [PasswordResetTokenHash] nvarchar(100) NULL;
+//             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Customers]') AND name = 'PasswordResetExpiresAt')
+//                 ALTER TABLE [dbo].[Customers] ADD [PasswordResetExpiresAt] datetime2 NULL;
+//             -- 2026-09-17 ""Employees"" page (Admin -> Users) - employee profile + work-area
+//             -- location scoping columns on Users. See MasterData.cs's User class doc comments.
+//             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Users]') AND name = 'State')
+//                 ALTER TABLE [dbo].[Users] ADD [State] nvarchar(100) NULL;
+//             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Users]') AND name = 'City')
+//                 ALTER TABLE [dbo].[Users] ADD [City] nvarchar(100) NULL;
+//             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Users]') AND name = 'Pincode')
+//                 ALTER TABLE [dbo].[Users] ADD [Pincode] nvarchar(10) NULL;
+//             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Users]') AND name = 'DateOfJoining')
+//                 ALTER TABLE [dbo].[Users] ADD [DateOfJoining] date NULL;
+//             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Users]') AND name = 'Designation')
+//                 ALTER TABLE [dbo].[Users] ADD [Designation] nvarchar(50) NULL;
+//             IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Users]') AND name = 'WorkLocationCodes')
+//                 ALTER TABLE [dbo].[Users] ADD [WorkLocationCodes] nvarchar(2000) NULL;
+//         ");
+//         Console.WriteLine("[Startup] Self-healing column migrations checked/applied.");
+//     }
+//     catch (Exception ex)
+//     {
+//         // Never let a migration hiccup take the whole app down - log it loudly instead, same
+//         // reasoning as every other best-effort block in this file. Worst case, the app starts with
+//         // the same "missing column" 500 it already had, now at least logged clearly at startup
+//         // instead of only surfacing later as an opaque request failure.
+//         Console.WriteLine($"[Startup] WARNING: self-healing column migrations failed - {ex.Message}");
+//     }
+// }
 
-// ---- wave 1 block: SELF-HEALING SCHEMA CATCH-UP (2026-09-03) - folds EVERY previously-manual
-// add-*.sql / apply-all-pending-jobcardscannerdb-changes.sql / redefine-workflow-stages-to-7-
-// steps.sql script sitting at the repo root into one self-applying block, same reasoning as the
-// column-migration block above (and the exact same root cause it was written for): this project
-// has no EF Core migrations, so every schema/data change since the database was first created
-// shipped as its own loose .sql file the user had to remember to run by hand against the real RDS
-// database. Several of these were confirmed NOT actually applied yet (that's what caused the
-// recurring part-suggestions 500 the block above fixes) - rather than trust that every other loose
-// script WAS run, this block re-applies all of them here too. Every statement is guarded (IF NOT
-// EXISTS / COL_LENGTH / OBJECT_ID), copied from the already-idempotent source scripts, so this is
-// safe and cheap to run on every startup regardless of which of the original scripts were or
-// weren't run by hand:
-//   - apply-all-pending-jobcardscannerdb-changes.sql (Dealers/Vehicles/JobCards/JobCardPhotos BAPL
-//     DMS columns, the JobCardPartSuggestions table + its own self-heal, the Invoices unique index)
-//   - add-jobcard-labour-suggestions-table.sql (the JobCardLabourSuggestions table itself - if this
-//     was never run, EVERY labour suggestion save/read fails, which is likely why "Add Suggestion"
-//     under Labour Suggestion was reported as not working even after the part-suggestions fix)
-//   - redefine-workflow-stages-to-7-steps.sql (the 7-step workflow: Vehicle Check-In, Work In
-//     Progress, Part Suggestion, Labour Suggestion, Repair Completed, Ready for Delivery, Invoice
-//     Generated)
-//   - NEW: an 8th stage, "Estimate Created", inserted right after Labour Suggestion and before
-//     Repair Completed, per explicit request - see JobCardsController.cs/EstimatesController.cs's
-//     calls into WorkflowStageAutomation for what now auto-advances a job card onto it.
-// Deliberately NOT included: add-bapldms-jobcard-media-table.sql and
-// add-bapldms-jobcardheader-priority-column.sql target BAPLDMSvad (DMS's own database, a
-// separate connection this DbContext does not own) - those still need running by hand against that
-// database specifically if not already applied.
-//
-// NOTE (2026-10-01 cleanup): RunPartSuggestionStatusTypeRepairAsync and RunOemModelCatchUpAsync
-// (further below) both depend on something THIS block creates/owns - see the dependency note at
-// the top of this section - so this one is awaited in wave 1, and those two run afterward, not
-// concurrently with it.
-async Task RunBaplColumnsLabourWorkflowCatchUpAsync()
-{
-    using var scope = app.Services.CreateScope();
-    var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
-    try
-    {
-        await db.Database.ExecuteSqlRawAsync(@"
-            -- ---- from apply-all-pending-jobcardscannerdb-changes.sql ----
-            IF COL_LENGTH('dbo.Dealers', 'BaplDmsDealerCode') IS NULL
-                ALTER TABLE [dbo].[Dealers] ADD [BaplDmsDealerCode] nvarchar(30) NULL;
-            IF COL_LENGTH('dbo.Vehicles', 'ControllerNo') IS NULL
-                ALTER TABLE [dbo].[Vehicles] ADD [ControllerNo] nvarchar(50) NULL;
-            IF COL_LENGTH('dbo.Vehicles', 'ConverterNo') IS NULL
-                ALTER TABLE [dbo].[Vehicles] ADD [ConverterNo] nvarchar(50) NULL;
-            IF COL_LENGTH('dbo.Vehicles', 'ChargerNo') IS NULL
-                ALTER TABLE [dbo].[Vehicles] ADD [ChargerNo] nvarchar(50) NULL;
-            IF COL_LENGTH('dbo.Vehicles', 'InsuranceExpiry') IS NULL
-                ALTER TABLE [dbo].[Vehicles] ADD [InsuranceExpiry] date NULL;
-            IF COL_LENGTH('dbo.Vehicles', 'NextServiceDueDate') IS NULL
-                ALTER TABLE [dbo].[Vehicles] ADD [NextServiceDueDate] date NULL;
-            IF COL_LENGTH('dbo.JobCards', 'BaplJobType') IS NULL
-                ALTER TABLE [dbo].[JobCards] ADD [BaplJobType] nvarchar(60) NULL;
-            IF COL_LENGTH('dbo.JobCards', 'BaplServiceLocation') IS NULL
-                ALTER TABLE [dbo].[JobCards] ADD [BaplServiceLocation] nvarchar(200) NULL;
-            IF COL_LENGTH('dbo.JobCards', 'BaplSupervisorName') IS NULL
-                ALTER TABLE [dbo].[JobCards] ADD [BaplSupervisorName] nvarchar(120) NULL;
-            IF COL_LENGTH('dbo.JobCards', 'BaplTechnicianName') IS NULL
-                ALTER TABLE [dbo].[JobCards] ADD [BaplTechnicianName] nvarchar(120) NULL;
-            IF COL_LENGTH('dbo.JobCards', 'BaplManualJobNo') IS NULL
-                ALTER TABLE [dbo].[JobCards] ADD [BaplManualJobNo] nvarchar(40) NULL;
-            IF COL_LENGTH('dbo.JobCardPhotos', 'Latitude') IS NULL
-                ALTER TABLE [dbo].[JobCardPhotos] ADD [Latitude] float NULL;
-            IF COL_LENGTH('dbo.JobCardPhotos', 'Longitude') IS NULL
-                ALTER TABLE [dbo].[JobCardPhotos] ADD [Longitude] float NULL;
-            IF COL_LENGTH('dbo.JobCardPhotos', 'PartSuggestionId') IS NULL
-                ALTER TABLE [dbo].[JobCardPhotos] ADD [PartSuggestionId] UNIQUEIDENTIFIER NULL;
-            IF COL_LENGTH('JobCards', 'BaplJobTypeId') IS NULL
-                ALTER TABLE JobCards ADD BaplJobTypeId INT NULL;
-            IF COL_LENGTH('JobCards', 'BaplJobSourceId') IS NULL
-                ALTER TABLE JobCards ADD BaplJobSourceId INT NULL;
-            IF COL_LENGTH('JobCards', 'BaplJobSourceName') IS NULL
-                ALTER TABLE JobCards ADD BaplJobSourceName NVARCHAR(60) NULL;
-            IF COL_LENGTH('JobCards', 'BaplServiceHeadId') IS NULL
-                ALTER TABLE JobCards ADD BaplServiceHeadId INT NULL;
-            IF COL_LENGTH('JobCards', 'BaplServiceHeadName') IS NULL
-                ALTER TABLE JobCards ADD BaplServiceHeadName NVARCHAR(120) NULL;
-            IF COL_LENGTH('JobCards', 'BaplServiceTypeId') IS NULL
-                ALTER TABLE JobCards ADD BaplServiceTypeId INT NULL;
-            IF COL_LENGTH('JobCards', 'BaplServiceTypeName') IS NULL
-                ALTER TABLE JobCards ADD BaplServiceTypeName NVARCHAR(120) NULL;
-            IF COL_LENGTH('JobCards', 'BaplServiceLocationCode') IS NULL
-                ALTER TABLE JobCards ADD BaplServiceLocationCode NVARCHAR(20) NULL;
-            IF COL_LENGTH('JobCards', 'BaplJobCardHeaderId') IS NULL
-                ALTER TABLE JobCards ADD BaplJobCardHeaderId INT NULL;
-            IF COL_LENGTH('JobCards', 'BaplJobNo') IS NULL
-                ALTER TABLE JobCards ADD BaplJobNo INT NULL;
-            IF COL_LENGTH('JobCards', 'BaplSyncStatus') IS NULL
-                ALTER TABLE JobCards ADD BaplSyncStatus NVARCHAR(20) NULL;
-            IF COL_LENGTH('JobCards', 'BaplSyncError') IS NULL
-                ALTER TABLE JobCards ADD BaplSyncError NVARCHAR(1000) NULL;
-            IF COL_LENGTH('JobCards', 'AssignedTechnicianName') IS NULL
-                ALTER TABLE JobCards ADD AssignedTechnicianName NVARCHAR(120) NULL;
-            IF OBJECT_ID('dbo.JobCardPartSuggestions', 'U') IS NULL
-            BEGIN
-                CREATE TABLE dbo.JobCardPartSuggestions (
-                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-                    JobCardId UNIQUEIDENTIFIER NOT NULL,
-                    ItemCode NVARCHAR(60) NOT NULL,
-                    AvailableQtyAtSuggestion INT NULL,
-                    Status NVARCHAR(20) NOT NULL DEFAULT 'Paid',
-                    SuggestedById UNIQUEIDENTIFIER NULL,
-                    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-                    CONSTRAINT FK_JobCardPartSuggestions_JobCards FOREIGN KEY (JobCardId) REFERENCES dbo.JobCards(Id) ON DELETE CASCADE,
-                    CONSTRAINT FK_JobCardPartSuggestions_Users FOREIGN KEY (SuggestedById) REFERENCES dbo.Users(Id)
-                );
-                CREATE INDEX IX_JobCardPartSuggestions_JobCardId ON dbo.JobCardPartSuggestions(JobCardId);
-            END
-            IF COL_LENGTH('dbo.JobCardPartSuggestions', 'AvailableQtyAtSuggestion') IS NULL
-                ALTER TABLE [dbo].[JobCardPartSuggestions] ADD [AvailableQtyAtSuggestion] INT NULL;
-            IF COL_LENGTH('dbo.JobCardPartSuggestions', 'SuggestedById') IS NULL
-                ALTER TABLE [dbo].[JobCardPartSuggestions] ADD [SuggestedById] UNIQUEIDENTIFIER NULL;
-            IF COL_LENGTH('dbo.JobCardPartSuggestions', 'SuggestedById') IS NOT NULL
-               AND NOT EXISTS (
-                   SELECT 1 FROM sys.foreign_keys
-                   WHERE name = 'FK_JobCardPartSuggestions_Users' AND parent_object_id = OBJECT_ID('dbo.JobCardPartSuggestions')
-               )
-            BEGIN
-                ALTER TABLE [dbo].[JobCardPartSuggestions]
-                    ADD CONSTRAINT [FK_JobCardPartSuggestions_Users] FOREIGN KEY ([SuggestedById]) REFERENCES [dbo].[Users]([Id]);
-            END
-            IF NOT EXISTS (
-                SELECT 1 FROM sys.indexes WHERE name = 'IX_Invoices_JobCardId' AND object_id = OBJECT_ID('dbo.Invoices')
-            )
-            BEGIN
-                CREATE UNIQUE INDEX [IX_Invoices_JobCardId] ON [dbo].[Invoices] ([JobCardId]);
-            END
+// // ---- wave 1 block: SELF-HEALING SCHEMA CATCH-UP (2026-09-03) - folds EVERY previously-manual
+// // add-*.sql / apply-all-pending-jobcardscannerdb-changes.sql / redefine-workflow-stages-to-7-
+// // steps.sql script sitting at the repo root into one self-applying block, same reasoning as the
+// // column-migration block above (and the exact same root cause it was written for): this project
+// // has no EF Core migrations, so every schema/data change since the database was first created
+// // shipped as its own loose .sql file the user had to remember to run by hand against the real RDS
+// // database. Several of these were confirmed NOT actually applied yet (that's what caused the
+// // recurring part-suggestions 500 the block above fixes) - rather than trust that every other loose
+// // script WAS run, this block re-applies all of them here too. Every statement is guarded (IF NOT
+// // EXISTS / COL_LENGTH / OBJECT_ID), copied from the already-idempotent source scripts, so this is
+// // safe and cheap to run on every startup regardless of which of the original scripts were or
+// // weren't run by hand:
+// //   - apply-all-pending-jobcardscannerdb-changes.sql (Dealers/Vehicles/JobCards/JobCardPhotos BAPL
+// //     DMS columns, the JobCardPartSuggestions table + its own self-heal, the Invoices unique index)
+// //   - add-jobcard-labour-suggestions-table.sql (the JobCardLabourSuggestions table itself - if this
+// //     was never run, EVERY labour suggestion save/read fails, which is likely why "Add Suggestion"
+// //     under Labour Suggestion was reported as not working even after the part-suggestions fix)
+// //   - redefine-workflow-stages-to-7-steps.sql (the 7-step workflow: Vehicle Check-In, Work In
+// //     Progress, Part Suggestion, Labour Suggestion, Repair Completed, Ready for Delivery, Invoice
+// //     Generated)
+// //   - NEW: an 8th stage, "Estimate Created", inserted right after Labour Suggestion and before
+// //     Repair Completed, per explicit request - see JobCardsController.cs/EstimatesController.cs's
+// //     calls into WorkflowStageAutomation for what now auto-advances a job card onto it.
+// // Deliberately NOT included: add-bapldms-jobcard-media-table.sql and
+// // add-bapldms-jobcardheader-priority-column.sql target BAPLDMSvad (DMS's own database, a
+// // separate connection this DbContext does not own) - those still need running by hand against that
+// // database specifically if not already applied.
+// //
+// // NOTE (2026-10-01 cleanup): RunPartSuggestionStatusTypeRepairAsync and RunOemModelCatchUpAsync
+// // (further below) both depend on something THIS block creates/owns - see the dependency note at
+// // the top of this section - so this one is awaited in wave 1, and those two run afterward, not
+// // concurrently with it.
+// async Task RunBaplColumnsLabourWorkflowCatchUpAsync()
+// {
+//     using var scope = app.Services.CreateScope();
+//     var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
+//     try
+//     {
+//         await db.Database.ExecuteSqlRawAsync(@"
+//             -- ---- from apply-all-pending-jobcardscannerdb-changes.sql ----
+//             IF COL_LENGTH('dbo.Dealers', 'BaplDmsDealerCode') IS NULL
+//                 ALTER TABLE [dbo].[Dealers] ADD [BaplDmsDealerCode] nvarchar(30) NULL;
+//             IF COL_LENGTH('dbo.Vehicles', 'ControllerNo') IS NULL
+//                 ALTER TABLE [dbo].[Vehicles] ADD [ControllerNo] nvarchar(50) NULL;
+//             IF COL_LENGTH('dbo.Vehicles', 'ConverterNo') IS NULL
+//                 ALTER TABLE [dbo].[Vehicles] ADD [ConverterNo] nvarchar(50) NULL;
+//             IF COL_LENGTH('dbo.Vehicles', 'ChargerNo') IS NULL
+//                 ALTER TABLE [dbo].[Vehicles] ADD [ChargerNo] nvarchar(50) NULL;
+//             IF COL_LENGTH('dbo.Vehicles', 'InsuranceExpiry') IS NULL
+//                 ALTER TABLE [dbo].[Vehicles] ADD [InsuranceExpiry] date NULL;
+//             IF COL_LENGTH('dbo.Vehicles', 'NextServiceDueDate') IS NULL
+//                 ALTER TABLE [dbo].[Vehicles] ADD [NextServiceDueDate] date NULL;
+//             IF COL_LENGTH('dbo.JobCards', 'BaplJobType') IS NULL
+//                 ALTER TABLE [dbo].[JobCards] ADD [BaplJobType] nvarchar(60) NULL;
+//             IF COL_LENGTH('dbo.JobCards', 'BaplServiceLocation') IS NULL
+//                 ALTER TABLE [dbo].[JobCards] ADD [BaplServiceLocation] nvarchar(200) NULL;
+//             IF COL_LENGTH('dbo.JobCards', 'BaplSupervisorName') IS NULL
+//                 ALTER TABLE [dbo].[JobCards] ADD [BaplSupervisorName] nvarchar(120) NULL;
+//             IF COL_LENGTH('dbo.JobCards', 'BaplTechnicianName') IS NULL
+//                 ALTER TABLE [dbo].[JobCards] ADD [BaplTechnicianName] nvarchar(120) NULL;
+//             IF COL_LENGTH('dbo.JobCards', 'BaplManualJobNo') IS NULL
+//                 ALTER TABLE [dbo].[JobCards] ADD [BaplManualJobNo] nvarchar(40) NULL;
+//             IF COL_LENGTH('dbo.JobCardPhotos', 'Latitude') IS NULL
+//                 ALTER TABLE [dbo].[JobCardPhotos] ADD [Latitude] float NULL;
+//             IF COL_LENGTH('dbo.JobCardPhotos', 'Longitude') IS NULL
+//                 ALTER TABLE [dbo].[JobCardPhotos] ADD [Longitude] float NULL;
+//             IF COL_LENGTH('dbo.JobCardPhotos', 'PartSuggestionId') IS NULL
+//                 ALTER TABLE [dbo].[JobCardPhotos] ADD [PartSuggestionId] UNIQUEIDENTIFIER NULL;
+//             IF COL_LENGTH('JobCards', 'BaplJobTypeId') IS NULL
+//                 ALTER TABLE JobCards ADD BaplJobTypeId INT NULL;
+//             IF COL_LENGTH('JobCards', 'BaplJobSourceId') IS NULL
+//                 ALTER TABLE JobCards ADD BaplJobSourceId INT NULL;
+//             IF COL_LENGTH('JobCards', 'BaplJobSourceName') IS NULL
+//                 ALTER TABLE JobCards ADD BaplJobSourceName NVARCHAR(60) NULL;
+//             IF COL_LENGTH('JobCards', 'BaplServiceHeadId') IS NULL
+//                 ALTER TABLE JobCards ADD BaplServiceHeadId INT NULL;
+//             IF COL_LENGTH('JobCards', 'BaplServiceHeadName') IS NULL
+//                 ALTER TABLE JobCards ADD BaplServiceHeadName NVARCHAR(120) NULL;
+//             IF COL_LENGTH('JobCards', 'BaplServiceTypeId') IS NULL
+//                 ALTER TABLE JobCards ADD BaplServiceTypeId INT NULL;
+//             IF COL_LENGTH('JobCards', 'BaplServiceTypeName') IS NULL
+//                 ALTER TABLE JobCards ADD BaplServiceTypeName NVARCHAR(120) NULL;
+//             IF COL_LENGTH('JobCards', 'BaplServiceLocationCode') IS NULL
+//                 ALTER TABLE JobCards ADD BaplServiceLocationCode NVARCHAR(20) NULL;
+//             IF COL_LENGTH('JobCards', 'BaplJobCardHeaderId') IS NULL
+//                 ALTER TABLE JobCards ADD BaplJobCardHeaderId INT NULL;
+//             IF COL_LENGTH('JobCards', 'BaplJobNo') IS NULL
+//                 ALTER TABLE JobCards ADD BaplJobNo INT NULL;
+//             IF COL_LENGTH('JobCards', 'BaplSyncStatus') IS NULL
+//                 ALTER TABLE JobCards ADD BaplSyncStatus NVARCHAR(20) NULL;
+//             IF COL_LENGTH('JobCards', 'BaplSyncError') IS NULL
+//                 ALTER TABLE JobCards ADD BaplSyncError NVARCHAR(1000) NULL;
+//             IF COL_LENGTH('JobCards', 'AssignedTechnicianName') IS NULL
+//                 ALTER TABLE JobCards ADD AssignedTechnicianName NVARCHAR(120) NULL;
+//             IF OBJECT_ID('dbo.JobCardPartSuggestions', 'U') IS NULL
+//             BEGIN
+//                 CREATE TABLE dbo.JobCardPartSuggestions (
+//                     Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+//                     JobCardId UNIQUEIDENTIFIER NOT NULL,
+//                     ItemCode NVARCHAR(60) NOT NULL,
+//                     AvailableQtyAtSuggestion INT NULL,
+//                     Status NVARCHAR(20) NOT NULL DEFAULT 'Paid',
+//                     SuggestedById UNIQUEIDENTIFIER NULL,
+//                     CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+//                     CONSTRAINT FK_JobCardPartSuggestions_JobCards FOREIGN KEY (JobCardId) REFERENCES dbo.JobCards(Id) ON DELETE CASCADE,
+//                     CONSTRAINT FK_JobCardPartSuggestions_Users FOREIGN KEY (SuggestedById) REFERENCES dbo.Users(Id)
+//                 );
+//                 CREATE INDEX IX_JobCardPartSuggestions_JobCardId ON dbo.JobCardPartSuggestions(JobCardId);
+//             END
+//             IF COL_LENGTH('dbo.JobCardPartSuggestions', 'AvailableQtyAtSuggestion') IS NULL
+//                 ALTER TABLE [dbo].[JobCardPartSuggestions] ADD [AvailableQtyAtSuggestion] INT NULL;
+//             IF COL_LENGTH('dbo.JobCardPartSuggestions', 'SuggestedById') IS NULL
+//                 ALTER TABLE [dbo].[JobCardPartSuggestions] ADD [SuggestedById] UNIQUEIDENTIFIER NULL;
+//             IF COL_LENGTH('dbo.JobCardPartSuggestions', 'SuggestedById') IS NOT NULL
+//                AND NOT EXISTS (
+//                    SELECT 1 FROM sys.foreign_keys
+//                    WHERE name = 'FK_JobCardPartSuggestions_Users' AND parent_object_id = OBJECT_ID('dbo.JobCardPartSuggestions')
+//                )
+//             BEGIN
+//                 ALTER TABLE [dbo].[JobCardPartSuggestions]
+//                     ADD CONSTRAINT [FK_JobCardPartSuggestions_Users] FOREIGN KEY ([SuggestedById]) REFERENCES [dbo].[Users]([Id]);
+//             END
+//             IF NOT EXISTS (
+//                 SELECT 1 FROM sys.indexes WHERE name = 'IX_Invoices_JobCardId' AND object_id = OBJECT_ID('dbo.Invoices')
+//             )
+//             BEGIN
+//                 CREATE UNIQUE INDEX [IX_Invoices_JobCardId] ON [dbo].[Invoices] ([JobCardId]);
+//             END
 
-            -- ---- from add-jobcard-labour-suggestions-table.sql ----
-            IF OBJECT_ID('dbo.JobCardLabourSuggestions', 'U') IS NULL
-            BEGIN
-                CREATE TABLE dbo.JobCardLabourSuggestions (
-                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-                    JobCardId UNIQUEIDENTIFIER NOT NULL,
-                    LabourCode NVARCHAR(60) NOT NULL,
-                    LabourDescription NVARCHAR(400) NULL,
-                    HsnCode NVARCHAR(20) NULL,
-                    Sgst DECIMAL(5,2) NULL,
-                    Cgst DECIMAL(5,2) NULL,
-                    Igst DECIMAL(5,2) NULL,
-                    RateAtSuggestion DECIMAL(12,2) NULL,
-                    Quantity INT NOT NULL DEFAULT 1,
-                    IssueType NVARCHAR(120) NULL,
-                    SuggestedById UNIQUEIDENTIFIER NULL,
-                    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-                    CONSTRAINT FK_JobCardLabourSuggestions_JobCards FOREIGN KEY (JobCardId) REFERENCES dbo.JobCards(Id) ON DELETE CASCADE,
-                    CONSTRAINT FK_JobCardLabourSuggestions_Users FOREIGN KEY (SuggestedById) REFERENCES dbo.Users(Id)
-                );
-                CREATE INDEX IX_JobCardLabourSuggestions_JobCardId ON dbo.JobCardLabourSuggestions(JobCardId);
-            END
-            IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'LabourDescription') IS NULL
-                ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [LabourDescription] NVARCHAR(400) NULL;
-            IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'HsnCode') IS NULL
-                ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [HsnCode] NVARCHAR(20) NULL;
-            IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'Sgst') IS NULL
-                ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [Sgst] DECIMAL(5,2) NULL;
-            IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'Cgst') IS NULL
-                ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [Cgst] DECIMAL(5,2) NULL;
-            IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'Igst') IS NULL
-                ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [Igst] DECIMAL(5,2) NULL;
-            IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'RateAtSuggestion') IS NULL
-                ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [RateAtSuggestion] DECIMAL(12,2) NULL;
-            IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'Quantity') IS NULL
-                ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [Quantity] INT NOT NULL DEFAULT 1;
-            IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'IssueType') IS NULL
-                ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [IssueType] NVARCHAR(120) NULL;
-            IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'SuggestedById') IS NULL
-                ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [SuggestedById] UNIQUEIDENTIFIER NULL;
-            IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'SuggestedById') IS NOT NULL
-               AND NOT EXISTS (
-                   SELECT 1 FROM sys.foreign_keys
-                   WHERE name = 'FK_JobCardLabourSuggestions_Users' AND parent_object_id = OBJECT_ID('dbo.JobCardLabourSuggestions')
-               )
-            BEGIN
-                ALTER TABLE [dbo].[JobCardLabourSuggestions]
-                    ADD CONSTRAINT [FK_JobCardLabourSuggestions_Users] FOREIGN KEY ([SuggestedById]) REFERENCES [dbo].[Users]([Id]);
-            END
-            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_JobCardLabourSuggestions_JobCardId' AND object_id = OBJECT_ID('dbo.JobCardLabourSuggestions'))
-                CREATE INDEX IX_JobCardLabourSuggestions_JobCardId ON dbo.JobCardLabourSuggestions(JobCardId);
+//             -- ---- from add-jobcard-labour-suggestions-table.sql ----
+//             IF OBJECT_ID('dbo.JobCardLabourSuggestions', 'U') IS NULL
+//             BEGIN
+//                 CREATE TABLE dbo.JobCardLabourSuggestions (
+//                     Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+//                     JobCardId UNIQUEIDENTIFIER NOT NULL,
+//                     LabourCode NVARCHAR(60) NOT NULL,
+//                     LabourDescription NVARCHAR(400) NULL,
+//                     HsnCode NVARCHAR(20) NULL,
+//                     Sgst DECIMAL(5,2) NULL,
+//                     Cgst DECIMAL(5,2) NULL,
+//                     Igst DECIMAL(5,2) NULL,
+//                     RateAtSuggestion DECIMAL(12,2) NULL,
+//                     Quantity INT NOT NULL DEFAULT 1,
+//                     IssueType NVARCHAR(120) NULL,
+//                     SuggestedById UNIQUEIDENTIFIER NULL,
+//                     CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+//                     CONSTRAINT FK_JobCardLabourSuggestions_JobCards FOREIGN KEY (JobCardId) REFERENCES dbo.JobCards(Id) ON DELETE CASCADE,
+//                     CONSTRAINT FK_JobCardLabourSuggestions_Users FOREIGN KEY (SuggestedById) REFERENCES dbo.Users(Id)
+//                 );
+//                 CREATE INDEX IX_JobCardLabourSuggestions_JobCardId ON dbo.JobCardLabourSuggestions(JobCardId);
+//             END
+//             IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'LabourDescription') IS NULL
+//                 ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [LabourDescription] NVARCHAR(400) NULL;
+//             IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'HsnCode') IS NULL
+//                 ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [HsnCode] NVARCHAR(20) NULL;
+//             IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'Sgst') IS NULL
+//                 ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [Sgst] DECIMAL(5,2) NULL;
+//             IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'Cgst') IS NULL
+//                 ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [Cgst] DECIMAL(5,2) NULL;
+//             IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'Igst') IS NULL
+//                 ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [Igst] DECIMAL(5,2) NULL;
+//             IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'RateAtSuggestion') IS NULL
+//                 ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [RateAtSuggestion] DECIMAL(12,2) NULL;
+//             IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'Quantity') IS NULL
+//                 ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [Quantity] INT NOT NULL DEFAULT 1;
+//             IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'IssueType') IS NULL
+//                 ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [IssueType] NVARCHAR(120) NULL;
+//             IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'SuggestedById') IS NULL
+//                 ALTER TABLE [dbo].[JobCardLabourSuggestions] ADD [SuggestedById] UNIQUEIDENTIFIER NULL;
+//             IF COL_LENGTH('dbo.JobCardLabourSuggestions', 'SuggestedById') IS NOT NULL
+//                AND NOT EXISTS (
+//                    SELECT 1 FROM sys.foreign_keys
+//                    WHERE name = 'FK_JobCardLabourSuggestions_Users' AND parent_object_id = OBJECT_ID('dbo.JobCardLabourSuggestions')
+//                )
+//             BEGIN
+//                 ALTER TABLE [dbo].[JobCardLabourSuggestions]
+//                     ADD CONSTRAINT [FK_JobCardLabourSuggestions_Users] FOREIGN KEY ([SuggestedById]) REFERENCES [dbo].[Users]([Id]);
+//             END
+//             IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_JobCardLabourSuggestions_JobCardId' AND object_id = OBJECT_ID('dbo.JobCardLabourSuggestions'))
+//                 CREATE INDEX IX_JobCardLabourSuggestions_JobCardId ON dbo.JobCardLabourSuggestions(JobCardId);
 
-            -- ---- from redefine-workflow-stages-to-7-steps.sql ----
-            UPDATE dbo.WorkflowStages SET Label = 'Vehicle Check-In / Job Card Created', Seq = 1, Active = 1, IsTerminal = 0
-                WHERE DealerId IS NULL AND StageKey = 'check_in';
-            UPDATE dbo.WorkflowStages SET Label = 'Work In Progress', Seq = 2, Active = 1, IsTerminal = 0
-                WHERE DealerId IS NULL AND StageKey = 'in_repair';
-            UPDATE dbo.WorkflowStages SET Label = 'Repair Completed', Active = 1, IsTerminal = 0
-                WHERE DealerId IS NULL AND StageKey = 'repair_completed';
-            UPDATE dbo.WorkflowStages SET Label = 'Ready for Delivery', Active = 1, IsTerminal = 0
-                WHERE DealerId IS NULL AND StageKey = 'ready_for_delivery';
-            UPDATE dbo.WorkflowStages SET Label = 'Invoice Generated', Active = 1, IsTerminal = 1
-                WHERE DealerId IS NULL AND StageKey = 'invoice_generated';
-            IF NOT EXISTS (SELECT 1 FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'part_suggestion')
-                INSERT INTO dbo.WorkflowStages (Id, DealerId, StageKey, Label, Seq, Icon, Active, IsTerminal, CreatedAt)
-                VALUES (NEWID(), NULL, 'part_suggestion', 'Part Suggestion', 3, 'package', 1, 0, SYSUTCDATETIME());
-            IF NOT EXISTS (SELECT 1 FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'labour_suggestion')
-                INSERT INTO dbo.WorkflowStages (Id, DealerId, StageKey, Label, Seq, Icon, Active, IsTerminal, CreatedAt)
-                VALUES (NEWID(), NULL, 'labour_suggestion', 'Labour Suggestion', 4, 'tool', 1, 0, SYSUTCDATETIME());
-            UPDATE dbo.WorkflowStages SET Active = 0
-                WHERE DealerId IS NULL AND StageKey IN ('job_card_created', 'inspection', 'diagnosis', 'estimate_prep', 'customer_approval',
-                                    'parts_requested', 'parts_issued', 'quality_check', 'rework', 'closed');
+//             -- ---- from redefine-workflow-stages-to-7-steps.sql ----
+//             UPDATE dbo.WorkflowStages SET Label = 'Vehicle Check-In / Job Card Created', Seq = 1, Active = 1, IsTerminal = 0
+//                 WHERE DealerId IS NULL AND StageKey = 'check_in';
+//             UPDATE dbo.WorkflowStages SET Label = 'Work In Progress', Seq = 2, Active = 1, IsTerminal = 0
+//                 WHERE DealerId IS NULL AND StageKey = 'in_repair';
+//             UPDATE dbo.WorkflowStages SET Label = 'Repair Completed', Active = 1, IsTerminal = 0
+//                 WHERE DealerId IS NULL AND StageKey = 'repair_completed';
+//             UPDATE dbo.WorkflowStages SET Label = 'Ready for Delivery', Active = 1, IsTerminal = 0
+//                 WHERE DealerId IS NULL AND StageKey = 'ready_for_delivery';
+//             UPDATE dbo.WorkflowStages SET Label = 'Invoice Generated', Active = 1, IsTerminal = 1
+//                 WHERE DealerId IS NULL AND StageKey = 'invoice_generated';
+//             IF NOT EXISTS (SELECT 1 FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'part_suggestion')
+//                 INSERT INTO dbo.WorkflowStages (Id, DealerId, StageKey, Label, Seq, Icon, Active, IsTerminal, CreatedAt)
+//                 VALUES (NEWID(), NULL, 'part_suggestion', 'Part Suggestion', 3, 'package', 1, 0, SYSUTCDATETIME());
+//             IF NOT EXISTS (SELECT 1 FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'labour_suggestion')
+//                 INSERT INTO dbo.WorkflowStages (Id, DealerId, StageKey, Label, Seq, Icon, Active, IsTerminal, CreatedAt)
+//                 VALUES (NEWID(), NULL, 'labour_suggestion', 'Labour Suggestion', 4, 'tool', 1, 0, SYSUTCDATETIME());
+//             UPDATE dbo.WorkflowStages SET Active = 0
+//                 WHERE DealerId IS NULL AND StageKey IN ('job_card_created', 'inspection', 'diagnosis', 'estimate_prep', 'customer_approval',
+//                                     'parts_requested', 'parts_issued', 'quality_check', 'rework', 'closed');
 
-            -- ---- NEW: 'Estimate Created' stage, inserted right after Labour Suggestion ----
-            IF NOT EXISTS (SELECT 1 FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'estimate_created')
-                INSERT INTO dbo.WorkflowStages (Id, DealerId, StageKey, Label, Seq, Icon, Active, IsTerminal, CreatedAt)
-                VALUES (NEWID(), NULL, 'estimate_created', 'Estimate Created', 5, 'file-text', 1, 0, SYSUTCDATETIME());
-            -- Final order: 1 check_in, 2 in_repair, 3 part_suggestion, 4 labour_suggestion,
-            -- 5 estimate_created, 6 repair_completed, 7 ready_for_delivery, 8 invoice_generated.
-            UPDATE dbo.WorkflowStages SET Seq = 6 WHERE DealerId IS NULL AND StageKey = 'repair_completed';
-            UPDATE dbo.WorkflowStages SET Seq = 7 WHERE DealerId IS NULL AND StageKey = 'ready_for_delivery';
-            UPDATE dbo.WorkflowStages SET Seq = 8 WHERE DealerId IS NULL AND StageKey = 'invoice_generated';
+//             -- ---- NEW: 'Estimate Created' stage, inserted right after Labour Suggestion ----
+//             IF NOT EXISTS (SELECT 1 FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'estimate_created')
+//                 INSERT INTO dbo.WorkflowStages (Id, DealerId, StageKey, Label, Seq, Icon, Active, IsTerminal, CreatedAt)
+//                 VALUES (NEWID(), NULL, 'estimate_created', 'Estimate Created', 5, 'file-text', 1, 0, SYSUTCDATETIME());
+//             -- Final order: 1 check_in, 2 in_repair, 3 part_suggestion, 4 labour_suggestion,
+//             -- 5 estimate_created, 6 repair_completed, 7 ready_for_delivery, 8 invoice_generated.
+//             UPDATE dbo.WorkflowStages SET Seq = 6 WHERE DealerId IS NULL AND StageKey = 'repair_completed';
+//             UPDATE dbo.WorkflowStages SET Seq = 7 WHERE DealerId IS NULL AND StageKey = 'ready_for_delivery';
+//             UPDATE dbo.WorkflowStages SET Seq = 8 WHERE DealerId IS NULL AND StageKey = 'invoice_generated';
 
-            -- Re-point any job card still sitting on a now-retired GLOBAL stage onto its nearest
-            -- surviving replacement (history rows are left untouched - see
-            -- redefine-workflow-stages-to-7-steps.sql's own step 4 for the full narrative).
-            DECLARE @checkIn UNIQUEIDENTIFIER = (SELECT Id FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'check_in');
-            DECLARE @inRepair UNIQUEIDENTIFIER = (SELECT Id FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'in_repair');
-            DECLARE @partSuggestion UNIQUEIDENTIFIER = (SELECT Id FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'part_suggestion');
-            DECLARE @repairCompleted UNIQUEIDENTIFIER = (SELECT Id FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'repair_completed');
-            DECLARE @invoiceGenerated UNIQUEIDENTIFIER = (SELECT Id FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'invoice_generated');
-            UPDATE j SET CurrentStageId = @checkIn
-                FROM dbo.JobCards j JOIN dbo.WorkflowStages s ON j.CurrentStageId = s.Id
-                WHERE s.DealerId IS NULL AND s.StageKey = 'job_card_created';
-            UPDATE j SET CurrentStageId = @inRepair
-                FROM dbo.JobCards j JOIN dbo.WorkflowStages s ON j.CurrentStageId = s.Id
-                WHERE s.DealerId IS NULL AND s.StageKey IN ('inspection', 'diagnosis', 'estimate_prep', 'customer_approval');
-            UPDATE j SET CurrentStageId = @partSuggestion
-                FROM dbo.JobCards j JOIN dbo.WorkflowStages s ON j.CurrentStageId = s.Id
-                WHERE s.DealerId IS NULL AND s.StageKey IN ('parts_requested', 'parts_issued');
-            UPDATE j SET CurrentStageId = @repairCompleted
-                FROM dbo.JobCards j JOIN dbo.WorkflowStages s ON j.CurrentStageId = s.Id
-                WHERE s.DealerId IS NULL AND s.StageKey IN ('quality_check', 'rework');
-            UPDATE j SET CurrentStageId = @invoiceGenerated
-                FROM dbo.JobCards j JOIN dbo.WorkflowStages s ON j.CurrentStageId = s.Id
-                WHERE s.DealerId IS NULL AND s.StageKey = 'closed';
-        ");
-        Console.WriteLine("[Startup] Self-healing schema catch-up (BAPL columns, Labour Suggestions table, 8-step workflow) checked/applied.");
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"[Startup] WARNING: self-healing schema catch-up failed - {ex.Message}");
-    }
-}
+//             -- Re-point any job card still sitting on a now-retired GLOBAL stage onto its nearest
+//             -- surviving replacement (history rows are left untouched - see
+//             -- redefine-workflow-stages-to-7-steps.sql's own step 4 for the full narrative).
+//             DECLARE @checkIn UNIQUEIDENTIFIER = (SELECT Id FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'check_in');
+//             DECLARE @inRepair UNIQUEIDENTIFIER = (SELECT Id FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'in_repair');
+//             DECLARE @partSuggestion UNIQUEIDENTIFIER = (SELECT Id FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'part_suggestion');
+//             DECLARE @repairCompleted UNIQUEIDENTIFIER = (SELECT Id FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'repair_completed');
+//             DECLARE @invoiceGenerated UNIQUEIDENTIFIER = (SELECT Id FROM dbo.WorkflowStages WHERE DealerId IS NULL AND StageKey = 'invoice_generated');
+//             UPDATE j SET CurrentStageId = @checkIn
+//                 FROM dbo.JobCards j JOIN dbo.WorkflowStages s ON j.CurrentStageId = s.Id
+//                 WHERE s.DealerId IS NULL AND s.StageKey = 'job_card_created';
+//             UPDATE j SET CurrentStageId = @inRepair
+//                 FROM dbo.JobCards j JOIN dbo.WorkflowStages s ON j.CurrentStageId = s.Id
+//                 WHERE s.DealerId IS NULL AND s.StageKey IN ('inspection', 'diagnosis', 'estimate_prep', 'customer_approval');
+//             UPDATE j SET CurrentStageId = @partSuggestion
+//                 FROM dbo.JobCards j JOIN dbo.WorkflowStages s ON j.CurrentStageId = s.Id
+//                 WHERE s.DealerId IS NULL AND s.StageKey IN ('parts_requested', 'parts_issued');
+//             UPDATE j SET CurrentStageId = @repairCompleted
+//                 FROM dbo.JobCards j JOIN dbo.WorkflowStages s ON j.CurrentStageId = s.Id
+//                 WHERE s.DealerId IS NULL AND s.StageKey IN ('quality_check', 'rework');
+//             UPDATE j SET CurrentStageId = @invoiceGenerated
+//                 FROM dbo.JobCards j JOIN dbo.WorkflowStages s ON j.CurrentStageId = s.Id
+//                 WHERE s.DealerId IS NULL AND s.StageKey = 'closed';
+//         ");
+//         Console.WriteLine("[Startup] Self-healing schema catch-up (BAPL columns, Labour Suggestions table, 8-step workflow) checked/applied.");
+//     }
+//     catch (Exception ex)
+//     {
+//         Console.WriteLine($"[Startup] WARNING: self-healing schema catch-up failed - {ex.Message}");
+//     }
+// }
 
-// ---- wave 1 block: EXTENDED BATTERY WARRANTY SCHEME (2026-09-22) - "needs to create warenty
-// table in jobcardscanner db for this functionality and add this in our function". Own try/catch
-// block, separate from the others, so a failure here (or in any other block) never blocks any
-// other block from running - same isolation convention already used throughout this file. See
-// Models/ExtendedBatteryWarrantySchemes.cs for the table's full field-by-field reasoning and
-// Models/RepairBillDocs.cs (RepairBillDocItem) for the two new nullable tag-only columns.
-//
-// NOTE (2026-10-01 cleanup): RunOemModelCatchUpAsync (further below) ALTERs the table this block
-// CREATEs, so it's awaited in wave 1 and RunOemModelCatchUpAsync runs after it, not concurrently.
-async Task RunExtendedBatteryWarrantySchemeCatchUpAsync()
-{
-    using var scope = app.Services.CreateScope();
-    var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
-    try
-    {
-        await db.Database.ExecuteSqlRawAsync(@"
-            IF OBJECT_ID('dbo.ExtendedBatteryWarrantySchemes', 'U') IS NULL
-            BEGIN
-                CREATE TABLE dbo.ExtendedBatteryWarrantySchemes (
-                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-                    DealerId UNIQUEIDENTIFIER NOT NULL,
-                    SchemeName NVARCHAR(150) NOT NULL,
-                    VehicleModel NVARCHAR(100) NOT NULL,
-                    RateType NVARCHAR(60) NULL,
-                    Duration INT NOT NULL DEFAULT (0),
-                    DurationType NVARCHAR(10) NOT NULL DEFAULT ('Months'),
-                    Kms DECIMAL(10,2) NOT NULL DEFAULT (0),
-                    DealerPrice DECIMAL(12,2) NOT NULL DEFAULT (0),
-                    CustomerPrice DECIMAL(12,2) NOT NULL DEFAULT (0),
-                    DiscountAmount DECIMAL(12,2) NOT NULL DEFAULT (0),
-                    GstPercent DECIMAL(5,2) NOT NULL DEFAULT (0),
-                    PurchaseValidityDays INT NULL,
-                    BatteryPartCode NVARCHAR(60) NULL,
-                    PartCode NVARCHAR(60) NULL,
-                    FromDate DATE NOT NULL,
-                    ToDate DATE NULL,
-                    IsActive BIT NOT NULL DEFAULT (1),
-                    CreatedById UNIQUEIDENTIFIER NULL,
-                    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-                    UpdatedById UNIQUEIDENTIFIER NULL,
-                    UpdatedAt DATETIME2 NULL,
-                    CONSTRAINT FK_ExtendedBatteryWarrantySchemes_Dealers FOREIGN KEY (DealerId) REFERENCES dbo.Dealers(Id),
-                    CONSTRAINT FK_ExtendedBatteryWarrantySchemes_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id),
-                    CONSTRAINT FK_ExtendedBatteryWarrantySchemes_UpdatedBy FOREIGN KEY (UpdatedById) REFERENCES dbo.Users(Id)
-                );
-                CREATE INDEX IX_ExtendedBatteryWarrantySchemes_DealerId_VehicleModel ON dbo.ExtendedBatteryWarrantySchemes(DealerId, VehicleModel);
-            END
+// // ---- wave 1 block: EXTENDED BATTERY WARRANTY SCHEME (2026-09-22) - "needs to create warenty
+// // table in jobcardscanner db for this functionality and add this in our function". Own try/catch
+// // block, separate from the others, so a failure here (or in any other block) never blocks any
+// // other block from running - same isolation convention already used throughout this file. See
+// // Models/ExtendedBatteryWarrantySchemes.cs for the table's full field-by-field reasoning and
+// // Models/RepairBillDocs.cs (RepairBillDocItem) for the two new nullable tag-only columns.
+// //
+// // NOTE (2026-10-01 cleanup): RunOemModelCatchUpAsync (further below) ALTERs the table this block
+// // CREATEs, so it's awaited in wave 1 and RunOemModelCatchUpAsync runs after it, not concurrently.
+// async Task RunExtendedBatteryWarrantySchemeCatchUpAsync()
+// {
+//     using var scope = app.Services.CreateScope();
+//     var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
+//     try
+//     {
+//         await db.Database.ExecuteSqlRawAsync(@"
+//             IF OBJECT_ID('dbo.ExtendedBatteryWarrantySchemes', 'U') IS NULL
+//             BEGIN
+//                 CREATE TABLE dbo.ExtendedBatteryWarrantySchemes (
+//                     Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+//                     DealerId UNIQUEIDENTIFIER NOT NULL,
+//                     SchemeName NVARCHAR(150) NOT NULL,
+//                     VehicleModel NVARCHAR(100) NOT NULL,
+//                     RateType NVARCHAR(60) NULL,
+//                     Duration INT NOT NULL DEFAULT (0),
+//                     DurationType NVARCHAR(10) NOT NULL DEFAULT ('Months'),
+//                     Kms DECIMAL(10,2) NOT NULL DEFAULT (0),
+//                     DealerPrice DECIMAL(12,2) NOT NULL DEFAULT (0),
+//                     CustomerPrice DECIMAL(12,2) NOT NULL DEFAULT (0),
+//                     DiscountAmount DECIMAL(12,2) NOT NULL DEFAULT (0),
+//                     GstPercent DECIMAL(5,2) NOT NULL DEFAULT (0),
+//                     PurchaseValidityDays INT NULL,
+//                     BatteryPartCode NVARCHAR(60) NULL,
+//                     PartCode NVARCHAR(60) NULL,
+//                     FromDate DATE NOT NULL,
+//                     ToDate DATE NULL,
+//                     IsActive BIT NOT NULL DEFAULT (1),
+//                     CreatedById UNIQUEIDENTIFIER NULL,
+//                     CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+//                     UpdatedById UNIQUEIDENTIFIER NULL,
+//                     UpdatedAt DATETIME2 NULL,
+//                     CONSTRAINT FK_ExtendedBatteryWarrantySchemes_Dealers FOREIGN KEY (DealerId) REFERENCES dbo.Dealers(Id),
+//                     CONSTRAINT FK_ExtendedBatteryWarrantySchemes_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id),
+//                     CONSTRAINT FK_ExtendedBatteryWarrantySchemes_UpdatedBy FOREIGN KEY (UpdatedById) REFERENCES dbo.Users(Id)
+//                 );
+//                 CREATE INDEX IX_ExtendedBatteryWarrantySchemes_DealerId_VehicleModel ON dbo.ExtendedBatteryWarrantySchemes(DealerId, VehicleModel);
+//             END
 
-            IF COL_LENGTH('dbo.RepairBillDocItems', 'ExtendedBatteryWarrantySchemeId') IS NULL
-                ALTER TABLE [dbo].[RepairBillDocItems] ADD [ExtendedBatteryWarrantySchemeId] UNIQUEIDENTIFIER NULL;
-            IF COL_LENGTH('dbo.RepairBillDocItems', 'IsUnderExtendedWarranty') IS NULL
-                ALTER TABLE [dbo].[RepairBillDocItems] ADD [IsUnderExtendedWarranty] BIT NULL;
-            IF COL_LENGTH('dbo.RepairBillDocItems', 'ExtendedBatteryWarrantySchemeId') IS NOT NULL
-               AND OBJECT_ID('dbo.ExtendedBatteryWarrantySchemes', 'U') IS NOT NULL
-               AND NOT EXISTS (
-                   SELECT 1 FROM sys.foreign_keys
-                   WHERE name = 'FK_RepairBillDocItems_ExtendedBatteryWarrantySchemes' AND parent_object_id = OBJECT_ID('dbo.RepairBillDocItems')
-               )
-            BEGIN
-                ALTER TABLE [dbo].[RepairBillDocItems]
-                    ADD CONSTRAINT [FK_RepairBillDocItems_ExtendedBatteryWarrantySchemes]
-                    FOREIGN KEY ([ExtendedBatteryWarrantySchemeId]) REFERENCES [dbo].[ExtendedBatteryWarrantySchemes]([Id]);
-            END
-            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_RepairBillDocItems_ExtendedBatteryWarrantySchemeId' AND object_id = OBJECT_ID('dbo.RepairBillDocItems'))
-                CREATE INDEX IX_RepairBillDocItems_ExtendedBatteryWarrantySchemeId ON dbo.RepairBillDocItems(ExtendedBatteryWarrantySchemeId);
-        ");
-        Console.WriteLine("[Startup] Self-healing schema catch-up (ExtendedBatteryWarrantySchemes table + RepairBillDocItems tag columns) checked/applied.");
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"[Startup] WARNING: ExtendedBatteryWarrantySchemes schema catch-up failed - {ex.Message}");
-    }
-}
+//             IF COL_LENGTH('dbo.RepairBillDocItems', 'ExtendedBatteryWarrantySchemeId') IS NULL
+//                 ALTER TABLE [dbo].[RepairBillDocItems] ADD [ExtendedBatteryWarrantySchemeId] UNIQUEIDENTIFIER NULL;
+//             IF COL_LENGTH('dbo.RepairBillDocItems', 'IsUnderExtendedWarranty') IS NULL
+//                 ALTER TABLE [dbo].[RepairBillDocItems] ADD [IsUnderExtendedWarranty] BIT NULL;
+//             IF COL_LENGTH('dbo.RepairBillDocItems', 'ExtendedBatteryWarrantySchemeId') IS NOT NULL
+//                AND OBJECT_ID('dbo.ExtendedBatteryWarrantySchemes', 'U') IS NOT NULL
+//                AND NOT EXISTS (
+//                    SELECT 1 FROM sys.foreign_keys
+//                    WHERE name = 'FK_RepairBillDocItems_ExtendedBatteryWarrantySchemes' AND parent_object_id = OBJECT_ID('dbo.RepairBillDocItems')
+//                )
+//             BEGIN
+//                 ALTER TABLE [dbo].[RepairBillDocItems]
+//                     ADD CONSTRAINT [FK_RepairBillDocItems_ExtendedBatteryWarrantySchemes]
+//                     FOREIGN KEY ([ExtendedBatteryWarrantySchemeId]) REFERENCES [dbo].[ExtendedBatteryWarrantySchemes]([Id]);
+//             END
+//             IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_RepairBillDocItems_ExtendedBatteryWarrantySchemeId' AND object_id = OBJECT_ID('dbo.RepairBillDocItems'))
+//                 CREATE INDEX IX_RepairBillDocItems_ExtendedBatteryWarrantySchemeId ON dbo.RepairBillDocItems(ExtendedBatteryWarrantySchemeId);
+//         ");
+//         Console.WriteLine("[Startup] Self-healing schema catch-up (ExtendedBatteryWarrantySchemes table + RepairBillDocItems tag columns) checked/applied.");
+//     }
+//     catch (Exception ex)
+//     {
+//         Console.WriteLine($"[Startup] WARNING: ExtendedBatteryWarrantySchemes schema catch-up failed - {ex.Message}");
+//     }
+// }
 
-// ---- wave 2 block (runs AFTER wave 1 - see dependency note above): OEM MODEL MASTER + OEM MODEL
-// WARRANTY (2026-09-22) - "this wants to integrate for my battery-warranty-schemes for link models
-// for warrenty and this all table add in jobcard db that all functionality need to craete in jc".
-// Own try/catch block, separate from the others, for the same isolation reason as every other
-// block in this file. See Models/OemModels.cs for the full field-by-field reasoning (ported from
-// the DMS reference's OemmodelMaster/OemmodelWarranty tables) and
-// Models/ExtendedBatteryWarrantySchemes.cs for the new OemModelId column added there to link the
-// two features together.
-async Task RunOemModelCatchUpAsync()
-{
-    using var scope = app.Services.CreateScope();
-    var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
-    try
-    {
-        await db.Database.ExecuteSqlRawAsync(@"
-            IF OBJECT_ID('dbo.OemModels', 'U') IS NULL
-            BEGIN
-                CREATE TABLE dbo.OemModels (
-                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-                    ModelName NVARCHAR(100) NOT NULL,
-                    ModelShortName NVARCHAR(30) NULL,
-                    IsActive BIT NOT NULL DEFAULT (1),
-                    CreatedById UNIQUEIDENTIFIER NULL,
-                    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-                    UpdatedById UNIQUEIDENTIFIER NULL,
-                    UpdatedAt DATETIME2 NULL,
-                    CONSTRAINT FK_OemModels_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id),
-                    CONSTRAINT FK_OemModels_UpdatedBy FOREIGN KEY (UpdatedById) REFERENCES dbo.Users(Id)
-                );
-                CREATE UNIQUE INDEX IX_OemModels_ModelName ON dbo.OemModels(ModelName);
-            END
+// // ---- wave 2 block (runs AFTER wave 1 - see dependency note above): OEM MODEL MASTER + OEM MODEL
+// // WARRANTY (2026-09-22) - "this wants to integrate for my battery-warranty-schemes for link models
+// // for warrenty and this all table add in jobcard db that all functionality need to craete in jc".
+// // Own try/catch block, separate from the others, for the same isolation reason as every other
+// // block in this file. See Models/OemModels.cs for the full field-by-field reasoning (ported from
+// // the DMS reference's OemmodelMaster/OemmodelWarranty tables) and
+// // Models/ExtendedBatteryWarrantySchemes.cs for the new OemModelId column added there to link the
+// // two features together.
+// async Task RunOemModelCatchUpAsync()
+// {
+//     using var scope = app.Services.CreateScope();
+//     var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
+//     try
+//     {
+//         await db.Database.ExecuteSqlRawAsync(@"
+//             IF OBJECT_ID('dbo.OemModels', 'U') IS NULL
+//             BEGIN
+//                 CREATE TABLE dbo.OemModels (
+//                     Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+//                     ModelName NVARCHAR(100) NOT NULL,
+//                     ModelShortName NVARCHAR(30) NULL,
+//                     IsActive BIT NOT NULL DEFAULT (1),
+//                     CreatedById UNIQUEIDENTIFIER NULL,
+//                     CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+//                     UpdatedById UNIQUEIDENTIFIER NULL,
+//                     UpdatedAt DATETIME2 NULL,
+//                     CONSTRAINT FK_OemModels_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id),
+//                     CONSTRAINT FK_OemModels_UpdatedBy FOREIGN KEY (UpdatedById) REFERENCES dbo.Users(Id)
+//                 );
+//                 CREATE UNIQUE INDEX IX_OemModels_ModelName ON dbo.OemModels(ModelName);
+//             END
 
-            IF OBJECT_ID('dbo.OemModelWarranties', 'U') IS NULL
-            BEGIN
-                CREATE TABLE dbo.OemModelWarranties (
-                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-                    OemModelId UNIQUEIDENTIFIER NOT NULL,
-                    EffectiveDate DATE NOT NULL,
-                    OdoReading DECIMAL(10,2) NULL,
-                    DurationType NVARCHAR(10) NULL,
-                    Duration DECIMAL(10,2) NULL,
-                    IsB2b BIT NULL,
-                    CreatedById UNIQUEIDENTIFIER NULL,
-                    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-                    UpdatedById UNIQUEIDENTIFIER NULL,
-                    UpdatedAt DATETIME2 NULL,
-                    CONSTRAINT FK_OemModelWarranties_OemModels FOREIGN KEY (OemModelId) REFERENCES dbo.OemModels(Id) ON DELETE CASCADE,
-                    CONSTRAINT FK_OemModelWarranties_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id),
-                    CONSTRAINT FK_OemModelWarranties_UpdatedBy FOREIGN KEY (UpdatedById) REFERENCES dbo.Users(Id)
-                );
-                CREATE INDEX IX_OemModelWarranties_OemModelId_EffectiveDate ON dbo.OemModelWarranties(OemModelId, EffectiveDate);
-            END
+//             IF OBJECT_ID('dbo.OemModelWarranties', 'U') IS NULL
+//             BEGIN
+//                 CREATE TABLE dbo.OemModelWarranties (
+//                     Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+//                     OemModelId UNIQUEIDENTIFIER NOT NULL,
+//                     EffectiveDate DATE NOT NULL,
+//                     OdoReading DECIMAL(10,2) NULL,
+//                     DurationType NVARCHAR(10) NULL,
+//                     Duration DECIMAL(10,2) NULL,
+//                     IsB2b BIT NULL,
+//                     CreatedById UNIQUEIDENTIFIER NULL,
+//                     CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+//                     UpdatedById UNIQUEIDENTIFIER NULL,
+//                     UpdatedAt DATETIME2 NULL,
+//                     CONSTRAINT FK_OemModelWarranties_OemModels FOREIGN KEY (OemModelId) REFERENCES dbo.OemModels(Id) ON DELETE CASCADE,
+//                     CONSTRAINT FK_OemModelWarranties_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id),
+//                     CONSTRAINT FK_OemModelWarranties_UpdatedBy FOREIGN KEY (UpdatedById) REFERENCES dbo.Users(Id)
+//                 );
+//                 CREATE INDEX IX_OemModelWarranties_OemModelId_EffectiveDate ON dbo.OemModelWarranties(OemModelId, EffectiveDate);
+//             END
 
-            IF COL_LENGTH('dbo.ExtendedBatteryWarrantySchemes', 'OemModelId') IS NULL
-                ALTER TABLE [dbo].[ExtendedBatteryWarrantySchemes] ADD [OemModelId] UNIQUEIDENTIFIER NULL;
-            IF COL_LENGTH('dbo.ExtendedBatteryWarrantySchemes', 'OemModelId') IS NOT NULL
-               AND OBJECT_ID('dbo.OemModels', 'U') IS NOT NULL
-               AND NOT EXISTS (
-                   SELECT 1 FROM sys.foreign_keys
-                   WHERE name = 'FK_ExtendedBatteryWarrantySchemes_OemModels' AND parent_object_id = OBJECT_ID('dbo.ExtendedBatteryWarrantySchemes')
-               )
-            BEGIN
-                ALTER TABLE [dbo].[ExtendedBatteryWarrantySchemes]
-                    ADD CONSTRAINT [FK_ExtendedBatteryWarrantySchemes_OemModels]
-                    FOREIGN KEY ([OemModelId]) REFERENCES [dbo].[OemModels]([Id]);
-            END
-            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ExtendedBatteryWarrantySchemes_OemModelId' AND object_id = OBJECT_ID('dbo.ExtendedBatteryWarrantySchemes'))
-                CREATE INDEX IX_ExtendedBatteryWarrantySchemes_OemModelId ON dbo.ExtendedBatteryWarrantySchemes(OemModelId);
-        ");
-        Console.WriteLine("[Startup] Self-healing schema catch-up (OemModels + OemModelWarranties tables + ExtendedBatteryWarrantySchemes.OemModelId column) checked/applied.");
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"[Startup] WARNING: OemModels/OemModelWarranties schema catch-up failed - {ex.Message}");
-    }
-}
+//             IF COL_LENGTH('dbo.ExtendedBatteryWarrantySchemes', 'OemModelId') IS NULL
+//                 ALTER TABLE [dbo].[ExtendedBatteryWarrantySchemes] ADD [OemModelId] UNIQUEIDENTIFIER NULL;
+//             IF COL_LENGTH('dbo.ExtendedBatteryWarrantySchemes', 'OemModelId') IS NOT NULL
+//                AND OBJECT_ID('dbo.OemModels', 'U') IS NOT NULL
+//                AND NOT EXISTS (
+//                    SELECT 1 FROM sys.foreign_keys
+//                    WHERE name = 'FK_ExtendedBatteryWarrantySchemes_OemModels' AND parent_object_id = OBJECT_ID('dbo.ExtendedBatteryWarrantySchemes')
+//                )
+//             BEGIN
+//                 ALTER TABLE [dbo].[ExtendedBatteryWarrantySchemes]
+//                     ADD CONSTRAINT [FK_ExtendedBatteryWarrantySchemes_OemModels]
+//                     FOREIGN KEY ([OemModelId]) REFERENCES [dbo].[OemModels]([Id]);
+//             END
+//             IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ExtendedBatteryWarrantySchemes_OemModelId' AND object_id = OBJECT_ID('dbo.ExtendedBatteryWarrantySchemes'))
+//                 CREATE INDEX IX_ExtendedBatteryWarrantySchemes_OemModelId ON dbo.ExtendedBatteryWarrantySchemes(OemModelId);
+//         ");
+//         Console.WriteLine("[Startup] Self-healing schema catch-up (OemModels + OemModelWarranties tables + ExtendedBatteryWarrantySchemes.OemModelId column) checked/applied.");
+//     }
+//     catch (Exception ex)
+//     {
+//         Console.WriteLine($"[Startup] WARNING: OemModels/OemModelWarranties schema catch-up failed - {ex.Message}");
+//     }
+// }
 
-// ---- wave 2 block (runs AFTER wave 1 - see dependency note above): COLUMN TYPE-REPAIR
-// (2026-09-03) - the IF OBJECT_ID(...)/COL_LENGTH(...) guards in the blocks above only detect a
-// MISSING table/column - they cannot detect or fix a column that already exists with the WRONG
-// type. Confirmed live via a pasted server log: on this database, JobCardPartSuggestions.Status is
-// INT (not NVARCHAR(20) as the CREATE TABLE above and the JobCardPartSuggestion C# model assume),
-// so every "Add Suggestion" save under Part Suggestion failed with "Conversion failed when
-// converting the nvarchar value 'Paid' to data type int." - the app always writes the string
-// 'Paid' or 'U/W' into this column (see AddPartSuggestion's req.Status check in
-// JobCardsController.cs). This almost certainly happened because JobCardPartSuggestions already
-// existed - created earlier by a different ad hoc script with Status typed as INT - before this
-// app's own guarded CREATE TABLE ever ran, so IF OBJECT_ID(...) IS NULL was already false and the
-// correct NVARCHAR(20) definition was silently never applied. This is a SEPARATE try/catch block
-// (its own ExecuteSqlRawAsync call), not folded into RunBaplColumnsLabourWorkflowCatchUpAsync
-// above, because a mid-batch error aborts every remaining statement in that same batch - a bug
-// here must not be able to prevent the BAPL-columns/Labour-table/workflow-stage statements above
-// it from applying.
-async Task RunPartSuggestionStatusTypeRepairAsync()
-{
-    using var scope = app.Services.CreateScope();
-    var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
-    try
-    {
-        await db.Database.ExecuteSqlRawAsync(@"
-            DECLARE @actualType NVARCHAR(50);
-            SELECT @actualType = ty.name
-                FROM sys.columns c
-                JOIN sys.types ty ON c.user_type_id = ty.user_type_id
-                WHERE c.object_id = OBJECT_ID('dbo.JobCardPartSuggestions') AND c.name = 'Status';
+// // ---- wave 2 block (runs AFTER wave 1 - see dependency note above): COLUMN TYPE-REPAIR
+// // (2026-09-03) - the IF OBJECT_ID(...)/COL_LENGTH(...) guards in the blocks above only detect a
+// // MISSING table/column - they cannot detect or fix a column that already exists with the WRONG
+// // type. Confirmed live via a pasted server log: on this database, JobCardPartSuggestions.Status is
+// // INT (not NVARCHAR(20) as the CREATE TABLE above and the JobCardPartSuggestion C# model assume),
+// // so every "Add Suggestion" save under Part Suggestion failed with "Conversion failed when
+// // converting the nvarchar value 'Paid' to data type int." - the app always writes the string
+// // 'Paid' or 'U/W' into this column (see AddPartSuggestion's req.Status check in
+// // JobCardsController.cs). This almost certainly happened because JobCardPartSuggestions already
+// // existed - created earlier by a different ad hoc script with Status typed as INT - before this
+// // app's own guarded CREATE TABLE ever ran, so IF OBJECT_ID(...) IS NULL was already false and the
+// // correct NVARCHAR(20) definition was silently never applied. This is a SEPARATE try/catch block
+// // (its own ExecuteSqlRawAsync call), not folded into RunBaplColumnsLabourWorkflowCatchUpAsync
+// // above, because a mid-batch error aborts every remaining statement in that same batch - a bug
+// // here must not be able to prevent the BAPL-columns/Labour-table/workflow-stage statements above
+// // it from applying.
+// async Task RunPartSuggestionStatusTypeRepairAsync()
+// {
+//     using var scope = app.Services.CreateScope();
+//     var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
+//     try
+//     {
+//         await db.Database.ExecuteSqlRawAsync(@"
+//             DECLARE @actualType NVARCHAR(50);
+//             SELECT @actualType = ty.name
+//                 FROM sys.columns c
+//                 JOIN sys.types ty ON c.user_type_id = ty.user_type_id
+//                 WHERE c.object_id = OBJECT_ID('dbo.JobCardPartSuggestions') AND c.name = 'Status';
 
-            IF @actualType IS NOT NULL AND @actualType <> 'nvarchar'
-            BEGIN
-                -- Drop any default constraint bound to Status first - ALTER COLUMN fails while one
-                -- is attached, and the constraint's autogenerated name isn't known up front.
-                DECLARE @dfName SYSNAME, @dynSql NVARCHAR(400);
-                SELECT @dfName = dc.name
-                    FROM sys.default_constraints dc
-                    JOIN sys.columns c ON c.default_object_id = dc.object_id
-                    WHERE dc.parent_object_id = OBJECT_ID('dbo.JobCardPartSuggestions') AND c.name = 'Status';
-                IF @dfName IS NOT NULL
-                BEGIN
-                    SET @dynSql = N'ALTER TABLE [dbo].[JobCardPartSuggestions] DROP CONSTRAINT [' + @dfName + N']';
-                    EXEC sp_executesql @dynSql;
-                END
+//             IF @actualType IS NOT NULL AND @actualType <> 'nvarchar'
+//             BEGIN
+//                 -- Drop any default constraint bound to Status first - ALTER COLUMN fails while one
+//                 -- is attached, and the constraint's autogenerated name isn't known up front.
+//                 DECLARE @dfName SYSNAME, @dynSql NVARCHAR(400);
+//                 SELECT @dfName = dc.name
+//                     FROM sys.default_constraints dc
+//                     JOIN sys.columns c ON c.default_object_id = dc.object_id
+//                     WHERE dc.parent_object_id = OBJECT_ID('dbo.JobCardPartSuggestions') AND c.name = 'Status';
+//                 IF @dfName IS NOT NULL
+//                 BEGIN
+//                     SET @dynSql = N'ALTER TABLE [dbo].[JobCardPartSuggestions] DROP CONSTRAINT [' + @dfName + N']';
+//                     EXEC sp_executesql @dynSql;
+//                 END
 
-                -- Widen first (int -> nvarchar(20) is a safe conversion - SQL Server turns each
-                -- existing value into its string form automatically) and only translate values
-                -- afterwards - doing the value translation while the column is still INT would
-                -- throw this exact same conversion error.
-                ALTER TABLE [dbo].[JobCardPartSuggestions] ALTER COLUMN [Status] NVARCHAR(20) NULL;
+//                 -- Widen first (int -> nvarchar(20) is a safe conversion - SQL Server turns each
+//                 -- existing value into its string form automatically) and only translate values
+//                 -- afterwards - doing the value translation while the column is still INT would
+//                 -- throw this exact same conversion error.
+//                 ALTER TABLE [dbo].[JobCardPartSuggestions] ALTER COLUMN [Status] NVARCHAR(20) NULL;
 
-                -- Legacy numeric-as-string values -> the two values the app actually understands
-                -- (AddPartSuggestion rejects anything else - req.Status must be 'Paid' or 'U/W').
-                -- Adjust this mapping if this dealer's original int codes meant something else;
-                -- anything unrecognized falls back to 'Paid' rather than being left in a state the
-                -- UI/API can't handle.
-                UPDATE [dbo].[JobCardPartSuggestions]
-                    SET [Status] = CASE
-                        WHEN [Status] IN ('Paid', 'U/W') THEN [Status]
-                        WHEN [Status] IN ('2', 'UW', 'U-W', 'Warranty') THEN 'U/W'
-                        ELSE 'Paid'
-                    END;
+//                 -- Legacy numeric-as-string values -> the two values the app actually understands
+//                 -- (AddPartSuggestion rejects anything else - req.Status must be 'Paid' or 'U/W').
+//                 -- Adjust this mapping if this dealer's original int codes meant something else;
+//                 -- anything unrecognized falls back to 'Paid' rather than being left in a state the
+//                 -- UI/API can't handle.
+//                 UPDATE [dbo].[JobCardPartSuggestions]
+//                     SET [Status] = CASE
+//                         WHEN [Status] IN ('Paid', 'U/W') THEN [Status]
+//                         WHEN [Status] IN ('2', 'UW', 'U-W', 'Warranty') THEN 'U/W'
+//                         ELSE 'Paid'
+//                     END;
 
-                ALTER TABLE [dbo].[JobCardPartSuggestions] ALTER COLUMN [Status] NVARCHAR(20) NOT NULL;
-                ALTER TABLE [dbo].[JobCardPartSuggestions]
-                    ADD CONSTRAINT [DF_JobCardPartSuggestions_Status] DEFAULT ('Paid') FOR [Status];
-            END
-        ");
-        Console.WriteLine("[Startup] Column type-repair (JobCardPartSuggestions.Status) checked/applied.");
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"[Startup] WARNING: JobCardPartSuggestions.Status type-repair failed - {ex.Message}");
-    }
-}
+//                 ALTER TABLE [dbo].[JobCardPartSuggestions] ALTER COLUMN [Status] NVARCHAR(20) NOT NULL;
+//                 ALTER TABLE [dbo].[JobCardPartSuggestions]
+//                     ADD CONSTRAINT [DF_JobCardPartSuggestions_Status] DEFAULT ('Paid') FOR [Status];
+//             END
+//         ");
+//         Console.WriteLine("[Startup] Column type-repair (JobCardPartSuggestions.Status) checked/applied.");
+//     }
+//     catch (Exception ex)
+//     {
+//         Console.WriteLine($"[Startup] WARNING: JobCardPartSuggestions.Status type-repair failed - {ex.Message}");
+//     }
+// }
 
-// ---- wave 1 block: MATERIAL TRANSFER LABOUR (2026-09-22) - "which Rate Type * is Partwise from
-// this we upload FOR Part Code add Labour Code also that was wants to integrate in material
-// transfer which in video ... give proper code like vide functionality in mobile and for web
-// both" - confirmed against the mt-labour_add.mp4 recording of the real BGauss DMS
-// (mydmsconnect.com/MtrlTranN.aspx): a "Labour" button on the Material Transfer entry, scoped to
-// the currently-picked Part Code, opens a "Part wise Labour Detail" popup backed by Labour Master
-// Partwise (DMSBAPLDATA's own LabourMasterPartwise table - see LabourMasterController.cs's new
-// by-part-code endpoint). Own try/catch block for the same isolation reason as every other block
-// in this file. See MaterialTransferDocItem.ItemType/TechnicianId's own doc comments in
-// Models/MaterialTransferDocs.cs.
-async Task RunMaterialTransferLabourCatchUpAsync()
-{
-    using var scope = app.Services.CreateScope();
-    var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
-    try
-    {
-        await db.Database.ExecuteSqlRawAsync(@"
-            IF COL_LENGTH('dbo.MaterialTransferDocItems', 'ItemType') IS NULL
-                ALTER TABLE [dbo].[MaterialTransferDocItems] ADD [ItemType] NVARCHAR(20) NOT NULL DEFAULT ('Part');
-            IF COL_LENGTH('dbo.MaterialTransferDocItems', 'TechnicianId') IS NULL
-                ALTER TABLE [dbo].[MaterialTransferDocItems] ADD [TechnicianId] UNIQUEIDENTIFIER NULL;
-            IF COL_LENGTH('dbo.MaterialTransferDocItems', 'TechnicianId') IS NOT NULL
-               AND NOT EXISTS (
-                   SELECT 1 FROM sys.foreign_keys
-                   WHERE name = 'FK_MaterialTransferDocItems_Technician' AND parent_object_id = OBJECT_ID('dbo.MaterialTransferDocItems')
-               )
-            BEGIN
-                ALTER TABLE [dbo].[MaterialTransferDocItems]
-                    ADD CONSTRAINT [FK_MaterialTransferDocItems_Technician]
-                    FOREIGN KEY ([TechnicianId]) REFERENCES [dbo].[Users]([Id]);
-            END
-        ");
-        Console.WriteLine("[Startup] Self-healing schema catch-up (MaterialTransferDocItems.ItemType/TechnicianId columns) checked/applied.");
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"[Startup] WARNING: MaterialTransferDocItems ItemType/TechnicianId schema catch-up failed - {ex.Message}");
-    }
-}
+// // ---- wave 1 block: MATERIAL TRANSFER LABOUR (2026-09-22) - "which Rate Type * is Partwise from
+// // this we upload FOR Part Code add Labour Code also that was wants to integrate in material
+// // transfer which in video ... give proper code like vide functionality in mobile and for web
+// // both" - confirmed against the mt-labour_add.mp4 recording of the real BGauss DMS
+// // (mydmsconnect.com/MtrlTranN.aspx): a "Labour" button on the Material Transfer entry, scoped to
+// // the currently-picked Part Code, opens a "Part wise Labour Detail" popup backed by Labour Master
+// // Partwise (DMSBAPLDATA's own LabourMasterPartwise table - see LabourMasterController.cs's new
+// // by-part-code endpoint). Own try/catch block for the same isolation reason as every other block
+// // in this file. See MaterialTransferDocItem.ItemType/TechnicianId's own doc comments in
+// // Models/MaterialTransferDocs.cs.
+// async Task RunMaterialTransferLabourCatchUpAsync()
+// {
+//     using var scope = app.Services.CreateScope();
+//     var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
+//     try
+//     {
+//         await db.Database.ExecuteSqlRawAsync(@"
+//             IF COL_LENGTH('dbo.MaterialTransferDocItems', 'ItemType') IS NULL
+//                 ALTER TABLE [dbo].[MaterialTransferDocItems] ADD [ItemType] NVARCHAR(20) NOT NULL DEFAULT ('Part');
+//             IF COL_LENGTH('dbo.MaterialTransferDocItems', 'TechnicianId') IS NULL
+//                 ALTER TABLE [dbo].[MaterialTransferDocItems] ADD [TechnicianId] UNIQUEIDENTIFIER NULL;
+//             IF COL_LENGTH('dbo.MaterialTransferDocItems', 'TechnicianId') IS NOT NULL
+//                AND NOT EXISTS (
+//                    SELECT 1 FROM sys.foreign_keys
+//                    WHERE name = 'FK_MaterialTransferDocItems_Technician' AND parent_object_id = OBJECT_ID('dbo.MaterialTransferDocItems')
+//                )
+//             BEGIN
+//                 ALTER TABLE [dbo].[MaterialTransferDocItems]
+//                     ADD CONSTRAINT [FK_MaterialTransferDocItems_Technician]
+//                     FOREIGN KEY ([TechnicianId]) REFERENCES [dbo].[Users]([Id]);
+//             END
+//         ");
+//         Console.WriteLine("[Startup] Self-healing schema catch-up (MaterialTransferDocItems.ItemType/TechnicianId columns) checked/applied.");
+//     }
+//     catch (Exception ex)
+//     {
+//         Console.WriteLine($"[Startup] WARNING: MaterialTransferDocItems ItemType/TechnicianId schema catch-up failed - {ex.Message}");
+//     }
+// }
 
-// ---- wave 1 block: TECHNICIAN EMPLOYEE (2026-09-24) - "this technician dont want to bid username
-// and password for that location wants to create technician" - the new login-less Technicians
-// table (see Models/Technicians.cs's own doc comment). Own try/catch block for the same isolation
-// reason as every other block in this file. NOTE: unrelated to
-// MaterialTransferDocItems.TechnicianId above (a pre-existing, different feature that FKs to
-// Users, not to this new table) - deliberately not touched.
-async Task RunTechnicianEmployeeCatchUpAsync()
-{
-    using var scope = app.Services.CreateScope();
-    var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
-    try
-    {
-        await db.Database.ExecuteSqlRawAsync(@"
-            IF OBJECT_ID('dbo.Technicians', 'U') IS NULL
-            BEGIN
-                CREATE TABLE dbo.Technicians (
-                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-                    DealerId UNIQUEIDENTIFIER NOT NULL,
-                    Name NVARCHAR(150) NOT NULL,
-                    LocationCode NVARCHAR(20) NOT NULL,
-                    LocationName NVARCHAR(200) NULL,
-                    Active BIT NOT NULL DEFAULT (1),
-                    CreatedById UNIQUEIDENTIFIER NULL,
-                    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-                    CONSTRAINT FK_Technicians_Dealers FOREIGN KEY (DealerId) REFERENCES dbo.Dealers(Id),
-                    CONSTRAINT FK_Technicians_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id)
-                );
-                CREATE INDEX IX_Technicians_DealerId_LocationCode ON dbo.Technicians(DealerId, LocationCode);
-            END
-        ");
-        Console.WriteLine("[Startup] Self-healing schema catch-up (Technicians table) checked/applied.");
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"[Startup] WARNING: Technicians schema catch-up failed - {ex.Message}");
-    }
-}
+// // ---- wave 1 block: TECHNICIAN EMPLOYEE (2026-09-24) - "this technician dont want to bid username
+// // and password for that location wants to create technician" - the new login-less Technicians
+// // table (see Models/Technicians.cs's own doc comment). Own try/catch block for the same isolation
+// // reason as every other block in this file. NOTE: unrelated to
+// // MaterialTransferDocItems.TechnicianId above (a pre-existing, different feature that FKs to
+// // Users, not to this new table) - deliberately not touched.
+// async Task RunTechnicianEmployeeCatchUpAsync()
+// {
+//     using var scope = app.Services.CreateScope();
+//     var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
+//     try
+//     {
+//         await db.Database.ExecuteSqlRawAsync(@"
+//             IF OBJECT_ID('dbo.Technicians', 'U') IS NULL
+//             BEGIN
+//                 CREATE TABLE dbo.Technicians (
+//                     Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+//                     DealerId UNIQUEIDENTIFIER NOT NULL,
+//                     Name NVARCHAR(150) NOT NULL,
+//                     LocationCode NVARCHAR(20) NOT NULL,
+//                     LocationName NVARCHAR(200) NULL,
+//                     Active BIT NOT NULL DEFAULT (1),
+//                     CreatedById UNIQUEIDENTIFIER NULL,
+//                     CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+//                     CONSTRAINT FK_Technicians_Dealers FOREIGN KEY (DealerId) REFERENCES dbo.Dealers(Id),
+//                     CONSTRAINT FK_Technicians_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id)
+//                 );
+//                 CREATE INDEX IX_Technicians_DealerId_LocationCode ON dbo.Technicians(DealerId, LocationCode);
+//             END
+//         ");
+//         Console.WriteLine("[Startup] Self-healing schema catch-up (Technicians table) checked/applied.");
+//     }
+//     catch (Exception ex)
+//     {
+//         Console.WriteLine($"[Startup] WARNING: Technicians schema catch-up failed - {ex.Message}");
+//     }
+// }
 
-// ---- wave 1 block: SERVICE MENU MASTER + COMPLAINT MASTER + PREFIX MASTER (2026-09-30, SECTION
-// 163) - "wants to create 1. service menu master 2. Complain master 3. Prefix Master". Own
-// try/catch block, same isolation convention as every other block in this file - a failure here
-// never blocks the app from starting or blocks any other schema block from running. See
-// Models/ServiceMenuMaster.cs, Models/ComplaintMaster.cs and Models/DocPrefixMaster.cs for full
-// field-by-field reasoning, including the flagged Assumption on Priority's data shape and the
-// flagged decision to keep the Prefix Master decoupled from the existing (unseen in this session)
-// JobCardNumberingService.
-async Task RunServiceMenuComplaintPrefixCatchUpAsync()
-{
-    using var scope = app.Services.CreateScope();
-    var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
-    try
-    {
-        await db.Database.ExecuteSqlRawAsync(@"
-            IF OBJECT_ID('dbo.ServiceMenuMasters', 'U') IS NULL
-            BEGIN
-                CREATE TABLE dbo.ServiceMenuMasters (
-                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-                    JobTypeId INT NOT NULL,
-                    JobTypeName NVARCHAR(60) NOT NULL,
-                    ServiceHeadId INT NOT NULL,
-                    ServiceHeadName NVARCHAR(120) NOT NULL,
-                    PriorityValue NVARCHAR(10) NOT NULL,
-                    PriorityLabel NVARCHAR(30) NOT NULL,
-                    SortOrder INT NOT NULL DEFAULT (0),
-                    IsActive BIT NOT NULL DEFAULT (1),
-                    CreatedById UNIQUEIDENTIFIER NULL,
-                    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-                    UpdatedById UNIQUEIDENTIFIER NULL,
-                    UpdatedAt DATETIME2 NULL,
-                    CONSTRAINT FK_ServiceMenuMasters_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id),
-                    CONSTRAINT FK_ServiceMenuMasters_UpdatedBy FOREIGN KEY (UpdatedById) REFERENCES dbo.Users(Id)
-                );
-                CREATE UNIQUE INDEX IX_ServiceMenuMasters_JobType_ServiceHead_Priority ON dbo.ServiceMenuMasters(JobTypeId, ServiceHeadId, PriorityValue);
-            END
+// // ---- wave 1 block: SERVICE MENU MASTER + COMPLAINT MASTER + PREFIX MASTER (2026-09-30, SECTION
+// // 163) - "wants to create 1. service menu master 2. Complain master 3. Prefix Master". Own
+// // try/catch block, same isolation convention as every other block in this file - a failure here
+// // never blocks the app from starting or blocks any other schema block from running. See
+// // Models/ServiceMenuMaster.cs, Models/ComplaintMaster.cs and Models/DocPrefixMaster.cs for full
+// // field-by-field reasoning, including the flagged Assumption on Priority's data shape and the
+// // flagged decision to keep the Prefix Master decoupled from the existing (unseen in this session)
+// // JobCardNumberingService.
+// async Task RunServiceMenuComplaintPrefixCatchUpAsync()
+// {
+//     using var scope = app.Services.CreateScope();
+//     var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
+//     try
+//     {
+//         await db.Database.ExecuteSqlRawAsync(@"
+//             IF OBJECT_ID('dbo.ServiceMenuMasters', 'U') IS NULL
+//             BEGIN
+//                 CREATE TABLE dbo.ServiceMenuMasters (
+//                     Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+//                     JobTypeId INT NOT NULL,
+//                     JobTypeName NVARCHAR(60) NOT NULL,
+//                     ServiceHeadId INT NOT NULL,
+//                     ServiceHeadName NVARCHAR(120) NOT NULL,
+//                     PriorityValue NVARCHAR(10) NOT NULL,
+//                     PriorityLabel NVARCHAR(30) NOT NULL,
+//                     SortOrder INT NOT NULL DEFAULT (0),
+//                     IsActive BIT NOT NULL DEFAULT (1),
+//                     CreatedById UNIQUEIDENTIFIER NULL,
+//                     CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+//                     UpdatedById UNIQUEIDENTIFIER NULL,
+//                     UpdatedAt DATETIME2 NULL,
+//                     CONSTRAINT FK_ServiceMenuMasters_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id),
+//                     CONSTRAINT FK_ServiceMenuMasters_UpdatedBy FOREIGN KEY (UpdatedById) REFERENCES dbo.Users(Id)
+//                 );
+//                 CREATE UNIQUE INDEX IX_ServiceMenuMasters_JobType_ServiceHead_Priority ON dbo.ServiceMenuMasters(JobTypeId, ServiceHeadId, PriorityValue);
+//             END
 
-            IF OBJECT_ID('dbo.ComplaintMasters', 'U') IS NULL
-            BEGIN
-                CREATE TABLE dbo.ComplaintMasters (
-                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-                    ComplaintText NVARCHAR(300) NOT NULL,
-                    SortOrder INT NOT NULL DEFAULT (0),
-                    IsActive BIT NOT NULL DEFAULT (1),
-                    CreatedById UNIQUEIDENTIFIER NULL,
-                    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-                    UpdatedById UNIQUEIDENTIFIER NULL,
-                    UpdatedAt DATETIME2 NULL,
-                    CONSTRAINT FK_ComplaintMasters_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id),
-                    CONSTRAINT FK_ComplaintMasters_UpdatedBy FOREIGN KEY (UpdatedById) REFERENCES dbo.Users(Id)
-                );
-            END
+//             IF OBJECT_ID('dbo.ComplaintMasters', 'U') IS NULL
+//             BEGIN
+//                 CREATE TABLE dbo.ComplaintMasters (
+//                     Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+//                     ComplaintText NVARCHAR(300) NOT NULL,
+//                     SortOrder INT NOT NULL DEFAULT (0),
+//                     IsActive BIT NOT NULL DEFAULT (1),
+//                     CreatedById UNIQUEIDENTIFIER NULL,
+//                     CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+//                     UpdatedById UNIQUEIDENTIFIER NULL,
+//                     UpdatedAt DATETIME2 NULL,
+//                     CONSTRAINT FK_ComplaintMasters_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id),
+//                     CONSTRAINT FK_ComplaintMasters_UpdatedBy FOREIGN KEY (UpdatedById) REFERENCES dbo.Users(Id)
+//                 );
+//             END
 
-            IF OBJECT_ID('dbo.DocPrefixMasters', 'U') IS NULL
-            BEGIN
-                CREATE TABLE dbo.DocPrefixMasters (
-                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-                    DocType NVARCHAR(10) NOT NULL,
-                    Prefix NVARCHAR(10) NOT NULL,
-                    IsActive BIT NOT NULL DEFAULT (1),
-                    CreatedById UNIQUEIDENTIFIER NULL,
-                    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-                    UpdatedById UNIQUEIDENTIFIER NULL,
-                    UpdatedAt DATETIME2 NULL,
-                    CONSTRAINT FK_DocPrefixMasters_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id),
-                    CONSTRAINT FK_DocPrefixMasters_UpdatedBy FOREIGN KEY (UpdatedById) REFERENCES dbo.Users(Id)
-                );
-                CREATE UNIQUE INDEX IX_DocPrefixMasters_DocType ON dbo.DocPrefixMasters(DocType);
+//             IF OBJECT_ID('dbo.DocPrefixMasters', 'U') IS NULL
+//             BEGIN
+//                 CREATE TABLE dbo.DocPrefixMasters (
+//                     Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+//                     DocType NVARCHAR(10) NOT NULL,
+//                     Prefix NVARCHAR(10) NOT NULL,
+//                     IsActive BIT NOT NULL DEFAULT (1),
+//                     CreatedById UNIQUEIDENTIFIER NULL,
+//                     CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+//                     UpdatedById UNIQUEIDENTIFIER NULL,
+//                     UpdatedAt DATETIME2 NULL,
+//                     CONSTRAINT FK_DocPrefixMasters_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id),
+//                     CONSTRAINT FK_DocPrefixMasters_UpdatedBy FOREIGN KEY (UpdatedById) REFERENCES dbo.Users(Id)
+//                 );
+//                 CREATE UNIQUE INDEX IX_DocPrefixMasters_DocType ON dbo.DocPrefixMasters(DocType);
 
-                -- Seed the 3 document types you named, using the exact prefixes from your example
-                -- (JC/26-25/0001, MT/26-25/0001, RB/26-25/0001). You can UPDATE these rows any time
-                -- via SQL - this INSERT only runs once, the first time the table is created.
-                INSERT INTO dbo.DocPrefixMasters (Id, DocType, Prefix, IsActive, CreatedAt) VALUES
-                    (NEWID(), 'JC', 'JC', 1, SYSUTCDATETIME()),
-                    (NEWID(), 'MT', 'MT', 1, SYSUTCDATETIME()),
-                    (NEWID(), 'RB', 'RB', 1, SYSUTCDATETIME());
-            END
+//                 -- Seed the 3 document types you named, using the exact prefixes from your example
+//                 -- (JC/26-25/0001, MT/26-25/0001, RB/26-25/0001). You can UPDATE these rows any time
+//                 -- via SQL - this INSERT only runs once, the first time the table is created.
+//                 INSERT INTO dbo.DocPrefixMasters (Id, DocType, Prefix, IsActive, CreatedAt) VALUES
+//                     (NEWID(), 'JC', 'JC', 1, SYSUTCDATETIME()),
+//                     (NEWID(), 'MT', 'MT', 1, SYSUTCDATETIME()),
+//                     (NEWID(), 'RB', 'RB', 1, SYSUTCDATETIME());
+//             END
 
-            IF OBJECT_ID('dbo.DocNumberSequences', 'U') IS NULL
-            BEGIN
-                CREATE TABLE dbo.DocNumberSequences (
-                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-                    DocType NVARCHAR(10) NOT NULL,
-                    FinancialYear NVARCHAR(10) NOT NULL,
-                    LastSequence INT NOT NULL DEFAULT (0),
-                    UpdatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
-                );
-                CREATE UNIQUE INDEX IX_DocNumberSequences_DocType_FY ON dbo.DocNumberSequences(DocType, FinancialYear);
-            END
-        ");
-        Console.WriteLine("[Startup] Self-healing schema catch-up (ServiceMenuMasters + ComplaintMasters + DocPrefixMasters + DocNumberSequences tables) checked/applied.");
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"[Startup] WARNING: ServiceMenuMaster/ComplaintMaster/DocPrefixMaster schema catch-up failed - {ex.Message}");
-    }
-}
+//             IF OBJECT_ID('dbo.DocNumberSequences', 'U') IS NULL
+//             BEGIN
+//                 CREATE TABLE dbo.DocNumberSequences (
+//                     Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+//                     DocType NVARCHAR(10) NOT NULL,
+//                     FinancialYear NVARCHAR(10) NOT NULL,
+//                     LastSequence INT NOT NULL DEFAULT (0),
+//                     UpdatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+//                 );
+//                 CREATE UNIQUE INDEX IX_DocNumberSequences_DocType_FY ON dbo.DocNumberSequences(DocType, FinancialYear);
+//             END
+//         ");
+//         Console.WriteLine("[Startup] Self-healing schema catch-up (ServiceMenuMasters + ComplaintMasters + DocPrefixMasters + DocNumberSequences tables) checked/applied.");
+//     }
+//     catch (Exception ex)
+//     {
+//         Console.WriteLine($"[Startup] WARNING: ServiceMenuMaster/ComplaintMaster/DocPrefixMaster schema catch-up failed - {ex.Message}");
+//     }
+// }
 
-// ---- wave 1 block: MENU ACCESS OVERRIDE + ROLE MENU MODE (SECTION 173, 2026-09-30) - diagnosing
-// "Admin: Menu Access -> Save failed." on the live site (dms.bgauss.com, logged in as
-// SystemAdmin).
-//
-// FACT, confirmed by re-reading this whole file: Models/MenuAccessOverride.cs (SECTION 155,
-// 2026-09-29) and Models/RoleMenuMode.cs (SECTION 170, 2026-09-30) are the ONLY two tables added to
-// JobCardScannerDbContext this entire session that never got a guarded CREATE TABLE block here -
-// every other new table since (PartUploads, Technicians, ServiceMenuMasters, ComplaintMasters,
-// DocPrefixMasters, DocNumberSequences, ExtendedBatteryWarrantySchemes, OemModels, ...) has one.
-// db.Database.EnsureCreatedAsync() near the top of this file only creates schema for a brand-new,
-// completely empty database (see that block's own comment) - it does NOT retroactively add tables
-// to an already-existing database, which dms.bgauss.com clearly is. So on any environment where
-// these two tables were never created some other way, GET /api/menu-access and PUT /api/menu-access
-// (MenuAccessController.cs) would throw a raw SqlException ("Invalid object name
-// 'dbo.MenuAccessOverrides'"/'dbo.RoleMenuModes'") the first time either table is touched.
-//
-// INTERPRETATION, NOT CONFIRMED AS THE CAUSE: the screenshot you sent shows the page's GET load
-// working fine (every item listed, "EVERYONE" defaults) - if MenuAccessOverrides were missing on
-// dms.bgauss.com specifically, that GET would already be failing with its own "Could not load..."
-// banner, not just Save. So either that table already exists there (created some other way) and
-// only RoleMenuModes is missing - its own GET fails silently (fail-open, see MenuAccessPage.tsx's
-// load()), which would explain a Save-time failure with no earlier symptom - or the real cause of
-// THIS specific "Save failed." is something else entirely (e.g. the CorporateAdmin/SystemAdmin role
-// check in MenuAccessController.Put returning Forbid() with an empty body for this login). This
-// block fixes the CONFIRMED gap (both tables missing their self-healing catch-up, unlike every
-// sibling table) regardless - it's a safe, idempotent no-op if both already exist on
-// dms.bgauss.com, and protects every other/future environment (a staging reset, a DR restore, a
-// fresh install) from hitting this same silent gap. It does NOT by itself confirm or rule out
-// what's actually failing on dms.bgauss.com right now - see MenuAccessPage.tsx's own SECTION 173
-// fix (real HTTP status + backend message now shown in the error banner) for how to pin that down
-// next time Save is clicked there.
-async Task RunMenuAccessRoleModeCatchUpAsync()
-{
-    using var scope = app.Services.CreateScope();
-    var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
-    try
-    {
-        await db.Database.ExecuteSqlRawAsync(@"
-            IF OBJECT_ID('dbo.MenuAccessOverrides', 'U') IS NULL
-            BEGIN
-                CREATE TABLE dbo.MenuAccessOverrides (
-                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-                    NavKey NVARCHAR(80) NOT NULL,
-                    RolesCsv NVARCHAR(400) NOT NULL DEFAULT (''),
-                    UpdatedBy NVARCHAR(200) NULL,
-                    UpdatedAtUtc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
-                );
-                CREATE UNIQUE INDEX IX_MenuAccessOverrides_NavKey ON dbo.MenuAccessOverrides(NavKey);
-            END
+// // ---- wave 1 block: MENU ACCESS OVERRIDE + ROLE MENU MODE (SECTION 173, 2026-09-30) - diagnosing
+// // "Admin: Menu Access -> Save failed." on the live site (dms.bgauss.com, logged in as
+// // SystemAdmin).
+// //
+// // FACT, confirmed by re-reading this whole file: Models/MenuAccessOverride.cs (SECTION 155,
+// // 2026-09-29) and Models/RoleMenuMode.cs (SECTION 170, 2026-09-30) are the ONLY two tables added to
+// // JobCardScannerDbContext this entire session that never got a guarded CREATE TABLE block here -
+// // every other new table since (PartUploads, Technicians, ServiceMenuMasters, ComplaintMasters,
+// // DocPrefixMasters, DocNumberSequences, ExtendedBatteryWarrantySchemes, OemModels, ...) has one.
+// // db.Database.EnsureCreatedAsync() near the top of this file only creates schema for a brand-new,
+// // completely empty database (see that block's own comment) - it does NOT retroactively add tables
+// // to an already-existing database, which dms.bgauss.com clearly is. So on any environment where
+// // these two tables were never created some other way, GET /api/menu-access and PUT /api/menu-access
+// // (MenuAccessController.cs) would throw a raw SqlException ("Invalid object name
+// // 'dbo.MenuAccessOverrides'"/'dbo.RoleMenuModes'") the first time either table is touched.
+// //
+// // INTERPRETATION, NOT CONFIRMED AS THE CAUSE: the screenshot you sent shows the page's GET load
+// // working fine (every item listed, "EVERYONE" defaults) - if MenuAccessOverrides were missing on
+// // dms.bgauss.com specifically, that GET would already be failing with its own "Could not load..."
+// // banner, not just Save. So either that table already exists there (created some other way) and
+// // only RoleMenuModes is missing - its own GET fails silently (fail-open, see MenuAccessPage.tsx's
+// // load()), which would explain a Save-time failure with no earlier symptom - or the real cause of
+// // THIS specific "Save failed." is something else entirely (e.g. the CorporateAdmin/SystemAdmin role
+// // check in MenuAccessController.Put returning Forbid() with an empty body for this login). This
+// // block fixes the CONFIRMED gap (both tables missing their self-healing catch-up, unlike every
+// // sibling table) regardless - it's a safe, idempotent no-op if both already exist on
+// // dms.bgauss.com, and protects every other/future environment (a staging reset, a DR restore, a
+// // fresh install) from hitting this same silent gap. It does NOT by itself confirm or rule out
+// // what's actually failing on dms.bgauss.com right now - see MenuAccessPage.tsx's own SECTION 173
+// // fix (real HTTP status + backend message now shown in the error banner) for how to pin that down
+// // next time Save is clicked there.
+// async Task RunMenuAccessRoleModeCatchUpAsync()
+// {
+//     using var scope = app.Services.CreateScope();
+//     var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
+//     try
+//     {
+//         await db.Database.ExecuteSqlRawAsync(@"
+//             IF OBJECT_ID('dbo.MenuAccessOverrides', 'U') IS NULL
+//             BEGIN
+//                 CREATE TABLE dbo.MenuAccessOverrides (
+//                     Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+//                     NavKey NVARCHAR(80) NOT NULL,
+//                     RolesCsv NVARCHAR(400) NOT NULL DEFAULT (''),
+//                     UpdatedBy NVARCHAR(200) NULL,
+//                     UpdatedAtUtc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+//                 );
+//                 CREATE UNIQUE INDEX IX_MenuAccessOverrides_NavKey ON dbo.MenuAccessOverrides(NavKey);
+//             END
 
-            IF OBJECT_ID('dbo.RoleMenuModes', 'U') IS NULL
-            BEGIN
-                CREATE TABLE dbo.RoleMenuModes (
-                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-                    Role NVARCHAR(40) NOT NULL,
-                    OnlyShowChecked BIT NOT NULL DEFAULT (0),
-                    UpdatedBy NVARCHAR(200) NULL,
-                    UpdatedAtUtc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
-                );
-                CREATE UNIQUE INDEX IX_RoleMenuModes_Role ON dbo.RoleMenuModes(Role);
-            END
-        ");
-        Console.WriteLine("[Startup] Self-healing schema catch-up (MenuAccessOverrides + RoleMenuModes tables) checked/applied.");
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"[Startup] WARNING: MenuAccessOverride/RoleMenuMode schema catch-up failed - {ex.Message}");
-    }
-}
+//             IF OBJECT_ID('dbo.RoleMenuModes', 'U') IS NULL
+//             BEGIN
+//                 CREATE TABLE dbo.RoleMenuModes (
+//                     Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+//                     Role NVARCHAR(40) NOT NULL,
+//                     OnlyShowChecked BIT NOT NULL DEFAULT (0),
+//                     UpdatedBy NVARCHAR(200) NULL,
+//                     UpdatedAtUtc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+//                 );
+//                 CREATE UNIQUE INDEX IX_RoleMenuModes_Role ON dbo.RoleMenuModes(Role);
+//             END
+//         ");
+//         Console.WriteLine("[Startup] Self-healing schema catch-up (MenuAccessOverrides + RoleMenuModes tables) checked/applied.");
+//     }
+//     catch (Exception ex)
+//     {
+//         Console.WriteLine($"[Startup] WARNING: MenuAccessOverride/RoleMenuMode schema catch-up failed - {ex.Message}");
+//     }
+// }
 
-// 2026-10-02 (SECTION 188) - "Ledger Master" (Party/Insurance only) - see Models/LedgerMaster.cs
-// for the full reasoning. Runs in WAVE 2 (not wave 1) because, beyond creating its own table, it
-// also seeds a "ledger-master" row into dbo.DocPrefixMasters (IF NOT EXISTS) so Ledger Codes have
-// a Prefix Master row to consume from day one - that seed depends on DocPrefixMasters already
-// existing, which wave 1's RunServiceMenuComplaintPrefixCatchUpAsync is responsible for creating.
-// The seed check here is a data-level "IF NOT EXISTS (SELECT ...)", not an OBJECT_ID check, since
-// DocPrefixMasters itself may already exist with other rows in it (it does, on your real DB - JC/
-// MT/RB were seeded back in SECTION 163) - this only ever adds the ONE new row this feature needs,
-// never touches your existing JC/MT/RB rows.
-//
-// ASSUMPTION FLAGGED: this assumes the SECTION 184 migration (backend/recreate-doc-prefix-master-tables.sql,
-// delivered earlier this session) has already been run against your real DB, so DocPrefixMasters
-// has ModuleKey/UsesFinancialYear columns (not the older DocType-only shape) - if it hasn't, this
-// INSERT will fail with an "Invalid column name" error and the warning below will say so; run that
-// migration first if you see that in your console.
-//
-// SECTION 189 (2026-10-02): added DealerId to the CREATE TABLE below (per-dealer scoping, see
-// Models/LedgerMaster.cs). IF your "Could not save this ledger" error happened because
-// dbo.LedgerMasters was ALREADY created on your DB by the SECTION 188 version of this file (without
-// DealerId) - unlikely if Save was already failing outright, since that usually means the table was
-// never created successfully in the first place, but possible - this guarded CREATE TABLE will NOT
-// retroactively add the column (IF OBJECT_ID(...) IS NULL is now false). Run
-// backend/add-ledgermaster-dealerid-column.sql by hand first in that case; otherwise just restart
-// the backend and this creates the table correctly from scratch.
-async Task RunLedgerMasterCatchUpAsync()
-{
-    using var scope = app.Services.CreateScope();
-    var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
-    try
-    {
-        await db.Database.ExecuteSqlRawAsync(@"
-            IF OBJECT_ID('dbo.LedgerMasters', 'U') IS NULL
-            BEGIN
-                CREATE TABLE dbo.LedgerMasters (
-                    Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-                    DealerId UNIQUEIDENTIFIER NOT NULL,
-                    LedgerType NVARCHAR(20) NOT NULL,
-                    LedgerCode NVARCHAR(40) NOT NULL,
-                    LedgerName NVARCHAR(200) NOT NULL,
-                    MobileNumber NVARCHAR(10) NULL,
-                    AlternateMobileNo NVARCHAR(10) NULL,
-                    EMail NVARCHAR(200) NULL,
-                    Address NVARCHAR(400) NULL,
-                    Pin NVARCHAR(10) NULL,
-                    Gstno NVARCHAR(20) NULL,
-                    Pan NVARCHAR(10) NULL,
-                    AadharNumber NVARCHAR(20) NULL,
-                    IsActive BIT NOT NULL DEFAULT (1),
-                    CreatedById UNIQUEIDENTIFIER NULL,
-                    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-                    UpdatedById UNIQUEIDENTIFIER NULL,
-                    UpdatedAt DATETIME2 NULL,
-                    CONSTRAINT FK_LedgerMasters_Dealer FOREIGN KEY (DealerId) REFERENCES dbo.Dealers(Id),
-                    CONSTRAINT FK_LedgerMasters_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id),
-                    CONSTRAINT FK_LedgerMasters_UpdatedBy FOREIGN KEY (UpdatedById) REFERENCES dbo.Users(Id)
-                );
-                CREATE UNIQUE INDEX IX_LedgerMasters_LedgerCode ON dbo.LedgerMasters(LedgerCode);
-                CREATE INDEX IX_LedgerMasters_Dealer_LedgerType ON dbo.LedgerMasters(DealerId, LedgerType);
-            END
+// // 2026-10-02 (SECTION 188) - "Ledger Master" (Party/Insurance only) - see Models/LedgerMaster.cs
+// // for the full reasoning. Runs in WAVE 2 (not wave 1) because, beyond creating its own table, it
+// // also seeds a "ledger-master" row into dbo.DocPrefixMasters (IF NOT EXISTS) so Ledger Codes have
+// // a Prefix Master row to consume from day one - that seed depends on DocPrefixMasters already
+// // existing, which wave 1's RunServiceMenuComplaintPrefixCatchUpAsync is responsible for creating.
+// // The seed check here is a data-level "IF NOT EXISTS (SELECT ...)", not an OBJECT_ID check, since
+// // DocPrefixMasters itself may already exist with other rows in it (it does, on your real DB - JC/
+// // MT/RB were seeded back in SECTION 163) - this only ever adds the ONE new row this feature needs,
+// // never touches your existing JC/MT/RB rows.
+// //
+// // ASSUMPTION FLAGGED: this assumes the SECTION 184 migration (backend/recreate-doc-prefix-master-tables.sql,
+// // delivered earlier this session) has already been run against your real DB, so DocPrefixMasters
+// // has ModuleKey/UsesFinancialYear columns (not the older DocType-only shape) - if it hasn't, this
+// // INSERT will fail with an "Invalid column name" error and the warning below will say so; run that
+// // migration first if you see that in your console.
+// //
+// // SECTION 189 (2026-10-02): added DealerId to the CREATE TABLE below (per-dealer scoping, see
+// // Models/LedgerMaster.cs). IF your "Could not save this ledger" error happened because
+// // dbo.LedgerMasters was ALREADY created on your DB by the SECTION 188 version of this file (without
+// // DealerId) - unlikely if Save was already failing outright, since that usually means the table was
+// // never created successfully in the first place, but possible - this guarded CREATE TABLE will NOT
+// // retroactively add the column (IF OBJECT_ID(...) IS NULL is now false). Run
+// // backend/add-ledgermaster-dealerid-column.sql by hand first in that case; otherwise just restart
+// // the backend and this creates the table correctly from scratch.
+// async Task RunLedgerMasterCatchUpAsync()
+// {
+//     using var scope = app.Services.CreateScope();
+//     var db = scope.ServiceProvider.GetRequiredService<JobCardScannerDbContext>();
+//     try
+//     {
+//         await db.Database.ExecuteSqlRawAsync(@"
+//             IF OBJECT_ID('dbo.LedgerMasters', 'U') IS NULL
+//             BEGIN
+//                 CREATE TABLE dbo.LedgerMasters (
+//                     Id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+//                     DealerId UNIQUEIDENTIFIER NOT NULL,
+//                     LedgerType NVARCHAR(20) NOT NULL,
+//                     LedgerCode NVARCHAR(40) NOT NULL,
+//                     LedgerName NVARCHAR(200) NOT NULL,
+//                     MobileNumber NVARCHAR(10) NULL,
+//                     AlternateMobileNo NVARCHAR(10) NULL,
+//                     EMail NVARCHAR(200) NULL,
+//                     Address NVARCHAR(400) NULL,
+//                     Pin NVARCHAR(10) NULL,
+//                     Gstno NVARCHAR(20) NULL,
+//                     Pan NVARCHAR(10) NULL,
+//                     AadharNumber NVARCHAR(20) NULL,
+//                     IsActive BIT NOT NULL DEFAULT (1),
+//                     CreatedById UNIQUEIDENTIFIER NULL,
+//                     CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+//                     UpdatedById UNIQUEIDENTIFIER NULL,
+//                     UpdatedAt DATETIME2 NULL,
+//                     CONSTRAINT FK_LedgerMasters_Dealer FOREIGN KEY (DealerId) REFERENCES dbo.Dealers(Id),
+//                     CONSTRAINT FK_LedgerMasters_CreatedBy FOREIGN KEY (CreatedById) REFERENCES dbo.Users(Id),
+//                     CONSTRAINT FK_LedgerMasters_UpdatedBy FOREIGN KEY (UpdatedById) REFERENCES dbo.Users(Id)
+//                 );
+//                 CREATE UNIQUE INDEX IX_LedgerMasters_LedgerCode ON dbo.LedgerMasters(LedgerCode);
+//                 CREATE INDEX IX_LedgerMasters_Dealer_LedgerType ON dbo.LedgerMasters(DealerId, LedgerType);
+//             END
 
-            IF NOT EXISTS (SELECT 1 FROM dbo.DocPrefixMasters WHERE ModuleKey = 'ledger-master')
-            BEGIN
-                INSERT INTO dbo.DocPrefixMasters (Id, ModuleKey, Prefix, UsesFinancialYear, IsActive, CreatedAt) VALUES
-                    (NEWID(), 'ledger-master', 'LED', 0, 1, SYSUTCDATETIME());
-            END
-        ");
-        Console.WriteLine("[Startup] Self-healing schema catch-up (LedgerMasters table + ledger-master Prefix Master seed) checked/applied.");
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"[Startup] WARNING: LedgerMaster schema catch-up failed - {ex.Message}");
-    }
-}
+//             IF NOT EXISTS (SELECT 1 FROM dbo.DocPrefixMasters WHERE ModuleKey = 'ledger-master')
+//             BEGIN
+//                 INSERT INTO dbo.DocPrefixMasters (Id, ModuleKey, Prefix, UsesFinancialYear, IsActive, CreatedAt) VALUES
+//                     (NEWID(), 'ledger-master', 'LED', 0, 1, SYSUTCDATETIME());
+//             END
+//         ");
+//         Console.WriteLine("[Startup] Self-healing schema catch-up (LedgerMasters table + ledger-master Prefix Master seed) checked/applied.");
+//     }
+//     catch (Exception ex)
+//     {
+//         Console.WriteLine($"[Startup] WARNING: LedgerMaster schema catch-up failed - {ex.Message}");
+//     }
+// }
 
 // Self-healing schema catch-up DISABLED 2026-10-02 at user's request: the schema is already
 // fully up to date in production (every ALTER TABLE/CREATE TABLE check in the Run*CatchUpAsync

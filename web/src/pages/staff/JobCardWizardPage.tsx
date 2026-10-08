@@ -44,6 +44,27 @@ interface ComplaintMasterRow {
   id: string
   complaintText: string
 }
+
+// 2026-10-07 ("Edit anyway ... open 1 tab ... party ledger for that dealer ... select and shown in
+// below in Customer details"): the slice of a Ledger Master row (GET /api/ledger-master, type
+// "Party") this wizard needs - the "Edit anyway" panel lists these and copies the picked one into
+// the Registered Customer fields.
+interface PartyLedgerRow {
+  id: string
+  ledgerCode: string
+  ledgerName: string
+  mobileNumber: string | null
+  eMail: string | null
+  address: string | null
+  address2: string | null
+  city: string | null
+  state: string | null
+  isShared: boolean
+}
+interface LedgerTypeRow {
+  id: number
+  customerType: string
+}
 /** First-seen-wins de-dup, preserving whatever order `items` is already sorted in - used to turn
  * the flat ServiceMenuRow list into the three cascading dropdowns' distinct option sets. */
 function dedupeBy<T, K>(items: T[], keyFn: (item: T) => K): T[] {
@@ -275,13 +296,107 @@ export function JobCardWizardPage() {
     }, 300)
     return () => clearTimeout(handle)
   }, [chassisOrRegQ, showVehicleSuggestions, effectiveDealerId])
-  // Fields pre-filled from a DMS auto-fetch are locked by default (disabled inputs) so they
-  // aren't accidentally overwritten - each section has its own "Edit anyway" escape hatch for the
-  // rare case the fetched data is wrong. Resets back to locked whenever a fresh hit comes in.
-  const [unlockCustomerFields, setUnlockCustomerFields] = useState(false)
+
+  // Fields pre-filled from a DMS auto-fetch are locked (disabled inputs) so they aren't
+  // accidentally overwritten.
+  //
+  // 2026-10-07 ("Edit anyway ... open 1 tab ... which we create party ledger for that dealer ...
+  // select and shown in below in Customer details ... manual work total remove in Edit anyway"):
+  // the Registered Customer section no longer has a manual-typing escape hatch. The old
+  // `unlockCustomerFields` state (which turned the locked inputs back into free-text boxes) is
+  // REMOVED - customer fields stay locked for as long as a Vehicle Sale hit exists. "Edit anyway"
+  // now opens a panel listing this dealer's PARTY ledgers (Ledger Master, type Party - the
+  // customers created there); picking one copies its details into the fields below. A customer who
+  // isn't in the list has to be added to Ledger Master first (a note on the panel says so) - this
+  // wizard no longer lets anyone type a replacement customer over the fetched one. (A chassis that
+  // Vehicle Sale does NOT know at all still falls back to the manual "register a customer" fields -
+  // there is no hit to lock in that case.) The Vehicle step's own "Edit anyway" is unchanged.
   const [unlockVehicleFields, setUnlockVehicleFields] = useState(false)
-  const customerFieldsLocked = !!baplVehicleHit && !unlockCustomerFields
+  const customerFieldsLocked = !!baplVehicleHit
   const vehicleFieldsLocked = !!baplVehicleHit && !unlockVehicleFields
+
+  // ---- "Edit anyway" panel: this dealer's Party ledgers from Ledger Master ----
+  const [showLedgerPicker, setShowLedgerPicker] = useState(false)
+  const [partyLedgers, setPartyLedgers] = useState<PartyLedgerRow[] | null>(null)   // null = still loading
+  const [partyLedgerTotal, setPartyLedgerTotal] = useState(0)
+  const [ledgerPickerError, setLedgerPickerError] = useState<string | null>(null)
+  const [ledgerSearch, setLedgerSearch] = useState('')
+  // The ledger whose details currently fill the Registered Customer fields (null = the Vehicle Sale customer).
+  const [selectedLedger, setSelectedLedger] = useState<PartyLedgerRow | null>(null)
+  const partyTypeIdRef = useRef<number | null>(null)
+
+  // Loads the Party ledgers each time the panel opens (so a ledger just added in Ledger Master shows up), and again - debounced - as the search box
+  // changes. A dealer login is scoped to its own dealer's ledgers (plus ones shared with every dealer) by the server; CorporateAdmin / SystemAdmin
+  // (who pick a dealer at the top of this step) get that dealer's ledgers via the dealerId param.
+  useEffect(() => {
+    if (!showLedgerPicker) return
+    let cancelled = false
+    setPartyLedgers(null)
+    setLedgerPickerError(null)
+    const handle = setTimeout(async () => {
+      try {
+        if (partyTypeIdRef.current === null) {
+          const { data: types } = await staffApi.get<LedgerTypeRow[]>('/api/ledger-master/types')
+          const party = types.find((t) => t.customerType.trim().toLowerCase() === 'party')
+          if (!party) {
+            if (!cancelled) { setPartyLedgers([]); setPartyLedgerTotal(0); setLedgerPickerError('Ledger Master has no "Party" ledger type.') }
+            return
+          }
+          partyTypeIdRef.current = party.id
+        }
+        const { data } = await staffApi.get<{ data: PartyLedgerRow[]; totalRecords: number }>('/api/ledger-master', {
+          params: {
+            ledgerTypeId: partyTypeIdRef.current,
+            pageIndex: 0,
+            pageSize: 100,
+            includeInactive: false,
+            searchTerm: ledgerSearch.trim() || undefined,
+            dealerId: effectiveDealerId || undefined,
+          },
+        })
+        if (!cancelled) { setPartyLedgers(data.data); setPartyLedgerTotal(data.totalRecords) }
+      } catch (err: unknown) {
+        if (!cancelled) {
+          setPartyLedgers([])
+          setPartyLedgerTotal(0)
+          setLedgerPickerError((err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not load the Party ledgers from Ledger Master.')
+        }
+      }
+    }, ledgerSearch ? 300 : 0)
+    return () => { cancelled = true; clearTimeout(handle) }
+  }, [showLedgerPicker, ledgerSearch, effectiveDealerId])
+
+  /** Copies a Party ledger's details into the Registered Customer fields (Sale Date stays the vehicle's own). */
+  const applyLedger = (l: PartyLedgerRow) => {
+    setSelectedLedger(l)
+    setNewCustomer((c) => ({
+      ...c,
+      name: l.ledgerName,
+      mobile: (l.mobileNumber ?? '').replace(/\D/g, '').slice(0, 10),
+      email: l.eMail ?? '',
+      city: l.city ?? '',
+      state: l.state ?? '',
+      address: [l.address, l.address2].filter((a) => a && a.trim()).map((a) => (a as string).trim()).join(', '),
+    }))
+    setShowLedgerPicker(false)
+    setLedgerSearch('')
+  }
+
+  /** Back to the customer Vehicle Sale returned (drops the picked ledger). */
+  const revertToVehicleSaleCustomer = () => {
+    setSelectedLedger(null)
+    setShowLedgerPicker(false)
+    if (!baplVehicleHit) return
+    setNewCustomer((c) => ({
+      ...c,
+      name: baplVehicleHit.customerName ?? '',
+      mobile: baplVehicleHit.customerMobile ? baplVehicleHit.customerMobile.replace(/\D/g, '').slice(0, 10) : '',
+      city: baplVehicleHit.customerCity ?? '',
+      email: baplVehicleHit.customerEmail ?? '',
+      address: baplVehicleHit.customerAddress ?? '',
+      state: baplVehicleHit.customerState ?? '',
+    }))
+  }
 
   // SECTION 182 (2026-09-30) "Email City Address State..that not fetch why fix this" - `state`
   // was completely missing from this mapping before: name/mobile/city/email/address all had a
@@ -304,6 +419,9 @@ export function JobCardWizardPage() {
   // backend file this session - see my reply for what I need to fix that part.
   const applyVehicleHit = (data: BaplDmsVehicleLookup) => {
     setBaplVehicleHit(data)
+    // a fresh Vehicle Sale hit means a fresh customer - drop any ledger picked for the previous chassis
+    setSelectedLedger(null)
+    setShowLedgerPicker(false)
     setNewCustomer((c) => ({
       ...c,
       name: data.customerName || c.name,
@@ -330,7 +448,8 @@ export function JobCardWizardPage() {
     setVehicleNotSoldNotice(null)
     setOpenJobCardNotice(null)
     setBaplVehicleHit(null)
-    setUnlockCustomerFields(false)
+    setSelectedLedger(null)
+    setShowLedgerPicker(false)
     setUnlockVehicleFields(false)
     setShowGlobalSearchOffer(false)
     setGlobalHit(null)
@@ -1225,10 +1344,97 @@ export function JobCardWizardPage() {
           <h3 style={{ marginTop: 24 }}>Registered Customer</h3>
           {customerFieldsLocked && (
             <p className="muted" style={{ marginTop: -4, marginBottom: 12 }}>
-              🔒 Name, Mobile, Email, City and Address from DMS and are locked to prevent accidental changes.{' '}
-              <a href="#" onClick={(e) => { e.preventDefault(); setUnlockCustomerFields(true) }}>Edit anyway</a>
+              🔒 {selectedLedger
+                ? 'Customer details come from the Ledger Master and are locked.'
+                : 'Name, Mobile, Email, City, Address and State come from Vehicle Sale and are locked.'}{' '}
+              {/* 2026-10-07: no manual unlock any more - "Edit anyway" opens the Party-ledger list. */}
+              <a href="#" onClick={(e) => { e.preventDefault(); setShowLedgerPicker((open) => !open) }}>{showLedgerPicker ? 'Close' : 'Edit anyway'}</a>
             </p>
           )}
+
+          {/* ---------- "Edit anyway": this dealer's Party ledgers (Ledger Master) ---------- */}
+          {customerFieldsLocked && showLedgerPicker && (
+            <div style={{ background: '#f5f9ff', border: '1px solid #bfdcff', borderRadius: 10, padding: '12px 14px', marginBottom: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <span style={{ background: '#1c64f2', color: '#fff', fontSize: 12, fontWeight: 600, padding: '2px 8px', borderRadius: 999 }}>
+                  Ledger Master
+                </span>
+                <strong style={{ fontSize: 14 }}>Select the customer (Party ledger of this dealer)</strong>
+              </div>
+              <p className="muted" style={{ margin: '0 0 10px', fontSize: 12 }}>
+                📝 Note: the customer details you need must already be added in <strong>Ledger Master</strong> as a <strong>Party</strong> ledger.
+                Add the customer there first - it will then appear in this list and its details are fetched here automatically.
+                Customer details can't be typed in manually on this page.
+              </p>
+              <input
+                autoFocus
+                value={ledgerSearch}
+                onChange={(e) => setLedgerSearch(e.target.value)}
+                placeholder="Search by name, ledger code, mobile or city…"
+                style={{ width: '100%', boxSizing: 'border-box' }}
+              />
+              <div style={{ maxHeight: 260, overflowY: 'auto', marginTop: 8, border: '1px solid var(--border)', borderRadius: 8, background: '#fff' }}>
+                <table style={{ width: '100%' }}>
+                  <thead>
+                    <tr><th>Code</th><th>Customer</th><th>Mobile</th><th>City</th><th>State</th><th></th></tr>
+                  </thead>
+                  <tbody>
+                    {partyLedgers === null && (
+                      <tr><td colSpan={6} className="muted" style={{ textAlign: 'center', padding: 14 }}>Loading…</td></tr>
+                    )}
+                    {(partyLedgers ?? []).map((l) => (
+                      <tr key={l.id} style={{ cursor: 'pointer' }} onClick={() => applyLedger(l)} title="Click to use this customer">
+                        <td>{l.ledgerCode}</td>
+                        <td>
+                          {l.ledgerName}
+                          {l.isShared && <span className="badge badge-muted" style={{ marginLeft: 6, fontSize: 10 }}>ALL DEALERS</span>}
+                        </td>
+                        <td>{l.mobileNumber ?? '—'}</td>
+                        <td>{l.city ?? '—'}</td>
+                        <td>{l.state ?? '—'}</td>
+                        <td><button type="button" className="btn btn-sm btn-primary" onClick={(e) => { e.stopPropagation(); applyLedger(l) }}>Select</button></td>
+                      </tr>
+                    ))}
+                    {partyLedgers !== null && partyLedgers.length === 0 && (
+                      <tr>
+                        <td colSpan={6} className="muted" style={{ textAlign: 'center', padding: 14 }}>
+                          {ledgerPickerError ?? (ledgerSearch.trim()
+                            ? 'No Party ledger matches your search.'
+                            : 'No Party ledgers for this dealer yet - add the customer in Ledger Master (type Party), then open this list again.')}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              {partyLedgers !== null && partyLedgerTotal > partyLedgers.length && (
+                <p className="muted" style={{ margin: '6px 0 0', fontSize: 12 }}>
+                  Showing the first {partyLedgers.length} of {partyLedgerTotal} - type in the search box to narrow down.
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* ---------- the ledger currently filling the fields below ---------- */}
+          {selectedLedger && (
+            <div style={{
+              background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 8, padding: '8px 12px', marginBottom: 12,
+              display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+            }}>
+              <span style={{ background: '#059669', color: '#fff', fontSize: 12, fontWeight: 600, padding: '2px 8px', borderRadius: 999 }}>Ledger</span>
+              <strong>{selectedLedger.ledgerCode} — {selectedLedger.ledgerName}</strong>
+              <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                <button type="button" className="btn btn-sm" onClick={() => setShowLedgerPicker(true)}>Change</button>
+                <button type="button" className="btn btn-sm" onClick={revertToVehicleSaleCustomer}>Use Vehicle Sale details</button>
+              </span>
+            </div>
+          )}
+          {selectedLedger && newCustomer.mobile.length !== 10 && (
+            <p className="error-text" style={{ marginTop: 0 }}>
+              This ledger has no valid 10-digit mobile number. Add it to the ledger in Ledger Master, then select the ledger again.
+            </p>
+          )}
+
           <div className="form-row">
             <div className="field">
               <label>Name</label>

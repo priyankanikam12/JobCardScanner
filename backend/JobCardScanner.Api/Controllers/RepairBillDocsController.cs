@@ -433,9 +433,13 @@ public class RepairBillDocsController : ControllerBase
     /// changed when this was extracted out of Create to also be reusable by Update.</summary>
     private async Task<string?> BuildAndAttachItemsAsync(RepairBillDoc bill, CreateRepairBillRequest req, Guid dealerId)
     {
+        // 2026-10-07: "FOC" (free of cost) joins U/W and FSC. The Repair Bill screens (web and Android) already treated FOC as a zero-amount line on screen, but this
+        // save-time calculation did not, so a saved FOC line came back with a non-zero taxable amount / total (and printed on the invoice). Now an FOC line is stored
+        // with taxable, GST and total all 0 - the same as the screen shows.
         static bool IsZeroTax(string? issueType) =>
             string.Equals(issueType, "U/W", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(issueType, "FSC", StringComparison.OrdinalIgnoreCase);
+            || string.Equals(issueType, "FSC", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(issueType, "FOC", StringComparison.OrdinalIgnoreCase);
 
         // 2026-09-28 ("if qty 0 then give alert update qty") - same guard, same reasoning, as
         // MaterialTransferDocsController.ApplyStockAndBuildItemsAsync's own copy: a Part or Labour

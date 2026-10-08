@@ -41,7 +41,7 @@ namespace JobCardScanner.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/material-transfer-docs")]
-[Authorize(Policy = Policies.Staff)]
+[Authorize(Policy = "ServiceAdvisorUpNoSupervisor")]
 public class MaterialTransferDocsController : ControllerBase
 {
     private readonly JobCardScannerDbContext _db;
@@ -525,7 +525,9 @@ public class MaterialTransferDocsController : ControllerBase
 
         foreach (var it in req.Items)
         {
-            var amount = (decimal)it.Qty * it.Rate;
+            // 2026-10-07: an FOC (free of cost) line carries no amount - the same rule the Repair Bill uses for FOC. Qty, Rate and the stock decrement above are
+            // still recorded; only the line's Amount (and so the document's TotalAmount) is 0.
+            var amount = string.Equals(it.IssueType, "FOC", StringComparison.OrdinalIgnoreCase) ? 0m : (decimal)it.Qty * it.Rate;
             doc.Items.Add(new MaterialTransferDocItem
             {
                 PartId = it.PartId,

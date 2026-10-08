@@ -6,6 +6,9 @@ import { useStaffAuth } from '../../auth/StaffAuthContext'
 import type { BaplDmsLabourRow, BaplDmsWorkshop, BaplItemMaster, JobSearchResult, LabourMasterPartwise, MaterialTransferItemForJob, RepairBillDoc, RepairBillDocItemType, RepairBillDocStatus } from '../../types'
 import { JobSearchModal } from '../../components/JobSearchModal'
 import { LabourSearchInput } from '../../components/LabourSearchInput'
+// 2026-10-07 (Insurance): the "Insurance" section - pick an Insurance ledger (Ledger Master, type Insurance) and fill the policy details; saved with the bill and printed on its
+// invoice (see lib/repairBillInsuranceHtml.ts). A bill without insurance saves and prints in the normal format.
+import { InsuranceSection } from '../../components/InsuranceSection'
 
 type TaxMode = 'Same State (CGST+SGST)' | 'Different State (IGST)'
 type DiscountType = 'None' | 'Percentage' | 'Amount'
@@ -102,6 +105,8 @@ export function RepairBillCreatePage() {
       ? 'Same State (CGST+SGST)' : 'Different State (IGST)'
   }, [profile?.dealerState, partyState])
 
+  // Insurance (2026-10-07): showInsurance = the Insurance section is switched on for this bill. The values below are saved on the bill (RepairBillDoc.insurance*) and printed on
+  // its invoice; with the section off, none of them is sent and the bill prints in the normal format.
   const [showInsurance, setShowInsurance] = useState(false)
   const [insuranceCompanyName, setInsuranceCompanyName] = useState('')
   const [insuranceDescription, setInsuranceDescription] = useState('')
@@ -306,7 +311,7 @@ export function RepairBillCreatePage() {
     clearJob()
     setBillType('Cash'); setIssueType(''); setRemarks('')
     setInsuranceCompanyName(''); setInsuranceDescription(''); setSurveyorName(''); setSurveyorContactNumber('')
-    setPolicyNo(''); setInsuranceValidTill(''); setZeroDepreciation(false); setTotalDiscount('0'); setAmountReceived('0')
+    setPolicyNo(''); setInsuranceValidTill(''); setZeroDepreciation(false); setShowInsurance(false); setTotalDiscount('0'); setAmountReceived('0')
     setBillDate(new Date().toISOString().slice(0, 10))
     nextManualKeyRef.current = 2
     setItems([])
@@ -339,6 +344,7 @@ export function RepairBillCreatePage() {
         setZeroDepreciation(bill.zeroDepreciation)
         setTotalDiscount(String(bill.totalDiscount))
         setAmountReceived(String(bill.amountReceived))
+        // a saved bill that has insurance reopens with the Insurance section on
         setShowInsurance(!!(bill.insuranceCompanyName || bill.policyNo || bill.surveyorName))
 
         const snapshot: Record<string, { discountType: DiscountType; discountValue: string; issueType: string }> = {}
@@ -414,6 +420,9 @@ export function RepairBillCreatePage() {
     setSaveError(null)
     setSaveOk(null)
     if (!partyName.trim()) { setSaveError('Party Name is required.'); return }
+    // Insurance (2026-10-07): the section is on, so an insurance company must have been picked from the Insurance ledger list.
+    if (showInsurance && !insuranceCompanyName.trim()) { setSaveError('Select the Insurance company from the list, or click "Remove Insurance".'); return }
+    if (showInsurance && surveyorContactNumber && !/^\d{10}$/.test(surveyorContactNumber)) { setSaveError('Surveyor Contact No must be exactly 10 digits.'); return }
     const validItems = items.filter((i) => i.itemDescription.trim() && Number(i.qty) > 0)
     if (validItems.length === 0) { setSaveError('Add at least one item/labour line with a description and quantity.'); return }
 
@@ -427,13 +436,14 @@ export function RepairBillCreatePage() {
       issueType: issueType || null,
       remarks: remarks || null,
       billDate,
-      insuranceCompanyName: insuranceCompanyName || null,
-      insuranceDescription: insuranceDescription || null,
-      surveyorName: surveyorName || null,
-      surveyorContactNumber: surveyorContactNumber || null,
-      policyNo: policyNo || null,
-      insuranceValidTill: insuranceValidTill || null,
-      zeroDepreciation,
+      // a bill without the Insurance section sends none of these, so it saves and prints in the normal format
+      insuranceCompanyName: showInsurance ? insuranceCompanyName || null : null,
+      insuranceDescription: showInsurance ? insuranceDescription || null : null,
+      surveyorName: showInsurance ? surveyorName || null : null,
+      surveyorContactNumber: showInsurance ? surveyorContactNumber || null : null,
+      policyNo: showInsurance ? policyNo || null : null,
+      insuranceValidTill: showInsurance ? insuranceValidTill || null : null,
+      zeroDepreciation: showInsurance ? zeroDepreciation : false,
       totalDiscount: Number(totalDiscount) || 0,
       amountReceived: Number(amountReceived) || 0,
       items: validItems.map((i) => {
@@ -896,6 +906,35 @@ export function RepairBillCreatePage() {
           </table>
         </div>
         </div>
+
+        {/* ---------- Insurance (2026-10-07) ----------
+            "+ Add Insurance" opens the list of Insurance ledgers (Ledger Master, type Insurance); pick one, fill the policy details, then Save as Proforma / Save as Invoice as usual.
+            The insurance details are saved on the bill and printed on its invoice; a bill without insurance prints in the normal format. */}
+        <InsuranceSection
+          enabled={showInsurance}
+          onToggle={(on) => {
+            setShowInsurance(on)
+            if (!on) {
+              setInsuranceCompanyName(''); setInsuranceDescription(''); setSurveyorName(''); setSurveyorContactNumber('')
+              setPolicyNo(''); setInsuranceValidTill(''); setZeroDepreciation(false)
+            }
+          }}
+          value={{
+            companyName: insuranceCompanyName, policyNo, validTill: insuranceValidTill, surveyorName,
+            surveyorContact: surveyorContactNumber, zeroDepreciation, description: insuranceDescription,
+          }}
+          onChange={(p) => {
+            if (p.companyName !== undefined) setInsuranceCompanyName(p.companyName)
+            if (p.policyNo !== undefined) setPolicyNo(p.policyNo)
+            if (p.validTill !== undefined) setInsuranceValidTill(p.validTill)
+            if (p.surveyorName !== undefined) setSurveyorName(p.surveyorName)
+            if (p.surveyorContact !== undefined) setSurveyorContactNumber(p.surveyorContact)
+            if (p.zeroDepreciation !== undefined) setZeroDepreciation(p.zeroDepreciation)
+            if (p.description !== undefined) setInsuranceDescription(p.description)
+          }}
+          disabled={!jobCardId || editingBillStatus === 'Billed' || editingBillStatus === 'Cancelled'}
+          disabledReason={!jobCardId ? 'Search and link a Job above to add Insurance.' : `This bill is already ${editingBillStatus} - its insurance can no longer be changed.`}
+        />
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
           <span className="muted">

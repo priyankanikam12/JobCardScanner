@@ -324,6 +324,12 @@ public class JobCardPartSuggestion
     /// (Database.EnsureCreatedAsync() in Program.cs does nothing on a database that already
     /// exists).</summary>
     public int Quantity { get; set; } = 1;
+    /// <summary>"Percentage" or "Amount"; null = no discount. Set through PUT /api/jobcards/{part|labour}-suggestions/{id}/discount.</summary>
+    [MaxLength(20)]
+    public string? DiscountType { get; set; }
+
+    /// <summary>The % (0-100) or the rupee amount, per DiscountType. 0 when there is no discount.</summary>
+    public decimal DiscountValue { get; set; }
     /// <summary>Snapshot of the item's description/MRP/HSN at suggestion time, from DMS's own
     /// best-effort ItemMaster enrichment (see BaplDmsPartStockRow's doc comment in
     /// BaplDmsService.cs - these may be null even for a real item if that table/columns turn out to
@@ -370,6 +376,12 @@ public class JobCardLabourSuggestion
     [Column(TypeName = "decimal(12,2)")] public decimal? RateAtSuggestion { get; set; }
     /// <summary>How many units of this labour code - staff-editable, defaults to 1.</summary>
     public int Quantity { get; set; } = 1;
+    /// <summary>"Percentage" or "Amount"; null = no discount. Set through PUT /api/jobcards/{part|labour}-suggestions/{id}/discount.</summary>
+    [MaxLength(20)]
+    public string? DiscountType { get; set; }
+
+    /// <summary>The % (0-100) or the rupee amount, per DiscountType. 0 when there is no discount.</summary>
+    public decimal DiscountValue { get; set; }
     /// <summary>Free-text reason/issue type for this labour line (e.g. "Warranty", "Accident",
     /// "General Service") - not a fixed dropdown, since DMS doesn't define a closed set of
     /// these for LabourMaster.</summary>

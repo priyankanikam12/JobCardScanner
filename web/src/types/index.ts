@@ -897,6 +897,8 @@ export interface JobCardPartSuggestion {
   /// How many units of this part are used on this job card - distinct from
   /// availableQtyAtSuggestion (DMS's stock level at suggestion time). Defaults to 1.
   quantity: number
+  discountType?: string | null
+  discountValue?: number | null
   /// Snapshot of the item's description/HSN/MRP at suggestion time - see BaplDmsPartStock's doc
   /// comment on why these may be null even for a real item.
   description?: string | null
@@ -918,6 +920,8 @@ export interface JobCardLabourSuggestion {
   igst?: number | null
   rateAtSuggestion?: number | null
   quantity: number
+  discountType?: string | null
+  discountValue?: number | null
   issueType?: string | null
   createdAt?: string
 }

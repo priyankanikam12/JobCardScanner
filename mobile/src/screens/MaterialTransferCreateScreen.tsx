@@ -53,6 +53,14 @@ import type { BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaster, CombinedMateria
  * DMSBAPLDATA rows merged together - see loadCombined's own endpoint). The new report screen
  * instead shows DMSBAPLDATA's full item + labour line-item detail for a chosen DMS workshop
  * location, matching web's MaterialTransferPage.tsx.
+ *
+ * 2026-10-07 ("in Material transfer add FOC type Issue Type and which logic add in repair bill for
+ * FOC that all maintaining"): Issue Type now has a third option, FOC (free of cost), next to Paid and
+ * U/W. An FOC line follows the Repair Bill's rule - its Amount (and the GST that goes with it) is 0,
+ * so it adds nothing to the total; its Qty/Rate are still recorded and the stock is still taken. A
+ * Labour line added from an FOC part carries FOC too (it inherits its Part line's Issue Type). The
+ * server applies the same rule when it saves (MaterialTransferDocsController: an FOC line's Amount
+ * is 0), so what this screen shows is what is stored. See lineCalc below - isFoc is the whole change.
  */
 type DiscountType = '%' | 'Value'
 
@@ -86,8 +94,12 @@ const rateFromDlrPrice = (dlrPrice: number, totalGstPct: number) => dlrPrice / (
 /** Direct port of web's lineCalc - see that function's doc comment in
  * web/src/pages/staff/MaterialTransferCreatePage.tsx for the full worked-example reasoning
  * (frozen GST-on-discount: discount reduces Rate only, the GST rupee amount added back stays the
- * ORIGINAL amount computed on the undiscounted Rate, MRP never moves). */
+ * ORIGINAL amount computed on the undiscounted Rate, MRP never moves).
+ * 2026-10-07: an FOC line (Issue Type "FOC" - free of cost) has Amount 0 and no GST amount, the same
+ * zero-amount rule the Repair Bill applies to FOC; everything else about the line (qty, rate, MRP) is
+ * unchanged. */
 const lineCalc = (it: DraftItem) => {
+  const isFoc = it.issueType === 'FOC'
   const qty = Number(it.qty) || 0
   const rate = Number(it.rate) || 0
   const sgstPct = Number(it.sgstPct) || 0
@@ -96,20 +108,21 @@ const lineCalc = (it: DraftItem) => {
   const totalGstPct = sgstPct + cgstPct > 0 ? sgstPct + cgstPct : igstPct
 
   const originalBase = qty * rate
-  const originalGstAmt = (originalBase * totalGstPct) / 100
+  const originalGstAmt = isFoc ? 0 : (originalBase * totalGstPct) / 100
 
   const discPct = it.discountType === '%' ? Number(it.discountValue) || 0 : 0
   const discVal = it.discountType === 'Value' ? Number(it.discountValue) || 0 : 0
   const discountedRate = Math.max(0, it.discountType === '%' ? rate * (1 - discPct / 100) : rate - discVal)
   const discountedBase = qty * discountedRate
 
-  const amount = discountedBase + originalGstAmt
+  const amount = isFoc ? 0 : discountedBase + originalGstAmt
   const mrp = rate + (rate * totalGstPct) / 100
 
-  return { qty, rate, discountedRate, originalBase, discountedBase, originalGstAmt, amount, mrp, sgstPct, cgstPct, igstPct }
+  return { qty, rate, discountedRate, originalBase, discountedBase, originalGstAmt, amount, mrp, sgstPct, cgstPct, igstPct, isFoc }
 }
 
-/** Direct port of web's lineTax - display-only CGST/SGST/IGST split of a line's frozen GST amount. */
+/** Direct port of web's lineTax - display-only CGST/SGST/IGST split of a line's frozen GST amount
+ * (0 for an FOC line - lineCalc already zeroes originalGstAmt). */
 const lineTax = (it: DraftItem, isSameState: boolean) => {
   const calc = lineCalc(it)
   if (!isSameState) {
@@ -436,11 +449,14 @@ export function MaterialTransferCreateScreen() {
             </View>
           </View>
 
+          {/* 2026-10-07 ("in Material transfer add FOC type Issue Type"): FOC added as a third option.
+              Picking it makes this line's Amount ₹0 (see lineCalc's isFoc) - the same free-of-cost rule
+              the Repair Bill uses; Qty/Rate are still recorded and the stock is still taken. */}
           <View style={styles.formRow}>
             <View style={{ flex: 1 }}>
               <Text style={styles.label}>Issue Type</Text>
-              <View style={{ flexDirection: 'row', gap: 6 }}>
-                {(['Paid', 'U/W'] as const).map((t) => (
+              <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
+                {(['Paid', 'U/W', 'FOC'] as const).map((t) => (
                   <TouchableOpacity key={t} style={[styles.pill, draft.issueType === t && styles.pillSelected]} onPress={() => setDraft((d) => ({ ...d, issueType: t }))}>
                     <Text style={[styles.pillText, draft.issueType === t && styles.pillTextSelected]}>{t}</Text>
                   </TouchableOpacity>
@@ -470,9 +486,12 @@ export function MaterialTransferCreateScreen() {
             const calc = lineCalc(draft as DraftItem)
             const tax = lineTax(draft as DraftItem, isSameState)
             return (
-              <Text style={styles.muted}>
-                CGST ₹{tax.cgstAmt.toFixed(2)} · SGST ₹{tax.sgstAmt.toFixed(2)} · IGST ₹{tax.igstAmt.toFixed(2)} · Amount ₹{calc.amount.toFixed(2)} · MRP ₹{calc.mrp.toFixed(2)}
-              </Text>
+              <>
+                <Text style={styles.muted}>
+                  CGST ₹{tax.cgstAmt.toFixed(2)} · SGST ₹{tax.sgstAmt.toFixed(2)} · IGST ₹{tax.igstAmt.toFixed(2)} · Amount ₹{calc.amount.toFixed(2)} · MRP ₹{calc.mrp.toFixed(2)}
+                </Text>
+                {calc.isFoc && <Text style={styles.muted}>FOC - free of cost: this line adds ₹0 to the total.</Text>}
+              </>
             )
           })()}
 
@@ -493,7 +512,7 @@ export function MaterialTransferCreateScreen() {
               <Text style={styles.rowTitle}>[{it.itemType}] {it.itemCode} — {it.itemDescription}</Text>
               <Text style={styles.muted}>Qty {it.qty} × ₹{it.rate} · {it.issueType || 'no issue type'}</Text>
               <Text style={styles.muted}>CGST ₹{tax.cgstAmt.toFixed(2)} · SGST ₹{tax.sgstAmt.toFixed(2)} · IGST ₹{tax.igstAmt.toFixed(2)}</Text>
-              <Text style={styles.muted}>Amount ₹{calc.amount.toFixed(2)} · MRP ₹{calc.mrp.toFixed(2)}</Text>
+              <Text style={styles.muted}>Amount ₹{calc.amount.toFixed(2)}{calc.isFoc ? ' (FOC)' : ''} · MRP ₹{calc.mrp.toFixed(2)}</Text>
             </View>
             <View style={{ gap: 6 }}>
               {it.itemType === 'Part' && !!it.itemCode.trim() && (

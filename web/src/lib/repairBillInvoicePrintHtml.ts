@@ -10,6 +10,9 @@ import type { JobCardDetail, RepairBillDoc } from '../types'
 // Customer Details -> Vehicle Details -> items grid -> Amount In Words / Part Total / Labour Total
 // / Invoice Total -> HSN Summary -> Remarks -> Customer Signature / Authorized Signatory.
 //
+// 2026-10-07 (Insurance): a bill that has an insurance company (picked in the Repair Bill page's Insurance section) prints an extra "Insurance Details" card right after
+// Vehicle Details - company, policy no, valid till, zero depreciation, surveyor, remarks. A bill without insurance prints in exactly the normal format (no card at all).
+//
 // Pure data-in/HTML-out - no browser-only APIs - so the SAME function body runs on web
 // (window.open + print) and on Android (expo-print's Print.printAsync({ html })).
 // ============================================================================
@@ -191,6 +194,19 @@ export function buildRepairBillTaxInvoicePrintHtml(bill: RepairBillDoc, ctx: Tax
   const regNo = ctx.registrationNo ?? bill.regNo
   const jobNo = ctx.jobNo ?? bill.jobCardNumber
 
+  // ---- Insurance Details (2026-10-07): only when the bill has an insurance company; otherwise nothing is printed and the invoice keeps the normal format ----
+  const hasInsurance = !!String(bill.insuranceCompanyName ?? '').trim()
+  const insuranceCard = hasInsurance ? `
+  <div class="card">
+    <div class="card-title">Insurance Details</div>
+    <table class="kv kv4">
+      <tr><td class="k">Insurance Company</td><td class="v">${invTxt(bill.insuranceCompanyName)}</td><td class="k2">Policy No</td><td class="v">${invTxt(bill.policyNo)}</td></tr>
+      <tr><td class="k">Valid Till</td><td class="v">${invDate(bill.insuranceValidTill)}</td><td class="k2">Zero Depreciation</td><td class="v">${bill.zeroDepreciation ? 'Yes' : 'No'}</td></tr>
+      <tr><td class="k">Surveyor Name</td><td class="v">${invTxt(bill.surveyorName)}</td><td class="k2">Surveyor Contact</td><td class="v">${invTxt(bill.surveyorContactNumber)}</td></tr>
+      ${String(bill.insuranceDescription ?? '').trim() ? `<tr><td class="k">Remarks</td><td colspan="3">${invEsc(String(bill.insuranceDescription).trim())}</td></tr>` : ''}
+    </table>
+  </div>` : ''
+
   return `<!doctype html><html><head><meta charset="utf-8" /><title>Invoice ${invEsc(bill.billNumber)}</title>
 <style>
   *,*::before,*::after { box-sizing: border-box; }
@@ -257,6 +273,7 @@ export function buildRepairBillTaxInvoicePrintHtml(bill: RepairBillDoc, ctx: Tax
       <tr><td class="k">Job Source</td><td class="v">${invTxt(ctx.jobSource)}</td><td class="k2">Technician</td><td class="v">${invTxt(ctx.technician)}</td></tr>
     </table>
   </div>
+${insuranceCard}
 
   <table class="grid">
     <thead><tr>

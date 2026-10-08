@@ -30,6 +30,53 @@ function describeSearchError(err: unknown, fallback: string): string {
   return `${fallback} (no response reached the server - check your connection)`
 }
 
+// ---------------- Discount on Part / Labour suggestions (2026-10-07) ----------------
+// A suggestion line now carries a Discount Type (None / % / ₹) and Discount Value, like the Repair Bill and Material Transfer lines. Stored on the suggestion row
+// (sql/2026-10-07_jobcard_suggestion_discount.sql) and set through PUT /api/jobcards/{part|labour}-suggestions/{id}/discount.
+type DiscountKind = 'None' | 'Percentage' | 'Amount'
+
+/** discountType / discountValue of a suggestion row. Read through a loose cast so this file compiles whether or not types/index.ts declares the two fields yet. */
+const discountOf = (row: unknown): { type: DiscountKind; value: number } => {
+  const r = row as { discountType?: string | null; discountValue?: number | null }
+  const type: DiscountKind = r.discountType === 'Percentage' || r.discountType === 'Amount' ? r.discountType : 'None'
+  return { type, value: Number(r.discountValue) || 0 }
+}
+
+/** One suggestion line's money - same rule as the Repair Bill's lineEstimate: the discount comes off the line's gross (rate x qty), a % of it or a flat rupee amount and
+ *  never more than the gross; an FOC (free of cost) line is 0 whatever its discount. */
+function suggestionLineMoney(rate: number | null | undefined, qty: number | null | undefined, isFoc: boolean, discount: { type: DiscountKind; value: number }) {
+  const gross = (Number(rate) || 0) * (Number(qty) || 0)
+  if (isFoc) return { gross, discount: 0, amount: 0 }
+  const raw = discount.type === 'Percentage' ? (gross * discount.value) / 100 : discount.type === 'Amount' ? discount.value : 0
+  const off = Math.min(Math.max(raw, 0), gross)
+  return { gross, discount: off, amount: gross - off }
+}
+
+const discountLabel = (d: { type: DiscountKind; value: number }) => (d.type === 'Percentage' ? `${d.value}%` : d.type === 'Amount' ? `₹${d.value}` : '—')
+
+/** The Part / Labour rows of the estimate, with discount worked in - shared by the "Estimate" print and the Estimates Amount card so both always show the same numbers. */
+function buildEstimateRows(jc: JobCardDetail) {
+  const partRows = jc.partSuggestions.map((p, i) => {
+    const mrp = p.mrp ?? 0
+    const qty = p.quantity ?? 1
+    const isFoc = p.status === 'FOC'
+    const d = discountOf(p)
+    const m = suggestionLineMoney(mrp, qty, isFoc, d)
+    return { sr: i + 1, code: p.itemCode, description: p.description ?? '-', hsn: p.hsnCode ?? '-', mrp, qty, isFoc, discountText: isFoc ? 'FOC' : discountLabel(d), discount: m.discount, amount: m.amount }
+  })
+  const labourRows = jc.labourSuggestions.map((l, i) => {
+    const rate = l.rateAtSuggestion ?? 0
+    const qty = l.quantity ?? 1
+    const isFoc = l.issueType === 'FOC'
+    const d = discountOf(l)
+    const m = suggestionLineMoney(rate, qty, isFoc, d)
+    return { sr: i + 1, code: l.labourCode, description: l.labourDescription ?? '-', hsn: l.hsnCode ?? '-', rate, qty, isFoc, discountText: isFoc ? 'FOC' : discountLabel(d), discount: m.discount, amount: m.amount }
+  })
+  const partsTotal = partRows.reduce((sum, r) => sum + r.amount, 0)
+  const labourTotal = labourRows.reduce((sum, r) => sum + r.amount, 0)
+  return { partRows, labourRows, partsTotal, labourTotal, grandTotal: partsTotal + labourTotal }
+}
+
 // 2026-10-01 REMOVED (per explicit request - "Remove the cap entirely"): the ₹2000 Grand Total
 // hard-stop that used to block Part/Labour Suggestion once the Estimates Amount reached a threshold.
 // There is now no maximum - Part/Labour Suggestion only locks on the manual Done/Edit toggle on the
@@ -228,20 +275,13 @@ function PrintMenu({ jc, setMsg }: { jc: JobCardDetail; setMsg: (m: string | nul
     setOpen(false)
     const win = openLoadingWindow('Preparing estimate…', 'Please allow popups to print the estimate.')
     if (!win) return
-    const partRows = jc.partSuggestions.map((p, i) => {
-      const mrp = p.mrp ?? 0
-      const qty = p.quantity ?? 1
-      const isFoc = p.status === 'FOC'
-      return { sr: i + 1, code: p.itemCode, description: p.description ?? '-', hsn: p.hsnCode ?? '-', mrp, qty, amount: isFoc ? 0 : mrp * qty }
-    })
-    const labourRows = jc.labourSuggestions.map((l, i) => {
-      const rate = l.rateAtSuggestion ?? 0
-      const qty = l.quantity ?? 1
-      const isFoc = l.issueType === 'FOC'
-      return { sr: i + 1, code: l.labourCode, description: l.labourDescription ?? '-', hsn: l.hsnCode ?? '-', rate, qty, amount: isFoc ? 0 : rate * qty }
-    })
-    const partsTotal = partRows.reduce((sum, r) => sum + r.amount, 0)
-    const labourTotal = labourRows.reduce((sum, r) => sum + r.amount, 0)
+    // Amounts are net of each line's discount (and 0 for FOC). The print layout has no Discount column, so a discounted line says so in its description.
+    const est = buildEstimateRows(jc)
+    const withDiscountNote = (description: string, discount: number) => (discount > 0 ? `${description} (discount -₹${discount.toFixed(2)})` : description)
+    const partRows = est.partRows.map((r) => ({ sr: r.sr, code: r.code, description: withDiscountNote(r.description, r.discount), hsn: r.hsn, mrp: r.mrp, qty: r.qty, amount: r.amount }))
+    const labourRows = est.labourRows.map((r) => ({ sr: r.sr, code: r.code, description: withDiscountNote(r.description, r.discount), hsn: r.hsn, rate: r.rate, qty: r.qty, amount: r.amount }))
+    const partsTotal = est.partsTotal
+    const labourTotal = est.labourTotal
     showInWindow(win, buildEstimatePrintHtml({
       dealerName: jc.dealer?.name,
       dealerCode: jc.dealer?.code,
@@ -933,21 +973,8 @@ function EstimatesCard({
 
   const money = (n: number) => `₹${n.toFixed(2)}`
 
-  const partRows = jc.partSuggestions.map((p, i) => {
-    const mrp = p.mrp ?? 0
-    const qty = p.quantity ?? 1
-    const isFoc = p.status === 'FOC'
-    return { sr: i + 1, code: p.itemCode, description: p.description ?? '-', hsn: p.hsnCode ?? '-', mrp, qty, amount: isFoc ? 0 : mrp * qty }
-  })
-  const labourRows = jc.labourSuggestions.map((l, i) => {
-    const rate = l.rateAtSuggestion ?? 0
-    const qty = l.quantity ?? 1
-    const isFoc = l.issueType === 'FOC'
-    return { sr: i + 1, code: l.labourCode, description: l.labourDescription ?? '-', hsn: l.hsnCode ?? '-', rate, qty, amount: isFoc ? 0 : rate * qty }
-  })
-  const partsTotal = partRows.reduce((sum, r) => sum + r.amount, 0)
-  const labourTotal = labourRows.reduce((sum, r) => sum + r.amount, 0)
-  const grandTotal = partsTotal + labourTotal
+  // 2026-10-07: amounts are net of each line's discount (and 0 for FOC) - see buildEstimateRows.
+  const { partRows, labourRows, partsTotal, labourTotal, grandTotal } = buildEstimateRows(jc)
   const closed = jc.status === 'Closed'
 
   return (
@@ -956,35 +983,39 @@ function EstimatesCard({
 
       <h4>Part Details</h4>
       <table>
-        <thead><tr><th>Sr no.</th><th>Item Code</th><th>Description</th><th>HSN</th><th>MRP</th><th>Qty</th><th>Amount</th></tr></thead>
+        <thead><tr><th>Sr no.</th><th>Item Code</th><th>Description</th><th>HSN</th><th>MRP</th><th>Qty</th><th>Discount</th><th>Amount</th></tr></thead>
         <tbody>
           {partRows.map((r) => (
             <tr key={r.sr}>
               <td>{r.sr}</td><td>{r.code}</td><td>{r.description}</td><td>{r.hsn}</td>
-              <td>{money(r.mrp)}</td><td>{r.qty}</td><td>{money(r.amount)}</td>
+              <td>{money(r.mrp)}</td><td>{r.qty}</td>
+              <td>{r.discountText}{r.discount > 0 && <span className="muted"> (−{money(r.discount)})</span>}</td>
+              <td>{money(r.amount)}</td>
             </tr>
           ))}
-          {partRows.length === 0 && <tr><td colSpan={7} className="muted">No parts suggested yet.</td></tr>}
+          {partRows.length === 0 && <tr><td colSpan={8} className="muted">No parts suggested yet.</td></tr>}
         </tbody>
         {partRows.length > 0 && (
-          <tfoot><tr><td colSpan={6} style={{ textAlign: 'right', fontWeight: 600 }}>Parts Total</td><td style={{ fontWeight: 600 }}>{money(partsTotal)}</td></tr></tfoot>
+          <tfoot><tr><td colSpan={7} style={{ textAlign: 'right', fontWeight: 600 }}>Parts Total</td><td style={{ fontWeight: 600 }}>{money(partsTotal)}</td></tr></tfoot>
         )}
       </table>
 
       <h4 style={{ marginTop: 16 }}>Labour Details</h4>
       <table>
-        <thead><tr><th>Sr no.</th><th>Labour Code</th><th>Description</th><th>HSN</th><th>MRP (Rate)</th><th>Qty</th><th>Amount</th></tr></thead>
+        <thead><tr><th>Sr no.</th><th>Labour Code</th><th>Description</th><th>HSN</th><th>MRP (Rate)</th><th>Qty</th><th>Discount</th><th>Amount</th></tr></thead>
         <tbody>
           {labourRows.map((r) => (
             <tr key={r.sr}>
               <td>{r.sr}</td><td>{r.code}</td><td>{r.description}</td><td>{r.hsn}</td>
-              <td>{money(r.rate)}</td><td>{r.qty}</td><td>{money(r.amount)}</td>
+              <td>{money(r.rate)}</td><td>{r.qty}</td>
+              <td>{r.discountText}{r.discount > 0 && <span className="muted"> (−{money(r.discount)})</span>}</td>
+              <td>{money(r.amount)}</td>
             </tr>
           ))}
-          {labourRows.length === 0 && <tr><td colSpan={7} className="muted">No labour suggested yet.</td></tr>}
+          {labourRows.length === 0 && <tr><td colSpan={8} className="muted">No labour suggested yet.</td></tr>}
         </tbody>
         {labourRows.length > 0 && (
-          <tfoot><tr><td colSpan={6} style={{ textAlign: 'right', fontWeight: 600 }}>Labour Total</td><td style={{ fontWeight: 600 }}>{money(labourTotal)}</td></tr></tfoot>
+          <tfoot><tr><td colSpan={7} style={{ textAlign: 'right', fontWeight: 600 }}>Labour Total</td><td style={{ fontWeight: 600 }}>{money(labourTotal)}</td></tr></tfoot>
         )}
       </table>
 
@@ -1075,6 +1106,10 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
   const [qty, setQty] = useState<number>(1)
   const [status, setStatus] = useState<'Paid' | 'U/W' | 'FOC'>('Paid')
   const [searchError, setSearchError] = useState<string | null>(null)
+  // 2026-10-07: discount of the line being added, and of an already-added line being edited
+  const [discountType, setDiscountType] = useState<DiscountKind>('None')
+  const [discountValue, setDiscountValue] = useState('0')
+  const [editing, setEditing] = useState<{ id: string; type: DiscountKind; value: string } | null>(null)
 
   useEffect(() => {
     const handle = setTimeout(() => {
@@ -1103,7 +1138,7 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
   }
 
   const addSuggestion = async () => {
-    await staffApi.post(`/api/jobcards/${jc.id}/part-suggestions`, {
+    const { data: created } = await staffApi.post<{ id: string }>(`/api/jobcards/${jc.id}/part-suggestions`, {
       itemCode,
       availableQtyAtSuggestion: selectedPart?.availableQty ?? null,
       status,
@@ -1112,18 +1147,42 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
       hsnCode: selectedPart?.hsnCode ?? null,
       mrp: selectedPart?.mrp ?? null,
     })
+    // the discount is saved right after the part is added (an FOC part is free of cost, so it never takes one)
+    const value = Number(discountValue) || 0
+    if (status !== 'FOC' && discountType !== 'None' && value > 0) {
+      try {
+        await staffApi.put(`/api/jobcards/part-suggestions/${created.id}/discount`, { discountType, discountValue: discountType === 'Percentage' ? Math.min(value, 100) : value })
+      } catch {
+        alert('The part was added, but its discount could not be saved - use the Discount button on its row to set it.')
+      }
+    }
     setItemCode('')
     setSelectedPart(null)
     setSearch('')
     setQty(1)
     setStatus('Paid')
+    setDiscountType('None')
+    setDiscountValue('0')
   }
+
+  const saveDiscountEdit = async () => {
+    if (!editing) return
+    const value = Number(editing.value) || 0
+    await staffApi.put(`/api/jobcards/part-suggestions/${editing.id}/discount`, {
+      discountType: editing.type === 'None' ? null : editing.type,
+      discountValue: editing.type === 'None' ? 0 : editing.type === 'Percentage' ? Math.min(value, 100) : value,
+    })
+    setEditing(null)
+  }
+
+  /** Money of a saved part line (MRP x Qty, less its discount; FOC = 0). */
+  const partMoney = (p: JobCardDetail['partSuggestions'][number]) => suggestionLineMoney(p.mrp, p.quantity, p.status === 'FOC', discountOf(p))
 
   return (
     <div className="card">
       <h3>Part Suggestion</h3>
       <table>
-        <thead><tr><th>Sr no.</th><th>Item Code</th><th>Description</th><th>MRP</th><th>QTY</th><th>Issue Type</th><th>Picture</th><th></th></tr></thead>
+        <thead><tr><th>Sr no.</th><th>Item Code</th><th>Description</th><th>MRP</th><th>QTY</th><th>Discount</th><th>Amount</th><th>Issue Type</th><th>Picture</th><th></th></tr></thead>
         <tbody>
           {jc.partSuggestions.map((p, i) => (
             <tr key={p.id}>
@@ -1132,6 +1191,25 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
               <td>{p.description ?? '-'}</td>
               <td>{p.mrp != null ? `₹${p.mrp}` : '-'}</td>
               <td>{p.quantity}</td>
+              <td>
+                {editing?.id === p.id ? (
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    <select value={editing.type} onChange={(e) => setEditing({ ...editing, type: e.target.value as DiscountKind })}>
+                      <option value="None">None</option>
+                      <option value="Percentage">%</option>
+                      <option value="Amount">₹</option>
+                    </select>
+                    <input
+                      type="number" min={0} value={editing.value} disabled={editing.type === 'None'}
+                      onChange={(e) => setEditing({ ...editing, value: e.target.value })}
+                      style={{ width: '5rem', textAlign: 'right' }}
+                    />
+                  </div>
+                ) : (
+                  p.status === 'FOC' ? 'FOC' : discountLabel(discountOf(p))
+                )}
+              </td>
+              <td>₹{partMoney(p).amount.toFixed(2)}</td>
               <td><StatusBadge status={p.status} /></td>
               <td>
                 <PartPictureCell
@@ -1150,6 +1228,21 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
                   <option value="U/W">U/W</option>
                   <option value="FOC">FOC</option>
                 </select>
+                {editing?.id === p.id ? (
+                  <>
+                    <button className="btn btn-sm btn-primary" onClick={() => run(saveDiscountEdit, 'Discount updated.')}>Save</button>
+                    <button className="btn btn-sm" onClick={() => setEditing(null)}>Cancel</button>
+                  </>
+                ) : (
+                  <button
+                    className="btn btn-sm"
+                    disabled={p.status === 'FOC'}
+                    title={p.status === 'FOC' ? 'An FOC part is free of cost - no discount applies.' : 'Edit this part\'s discount'}
+                    onClick={() => setEditing({ id: p.id, type: discountOf(p).type, value: String(discountOf(p).value) })}
+                  >
+                    Discount
+                  </button>
+                )}
                 <button
                   className="btn btn-sm"
                   style={{ background: '#dc2626', color: '#fff', border: '1px solid #dc2626' }}
@@ -1161,7 +1254,7 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
             </tr>
           ))}
           {jc.partSuggestions.length === 0 && (
-            <tr><td colSpan={8} className="muted">No parts suggested yet.</td></tr>
+            <tr><td colSpan={10} className="muted">No parts suggested yet.</td></tr>
           )}
         </tbody>
       </table>
@@ -1229,6 +1322,23 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
           <input type="number" min={1} value={qty} onChange={(e) => setQty(Number(e.target.value))} style={{ width: '4rem' }} />
         </div>
         <div className="field field-compact">
+          <label>Disc. Type</label>
+          <select value={discountType} onChange={(e) => setDiscountType(e.target.value as DiscountKind)} disabled={status === 'FOC'}>
+            <option value="None">None</option>
+            <option value="Percentage">%</option>
+            <option value="Amount">₹</option>
+          </select>
+        </div>
+        <div className="field field-compact">
+          <label>Discount</label>
+          <input
+            type="number" min={0} value={discountValue}
+            onChange={(e) => setDiscountValue(e.target.value)}
+            disabled={status === 'FOC' || discountType === 'None'}
+            style={{ width: '5.5rem', textAlign: 'right' }}
+          />
+        </div>
+        <div className="field field-compact">
           <label>Issue Type</label>
           <select value={status} onChange={(e) => setStatus(e.target.value as 'Paid' | 'U/W' | 'FOC')}>
             <option value="Paid">Paid</option>
@@ -1249,7 +1359,11 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
       </div>
       </div>
       {selectedPart && (
-        <p className="muted">MRP {selectedPart.mrp != null ? `₹${selectedPart.mrp}` : '-'} · GST {partGstText(selectedPart)} · HSN {selectedPart.hsnCode ?? '-'} · {partStockLines(selectedPart)}</p>
+        <p className="muted">
+          MRP {selectedPart.mrp != null ? `₹${selectedPart.mrp}` : '-'} · GST {partGstText(selectedPart)} · HSN {selectedPart.hsnCode ?? '-'} · {partStockLines(selectedPart)}
+          {' · '}Amount ₹{suggestionLineMoney(selectedPart.mrp, qty, status === 'FOC', { type: discountType, value: Number(discountValue) || 0 }).amount.toFixed(2)}
+          {status === 'FOC' ? ' (FOC - free of cost)' : discountType !== 'None' && Number(discountValue) > 0 ? ' after discount' : ''}
+        </p>
       )}
       </>
       )}
@@ -1333,7 +1447,10 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
   const [selected, setSelected] = useState<JobCardsLabourCatalogRow | null>(null)
   const [qty, setQty] = useState<number>(1)
   const [issueType, setIssueType] = useState('')
-  const [editing, setEditing] = useState<{ id: string; qty: number; issueType: string } | null>(null)
+  const [editing, setEditing] = useState<{ id: string; qty: number; issueType: string; discountType: DiscountKind; discountValue: string } | null>(null)
+  // 2026-10-07: discount of the labour line being added
+  const [discountType, setDiscountType] = useState<DiscountKind>('None')
+  const [discountValue, setDiscountValue] = useState('0')
 
   useEffect(() => {
     const handle = setTimeout(() => {
@@ -1353,7 +1470,7 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
 
   const addSuggestion = async () => {
     if (!selected) return
-    await staffApi.post(`/api/jobcards/${jc.id}/labour-suggestions`, {
+    const { data: created } = await staffApi.post<{ id: string }>(`/api/jobcards/${jc.id}/labour-suggestions`, {
       labourCode: selected.labourCode,
       labourDescription: selected?.labourDescription ?? null,
       hsnCode: selected?.hsnCode ?? null,
@@ -1364,11 +1481,22 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
       quantity: qty || 1,
       issueType: issueType.trim() || null,
     })
+    // the discount is saved right after the labour line is added (an FOC line is free of cost, so it never takes one)
+    const value = Number(discountValue) || 0
+    if (issueType !== 'FOC' && discountType !== 'None' && value > 0) {
+      try {
+        await staffApi.put(`/api/jobcards/labour-suggestions/${created.id}/discount`, { discountType, discountValue: discountType === 'Percentage' ? Math.min(value, 100) : value })
+      } catch {
+        alert('The labour was added, but its discount could not be saved - use Edit on its row to set it.')
+      }
+    }
     setSelectedId('')
     setSelected(null)
     setQ('')
     setQty(1)
     setIssueType('')
+    setDiscountType('None')
+    setDiscountValue('0')
   }
 
   const saveEdit = async () => {
@@ -1377,8 +1505,18 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
       quantity: editing.qty || 1,
       issueType: editing.issueType.trim() || null,
     })
+    const value = Number(editing.discountValue) || 0
+    const isFoc = editing.issueType.trim() === 'FOC'
+    const type = isFoc ? 'None' : editing.discountType
+    await staffApi.put(`/api/jobcards/labour-suggestions/${editing.id}/discount`, {
+      discountType: type === 'None' ? null : type,
+      discountValue: type === 'None' ? 0 : type === 'Percentage' ? Math.min(value, 100) : value,
+    })
     setEditing(null)
   }
+
+  /** Money of a saved labour line (Rate x Qty, less its discount; FOC = 0). */
+  const labourMoney = (l: JobCardDetail['labourSuggestions'][number]) => suggestionLineMoney(l.rateAtSuggestion, l.quantity, l.issueType === 'FOC', discountOf(l))
 
   return (
     <div className="card">
@@ -1387,7 +1525,7 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
         <thead>
           <tr>
             <th>Labour Code</th><th>Description</th><th>Qty</th><th>Rate</th><th>HSN</th>
-            <th>SGST</th><th>CGST</th><th>IGST</th><th>Issue Type</th><th></th>
+            <th>SGST</th><th>CGST</th><th>IGST</th><th>Discount</th><th>Amount</th><th>Issue Type</th><th></th>
           </tr>
         </thead>
         <tbody>
@@ -1402,6 +1540,23 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
                 <td>{l.sgst ?? '-'}</td>
                 <td>{l.cgst ?? '-'}</td>
                 <td>{l.igst ?? '-'}</td>
+                <td>
+                  {editing.issueType === 'FOC' ? 'FOC' : (
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      <select value={editing.discountType} onChange={(e) => setEditing({ ...editing, discountType: e.target.value as DiscountKind })}>
+                        <option value="None">None</option>
+                        <option value="Percentage">%</option>
+                        <option value="Amount">₹</option>
+                      </select>
+                      <input
+                        type="number" min={0} value={editing.discountValue} disabled={editing.discountType === 'None'}
+                        onChange={(e) => setEditing({ ...editing, discountValue: e.target.value })}
+                        style={{ width: '5rem', textAlign: 'right' }}
+                      />
+                    </div>
+                  )}
+                </td>
+                <td>₹{suggestionLineMoney(l.rateAtSuggestion, editing.qty, editing.issueType === 'FOC', { type: editing.discountType, value: Number(editing.discountValue) || 0 }).amount.toFixed(2)}</td>
                 <td>
                   <select value={editing.issueType} onChange={(e) => setEditing({ ...editing, issueType: e.target.value })}>
                     <option value="">Select…</option>
@@ -1423,9 +1578,11 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
                 <td>{l.sgst ?? '-'}</td>
                 <td>{l.cgst ?? '-'}</td>
                 <td>{l.igst ?? '-'}</td>
+                <td>{l.issueType === 'FOC' ? 'FOC' : discountLabel(discountOf(l))}</td>
+                <td>₹{labourMoney(l).amount.toFixed(2)}</td>
                 <td>{l.issueType ?? '-'}</td>
                 <td>
-                  <button className="btn btn-sm" onClick={() => setEditing({ id: l.id, qty: l.quantity, issueType: l.issueType ?? '' })}>Edit</button>{' '}
+                  <button className="btn btn-sm" onClick={() => setEditing({ id: l.id, qty: l.quantity, issueType: l.issueType ?? '', discountType: discountOf(l).type, discountValue: String(discountOf(l).value) })}>Edit</button>{' '}
                   <button
                     className="btn btn-sm"
                     style={{ background: '#dc2626', color: '#fff', border: '1px solid #dc2626' }}
@@ -1438,7 +1595,7 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
             )
           )}
           {jc.labourSuggestions.length === 0 && (
-            <tr><td colSpan={10} className="muted">No labour suggested yet.</td></tr>
+            <tr><td colSpan={12} className="muted">No labour suggested yet.</td></tr>
           )}
         </tbody>
       </table>
@@ -1504,6 +1661,23 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
           <input type="number" min={1} value={qty} onChange={(e) => setQty(Number(e.target.value))} style={{ width: '4rem' }} />
         </div>
         <div className="field field-compact">
+          <label>Disc. Type</label>
+          <select value={discountType} onChange={(e) => setDiscountType(e.target.value as DiscountKind)} disabled={issueType === 'FOC'}>
+            <option value="None">None</option>
+            <option value="Percentage">%</option>
+            <option value="Amount">₹</option>
+          </select>
+        </div>
+        <div className="field field-compact">
+          <label>Discount</label>
+          <input
+            type="number" min={0} value={discountValue}
+            onChange={(e) => setDiscountValue(e.target.value)}
+            disabled={issueType === 'FOC' || discountType === 'None'}
+            style={{ width: '5.5rem', textAlign: 'right' }}
+          />
+        </div>
+        <div className="field field-compact">
           <label>Issue Type</label>
           <select value={issueType} onChange={(e) => setIssueType(e.target.value)}>
             <option value="">Select…</option>
@@ -1525,6 +1699,8 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
       {selected && (
         <p className="muted">
           Rate ₹{selected.labourRate ?? '-'} · HSN {selected.hsnCode ?? '-'} · SGST {selected.sgst ?? '-'} · CGST {selected.cgst ?? '-'} · IGST {selected.igst ?? '-'}
+          {' · '}Amount ₹{suggestionLineMoney(selected.labourRate, qty, issueType === 'FOC', { type: discountType, value: Number(discountValue) || 0 }).amount.toFixed(2)}
+          {issueType === 'FOC' ? ' (FOC - free of cost)' : discountType !== 'None' && Number(discountValue) > 0 ? ' after discount' : ''}
           {selected.partCode && ` · Part: ${selected.partCode}${selected.partDescription ? ' — ' + selected.partDescription : ''}`}
         </p>
       )}

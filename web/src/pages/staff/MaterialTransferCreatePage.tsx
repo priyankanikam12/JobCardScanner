@@ -169,7 +169,7 @@ import { PartSearchInput, isConfirmedOutOfStock } from '../../components/PartSea
  *
  * NOT implemented, disclosed rather than silently dropped: the video's own popup also has a
  * "Labour Technician" dropdown - see PartwiseLabourModal.tsx's own doc comment for why (same
- * pre-existing, already-disclosed "no technician-catalog endpoint for ServiceAdvisorUp" gap this
+ * pre-existing, already-disclosed "no technician-catalog endpoint for ServiceAdvisor" gap this
  * page's own header Technician field already lives with). TechnicianId is always sent as null.
  *
  * These Labour rows flow into Repair Bill exactly the way Material-Transfer Part rows already do
@@ -214,6 +214,14 @@ import { PartSearchInput, isConfirmedOutOfStock } from '../../components/PartSea
  * this heuristic would need revisiting) - it only affects whether changing a Part row's Issue
  * Type after reopening also cascades to its Labour rows and whether removing that Part row also
  * removes them; it never changes what's saved.
+ *
+ * 2026-10-07 ("in Material transfer add FOC type Issue Type and which logic add in repair bill for
+ * FOC that all maintaining"): Issue Type gains FOC (free of cost), next to Paid and U/W. An FOC
+ * line follows the Repair Bill's rule - its Amount and GST are 0, so it adds nothing to the total;
+ * its Qty/Rate are still recorded and the stock is still taken. Labour rows added from an FOC part
+ * inherit FOC (the Part row's Issue Type governs them - see updatePartIssueType). The server
+ * applies the same rule when it saves (MaterialTransferDocsController: an FOC line's Amount is 0),
+ * so what this screen shows is what is stored. See lineCalc below - isFoc is the whole change.
  */
 type DiscountType = '%' | 'Value'
 
@@ -253,8 +261,8 @@ type DraftItem = {
   validDays: string
   itemReceived: string
   /** Reference: MaterialTransfer.IssueType, per row - "Paid" or "U/W" (see module doc comment's
-   * second 2026-09-21 correction). Kept optional/blank by default since the reference's own
-   * dropdown has no pre-selected value either. */
+   * second 2026-09-21 correction); 2026-10-07 adds "FOC". Kept optional/blank by default since the
+   * reference's own dropdown has no pre-selected value either. */
   issueType: string
   /** Stock available at the current Location for this line's Item Code, captured when a part is
    * picked via search - used only to cap/warn on Qty (see updateQty below), never sent to the
@@ -294,8 +302,11 @@ const rateFromDlrPrice = (dlrPrice: number, totalGstPct: number) => dlrPrice / (
  *    108 you specified). MRP is always the original, undiscounted Rate+GST figure and never moves
  *    when a discount is applied - taken literally from your own worked numbers (given twice,
  *    consistently), not "corrected" to the more usual GST-on-discounted-price convention.
+ *  - 2026-10-07: an FOC line (Issue Type "FOC" - free of cost) has Amount 0 and no GST amount, the
+ *    same zero-amount rule the Repair Bill applies to FOC. Qty, Rate and MRP are unchanged.
  */
 const lineCalc = (it: DraftItem) => {
+  const isFoc = it.issueType === 'FOC'
   const qty = Number(it.qty) || 0
   const rate = Number(it.rate) || 0
   const sgstPct = Number(it.sgstPct) || 0
@@ -304,23 +315,24 @@ const lineCalc = (it: DraftItem) => {
   const totalGstPct = sgstPct + cgstPct > 0 ? sgstPct + cgstPct : igstPct
 
   const originalBase = qty * rate // pre-tax, pre-discount
-  const originalGstAmt = (originalBase * totalGstPct) / 100 // frozen - see doc comment above
+  const originalGstAmt = isFoc ? 0 : (originalBase * totalGstPct) / 100 // frozen - see doc comment above
 
   const discPct = it.discountType === '%' ? Number(it.discountValue) || 0 : 0
   const discVal = it.discountType === 'Value' ? Number(it.discountValue) || 0 : 0
   const discountedRate = Math.max(0, it.discountType === '%' ? rate * (1 - discPct / 100) : rate - discVal)
   const discountedBase = qty * discountedRate
 
-  const amount = discountedBase + originalGstAmt
+  const amount = isFoc ? 0 : discountedBase + originalGstAmt
   const mrp = rate + (rate * totalGstPct) / 100 // per-unit, fixed regardless of discount
 
-  return { qty, rate, discountedRate, originalBase, discountedBase, originalGstAmt, amount, mrp, sgstPct, cgstPct, igstPct }
+  return { qty, rate, discountedRate, originalBase, discountedBase, originalGstAmt, amount, mrp, sgstPct, cgstPct, igstPct, isFoc }
 }
 
 /** Display-only CGST/SGST/IGST split of a line's (frozen, see lineCalc) GST amount, per the
  * auto-detected (or defaulted) tax mode - not persisted, see the module doc comment above. Splits
  * proportionally between the item's own SGST/CGST shares (equal in every sample row you shared,
- * but not assumed to be) rather than always exactly halving the total. */
+ * but not assumed to be) rather than always exactly halving the total. An FOC line's GST amount is
+ * already 0 (lineCalc), so its CGST/SGST/IGST amounts show ₹0.00. */
 const lineTax = (it: DraftItem, isSameState: boolean) => {
   const calc = lineCalc(it)
   if (!isSameState) {
@@ -512,21 +524,10 @@ export function MaterialTransferCreatePage() {
   // with balance quantity". Each merged-in row is tagged source: 'partUpload' (see
   // BaplDmsPartStock's doc comment) so PartSearchInput can visually distinguish it and
   // pickPartForLine can use its BillPrice/BalQty directly instead of the live-DMS MRP/GST path.
-  const [dmsParts, setDmsParts] = useState<BaplDmsPartStock[]>([])
+  const [dmsParts] = useState<BaplDmsPartStock[]>([])
   const [uploadedParts, setUploadedParts] = useState<BaplDmsPartStock[]>([])
-  useEffect(() => {
-    if (!location) { setUploadedParts([]); return }
-    staffApi.get<PartUpload[]>('/api/part-uploads', { params: { locationCode: location } })
-      .then(({ data }) => setUploadedParts(data.map((u): BaplDmsPartStock => ({
-        itemCode: u.partNo,
-        availableQty: u.balQty ?? 0,
-        description: u.description,
-        hsnCode: u.hsnSacCode,
-        source: 'partUpload',
-        billPrice: u.billPrice,
-      }))))
-      .catch(() => setUploadedParts([]))
-  }, [location])
+  // (The same /api/part-uploads fetch used to be written out twice here, back to back - one copy
+  // removed, the behaviour is identical.)
   useEffect(() => {
     if (!location) { setUploadedParts([]); return }
     staffApi.get<PartUpload[]>('/api/part-uploads', { params: { locationCode: location } })
@@ -548,7 +549,6 @@ export function MaterialTransferCreatePage() {
   // winning: it's the row this app can actually deduct/restore stock against (see
   // MaterialTransferDocsController.Create/Delete's PartUploads.BalQty adjustment) and its BalQty
   // is the more current figure of the two, so it's the more actionable one to show/pick.
-  const uploadedCodes = new Set(uploadedParts.map((p) => p.itemCode.trim().toUpperCase()))
 
   // 2026-09-21 ("Rate = Dlr_Price - GST% ... that all we want to fetch from baplfinal databse"):
   // bulk-enriches whatever's already loaded (BOTH live-DMS AND Part-Upload rows alike - your own
@@ -701,6 +701,8 @@ export function MaterialTransferCreatePage() {
     // agree, since disagreement was never observed and blocking on it would silently skip this
     // auto-fill for no clear reason. Only overwrites when a category is actually found and maps
     // cleanly to "Paid" or "U/W" - never clears an existing Issue Type back to blank on a miss.
+    // 2026-10-07: this auto-fill never replaces an FOC the user has already set on this row - FOC
+    // is a deliberate choice, not something a Labour Master category should silently undo.
     try {
       const { data: labourRows } = await staffApi.get<LabourMasterPartwise[]>(`/api/material-transfer-docs/labour-by-part-code/${encodeURIComponent(p.itemCode)}`)
       const category = labourRows.find((l) => l.category)?.category?.trim().toLowerCase()
@@ -709,7 +711,7 @@ export function MaterialTransferCreatePage() {
         : category?.includes('paid')
           ? 'Paid'
           : null
-      if (mappedIssueType) updatePartIssueType(key, mappedIssueType)
+      if (mappedIssueType && current?.issueType !== 'FOC') updatePartIssueType(key, mappedIssueType)
     } catch {
       // Silent - this is a convenience auto-fill on top of the part pick, not something that
       // should surface its own error banner and compete with priceWarning/stockWarning above.
@@ -924,7 +926,7 @@ export function MaterialTransferCreatePage() {
           // for a hand-edited Rate. The GST add-back (Amount = discountedRate x qty + frozen GST)
           // stays a FRONTEND-ONLY display figure, exactly as before - Amount here is still
           // Rate x Qty, computed server-side, matching MaterialTransferDoc's own doc comment on
-          // why no tax is persisted.
+          // why no tax is persisted. (2026-10-07: for an FOC line the server stores Amount 0.)
           rate: Number(lineCalc(i).discountedRate.toFixed(2)),
           rackNo: i.rackNo || null,
           bin: i.bin || null,
@@ -1142,10 +1144,12 @@ export function MaterialTransferCreatePage() {
                   </td>
                   <td><input value={it.hsnCode} readOnly placeholder="—" title="Auto-filled from the picked part." style={{ width: 100 }} /></td>
                   <td>
+                    {/* 2026-10-07: FOC added (free of cost - Amount and GST are 0, see lineCalc). */}
                     <select value={it.issueType} onChange={(e) => updatePartIssueType(it.key, e.target.value)} style={{ minWidth: 130 }} disabled={!jobCardId}>
                       <option value="">— select —</option>
                       <option value="Paid">Paid</option>
                       <option value="U/W">U/W</option>
+                      <option value="FOC">FOC</option>
                     </select>
                   </td>
                   <td><input type="number" value={it.qty} onChange={(e) => updateQty(it.key, e.target.value)} style={{ width: 70, textAlign: 'right' }} disabled={!jobCardId} /></td>
@@ -1160,7 +1164,7 @@ export function MaterialTransferCreatePage() {
                     </select>
                   </td>
                   <td><input type="number" value={it.discountValue} onChange={(e) => updateItem(it.key, { discountValue: e.target.value })} style={{ width: 90, textAlign: 'right' }} disabled={!jobCardId} /></td>
-                  <td className="text-end">₹{calc.amount.toFixed(2)}</td>
+                  <td className="text-end">₹{calc.amount.toFixed(2)}{calc.isFoc && <><br /><span className="muted" style={{ fontSize: 11 }}>FOC</span></>}</td>
                   <td className="text-end">₹{calc.mrp.toFixed(2)}</td>
                   <td>
                     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
