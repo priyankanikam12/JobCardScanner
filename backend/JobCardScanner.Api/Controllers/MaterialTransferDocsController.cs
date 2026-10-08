@@ -41,7 +41,7 @@ namespace JobCardScanner.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/material-transfer-docs")]
-[Authorize(Policy = "ServiceAdvisorUpNoSupervisor")]
+[Authorize(Policy = Policies.Staff)]
 public class MaterialTransferDocsController : ControllerBase
 {
     private readonly JobCardScannerDbContext _db;
