@@ -31,7 +31,7 @@ namespace JobCardScanner.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/labour-master")]
-[Authorize(Policy = Policies.WorkshopManagerUp)]
+[Authorize(Policy = Policies.Staff)]
 public class LabourMasterController : ControllerBase
 {
     private readonly ILabourMasterImportService _labourMaster;

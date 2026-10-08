@@ -380,7 +380,7 @@ export function LedgerMasterPage() {
       .get<LedgerTypeOption[]>('/api/ledger-master/types')
       .then((res) => setTypes(res.data))
       .catch((err) => setSetupError(err?.response?.data?.message
-        ?? 'Could not load the Ledger Types - has sql/2026-10-06_ledger_type_master.sql (then sql/2026-10-06_ledger_erp_sourced.sql) been run?'))
+        ?? 'Could not load the Ledger Types.'))
   }, [])
 
   const typeById = (id: number | '' | null | undefined) => (id === '' || id == null ? undefined : types.find((t) => t.id === id))
@@ -436,6 +436,13 @@ export function LedgerMasterPage() {
     if (isOrgWide) return true
     if (t?.isOrgLevel) return false
     return !!profile?.dealerId && r.dealerId === profile.dealerId
+  }
+
+  /** 2026-10-07: every role may create and edit, but only CorporateAdmin / SystemAdmin may delete or reactivate - and a ledger copied from the ERP (Dealer, Company) only a SystemAdmin.
+   *  Anyone else simply never sees the Delete / Reactivate button (the server refuses it too). */
+  const canDeleteRow = (r: LedgerRow) => {
+    if (typeById(r.ledgerTypeId)?.isErpSourced) return profile?.role === 'SystemAdmin'
+    return isOrgWide
   }
 
   const toggleSort = (key: SortKey) => {
@@ -613,6 +620,7 @@ export function LedgerMasterPage() {
   }
 
   const toggleActive = (r: LedgerRow, andClose = false) => {
+    if (!canDeleteRow(r)) return
     if (r.isActive && !window.confirm(`Delete ledger "${r.ledgerName}"? It is hidden from the pickers and can be reactivated from this list later.`)) return
     const action = r.isActive
       ? staffApi.delete(`/api/ledger-master/${r.id}`)
@@ -896,7 +904,7 @@ export function LedgerMasterPage() {
         )}
 
         {/* ---------- notes ---------- */}
-        {/* {editId && formType?.isErpSourced && (
+        {editId && formType?.isErpSourced && (
           <div className={`lf-callout${formEditable ? '' : ' gray'}`}>
             <span>ℹ️</span>
             <span>
@@ -905,7 +913,7 @@ export function LedgerMasterPage() {
                 : 'This ledger is copied from the ERP - only a SystemAdmin can change it.'}
             </span>
           </div>
-        )} */}
+        )}
         {isCompanyType && !formType?.isErpSourced && (
           <div className="lf-callout gray"><span>ℹ️</span><span>A {formType?.customerType} ledger belongs to the organisation and is visible to every dealer.</span></div>
         )}
@@ -914,7 +922,7 @@ export function LedgerMasterPage() {
 
         {/* ---------- actions ---------- */}
         <div className="lf-actions">
-          {editId && formEditable && editRow && (
+          {editId && formEditable && editRow && canDeleteRow(editRow) && (
             <button className="ledger-btn ledger-btn-red lf-delete" disabled={saving} onClick={() => toggleActive(editRow, true)}>
               {editRow.isActive ? 'Delete' : 'Reactivate'}
             </button>
@@ -1037,7 +1045,7 @@ export function LedgerMasterPage() {
                     <td data-label="Updated Date">{fmtDate(r.updatedAt)}</td>
                     <td data-label="" style={{ whiteSpace: 'nowrap' }}>
                       {editable && <button className="btn btn-sm" onClick={(e) => { e.stopPropagation(); openEdit(r) }}>Edit</button>}{' '}
-                      {editable && (
+                      {editable && canDeleteRow(r) && (
                         <button className="btn btn-sm" onClick={(e) => { e.stopPropagation(); toggleActive(r) }}>{r.isActive ? 'Delete' : 'Reactivate'}</button>
                       )}
                     </td>

@@ -24,8 +24,9 @@ namespace JobCardScanner.Api.Controllers;
 ///
 /// WHO SEES WHAT (the DMS rule): CorporateAdmin / SystemAdmin see everything (and can filter to one dealer). Everyone else sees shared ledgers (always the
 /// ERP Dealer and Company ones) and their OWN dealer's. A client-supplied dealerId is ignored for them; a row they may not see answers 404, not 403.
-/// WHO CAN CHANGE WHAT: ERP ledgers (Dealer, Company): SystemAdmin only. Ledgers created here (Party / Insurance ...): org-wide roles any, every other role its own dealer's. Reads need Policies.Staff,
-/// every write Policies.WorkshopManagerUp. DELETE is a soft delete (IsActive = false).
+/// WHO CAN CHANGE WHAT: ERP ledgers (Dealer, Company): SystemAdmin only. Ledgers created here (Party / Insurance ...): org-wide roles any, every other role its own dealer's.
+/// 2026-10-07: EVERY staff role can create and edit (Policies.Staff on POST / PUT, within the scope above); only CorporateAdmin / SystemAdmin can DELETE or reactivate
+/// (Policies.CorporateAdminUp on DELETE, and PUT refuses an IsActive change from anyone else). DELETE is a soft delete (IsActive = false).
 /// Schema: sql/2026-10-06_ledger_type_master.sql, then sql/2026-10-06_ledger_erp_sourced.sql.
 /// </summary>
 [ApiController]
@@ -205,6 +206,13 @@ public class LedgerMasterController : ControllerBase
         // Company and Dealer ledgers (copied from the ERP): only a SystemAdmin may edit or delete them.
         if (type?.IsErpSourced == true || x.ErpCustomerCode is not null) return _currentUser.Role == StaffRole.SystemAdmin;
         return IsOrgWideRole || (type?.IsOrgLevel != true && _currentUser.DealerId != null && x.DealerId == _currentUser.DealerId);
+    }
+
+    /// <summary>2026-10-07: delete / reactivate is for CorporateAdmin and SystemAdmin only - and a ledger copied from the ERP (Dealer, Company) only for a SystemAdmin, as before.</summary>
+    private bool CanDelete(LedgerMaster x, LedgerTypeMaster? type)
+    {
+        if (type?.IsErpSourced == true || x.ErpCustomerCode is not null) return _currentUser.Role == StaffRole.SystemAdmin;
+        return IsOrgWideRole;
     }
 
     // ------------------------------------------------------------------ list
@@ -475,7 +483,13 @@ public class LedgerMasterController : ControllerBase
         entity.Pan = Upper(req.Pan);
         entity.AadharNumber = Trimmed(req.AadharNumber);
 
-        entity.IsActive = req.IsActive;
+        // 2026-10-07: deleting (IsActive = false) or reactivating is not part of "edit" - CorporateAdmin / SystemAdmin only. Everyone else may save the form, but not flip this.
+        if (req.IsActive != entity.IsActive)
+        {
+            if (!CanDelete(entity, type))
+                return StatusCode(403, new { message = "Only a CorporateAdmin or SystemAdmin can delete or reactivate a ledger." });
+            entity.IsActive = req.IsActive;
+        }
         if (isErpLedger) entity.ErpOverride = true;                    // edited here: the ERP sync leaves this ledger alone from now on
         if (type?.IsOrgLevel == true) entity.IsShared = true;
         else if (IsOrgWideRole && req.IsShared is not null) entity.IsShared = req.IsShared.Value;
@@ -491,7 +505,7 @@ public class LedgerMasterController : ControllerBase
 
     /// <summary>SOFT delete (IsActive = false), reversible with PUT isActive = true. ERP-sourced ledgers cannot be deactivated here.</summary>
     [HttpDelete("{id:guid}")]
-    [Authorize(Policy = Policies.WorkshopManagerUp)]
+    [Authorize(Policy = Policies.CorporateAdminUp)]   // 2026-10-07: was WorkshopManagerUp - delete is for CorporateAdmin / SystemAdmin only
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
     {
         var entity = await _db.LedgerMasters.FirstOrDefaultAsync(x => x.Id == id, ct);
@@ -503,6 +517,8 @@ public class LedgerMasterController : ControllerBase
             return StatusCode(403, new { message = isErpLedger
                 ? $"A {type?.CustomerType ?? "ERP"} ledger comes from the ERP - only a SystemAdmin can delete it."
                 : "You can't change this ledger." });
+        if (!CanDelete(entity, type))
+            return StatusCode(403, new { message = "Only a CorporateAdmin or SystemAdmin can delete a ledger." });
 
         entity.IsActive = false;
         if (isErpLedger) entity.ErpOverride = true;                    // deleted here: the sync must not bring it back
