@@ -415,11 +415,31 @@ public class RepairBillDocsController : ControllerBase
         _db.RepairBillDocItems.RemoveRange(bill.Items);
         bill.Items.Clear();
 
-        var error = await BuildAndAttachItemsAsync(bill, req, dealerId.Value);
+        // 2026-10-09 ("i add discount and try to update then shown 'Could not update the repair bill'"): an unexpected failure here (a database error, a foreign-key problem, ...) used to escape
+        // as a bare HTTP 500 with no body, so the page could only show its generic fallback text. It now answers with the real reason, like the list actions do. The audit entry is best-effort -
+        // a failure writing it must not turn an already-saved update into an error.
+        string? error;
+        try
+        {
+            error = await BuildAndAttachItemsAsync(bill, req, dealerId.Value);
+            if (error is null)
+            {
+                // 2026-10-09 FIX ("expected to affect 1 row(s), but actually affected 0 row(s)"): the replacement lines were added to the TRACKED bill's collection already carrying a key
+                // (RepairBillDocItem.Id is pre-filled), so EF Core classed them as existing rows and sent UPDATEs that match nothing. Mark them Added explicitly so they are INSERTed.
+                // (Create never hit this - it adds the whole new graph in one go.)
+                foreach (var line in bill.Items) _db.Entry(line).State = EntityState.Added;
+                await _db.SaveChangesAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Repair bill update failed for bill {BillId}.", id);
+            return StatusCode(500, new { message = $"Could not update the repair bill: {ex.GetBaseException().Message}" });
+        }
         if (error is not null) return BadRequest(new { message = error });
 
-        await _db.SaveChangesAsync();
-        await _audit.LogAsync("RepairBillDoc.Update", "RepairBillDoc", bill.Id.ToString(), new { bill.BillNumber, bill.TotalAmount });
+        try { await _audit.LogAsync("RepairBillDoc.Update", "RepairBillDoc", bill.Id.ToString(), new { bill.BillNumber, bill.TotalAmount }); }
+        catch (Exception ex) { _logger.LogWarning(ex, "Audit entry for RepairBillDoc.Update could not be written."); }
 
         return Ok(ToRow(bill));
     }

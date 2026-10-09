@@ -128,7 +128,9 @@ builder.Services.AddAuthorization(options =>
     // these - it keeps the exact same practical access WorkshopManager already has (that's what
     // Designation="Supervisor" used to map onto before today), it's just now its own distinct role
     // rather than a plain alias of WorkshopManager.
-    options.AddPolicy(Policies.ServiceAdvisorUp, p => RoleUp(p, "ServiceAdvisor", "Supervisor", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
+    options.AddPolicy(Policies.ServiceAdvisorUp, p => RoleUp(p, "ServiceAdvisor", "Captain", "ViceCaptain", "Supervisor", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
+    options.AddPolicy(Policies.PartsReadUp, p => RoleUp(p, "ServiceAdvisor", "Captain", "ViceCaptain", "PartsUser", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));  
+    // options.AddPolicy(Policies.ServiceAdvisorUp, p => RoleUp(p, "ServiceAdvisor", "Supervisor", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
     options.AddPolicy(Policies.WorkshopManagerUp, p => RoleUp(p, "Supervisor", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
     options.AddPolicy(Policies.PartsUserUp, p => RoleUp(p, "PartsUser", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
     // See Policies.PartsReadUp's doc comment - union of ServiceAdvisorUp + PartsUserUp's roles,

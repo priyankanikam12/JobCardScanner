@@ -490,11 +490,22 @@ export function JobCardDetailPage() {
     }
   }
 
+  // 2026-10-09 ("we delete this material transfer and repair bill and reopen jobcard ... and we can create mt and repair bill"): CorporateAdmin / SystemAdmin can put a Closed job card back to work.
+  // The server (POST /api/jobcards/{id}/reopen) refuses while a Repair Bill is still saved as Invoice for it - delete that bill first.
+  const reopenJobCard = () => {
+    const reason = window.prompt('Reason for reopening this job card? (its Material Transfer and Repair Bill can then be created again)')
+    if (reason === null) return
+    run(() => staffApi.post(`/api/jobcards/${jc.id}/reopen`, { reason: reason.trim() || null }), 'Job card reopened - start the Technician Work Log timer, then create the Material Transfer and Repair Bill again.')
+  }
+
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h2 style={{ margin: 0 }}>{jc.jobCardNumber}</h2>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {jc.status === 'Closed' && hasRole('CorporateAdmin', 'SystemAdmin') && (
+            <button type="button" className="btn" style={{ border: '1px solid var(--border)' }} disabled={busy} onClick={reopenJobCard}>↩ Reopen job card</button>
+          )}
           <PrintMenu jc={jc} setMsg={setMsg} />
           <StatusBadge status={jc.status} />
         </div>

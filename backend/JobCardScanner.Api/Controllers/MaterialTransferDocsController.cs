@@ -41,7 +41,7 @@ namespace JobCardScanner.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/material-transfer-docs")]
-[Authorize(Policy = Policies.Staff)]
+[Authorize(Policy = "ServiceAdvisorUpNoSupervisor")]
 public class MaterialTransferDocsController : ControllerBase
 {
     private readonly JobCardScannerDbContext _db;
@@ -458,11 +458,29 @@ public class MaterialTransferDocsController : ControllerBase
         _db.MaterialTransferDocItems.RemoveRange(doc.Items);
         doc.Items.Clear();
 
-        var error = await ApplyStockAndBuildItemsAsync(doc, req, dealerId.Value);
+        // 2026-10-09 ("same for mt"): same as RepairBillDocsController.Update - an unexpected failure used to be a bare HTTP 500 with no body; it now answers with the real reason, and the audit
+        // entry is best-effort.
+        string? error;
+        try
+        {
+            error = await ApplyStockAndBuildItemsAsync(doc, req, dealerId.Value);
+            if (error is null)
+            {
+                // 2026-10-09 FIX - same cause as RepairBillDocsController.Update: the replacement lines carry a pre-filled key, so EF Core treated them as existing rows (UPDATE ... affected 0 rows).
+                // Mark them Added so they are INSERTed.
+                foreach (var line in doc.Items) _db.Entry(line).State = EntityState.Added;
+                await _db.SaveChangesAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Material transfer update failed for transfer {TransferId}.", id);
+            return StatusCode(500, new { message = $"Could not update the material transfer: {ex.GetBaseException().Message}" });
+        }
         if (error is not null) return BadRequest(new { message = error });
 
-        await _db.SaveChangesAsync();
-        await _audit.LogAsync("MaterialTransferDoc.Update", "MaterialTransferDoc", doc.Id.ToString(), new { doc.TransferNumber, doc.TotalAmount });
+        try { await _audit.LogAsync("MaterialTransferDoc.Update", "MaterialTransferDoc", doc.Id.ToString(), new { doc.TransferNumber, doc.TotalAmount }); }
+        catch (Exception ex) { _logger.LogWarning(ex, "Audit entry for MaterialTransferDoc.Update could not be written."); }
 
         return Ok(ToRow(doc));
     }
