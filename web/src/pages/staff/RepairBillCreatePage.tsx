@@ -424,7 +424,8 @@ export function RepairBillCreatePage() {
     if (showInsurance && !insuranceCompanyName.trim()) { setSaveError('Select the Insurance company from the list, or click "Remove Insurance".'); return }
     if (showInsurance && surveyorContactNumber && !/^\d{10}$/.test(surveyorContactNumber)) { setSaveError('Surveyor Contact No must be exactly 10 digits.'); return }
     const validItems = items.filter((i) => i.itemDescription.trim() && Number(i.qty) > 0)
-    if (validItems.length === 0) { setSaveError('Add at least one item/labour line with a description and quantity.'); return }
+    // 2026-10-10 ("without MT and without RB we can do save as proforma"): a Proforma may be saved with no Part and no Labour lines yet - they can be added later with Update Proforma. (Saving it as
+    // an Invoice still needs at least one line - the server checks that.)
 
     const body = {
       jobCardId: jobCardId || null,
@@ -811,8 +812,8 @@ export function RepairBillCreatePage() {
 
         {jobCardId && mtFetchDone && materialTransferItems.length === 0 && (
           <p className="muted" style={{ color: '#b45309', margin: '0 0 10px' }}>
-            ⚠ No Material Transfer found yet for this Job Card. Parts must be issued via Material
-            Transfer first - they will appear here automatically once saved. You can still add
+            ⚠ No Material Transfer found yet for this Job Card. Its parts will appear here automatically
+            once a Material Transfer is saved. You can still save this bill as Proforma now, and add
             Labour above.
           </p>
         )}

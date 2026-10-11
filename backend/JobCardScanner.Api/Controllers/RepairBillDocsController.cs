@@ -288,7 +288,8 @@ public class RepairBillDocsController : ControllerBase
         if (dealerId is null)
             return StatusCode(403, new { message = "A repair bill is created under a dealer - this login is not linked to one." });
         if (string.IsNullOrWhiteSpace(req.PartyName)) return BadRequest(new { message = "Party Name is required." });
-        if (req.Items is null || req.Items.Count == 0) return BadRequest(new { message = "Add at least one item or labour line." });
+        // 2026-10-10: a Proforma bill may now be saved with no lines at all (empty list) - only a missing list is refused.
+        if (req.Items is null) return BadRequest(new { message = "The items list is missing." });
 
         var dealer = await _db.Dealers.AsNoTracking().FirstOrDefaultAsync(d => d.Id == dealerId);
         if (dealer is null) return BadRequest(new { message = "Dealer not found for the signed-in user." });
@@ -363,7 +364,8 @@ public class RepairBillDocsController : ControllerBase
         if (dealerId is null)
             return StatusCode(403, new { message = "A repair bill is edited under its dealer - this login is not linked to one." });
         if (string.IsNullOrWhiteSpace(req.PartyName)) return BadRequest(new { message = "Party Name is required." });
-        if (req.Items is null || req.Items.Count == 0) return BadRequest(new { message = "Add at least one item or labour line." });
+        // 2026-10-10: a Proforma bill may now be saved with no lines at all (empty list) - only a missing list is refused.
+        if (req.Items is null) return BadRequest(new { message = "The items list is missing." });
 
         var bill = await _db.RepairBillDocs.Include(r => r.Items)
             .FirstOrDefaultAsync(r => r.Id == id && r.DealerId == dealerId && !r.IsDeleted);
@@ -654,8 +656,11 @@ public class RepairBillDocsController : ControllerBase
     public async Task<IActionResult> UpdateStatus(Guid id, [FromBody] RepairBillDocStatus status)
     {
         var dealerId = _currentUser.DealerId;
-        var bill = await _db.RepairBillDocs.FirstOrDefaultAsync(r => r.Id == id && r.DealerId == dealerId);
+        var bill = await _db.RepairBillDocs.Include(r => r.Items).FirstOrDefaultAsync(r => r.Id == id && r.DealerId == dealerId);
         if (bill is null) return NotFound();
+        // 2026-10-10: since a Proforma can now be saved with no lines, an EMPTY bill must not become an Invoice - that would close the job card on a Rs 0 bill with nothing on it.
+        if (status == RepairBillDocStatus.Billed && bill.Items.Count == 0)
+            return BadRequest(new { message = "Add at least one item or labour line before saving this bill as Invoice." });
         bill.Status = status;
 
         // 2026-09-28 (SECTION 147, "when i click Generate Invoice ... we cant close jobcards

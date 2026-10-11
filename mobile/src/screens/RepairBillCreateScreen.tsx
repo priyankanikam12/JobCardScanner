@@ -24,6 +24,11 @@ import type { BaplDmsLabourRow, BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaste
  * taxable amount (taxable = zeroTax ? 0 : gross - discountAmt), so adding 'FOC' to the same
  * zero-tax set makes a picked FOC line's Total read ₹0 with no separate amount override required -
  * the exact same one-line fix web's RepairBillCreatePage.tsx got.
+ *
+ * 2026-10-10 ("without MT and without RB we can do save as proforma"): a Proforma can be saved with
+ * NO Part and NO Labour lines - the "Add at least one item/labour line first" check in save() is
+ * gone (the server accepts an empty list too). Lines can be added later with Update Proforma. Saving
+ * such a bill as Invoice is still refused by the server (it needs at least one line).
  */
 type TaxMode = 'Same State (CGST+SGST)' | 'Different State (IGST)'
 type DiscountType = 'None' | 'Percentage' | 'Amount'
@@ -550,7 +555,7 @@ export function RepairBillCreateScreen() {
 
   const save = () => {
     if (!partyName.trim()) { Alert.alert('Party Name is required.'); return }
-    if (items.length === 0) { Alert.alert('Add at least one item/labour line first.'); return }
+    // 2026-10-10 ("without MT and without RB we can do save as proforma"): no "at least one line" check any more - a Proforma can be saved with no Part and no Labour lines yet.
     setSaving(true)
     const body = {
         jobCardId: jobCardId || null,
@@ -839,11 +844,13 @@ export function RepairBillCreateScreen() {
 
       {items.length > 0 && <Text style={styles.subheading}>Lines ({items.length})</Text>}
       {/* 2026-09-22: mirrors web's own onSelect() warning - see this module's doc comment on why
-          this screen now syncs from Material Transfer at all. */}
+          this screen now syncs from Material Transfer at all. 2026-10-10: reworded - a Proforma
+          can be saved without any lines, so this is only a note. */}
       {jobCardId && mtFetchDone && materialTransferItems.length === 0 && (
         <Text style={styles.muted}>
           No Material Transfer found yet for this Job Card. Parts/Labour issued via Material
-          Transfer will appear here automatically once saved - you can still add lines manually above.
+          Transfer will appear here automatically once saved - you can still add lines manually
+          above, or save this bill as Proforma now and add lines later.
         </Text>
       )}
       {items.map((it) => {
