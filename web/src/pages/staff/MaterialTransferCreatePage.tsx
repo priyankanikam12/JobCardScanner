@@ -895,7 +895,7 @@ export function MaterialTransferCreatePage() {
     setSaveError(null)
     setSaveOk(null)
     const validItems = items.filter((i) => i.itemDescription.trim() && Number(i.qty) > 0)
-    if (validItems.length === 0) { setSaveError('Add at least one item line with a description and quantity.'); return }
+    // 2026-10-12 ("Add at least one item line first - remove that, with no item it will save"): a Material Transfer can be saved with no lines yet (a Draft to fill in later with Update Draft).
 
     setSaving(true)
     const body = {

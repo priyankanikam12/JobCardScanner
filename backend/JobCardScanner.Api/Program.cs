@@ -195,7 +195,7 @@ builder.Services.AddAuthorization(options =>
     // with every other policy name in this file, paste me the file that defines the Policies class
     // and I'll add them there and switch these two literals over to it - purely cosmetic, not a
     // behavior change.
-    options.AddPolicy("ServiceAdvisorUpNoSupervisor", p => RoleUp(p, "ServiceAdvisor", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
+    options.AddPolicy("ServiceAdvisorUpNoSupervisor", p => RoleUp(p, "ServiceAdvisor", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin","Captain","ViceCaptain","PartsUser","Cashier","Supervisor"));
     options.AddPolicy("WorkshopManagerUpNoSupervisor", p => RoleUp(p, "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
 });
 

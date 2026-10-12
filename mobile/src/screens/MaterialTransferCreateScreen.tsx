@@ -306,7 +306,7 @@ export function MaterialTransferCreateScreen() {
   const clearJob = () => { setJobCardId(null); setJobCardNumber(''); setPartyState(null) }
 
   const save = () => {
-    if (items.length === 0) { Alert.alert('Add at least one item line first.'); return }
+    // 2026-10-12 ("Add at least one item line first - remove that"): a Material Transfer can be saved with no lines yet.
     setSaving(true)
     apiClient
       .post('/api/material-transfer-docs', {

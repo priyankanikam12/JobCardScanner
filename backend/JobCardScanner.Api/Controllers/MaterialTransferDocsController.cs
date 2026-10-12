@@ -356,7 +356,8 @@ public class MaterialTransferDocsController : ControllerBase
         var dealerId = _currentUser.DealerId;
         if (dealerId is null)
             return StatusCode(403, new { message = "A material transfer is created under a dealer - this login is not linked to one." });
-        if (req.Items is null || req.Items.Count == 0) return BadRequest(new { message = "Add at least one item line." });
+        // 2026-10-12: a Draft transfer may be saved with no lines at all (empty list) - only a missing list is refused.
+        if (req.Items is null) return BadRequest(new { message = "The items list is missing." });
 
         var doc = new MaterialTransferDoc
         {
@@ -414,7 +415,8 @@ public class MaterialTransferDocsController : ControllerBase
         var dealerId = _currentUser.DealerId;
         if (dealerId is null)
             return StatusCode(403, new { message = "A material transfer is edited under its dealer - this login is not linked to one." });
-        if (req.Items is null || req.Items.Count == 0) return BadRequest(new { message = "Add at least one item line." });
+        // 2026-10-12: a Draft transfer may be saved with no lines at all (empty list) - only a missing list is refused.
+        if (req.Items is null) return BadRequest(new { message = "The items list is missing." });
 
         var doc = await _db.MaterialTransferDocs.Include(m => m.Items)
             .FirstOrDefaultAsync(m => m.Id == id && m.DealerId == dealerId);

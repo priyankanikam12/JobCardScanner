@@ -156,7 +156,7 @@ export function RepairBillCreateScreen() {
   const [editingBillStatus, setEditingBillStatus] = useState<RepairBillDocStatus | null>(null)
   const [editLoadError, setEditLoadError] = useState<string | null>(null)
   const [convertingId, setConvertingId] = useState<string | null>(null)
-  const editSnapshotByCodeRef = useRef<Record<string, { discountType: DiscountType; discountValue: string; issueType: string }>>({})
+  const editSnapshotByCodeRef = useRef<Record<string, { discountType: DiscountType; discountValue: string; issueType: string; rate: string }>>({})
   const dedupeLabourAfterEditRef = useRef(false)
   const scrollRef = useRef<ScrollView>(null)
 
@@ -303,6 +303,19 @@ export function RepairBillCreateScreen() {
         // Issue Type, matched by item type + code since a saved bill line has no direct FK back to
         // the Material Transfer row it came from - see startEditBill's own doc comment.
         const snap = editSnapshotByCodeRef.current[`${isLabour ? 'Labour' : 'Part'}:${m.itemCode.trim().toUpperCase()}`]
+        // 2026-10-12 ("the discount added on the Material Transfer is not showing in the Repair Bill") - same as web's sync: a Material Transfer line saves only the already-discounted
+        // Rate and the undiscounted MRP, so the discount is worked back out (undiscounted rate = MRP / (1 + GST%)) and shown as a Percentage on it. A reopened bill keeps what it saved.
+        let rateShown: number | string = snap ? snap.rate : m.rate
+        let discountTypeShown: DiscountType = snap ? snap.discountType : 'None'
+        let discountValueShown = snap ? snap.discountValue : '0'
+        if (!snap && !isLabour && m.mrp != null && m.mrp > 0) {
+          const originalRate = m.mrp / (1 + totalGst / 100)
+          if (originalRate - m.rate > 0.01) {
+            rateShown = Number(originalRate.toFixed(2))
+            discountTypeShown = 'Percentage'
+            discountValueShown = String(Number(((1 - m.rate / originalRate) * 100).toFixed(2)))
+          }
+        }
         return {
           key: m.id,
           itemType: isLabour ? 'Labour' : 'Part',
@@ -310,11 +323,11 @@ export function RepairBillCreateScreen() {
           itemDescription: m.itemDescription,
           hsnCode: m.hsnCode || '',
           qty: String(m.qty),
-          rate: String(m.rate),
+          rate: String(rateShown),
           mrp: !isLabour && m.mrp != null ? String(m.mrp) : '',
           gstPct: String(totalGst),
-          discountType: snap?.discountType ?? ('None' as DiscountType),
-          discountValue: snap?.discountValue ?? '0',
+          discountType: discountTypeShown,
+          discountValue: discountValueShown,
           issueType: snap?.issueType ?? (m.issueType || ''),
           fromMaterialTransfer: true,
         }
@@ -455,12 +468,13 @@ export function RepairBillCreateScreen() {
         setAmountReceived(String(bill.amountReceived))
         setShowInsurance(!!(bill.insuranceCompanyName || bill.policyNo || bill.surveyorName))
 
-        const snapshot: Record<string, { discountType: DiscountType; discountValue: string; issueType: string }> = {}
+        const snapshot: Record<string, { discountType: DiscountType; discountValue: string; issueType: string; rate: string }> = {}
         bill.items.forEach((it) => {
           snapshot[`${it.itemType}:${it.itemCode.trim().toUpperCase()}`] = {
             discountType: (it.discountType as DiscountType) || 'None',
             discountValue: String(it.discountValue),
             issueType: it.issueType || '',
+            rate: String(it.rate),
           }
         })
         editSnapshotByCodeRef.current = snapshot

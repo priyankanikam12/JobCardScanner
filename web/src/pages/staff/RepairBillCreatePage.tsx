@@ -27,6 +27,8 @@ type DraftItem = {
   discountValue: string
   issueType: string
   fromMaterialTransfer: boolean
+  /** true once the user has changed this line's Discount Type / Value on this screen - the Material Transfer sync then stops re-working them (see the sync effect). */
+  discountTouched?: boolean
 }
 
 const emptyItem = (key: string, defaultIssueType = ''): DraftItem => ({
@@ -126,12 +128,12 @@ export function RepairBillCreatePage() {
   const [editingBillNumber, setEditingBillNumber] = useState<string | null>(null)
   const [editingBillStatus, setEditingBillStatus] = useState<RepairBillDocStatus | null>(null)
   const [editLoadError, setEditLoadError] = useState<string | null>(null)
-  const editSnapshotByCodeRef = useRef<Record<string, { discountType: DiscountType; discountValue: string; issueType: string }>>({})
+  const editSnapshotByCodeRef = useRef<Record<string, { discountType: DiscountType; discountValue: string; issueType: string; rate: string }>>({})
   const dedupeLabourAfterEditRef = useRef(false)
 
   const removeItem = (key: string) => setItems((prev) => prev.filter((i) => i.key !== key))
   const updateItem = (key: string, patch: Partial<DraftItem>) =>
-    setItems((prev) => prev.map((i) => (i.key === key ? { ...i, ...patch } : i)))
+    setItems((prev) => prev.map((i) => (i.key === key ? { ...i, ...patch, ...('discountType' in patch || 'discountValue' in patch ? { discountTouched: true } : {}) } : i)))
 
   const [excludedPartKeys, setExcludedPartKeys] = useState<Set<string>>(new Set())
   const removePart = (it: DraftItem) => {
@@ -227,6 +229,23 @@ export function RepairBillCreatePage() {
         const totalGst = sgstPct + cgstPct > 0 ? sgstPct + cgstPct : igstPct
         const existing = prev.find((i) => i.key === m.id)
         const snap = editSnapshotByCodeRef.current[`${isLabour ? 'Labour' : 'Part'}:${m.itemCode.trim().toUpperCase()}`]
+        // 2026-10-12 ("the discount added on the Material Transfer is not showing in the Repair Bill"): a Material Transfer line keeps NO discount of its own - it saves only the
+        // already-discounted Rate and the undiscounted MRP (Dealer Price incl. GST), so the Repair Bill used to receive just the net rate and showed Discount "-". The discount is worked back
+        // out here: undiscounted rate = MRP / (1 + GST%), and any gap down to the saved Rate is the discount, shown as a Percentage on the undiscounted rate (the Repair Bill then discounts
+        // it as usual, GST on the discounted amount). Order of precedence for a line: what the user changed on this screen > what the saved bill had (when a bill is reopened for edit) >
+        // the discount recovered from the Material Transfer. A Labour line has no MRP and a line with no price gap shows no discount - both unchanged.
+        const keepEdited = !!existing?.discountTouched
+        let rateShown: number | string = keepEdited && existing ? existing.rate : snap ? snap.rate : m.rate
+        let discountTypeShown: DiscountType = keepEdited && existing ? existing.discountType : snap ? snap.discountType : 'None'
+        let discountValueShown = keepEdited && existing ? existing.discountValue : snap ? snap.discountValue : '0'
+        if (!keepEdited && !snap && !isLabour && m.mrp != null && m.mrp > 0) {
+          const originalRate = m.mrp / (1 + totalGst / 100)
+          if (originalRate - m.rate > 0.01) {
+            rateShown = Number(originalRate.toFixed(2))
+            discountTypeShown = 'Percentage'
+            discountValueShown = String(Number(((1 - m.rate / originalRate) * 100).toFixed(2)))
+          }
+        }
         return {
           key: m.id,
           itemType: isLabour ? 'Labour' : 'Part',
@@ -234,11 +253,12 @@ export function RepairBillCreatePage() {
           itemDescription: m.itemDescription,
           hsnCode: m.hsnCode || '',
           qty: String(m.qty),
-          rate: String(m.rate),
+          rate: String(rateShown),
           mrp: !isLabour && m.mrp != null ? String(m.mrp) : '',
           gstPct: String(totalGst),
-          discountType: existing?.discountType ?? snap?.discountType ?? 'None',
-          discountValue: existing?.discountValue ?? snap?.discountValue ?? '0',
+          discountType: discountTypeShown,
+          discountValue: discountValueShown,
+          discountTouched: keepEdited,
           issueType: existing?.issueType ?? snap?.issueType ?? (m.issueType || ''),
           fromMaterialTransfer: true,
         }
@@ -347,12 +367,13 @@ export function RepairBillCreatePage() {
         // a saved bill that has insurance reopens with the Insurance section on
         setShowInsurance(!!(bill.insuranceCompanyName || bill.policyNo || bill.surveyorName))
 
-        const snapshot: Record<string, { discountType: DiscountType; discountValue: string; issueType: string }> = {}
+        const snapshot: Record<string, { discountType: DiscountType; discountValue: string; issueType: string; rate: string }> = {}
         bill.items.forEach((it) => {
           snapshot[`${it.itemType}:${it.itemCode.trim().toUpperCase()}`] = {
             discountType: (it.discountType as DiscountType) || 'None',
             discountValue: String(it.discountValue),
             issueType: it.issueType || '',
+            rate: String(it.rate),
           }
         })
         editSnapshotByCodeRef.current = snapshot
