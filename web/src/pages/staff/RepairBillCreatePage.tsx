@@ -10,6 +10,41 @@ import { LabourSearchInput } from '../../components/LabourSearchInput'
 // invoice (see lib/repairBillInsuranceHtml.ts). A bill without insurance saves and prints in the normal format.
 import { InsuranceSection } from '../../components/InsuranceSection'
 
+// 2026-10-12 ("in repair bill Labour Code wise why not fetch?"): one row of the Labour Master (GET /api/labour-master/without-partwise | /partwise) - the tables the Labour Master page uploads into.
+// Its GST columns are plain fractions (0.18 = 18%).
+interface LabourMasterListRow {
+  id: number
+  labourCode: string
+  jobDescription: string | null
+  model: string | null
+  labourRate: number | null
+  igst: number | null
+  cgst: number | null
+  sgst: number | null
+  isActive: boolean
+}
+
+/** Shapes a Labour Master row like the DMS labour rows the picker already handles (GST as a percentage). ids are made negative so they can never clash with a DMS row's own id. */
+const labourFromMaster = (r: LabourMasterListRow, idOffset: number): BaplDmsLabourRow => ({
+  id: -(idOffset + r.id),
+  labourCode: r.labourCode,
+  labourDescription: r.jobDescription,
+  hsnCode: null,
+  labourRate: r.labourRate,
+  cgst: r.cgst != null ? r.cgst * 100 : null,
+  sgst: r.sgst != null ? r.sgst * 100 : null,
+  igst: r.igst != null ? r.igst * 100 : null,
+  oemModelName: r.model,
+} as unknown as BaplDmsLabourRow)
+
+/** A labour tagged for a model shows for a job whose vehicle name contains that model ("C12i" for "BGauss C12i MAX 2.0 Foliage Green"); an untagged labour shows for every vehicle. */
+const labourModelMatches = (labourModel: string | null | undefined, vehicle: string | null) => {
+  const lm = (labourModel ?? '').trim().toLowerCase()
+  const vm = (vehicle ?? '').trim().toLowerCase()
+  if (!lm || !vm) return true
+  return vm === lm || vm.includes(lm)
+}
+
 type TaxMode = 'Same State (CGST+SGST)' | 'Different State (IGST)'
 type DiscountType = 'None' | 'Percentage' | 'Amount'
 
@@ -151,8 +186,18 @@ export function RepairBillCreatePage() {
 
   const [draftLabour, setDraftLabour] = useState<DraftItem>(() => emptyItem('draft', issueType))
   const [labourEditingKey, setLabourEditingKey] = useState<string | null>(null)
-  const resetDraftLabour = () => { setDraftLabour(emptyItem('draft', issueType)); setLabourEditingKey(null) }
-  const startEditLabour = (it: DraftItem) => { setDraftLabour({ ...it }); setLabourEditingKey(it.key) }
+  // 2026-10-12 ("when we add Labour in the input box and that labour code's Rate is 0 then the Rate field is editable, otherwise non editable - Description also"): the Labour Master rate of the labour
+  // currently in the input row - null = nothing picked from the master (a free-typed code), 0 = picked but the master has no rate, > 0 = picked with a rate. A labour picked WITH a rate has its Rate and
+  // Description locked (they come from the master); a ₹0 labour, or a free-typed one, can be filled in by hand. Changing the code after a pick clears the row (see the code input).
+  const [draftPickedRate, setDraftPickedRate] = useState<number | null>(null)
+  const labourLocked = draftPickedRate !== null && draftPickedRate > 0
+  const resetDraftLabour = () => { setDraftLabour(emptyItem('draft', issueType)); setLabourEditingKey(null); setDraftPickedRate(null) }
+  const startEditLabour = (it: DraftItem) => {
+    setDraftLabour({ ...it }); setLabourEditingKey(it.key)
+    // an existing line is locked the same way when its code is still in the Labour Master with a rate
+    const master = allLabours.find((l) => l.labourCode.trim().toUpperCase() === it.itemCode.trim().toUpperCase())
+    setDraftPickedRate(master ? (master.labourRate ?? 0) : null)
+  }
   const commitLabourDraft = () => {
     if (!draftLabour.itemCode.trim() || !draftLabour.itemDescription.trim()) return
     if (labourEditingKey) {
@@ -286,11 +331,33 @@ export function RepairBillCreatePage() {
       .catch(() => setLabours([]))
   }, [location])
 
-  const labourOptionsForModel = !vehicleModel
-    ? labours
-    : labours.filter((l) => !l.oemModelName || l.oemModelName.trim().toLowerCase() === vehicleModel.trim().toLowerCase())
+  // 2026-10-12 ("in repair bill Labour Code wise why not fetch?"): the Labour picker only ever read the DMS labour list (/api/bapl-dms/labour), a different source from the Labour Master page, so
+  // the labour codes uploaded there (Without Partwise and Partwise) never showed here. It now offers the active Labour Master rows too; where the same code + model is in both, the Labour Master
+  // one wins (it is the list you maintain and its rate is the one to bill).
+  const [masterLabours, setMasterLabours] = useState<BaplDmsLabourRow[]>([])
+  useEffect(() => {
+    let cancelled = false
+    Promise.all([
+      staffApi.get<LabourMasterListRow[]>('/api/labour-master/without-partwise').then((r) => r.data.filter((x) => x.isActive).map((x) => labourFromMaster(x, 0))).catch(() => [] as BaplDmsLabourRow[]),
+      staffApi.get<LabourMasterListRow[]>('/api/labour-master/partwise').then((r) => r.data.filter((x) => x.isActive).map((x) => labourFromMaster(x, 1_000_000))).catch(() => [] as BaplDmsLabourRow[]),
+    ]).then(([withoutPartwise, partwise]) => { if (!cancelled) setMasterLabours([...withoutPartwise, ...partwise]) })
+    return () => { cancelled = true }
+  }, [])
+  const allLabours: BaplDmsLabourRow[] = (() => {
+    const seen = new Set<string>()
+    const out: BaplDmsLabourRow[] = []
+    for (const l of [...masterLabours, ...labours]) {
+      const key = `${l.labourCode.trim().toUpperCase()}|${(l.oemModelName ?? '').trim().toUpperCase()}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(l)
+    }
+    return out
+  })()
+  const labourOptionsForModel = allLabours.filter((l) => labourModelMatches(l.oemModelName, vehicleModel))
 
   const pickLabourForDraft = (l: BaplDmsLabourRow) => {
+    setDraftPickedRate(l.labourRate ?? 0)
     const totalGst = (l.cgst ?? 0) + (l.sgst ?? 0) > 0 ? (l.cgst ?? 0) + (l.sgst ?? 0) : (l.igst ?? 18)
     setDraftLabour((prev) => ({
       ...prev,
@@ -679,7 +746,11 @@ export function RepairBillCreatePage() {
               labours={labourOptionsForModel}
               locationSelected={!!location}
               value={draftLabour.itemCode}
-              onChangeText={(text) => setDraftLabour((p) => ({ ...p, itemCode: text }))}
+              onChangeText={(text) => {
+                // typing over a picked labour's code drops the pick (and its locked Rate / Description) - the row starts again from the typed code
+                if (draftPickedRate !== null) { setDraftPickedRate(null); setDraftLabour({ ...emptyItem('draft', issueType), itemCode: text }) }
+                else setDraftLabour((p) => ({ ...p, itemCode: text }))
+              }}
               onPick={pickLabourForDraft}
               placeholder="Labour code…"
               width={140}
@@ -695,7 +766,7 @@ export function RepairBillCreatePage() {
               onChangeText={(text) => setDraftLabour((p) => ({ ...p, itemDescription: text }))}
               onPick={pickLabourForDraft}
               width={220}
-              disabled={!jobCardId}
+              disabled={!jobCardId || labourLocked}
             />
           </div>
           <div className="field field-compact">
@@ -704,7 +775,7 @@ export function RepairBillCreatePage() {
           </div>
           <div className="field field-compact">
             <label>Rate</label>
-            <input type="number" value={draftLabour.rate} onChange={(e) => setDraftLabour((p) => ({ ...p, rate: e.target.value }))} style={{ width: 90, textAlign: 'right' }} disabled={!jobCardId} />
+            <input type="number" value={draftLabour.rate} onChange={(e) => setDraftLabour((p) => ({ ...p, rate: e.target.value }))} style={{ width: 90, textAlign: 'right' }} disabled={!jobCardId || labourLocked} title={labourLocked ? 'This rate comes from the Labour Master and cannot be changed.' : undefined} />
           </div>
           <div className="field field-compact">
             <label>Disc. Type</label>
@@ -746,6 +817,13 @@ export function RepairBillCreatePage() {
           </div>
         </div>
         </div>
+        {jobCardId && draftPickedRate !== null && (
+          <p className="muted" style={{ fontSize: 12, margin: '6px 0 0' }}>
+            {draftPickedRate > 0
+              ? `Rate (₹${draftPickedRate}) and Description come from the Labour Master and cannot be changed - change the Labour code to pick another.`
+              : 'This labour has no rate in the Labour Master - enter the Rate (and Description) yourself.'}
+          </p>
+        )}
         {!jobCardId && (
           <p className="muted" style={{ fontSize: 13, margin: '8px 0 0' }}>
             Search and link a Job above to add Labour.

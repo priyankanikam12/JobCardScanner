@@ -30,6 +30,31 @@ import type { BaplDmsLabourRow, BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaste
  * gone (the server accepts an empty list too). Lines can be added later with Update Proforma. Saving
  * such a bill as Invoice is still refused by the server (it needs at least one line).
  */
+// 2026-10-12 ("in repair bill Labour Code wise why not fetch?") - one row of the Labour Master (GET /api/labour-master/without-partwise | /partwise); its GST columns are plain fractions (0.18 = 18%).
+interface LabourMasterListRow {
+  id: number
+  labourCode: string
+  jobDescription: string | null
+  model: string | null
+  labourRate: number | null
+  igst: number | null
+  cgst: number | null
+  sgst: number | null
+  isActive: boolean
+}
+/** Shapes a Labour Master row like the DMS labour rows this screen already handles (GST as a percentage); ids are negative so they never clash with a DMS row's id. */
+const labourFromMaster = (r: LabourMasterListRow, idOffset: number): BaplDmsLabourRow => ({
+  id: -(idOffset + r.id),
+  labourCode: r.labourCode,
+  labourDescription: r.jobDescription,
+  hsnCode: null,
+  labourRate: r.labourRate,
+  cgst: r.cgst != null ? r.cgst * 100 : null,
+  sgst: r.sgst != null ? r.sgst * 100 : null,
+  igst: r.igst != null ? r.igst * 100 : null,
+  oemModelName: r.model,
+} as unknown as BaplDmsLabourRow)
+
 type TaxMode = 'Same State (CGST+SGST)' | 'Different State (IGST)'
 type DiscountType = 'None' | 'Percentage' | 'Amount'
 
@@ -219,14 +244,40 @@ export function RepairBillCreateScreen() {
       .catch(() => setLabours([]))
   }, [location])
 
+  // 2026-10-12 ("in repair bill Labour Code wise why not fetch?"): the picker only read the DMS labour list, never the Labour Master the Labour Master page uploads into - the active Labour Master
+  // rows (Without Partwise + Partwise) are offered too, and win over a DMS row with the same code + model.
+  const [masterLabours, setMasterLabours] = useState<BaplDmsLabourRow[]>([])
+  useEffect(() => {
+    let cancelled = false
+    Promise.all([
+      apiClient.get<LabourMasterListRow[]>('/api/labour-master/without-partwise').then((r) => r.data.filter((x) => x.isActive).map((x) => labourFromMaster(x, 0))).catch(() => [] as BaplDmsLabourRow[]),
+      apiClient.get<LabourMasterListRow[]>('/api/labour-master/partwise').then((r) => r.data.filter((x) => x.isActive).map((x) => labourFromMaster(x, 1_000_000))).catch(() => [] as BaplDmsLabourRow[]),
+    ]).then(([withoutPartwise, partwise]) => { if (!cancelled) setMasterLabours([...withoutPartwise, ...partwise]) })
+    return () => { cancelled = true }
+  }, [])
+  const allLabours: BaplDmsLabourRow[] = (() => {
+    const seen = new Set<string>()
+    const out: BaplDmsLabourRow[] = []
+    for (const l of [...masterLabours, ...labours]) {
+      const key = `${l.labourCode.trim().toUpperCase()}|${((l as { oemModelName?: string | null }).oemModelName ?? '').trim().toUpperCase()}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(l)
+    }
+    return out
+  })()
+
   const [draft, setDraft] = useState<Omit<DraftItem, 'key'>>(emptyDraft)
+  // 2026-10-12 ("when that labour code's Rate is 0 then the Rate field is editable, otherwise non editable"): the Labour Master rate of the labour picked into the draft - null = none picked,
+  // 0 = the master has no rate, > 0 = it has one (the Rate field is then locked).
+  const [draftLabourRate, setDraftLabourRate] = useState<number | null>(null)
   const [search, setSearch] = useState('')
   const q = search.trim().toLowerCase()
   const partMatches = draft.itemType === 'Part' && q.length > 0
     ? dmsParts.filter((p) => p.itemCode.toLowerCase().includes(q) || (p.description ?? '').toLowerCase().includes(q)).slice(0, 20)
     : []
   const labourMatches = draft.itemType === 'Labour' && q.length > 0
-    ? labours.filter((l) => l.labourCode.toLowerCase().includes(q) || (l.labourDescription ?? '').toLowerCase().includes(q)).slice(0, 20)
+    ? allLabours.filter((l) => l.labourCode.toLowerCase().includes(q) || (l.labourDescription ?? '').toLowerCase().includes(q)).slice(0, 20)
     : []
 
   // 2026-09-22 ("now i saved from material transfer bill now this will shown in repair bill"):
@@ -364,6 +415,7 @@ export function RepairBillCreateScreen() {
   }
 
   const pickPart = (p: BaplDmsPartStock) => {
+    setDraftLabourRate(null)
     const im = itemMasterByCode[p.itemCode.trim().toUpperCase()]
     const sgstPct = im?.sgst ?? 9
     const cgstPct = im?.cgst ?? 9
@@ -385,6 +437,7 @@ export function RepairBillCreateScreen() {
   /** Rate set DIRECTLY from LabourRate - a labour rate card's rate is already GST-exclusive,
    * unlike a Part's GST-inclusive Dealer Price/MRP. Direct port of web's pickLabourForLine. */
   const pickLabour = (l: BaplDmsLabourRow) => {
+    setDraftLabourRate(l.labourRate ?? 0)
     const totalGst = (l.cgst ?? 0) + (l.sgst ?? 0) > 0 ? (l.cgst ?? 0) + (l.sgst ?? 0) : (l.igst ?? 18)
     setDraft((d) => ({
       ...d,
@@ -406,6 +459,7 @@ export function RepairBillCreateScreen() {
     setItems((prev) => [...prev, { key: `manual-${nextKey}`, ...draft, issueType: draft.issueType || issueType }])
     setNextKey((k) => k + 1)
     setDraft(emptyDraft)
+    setDraftLabourRate(null)
     setSearch('')
   }
   const removeLine = (key: string) => setItems((prev) => prev.filter((i) => i.key !== key))
@@ -766,7 +820,7 @@ export function RepairBillCreateScreen() {
       <Text style={styles.subheading}>Add Item / Labour</Text>
       <View style={{ flexDirection: 'row', gap: 6, marginBottom: 8 }}>
         {(['Part', 'Labour'] as const).map((t) => (
-          <TouchableOpacity key={t} style={[styles.pill, draft.itemType === t && styles.pillSelected]} onPress={() => { setDraft((d) => ({ ...emptyDraft, itemType: t })); setSearch('') }}>
+          <TouchableOpacity key={t} style={[styles.pill, draft.itemType === t && styles.pillSelected]} onPress={() => { setDraft((d) => ({ ...emptyDraft, itemType: t })); setDraftLabourRate(null); setSearch('') }}>
             <Text style={[styles.pillText, draft.itemType === t && styles.pillTextSelected]}>{t}</Text>
           </TouchableOpacity>
         ))}
@@ -806,7 +860,13 @@ export function RepairBillCreateScreen() {
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.label}>Rate</Text>
-              <TextInput style={styles.input} value={draft.rate} onChangeText={(v) => setDraft((d) => ({ ...d, rate: v }))} keyboardType="numeric" />
+              <TextInput
+                style={[styles.input, draft.itemType === 'Labour' && draftLabourRate !== null && draftLabourRate > 0 && { opacity: 0.6 }]}
+                value={draft.rate}
+                onChangeText={(v) => setDraft((d) => ({ ...d, rate: v }))}
+                keyboardType="numeric"
+                editable={!(draft.itemType === 'Labour' && draftLabourRate !== null && draftLabourRate > 0)}
+              />
             </View>
           </View>
 
