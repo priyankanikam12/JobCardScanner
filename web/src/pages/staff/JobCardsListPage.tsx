@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import type { MouseEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { staffApi } from '../../api/client'
+import { useStaffAuth } from '../../auth/StaffAuthContext'
 import type { JobCardListResponse, JobCardSummary, JobCardStatus } from '../../types'
 import { StatusBadge } from '../../components/StatusBadge'
 
@@ -31,6 +32,10 @@ export function JobCardsListPage() {
   // instead of showing the unfiltered list first.
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
+  const { hasRole } = useStaffAuth()
+  // 2026-10-12 ("on systemadmin and corporateadmin login the job card list shows who created the job card"): head-office logins get a "Created By" column after Created.
+  const showCreatedBy = hasRole('CorporateAdmin', 'SystemAdmin')
+  const [createdByMap, setCreatedByMap] = useState<Record<string, string>>({})
   const [jobCards, setJobCards] = useState<JobCardSummary[]>([])
   // Non-null only when a real DMS problem (not "this dealer has no DMS data", which is
   // normal and silent) kept its job cards out of the blended list below.
@@ -69,6 +74,23 @@ export function JobCardsListPage() {
     return () => clearTimeout(handle)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q])
+
+  // 2026-10-12: who created each job card on the page - one POST for the page's own (JobCardScanner) job cards, only for CorporateAdmin / SystemAdmin. The DMS-sourced rows have no
+  // creator here and show "-".
+  useEffect(() => {
+    if (!showCreatedBy) return
+    const ids = jobCards.filter((j) => j.source !== 'BaplDms').map((j) => j.id)
+    if (ids.length === 0) return
+    let cancelled = false
+    staffApi
+      .post<{ id: string; createdByName: string | null }[]>('/api/jobcards/created-by', { ids })
+      .then(({ data }) => {
+        if (cancelled) return
+        setCreatedByMap((prev) => ({ ...prev, ...Object.fromEntries(data.map((d) => [d.id, d.createdByName ?? '-'])) }))
+      })
+      .catch(() => { /* best-effort - the column just shows "-" */ })
+    return () => { cancelled = true }
+  }, [jobCards, showCreatedBy])
 
   return (
     <div>
@@ -115,7 +137,9 @@ export function JobCardsListPage() {
           <table>
             <thead>
               <tr>
-                <th>Job Card #</th><th>Customer</th><th>Vehicle</th><th>Stage</th><th>Status</th><th>Technician</th><th>Created</th><th>Photos</th>
+                <th>Job Card #</th><th>Customer</th><th>Vehicle</th><th>Stage</th><th>Status</th><th>Technician</th><th>Created</th>
+                {showCreatedBy && <th>Created By</th>}
+                <th>Photos</th>
               </tr>
             </thead>
             <tbody>
@@ -153,6 +177,7 @@ export function JobCardsListPage() {
                     <td><StatusBadge status={jc.status} /></td>
                     <td>{jc.technicianName ?? '-'}</td>
                     <td>{jc.createdAt ? new Date(jc.createdAt).toLocaleDateString() : '-'}</td>
+                    {showCreatedBy && <td>{isBapl ? '-' : createdByMap[jc.id] ?? '…'}</td>}
                     <td>
                       {isBapl ? (
                         <span className="muted">-</span>
@@ -168,7 +193,7 @@ export function JobCardsListPage() {
                 )
               })}
               {jobCards.length === 0 && (
-                <tr><td colSpan={8} className="muted" style={{ textAlign: 'center', padding: 24 }}>No job cards found.</td></tr>
+                <tr><td colSpan={showCreatedBy ? 9 : 8} className="muted" style={{ textAlign: 'center', padding: 24 }}>No job cards found.</td></tr>
               )}
             </tbody>
           </table>
