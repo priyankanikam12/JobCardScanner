@@ -1546,7 +1546,7 @@ export function JobCardWizardPage() {
             )}
             {vehicleFieldsLocked && (
               <p className="muted" style={{ marginTop: -4, marginBottom: 12 }}>
-                🔒 Model, Reg No and VIN were auto-fetched from DMS and are locked to prevent accidental changes.{' '}
+                🔒 Model and VIN were auto-fetched from DMS and are locked to prevent accidental changes (Reg No can be edited).{' '}
                 <a href="#" onClick={(e) => { e.preventDefault(); setUnlockVehicleFields(true) }}>Edit anyway</a>
               </p>
             )}
@@ -1595,7 +1595,9 @@ export function JobCardWizardPage() {
             )}
             <div className="field" style={{ flex: '1 1 130px', minWidth: 130 }}>
               <label>Reg No</label>
-              <input value={newVehicle.regNo} disabled={vehicleFieldsLocked} onChange={(e) => setNewVehicle({ ...newVehicle, regNo: e.target.value })} />
+              {/* 2026-10-12 ("in jobcard in 2. Vehicle Reg No field show open field like Coupon No"): Reg No is always editable - it is NOT locked with Model / VIN after a Vehicle Sale
+                 hit, so a changed or corrected registration number can be typed straight in (like Coupon No). */}
+              <input value={newVehicle.regNo} onChange={(e) => setNewVehicle({ ...newVehicle, regNo: e.target.value })} />
             </div>
             <div className="field" style={{ flex: '1 1 130px', minWidth: 130 }}>
               <label>VIN</label>

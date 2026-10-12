@@ -1,8 +1,11 @@
 using JobCardScanner.Api.Auth;
+using JobCardScanner.Api.Data;
 using JobCardScanner.Api.Dtos;
+using JobCardScanner.Api.Models;
 using JobCardScanner.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 namespace JobCardScanner.Api.Controllers;
 
@@ -57,6 +60,15 @@ namespace JobCardScanner.Api.Controllers;
 /// on several other read endpoints (e.g. JobCardsController) - rather than to a hand-maintained
 /// role list that would need updating again every time a new role is added. Import/Update/Delete
 /// below are UNCHANGED and stay restricted to Policies.PartsUserUp - only the read was widened.
+///
+/// 2026-10-12 ("Your login isn't linked to a dealer - Part Upload is scoped per dealer ... show
+/// this on systemadmin, corporate admin ... all dealer"): CorporateAdmin and SystemAdmin have no
+/// dealer of their own, so Get() answered them with that 400. They now READ every dealer's uploaded
+/// stock (optionally narrowed to one dealer with `dealerId`), the same org-wide-read convention
+/// JobCardsController / RepairBillDocsController / MaterialTransferDocsController use (IsOrgWideRole).
+/// Every other role is scoped to its own dealer exactly as before - and a dealer login ignores
+/// `dealerId`, so it can never read another dealer's stock. Import / Update / Delete stay per dealer
+/// (an upload belongs to a dealer and an org-wide login has none to put it under) - unchanged.
 /// </summary>
 [ApiController]
 [Route("api/part-uploads")]
@@ -64,14 +76,19 @@ public class PartUploadController : ControllerBase
 {
     private readonly IPartUploadService _partUploads;
     private readonly ICurrentUserService _currentUser;
+    private readonly JobCardScannerDbContext _db;
     private readonly ILogger<PartUploadController> _logger;
 
-    public PartUploadController(IPartUploadService partUploads, ICurrentUserService currentUser, ILogger<PartUploadController> logger)
+    public PartUploadController(IPartUploadService partUploads, ICurrentUserService currentUser, JobCardScannerDbContext db, ILogger<PartUploadController> logger)
     {
         _partUploads = partUploads;
         _currentUser = currentUser;
+        _db = db;
         _logger = logger;
     }
+
+    /// <summary>2026-10-12: CorporateAdmin / SystemAdmin have no dealer of their own and read EVERY dealer's stock - see this controller's doc comment.</summary>
+    private bool IsOrgWideRole => _currentUser.Role is StaffRole.CorporateAdmin or StaffRole.SystemAdmin;
 
     /// <summary>2026-09-21 ("why stock not shown in material and repair bill page from
     /// part-upload"): a plain ServiceAdvisor can open Repair Bill/Material Transfer
@@ -100,14 +117,16 @@ public class PartUploadController : ControllerBase
     /// uploading/editing/deleting them is (those three stay on PartsUserUp below, unchanged), so
     /// there's no real access-control reason to keep this narrower than "any signed-in staff
     /// member at this dealer" - and widening it here means a FUTURE new role never needs this same
-    /// fix repeated.</summary>
+    /// fix repeated.
+    ///
+    /// 2026-10-12: `dealerId` (optional) is only honoured for CorporateAdmin / SystemAdmin - it narrows their all-dealers read to one dealer; with it omitted they get every dealer's
+    /// rows. For every other role it is ignored and the signed-in dealer's own rows come back, as before.</summary>
     [HttpGet]
     [Authorize(Policy = Policies.Staff)]
-    public async Task<IActionResult> Get([FromQuery] string? search, [FromQuery] string? locationCode, [FromQuery] DateOnly? dateFrom = null, [FromQuery] DateOnly? dateTo = null)
+    public async Task<IActionResult> Get(
+        [FromQuery] string? search, [FromQuery] string? locationCode,
+        [FromQuery] DateOnly? dateFrom = null, [FromQuery] DateOnly? dateTo = null, [FromQuery] Guid? dealerId = null)
     {
-        if (_currentUser.DealerId is not { } dealerId)
-            return BadRequest(new { message = "Your login isn't linked to a dealer - Part Upload is scoped per dealer." });
-
         try
         {
             // 2026-09-29 CORRECTED: named argument for allowedLocations (rather than relying on
@@ -117,7 +136,25 @@ public class PartUploadController : ControllerBase
             // first time). Named here so a future signature change can't silently miswire this
             // call the same way again.
             var allowedLocations = _currentUser.WorkLocationCodes;
-            return Ok(await _partUploads.GetAsync(dealerId, locationCode, search, HttpContext.RequestAborted, allowedLocations: allowedLocations, dateFrom: dateFrom, dateTo: dateTo));
+
+            if (_currentUser.DealerId is { } ownDealerId)
+                return Ok(await _partUploads.GetAsync(ownDealerId, locationCode, search, HttpContext.RequestAborted, allowedLocations: allowedLocations, dateFrom: dateFrom, dateTo: dateTo));
+
+            if (!IsOrgWideRole)
+                return BadRequest(new { message = "Your login isn't linked to a dealer - Part Upload is scoped per dealer." });
+
+            // CorporateAdmin / SystemAdmin: one dealer when asked for, otherwise every dealer. The service is per dealer, so it is called once for each and the rows are joined.
+            var dealerIds = dealerId is { } one
+                ? new List<Guid> { one }
+                : await _db.Dealers.AsNoTracking().Select(d => d.Id).ToListAsync(HttpContext.RequestAborted);
+
+            var all = new List<object>();
+            foreach (var id in dealerIds)
+            {
+                var rows = await _partUploads.GetAsync(id, locationCode, search, HttpContext.RequestAborted, allowedLocations: allowedLocations, dateFrom: dateFrom, dateTo: dateTo);
+                all.AddRange(rows.Cast<object>());
+            }
+            return Ok(all);
         }
         catch (InvalidOperationException ex)
         {

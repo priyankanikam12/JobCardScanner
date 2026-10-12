@@ -64,28 +64,59 @@ import { usePagination } from '../../lib/usePagination'
  * browser's Network tab for that failed GET /api/part-uploads request (its status code and
  * response body) or the backend's own console/log output at the same moment, and share that - I'll
  * fix the real cause once I can see it rather than patch something I can't confirm is the problem.
+ *
+ * 2026-10-12 ("Your login isn't linked to a dealer - Part Upload is scoped per dealer ... show this
+ * on systemadmin, corporate admin ... all dealer"): CorporateAdmin / SystemAdmin have no dealer, so
+ * this page used to show that error for them. They now see EVERY dealer's stock (GET /api/part-uploads
+ * answers org-wide for them - see PartUploadController.Get) with a Dealer filter to narrow to one
+ * dealer; the filter's Location list then follows the chosen dealer. The Upload card and the Edit /
+ * Delete buttons are for dealer logins only (an upload belongs to a dealer, and an org-wide login
+ * has none) - head office gets a note in their place and a read-only grid.
  */
 /** Pins the header row to the top of a `maxHeight` + `overflowY: auto` table wrapper - see the
  * grid's own comment below for why. `var(--surface)` (not transparent) so scrolled-under body
  * rows don't show through the sticky header. */
 const stickyTh: CSSProperties = { position: 'sticky', top: 0, background: 'var(--surface)', zIndex: 1 }
 
+interface DealerOption { id: string; name: string }
+type DealerRow = { id: string; name?: string; active?: boolean; isActive?: boolean }
+
 export function PartUploadPage() {
   const { profile } = useStaffAuth()
+  // 2026-10-12: a head-office login (CorporateAdmin / SystemAdmin) has no dealer of its own. `!!profile` keeps this false while the profile is still loading, so a dealer login never
+  // flashes the head-office view.
+  const isOrgWide = !!profile && !profile.dealerId
+
+  // ---------------- Dealer filter - head-office logins only ----------------
+  const [dealerOptions, setDealerOptions] = useState<DealerOption[]>([])
+  const [filterDealerId, setFilterDealerId] = useState('')
+  useEffect(() => {
+    if (!isOrgWide) return
+    staffApi.get<DealerRow[]>('/api/dealers')
+      .then(({ data }) => setDealerOptions(
+        (Array.isArray(data) ? data : [])
+          .filter((d) => d.active !== false && d.isActive !== false)
+          .map((d) => ({ id: d.id, name: d.name ?? d.id }))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+      ))
+      .catch(() => setDealerOptions([]))
+  }, [isOrgWide])
 
   // ---------------- Location dropdown - scoped to the signed-in user's own accessible workshops ----------------
+  // (a head-office login has none of its own, so its Location filter follows the dealer chosen in the Dealer filter above)
   const [workshops, setWorkshops] = useState<BaplDmsWorkshop[]>([])
+  const workshopDealerId = profile?.dealerId || filterDealerId
   useEffect(() => {
-    if (!profile?.dealerId) return
-    staffApi.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: profile.dealerId } })
+    if (!workshopDealerId) { setWorkshops([]); return }
+    staffApi.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: workshopDealerId } })
       .then(({ data }) => {
         const scoped = profile?.workLocationCodes?.length ? data.filter((w) => profile.workLocationCodes.includes(w.locCode)) : data
         setWorkshops(scoped)
-        if (scoped.length > 0) setUploadLocation((prev) => prev || scoped[0].locCode)
+        if (profile?.dealerId && scoped.length > 0) setUploadLocation((prev) => prev || scoped[0].locCode)
       })
       .catch(() => setWorkshops([]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile?.dealerId, profile?.workLocationCodes])
+  }, [workshopDealerId, profile?.workLocationCodes])
 
   const [rows, setRows] = useState<PartUpload[]>([])
   const [search, setSearch] = useState('')
@@ -116,6 +147,8 @@ export function PartUploadPage() {
           locationCode: filterLocation || undefined,
           dateFrom: filterDateFrom || undefined,
           dateTo: filterDateTo || undefined,
+          // only a head-office login's dealer filter is honoured by the server; a dealer login always reads its own dealer
+          dealerId: isOrgWide ? filterDealerId || undefined : undefined,
         },
       })
       .then((res) => setRows(res.data))
@@ -124,7 +157,7 @@ export function PartUploadPage() {
   }
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load() }, [filterLocation])
+  useEffect(() => { load() }, [filterLocation, filterDealerId, isOrgWide])
 
   const { page, setPage, pageSize, setPageSize, pageCount, pageRows, total } = usePagination(rows)
 
@@ -224,6 +257,17 @@ export function PartUploadPage() {
         adding duplicates.
       </p> */}
 
+      {/* 2026-10-12: head office (CorporateAdmin / SystemAdmin) reads every dealer's stock here; uploading belongs to a dealer login, so the Upload card is replaced by this note. */}
+      {isOrgWide && (
+        <div className="card">
+          <p className="muted" style={{ margin: 0 }}>
+            Showing the uploaded stock of <strong>{filterDealerId ? dealerOptions.find((d) => d.id === filterDealerId)?.name ?? 'the selected dealer' : 'every dealer'}</strong>.
+            Pick a dealer below to narrow it down. Uploading and editing stock is done from a dealer login - this view is read-only.
+          </p>
+        </div>
+      )}
+
+      {!isOrgWide && (
       <div className="card">
         <h3>Upload Excel</h3>
         <div className="form-row">
@@ -274,9 +318,10 @@ export function PartUploadPage() {
           </p>
         )}
       </div>
+      )}
 
       {/* ---------------- Edit card ---------------- */}
-      {editing && (
+      {editing && !isOrgWide && (
         <div className="card">
           <h3>Edit Part - {editing.partNo}</h3>
           <div className="form-row">
@@ -296,6 +341,20 @@ export function PartUploadPage() {
       )}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+        {/* 2026-10-12: head-office logins pick which dealer's stock to look at ("All dealers" = every dealer). Changing it clears the Location filter, since locations belong to a dealer. */}
+        {isOrgWide && (
+          <select
+            value={filterDealerId}
+            onChange={(e) => { setFilterDealerId(e.target.value); setFilterLocation('') }}
+            style={{ maxWidth: 280 }}
+            title="Dealer"
+          >
+            <option value="">All dealers ({dealerOptions.length})</option>
+            {dealerOptions.map((d) => (
+              <option key={d.id} value={d.id}>{d.name}</option>
+            ))}
+          </select>
+        )}
         {workshops.length > 0 && (
           <select value={filterLocation} onChange={(e) => setFilterLocation(e.target.value)} style={{ maxWidth: 220 }}>
             <option value="">All locations</option>
@@ -372,14 +431,20 @@ export function PartUploadPage() {
                   <td className="text-end">₹{fmtNum(r.billPrice)}</td>
                   <td>{locName(r.locationCode)}</td>
                   <td onClick={(e) => e.stopPropagation()}>
-                    <button className="btn btn-sm" onClick={() => setEditing(r)}>Edit</button>{' '}
-                    <button className="btn btn-sm btn-danger" onClick={() => deleteRow(r)}>Delete</button>
+                    {!isOrgWide && (
+                      <>
+                        <button className="btn btn-sm" onClick={() => setEditing(r)}>Edit</button>{' '}
+                        <button className="btn btn-sm btn-danger" onClick={() => deleteRow(r)}>Delete</button>
+                      </>
+                    )}
                   </td>
                 </tr>
               ))}
               {rows.length === 0 && !loading && !error && (
                 <tr><td colSpan={11} className="muted" style={{ textAlign: 'center', padding: 16 }}>
-                  No uploaded parts yet - upload a Stock Summary Detail Report above to get started.
+                  {isOrgWide
+                    ? 'No uploaded stock found for this selection.'
+                    : 'No uploaded parts yet - upload a Stock Summary Detail Report above to get started.'}
                 </td></tr>
               )}
             </tbody>
