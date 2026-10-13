@@ -70,6 +70,22 @@ const invMoney = (v: unknown): string => {
 
 const invPct = (v: unknown): string => `${Number(invNum(v).toFixed(2))}%`
 
+/** 2026-10-13 ("discount shows 11.99% / 12.01% instead of 12%"): a Percentage discount that was saved with rounding noise (the net rate was rounded to 2 decimals before it was worked back
+ * into a percentage) is PRINTED as the clean whole / half / quarter percent next to it - but only when that clean percentage reproduces this line's own Taxable amount within 2 paise, so a
+ * real odd discount, or a line whose taxable is 0 (U/W, FSC, FOC), prints exactly as stored. Display only: no stored amount changes. */
+const invDiscountPctShown = (rate: unknown, qty: unknown, taxable: unknown, stored: unknown): number => {
+  const v = invNum(stored)
+  const gross = invNum(qty) * invNum(rate)
+  const tx = invNum(taxable)
+  if (tx > 0 && gross > 0) {
+    for (const step of [1, 0.5, 0.25]) {
+      const c = Math.round(v / step) * step
+      if (c !== v && Math.abs(c - v) <= 0.06 && Math.abs(gross * (1 - c / 100) - tx) <= 0.02) return c
+    }
+  }
+  return v
+}
+
 const invDate = (v?: string | null): string => {
   if (!v) return '-'
   const d = new Date(v)
@@ -124,7 +140,7 @@ export function buildRepairBillTaxInvoicePrintHtml(bill: RepairBillDoc, ctx: Tax
     const tag = issue && issue !== 'Paid' ? ` <span class="tag">[${invEsc(issue)}]</span>` : ''
     const discount = !it.discountType || it.discountType === 'None' || !invNum(it.discountValue)
       ? '-'
-      : it.discountType === 'Percentage' ? invPct(it.discountValue) : invMoney(it.discountValue)
+      : it.discountType === 'Percentage' ? invPct(invDiscountPctShown(it.rate, it.qty, it.taxableAmount, it.discountValue)) : invMoney(it.discountValue)
     return `
       <tr>
         <td class="c">${i + 1}</td>

@@ -55,6 +55,18 @@ const labourFromMaster = (r: LabourMasterListRow, idOffset: number): BaplDmsLabo
   oemModelName: r.model,
 } as unknown as BaplDmsLabourRow)
 
+/** 2026-10-13 ("after Discount 12% added in the repair bill, the invoice shows 11.99% / 12.01%"): the discount worked back out of a Material Transfer line (undiscounted rate vs the saved,
+ * already-rounded net rate) carries rounding noise - 46.61 less 12% is 41.0168, saved as 41.02, which reads back as 11.99%. This returns the CLEAN percentage (whole, half, quarter or
+ * tenth of a percent, tried in that order) that reproduces the saved net rate exactly once rounded to 2 decimals; if none does it falls back to the 2-decimal value, so a genuinely odd discount
+ * is never altered. */
+const snapDiscountPct = (pct: number, originalRate: number, netRate: number): number => {
+  for (const step of [1, 0.5, 0.25, 0.1]) {
+    const c = Math.round(pct / step) * step
+    if (c >= 0 && Math.abs(Number((originalRate * (1 - c / 100)).toFixed(2)) - netRate) < 0.005) return Number(c.toFixed(2))
+  }
+  return Number(pct.toFixed(2))
+}
+
 type TaxMode = 'Same State (CGST+SGST)' | 'Different State (IGST)'
 type DiscountType = 'None' | 'Percentage' | 'Amount'
 
@@ -359,12 +371,19 @@ export function RepairBillCreateScreen() {
         let rateShown: number | string = snap ? snap.rate : m.rate
         let discountTypeShown: DiscountType = snap ? snap.discountType : 'None'
         let discountValueShown = snap ? snap.discountValue : '0'
-        if (!snap && !isLabour && m.mrp != null && m.mrp > 0) {
-          const originalRate = m.mrp / (1 + totalGst / 100)
-          if (originalRate - m.rate > 0.01) {
-            rateShown = Number(originalRate.toFixed(2))
-            discountTypeShown = 'Percentage'
-            discountValueShown = String(Number(((1 - m.rate / originalRate) * 100).toFixed(2)))
+        if (!isLabour && m.mrp != null && m.mrp > 0) {
+          // undiscounted rate rounded to 2 decimals - the same value the Material Transfer itself started from
+          const originalRate = Number((m.mrp / (1 + totalGst / 100)).toFixed(2))
+          const rawPct = originalRate > 0 ? (1 - m.rate / originalRate) * 100 : 0
+          if (!snap) {
+            if (originalRate - m.rate > 0.01) {
+              rateShown = originalRate
+              discountTypeShown = 'Percentage'
+              discountValueShown = String(snapDiscountPct(rawPct, originalRate, m.rate))
+            }
+          } else if (snap.discountType === 'Percentage' && Math.abs(Number(snap.rate) - originalRate) < 0.01 && Math.abs(Number(snap.discountValue) - rawPct) < 0.06) {
+            // a reopened bill that saved the noisy value (11.99 / 12.01) shows the clean one (12)
+            discountValueShown = String(snapDiscountPct(rawPct, originalRate, m.rate))
           }
         }
         return {
