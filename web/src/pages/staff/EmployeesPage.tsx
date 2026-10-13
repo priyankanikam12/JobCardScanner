@@ -1,3 +1,4 @@
+// web\src\pages\staff\EmployeesPage.tsx
 import { Fragment, useEffect, useState } from 'react'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
@@ -19,36 +20,34 @@ import type { BaplDmsWorkshop, StaffRole } from '../../types'
  * reach this to manage their own dealer's employees. This does NOT touch Admin: Users' own
  * CorporateAdmin/SystemAdmin-only restriction - that page's bulk/HQ tools are untouched.
  *
- * 2026-09-18: removed the separate "Dealer" picker (`hasRole('CorporateAdmin', 'SystemAdmin')` is
- * still exactly the gate that decides which mode applies, it just no longer feeds a dropdown) -
- * a DealerAdmin still only ever sees/assigns their OWN dealer's W1..Wn locations (unchanged,
- * `profile.dealerId` decides that automatically, no field needed), while Corporate/System Admin
- * now see and can pick from EVERY dealer's workshop locations directly in Work Area (GET
- * /api/bapl-dms/workshops with no dealerId param - already built for exactly this, see its doc
- * comment: "Omit dealerId to search every dealer's workshops by name/code (q)"). Since Work Area
- * can now span more than one dealer for a Corporate/System-Admin-created employee, DealerId on
- * that User row is left null/unscoped (shown as "All" in the grid, same convention already used
- * there) rather than picking one dealer arbitrarily - Work Area's LocCodes, not DealerId, are what
- * every enforcement point (JobCardsController, DmsBaplDataController) actually checks, so this
- * costs nothing functionally.
+ * 2026-09-18: removed the separate "Dealer" picker - a DealerAdmin only ever sees/assigns their OWN
+ * dealer's W1..Wn locations (`profile.dealerId` decides that automatically), while Corporate/System
+ * Admin saw EVERY dealer's workshop locations at once (GET /api/bapl-dms/workshops with no dealerId).
+ * DealerId on a Corporate/System-Admin-created employee is left null/unscoped (shown as "All" in the
+ * grid) - Work Area's LocCodes, not DealerId, are what every enforcement point (JobCardsController,
+ * DmsBaplDataController) actually checks.
  *
  * 2026-10-03 ("from this employees page also ui like technician-employees ... from Designation
  * hide mechanic and in that also filter add location and search"): matches
- * TechnicianEmployeesPage.tsx's now-established pattern -
- *   - The always-visible inline Add/Edit card is replaced with a single "+ Add Employee" button
- *     in the page header, opening the same form in a styled modal (gradient icon header, rounded
- *     card, backdrop) - reused for Edit exactly as on the Technician page.
- *   - A Search box (name/email, client-side) and a Location dropdown (workLocationCodes, also
- *     client-side here - unlike Technician Employee's GET /api/technicians?locationCode=..., this
- *     page's GET /api/users has no confirmed location query param in this session, so narrowing
- *     happens client-side against each row's own workLocationCodes array instead) sit above the
- *     table, same placement as the Technician page.
- *   - 'Mechanic' removed from DESIGNATIONS per explicit instruction - every existing employee
- *     already saved with Designation = 'Mechanic' keeps that value untouched in the database and
- *     still displays correctly in the grid/expanded-row view; it simply can't be newly selected
- *     (or re-selected while editing that same employee - the dropdown would show the Designation
- *     field blank for them until a new value is picked, same as any other no-longer-offered option
- *     would behave in a plain <select>).
+ * TechnicianEmployeesPage.tsx's pattern - Add/Edit in a styled modal, a Search box (name/email,
+ * client-side) and a Location dropdown (client-side, against each row's workLocationCodes), and
+ * 'Mechanic' removed from DESIGNATIONS (an employee already saved with it keeps it in the database).
+ *
+ * 2026-10-13 ("for edit and create in that also Work Area ... No DMS workshop locations on file yet ...
+ * not showing which location have that dealer, shown in tick"): for CorporateAdmin / SystemAdmin the
+ * Work Area list was loaded with NO dealerId - and GET /api/bapl-dms/workshops without a dealerId is
+ * the "search every dealer by name/code (q)" mode, so with no search text it came back empty and the
+ * box said "No DMS workshop locations on file yet." Now Corporate / System Admin pick a DEALER first
+ * (a Dealer dropdown above the list, only dealers with a DMS dealer code) and that dealer's own W1..Wn
+ * locations are listed with tick boxes - the call the Job Card page and a dealer login already use.
+ * Locations ticked for one dealer stay ticked when another dealer is picked (an employee can work in
+ * several dealers), and the count says how many are selected in total. When editing, the dealer is
+ * preselected from the employee's own dealer, or from the dealer code in their first saved location
+ * (CUS0288W4 -> CUS0288). A dealer login is unchanged (its own dealer's locations, no picker).
+ * A failed or empty list now says so (with the HTTP status) instead of looking like "none on file".
+ * Also: the browser's password autofill is switched off on the Email / Password boxes (it was filling
+ * the signed-in user's own saved password into an employee's Password), and server validation errors
+ * ({ errors: { Field: [...] } }) are shown instead of the generic "Could not save this employee."
  */
 
 interface StaffUser {
@@ -66,6 +65,14 @@ interface StaffUser {
   dateOfJoining?: string | null
   designation?: string | null
   workLocationCodes: string[]
+}
+
+/** A dealer offered in the Work Area dealer picker (GET /api/dealers) - only those with a DMS dealer code have workshops. */
+interface WorkDealer {
+  id: string
+  name: string
+  code?: string
+  baplDmsDealerCode?: string | null
 }
 
 // Fixed reference list (28 states + 8 union territories) - deliberately NOT sourced from any
@@ -94,17 +101,26 @@ const emptyEmployeeForm = {
   // READ-ONLY - the already-saved Role for the employee being edited (u.role, from GET
   // /api/users), shown next to Designation so you can see what Role this person actually has.
   // This is NOT an editable field and is never sent back to the server - Role is still only ever
-  // set by the backend's own Designation -> Role mapping (UsersController, not provided to me
-  // this session), per the existing placeholder/doc comments a few lines below in save(). Blank
-  // while creating a new employee, since there is no Role yet until the backend assigns one on
-  // save.
+  // set by the backend's own Designation -> Role mapping (UsersController), per the existing
+  // placeholder/doc comments in saveEmployee() below. Blank while creating a new employee.
   role: '' as StaffRole | '',
   dealerId: '',
   workLocationCodes: [] as string[],
 }
 
-const apiErrorMessage = (err: unknown, fallback: string): string =>
-  (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? fallback
+// 2026-10-13: also reads ASP.NET validation answers ({ title, errors: { Field: [messages] } } with no "message")
+// and shows the HTTP status when the server sent nothing readable, instead of only the generic fallback.
+const apiErrorMessage = (err: unknown, fallback: string): string => {
+  const res = (err as { response?: { status?: number; data?: { message?: string; title?: string; errors?: Record<string, string[]> } } })?.response
+  const d = res?.data
+  if (d?.message) return d.message
+  if (d?.errors) {
+    const all = Object.entries(d.errors).flatMap(([f, m]) => m.map((x) => `${f}: ${x}`))
+    if (all.length) return all.join(' ')
+  }
+  if (d?.title) return d.title
+  return res?.status ? `${fallback} (HTTP ${res.status})` : fallback
+}
 
 export function EmployeesPage() {
   const { profile, hasRole } = useStaffAuth()
@@ -125,19 +141,44 @@ export function EmployeesPage() {
   // editEmployee (table row) fills the form then opens it, so the same modal serves both.
   const [showModal, setShowModal] = useState(false)
 
-  // Work Area checkbox list - the SAME endpoint Parts & Inventory / Material Transfer already use.
-  // Corporate/System Admin get EVERY dealer's workshop locations at once (no dealerId param - see
-  // this endpoint's own doc comment); anyone else only ever sees their own dealer's, exactly like
-  // before, just without a picker since there was never a real choice to make for them.
+  // 2026-10-13: Corporate / System Admin pick a dealer, and that dealer's own workshop locations are listed. workDealerId is the picked
+  // dealer (local Dealer id); knownWorkshops remembers every location name loaded so far (code -> name), so a location ticked for one
+  // dealer still shows its name after another dealer is picked, in the grid's expanded row, and in the table's Location filter.
+  const [workDealers, setWorkDealers] = useState<WorkDealer[]>([])
+  const [workDealerId, setWorkDealerId] = useState('')
+  const [workshopsError, setWorkshopsError] = useState<string | null>(null)
+  const [knownWorkshops, setKnownWorkshops] = useState<Record<string, string>>({})
+
+  // Dealers offered in the picker: only those with a DMS dealer code (a dealer without one has no workshops to list).
   useEffect(() => {
-    if (!isCorporateOrSystem && !profile?.dealerId) { setEmployeeWorkshops([]); return }
+    if (!isCorporateOrSystem) return
+    staffApi.get<WorkDealer[]>('/api/dealers')
+      .then(({ data }) => setWorkDealers(data.filter((d) => !!d.baplDmsDealerCode).sort((a, b) => a.name.localeCompare(b.name))))
+      .catch(() => setWorkDealers([]))
+  }, [isCorporateOrSystem])
+
+  // Work Area checkbox list - the SAME call the Job Card page and Parts / Material Transfer use: GET /api/bapl-dms/workshops?dealerId=...
+  // A dealer login gets its own dealer's locations; Corporate / System Admin get the dealer picked above (nothing until one is picked).
+  const workshopsDealerId = isCorporateOrSystem ? workDealerId : (profile?.dealerId ?? '')
+  useEffect(() => {
+    setWorkshopsError(null)
+    if (!workshopsDealerId) { setEmployeeWorkshops([]); return }
     setEmployeeWorkshopsLoading(true)
-    staffApi.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: isCorporateOrSystem ? {} : { dealerId: profile?.dealerId } })
-      .then((r) => setEmployeeWorkshops(r.data))
-      .catch(() => setEmployeeWorkshops([]))
+    staffApi.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: workshopsDealerId } })
+      .then((r) => {
+        setEmployeeWorkshops(r.data)
+        setKnownWorkshops((prev) => {
+          const next = { ...prev }
+          r.data.forEach((w) => { next[w.locCode] = w.locName })
+          return next
+        })
+      })
+      .catch((err: unknown) => {
+        setEmployeeWorkshops([])
+        setWorkshopsError(apiErrorMessage(err, 'Could not load the workshop locations from DMS.'))
+      })
       .finally(() => setEmployeeWorkshopsLoading(false))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isCorporateOrSystem, profile?.dealerId])
+  }, [workshopsDealerId])
 
   const filteredWorkshops = employeeWorkshops.filter((w) =>
     !locSearch || w.locName.toLowerCase().includes(locSearch.toLowerCase()) || w.locCode.toLowerCase().includes(locSearch.toLowerCase()))
@@ -151,9 +192,25 @@ export function EmployeesPage() {
     }))
   }
   const selectAllWorkLocations = () => setEmployeeForm((f) => ({ ...f, workLocationCodes: Array.from(new Set([...f.workLocationCodes, ...employeeWorkshops.map((w) => w.locCode)])) }))
-  const clearAllWorkLocations = () => setEmployeeForm((f) => ({ ...f, workLocationCodes: [] }))
+  // Clears only the locations of the dealer shown - ones ticked for other dealers stay (see this file's 2026-10-13 note).
+  const clearAllWorkLocations = () => setEmployeeForm((f) => {
+    const listed = new Set(employeeWorkshops.map((w) => w.locCode))
+    return { ...f, workLocationCodes: f.workLocationCodes.filter((c) => !listed.has(c)) }
+  })
 
-  const openAddModal = () => { setEmployeeForm(emptyEmployeeForm); setLocSearch(''); setEmployeeError(null); setShowModal(true) }
+  // The dealer a set of saved locations belongs to, read from the dealer code in the first one (CUS0288W4 -> CUS0288).
+  const dealerIdForLocationCodes = (codes: string[]) => {
+    const first = codes[0]
+    if (!first) return ''
+    const prefix = first.replace(/W\d+$/i, '').toUpperCase()
+    return workDealers.find((d) => (d.baplDmsDealerCode ?? '').toUpperCase() === prefix)?.id ?? ''
+  }
+
+  const openAddModal = () => {
+    setEmployeeForm(emptyEmployeeForm); setLocSearch(''); setEmployeeError(null)
+    if (isCorporateOrSystem) setWorkDealerId('')
+    setShowModal(true)
+  }
   const resetEmployeeForm = () => { setEmployeeForm(emptyEmployeeForm); setLocSearch(''); setEmployeeError(null) }
   const closeModal = () => { setShowModal(false); resetEmployeeForm() }
 
@@ -173,6 +230,7 @@ export function EmployeesPage() {
       dealerId: u.dealerId ?? '',
       workLocationCodes: u.workLocationCodes,
     })
+    if (isCorporateOrSystem) setWorkDealerId(u.dealerId || dealerIdForLocationCodes(u.workLocationCodes))
     setLocSearch('')
     setEmployeeError(null)
     setShowModal(true)
@@ -191,10 +249,10 @@ export function EmployeesPage() {
     if (employeeForm.mobile && employeeForm.mobile.length !== 10) { setEmployeeError('Mobile No. must be exactly 10 digits.'); return }
 
     // Non-corporate admins always create/edit under their own dealer (unchanged). Corporate/System
-    // Admin have no dealer field anymore - a brand-new employee is left dealer-unscoped (null,
-    // shown as "All" in the grid; Work Area's LocCodes are what actually gate their access, not
-    // this field), while editing an EXISTING employee round-trips whatever dealerId that row
-    // already had rather than clearing it.
+    // Admin: a brand-new employee is left dealer-unscoped (null, shown as "All" in the grid; Work
+    // Area's LocCodes are what actually gate their access, not this field), while editing an
+    // EXISTING employee round-trips whatever dealerId that row already had rather than clearing it.
+    // (The Dealer picker in Work Area only chooses which dealer's locations to LIST - it does not set this.)
     const dealerIdToSend = isCorporateOrSystem ? (employeeForm.dealerId || null) : profile!.dealerId
 
     setEmployeeBusy(true)
@@ -253,25 +311,20 @@ export function EmployeesPage() {
     load()
   }
 
-  // 2026-09-18 "Grid" view: a per-row "View" button that expands that one employee's full saved
-  // details inline (Name, Email, Designation, Dealer, City/State, Work Area, Active) - the grid
-  // row itself only has room for a Work Area *count* ("2 locations"), so this is where the actual
-  // location names/codes are shown in full, resolved via employeeWorkshops (already fetched above
-  // for the Add/Edit card - covers every dealer's workshops for Corporate/System Admin, or just
-  // this admin's own dealer's otherwise, which is always enough to resolve any employee row this
-  // admin can see).
+  // 2026-09-18 "Grid" view: a per-row button that expands that one employee's full saved details
+  // inline - the grid row itself only has room for a Work Area *count*, so this is where the actual
+  // location names/codes are shown in full, resolved via knownWorkshops (every location name loaded so far).
   const [expandedId, setExpandedId] = useState<string | null>(null)
-  const workshopNameByCode = new Map(employeeWorkshops.map((w) => [w.locCode, w.locName]))
+  const workshopNameByCode = new Map(Object.entries(knownWorkshops))
 
   // 2026-10-03 ("add filter add location and search"): Search is client-side (name or email);
-  // Location is also client-side here - unlike Technician Employee's GET /api/technicians?
-  // locationCode=..., this page's GET /api/users has no confirmed location query param in this
-  // session, so this filters against each row's own workLocationCodes array instead. A user with
-  // an empty workLocationCodes ("All (unrestricted)") never matches a specific location filter -
-  // only an actual assigned location does, same as the expanded-row view's own "All
-  // (unrestricted)" distinction just above.
+  // Location is also client-side - it filters against each row's own workLocationCodes array. A user
+  // with an empty workLocationCodes ("All (unrestricted)") never matches a specific location filter.
+  // 2026-10-13: the Location options are every location loaded so far PLUS every code any listed employee
+  // already has (so a Corporate / System Admin, whose list is loaded dealer by dealer, can still filter by them).
   const [search, setSearch] = useState('')
   const [locationFilter, setLocationFilter] = useState('')
+  const locationFilterOptions = Array.from(new Set([...Object.keys(knownWorkshops), ...users.flatMap((u) => u.workLocationCodes)])).sort()
   const visibleUsers = users.filter((u) => {
     const matchesSearch = !search.trim()
       || u.name.toLowerCase().includes(search.trim().toLowerCase())
@@ -302,7 +355,9 @@ export function EmployeesPage() {
             <label>Location</label>
             <select value={locationFilter} onChange={(e) => setLocationFilter(e.target.value)}>
               <option value="">All locations</option>
-              {employeeWorkshops.map((w) => <option key={w.locCode} value={w.locCode}>{w.locName} ({w.locCode})</option>)}
+              {locationFilterOptions.map((code) => (
+                <option key={code} value={code}>{knownWorkshops[code] ? `${knownWorkshops[code]} (${code})` : code}</option>
+              ))}
             </select>
           </div>
         </div>
@@ -325,10 +380,8 @@ export function EmployeesPage() {
                     <button className="btn btn-sm" onClick={() => editEmployee(u)}>Edit</button>{' '}
                     <button className="btn btn-sm" onClick={() => toggleActive(u)}>{u.active ? 'Deactivate' : 'Activate'}</button>{' '}
                     <button className="btn btn-sm" style={{ color: '#b91c1c' }} onClick={() => deleteEmployee(u)}>Delete</button>{' '}
-                    {/* 2026-09-18: icon-only "Grid" toggle (see .btn-icon in global.css), matched
-                        against your reference screenshot's own Grid button - expands/collapses
-                        the full-detail row below, same behavior as the old text "View"/"Hide"
-                        button this replaces. */}
+                    {/* 2026-09-18: icon-only "Grid" toggle (see .btn-icon in global.css) - expands/collapses
+                        the full-detail row below. */}
                     <button
                       className={`btn btn-sm btn-icon ${expandedId === u.id ? 'btn-primary' : ''}`}
                       title={expandedId === u.id ? 'Hide saved data' : 'View saved data'}
@@ -456,12 +509,6 @@ export function EmployeesPage() {
                   <select value={employeeForm.designation} onChange={(e) => setEmployeeForm({ ...employeeForm, designation: e.target.value as Designation | '' })}>
                     <option value="">--Select--</option>
                     {DESIGNATIONS.map((d) => <option key={d} value={d}>{d}</option>)}
-                    {/* 2026-10-03: if this employee was saved with the now-hidden 'Mechanic'
-                        Designation, keep it selectable here so re-opening Edit doesn't silently
-                        blank/overwrite it - same "keep the pre-existing value selectable" pattern
-                        this app already uses elsewhere (e.g. JobCardDetailPage.tsx's Assign
-                        Technician dropdown for a technician no longer in that location's list). */}
-                    {/* {employeeForm.designation === 'Mechanic' && <option value="Mechanic">Mechanic (no longer assignable - pick a new value)</option>} */}
                   </select>
                 </div>
                 <div className="field">
@@ -477,26 +524,44 @@ export function EmployeesPage() {
                 <label>Work Area{employeeWorkshopsLoading ? ' (loading…)' : ''}</label>
                 <p className="muted" style={{ marginTop: -2 }}>
                   {isCorporateOrSystem
-                    ? 'Every dealer\'s workshop locations - search by dealer or location name/code below.'
+                    ? 'Pick a dealer, then tick the workshop locations this employee may work in. Locations ticked for other dealers stay ticked.'
                     : 'Your dealer\'s workshop locations.'}
                 </p>
-                {!employeeWorkshopsLoading && employeeWorkshops.length === 0 && (
-                  <p className="muted">No DMS workshop locations on file yet.</p>
+
+                {/* 2026-10-13: Corporate / System Admin choose which dealer's locations to list. */}
+                {isCorporateOrSystem && (
+                  <div style={{ marginBottom: 8 }}>
+                    <select value={workDealerId} onChange={(e) => { setWorkDealerId(e.target.value); setLocSearch('') }}>
+                      <option value="">--Select dealer--</option>
+                      {workDealers.map((d) => (
+                        <option key={d.id} value={d.id}>{d.name}{d.baplDmsDealerCode ? ` (${d.baplDmsDealerCode})` : ''}</option>
+                      ))}
+                    </select>
+                    {workDealers.length === 0 && <p className="muted" style={{ margin: '4px 0 0' }}>No dealers with a DMS dealer code were found.</p>}
+                  </div>
+                )}
+
+                {isCorporateOrSystem && !workDealerId && (
+                  <p className="muted">Select a dealer above to see its workshop locations.</p>
+                )}
+                {workshopsError && <p className="muted" style={{ color: '#b91c1c' }}>⚠ {workshopsError}</p>}
+                {!!workshopsDealerId && !employeeWorkshopsLoading && !workshopsError && employeeWorkshops.length === 0 && (
+                  <p className="muted">No DMS workshop locations are on file for this dealer.</p>
                 )}
                 {employeeWorkshops.length > 0 && (
                   // overflow: hidden here (in addition to overflowX: hidden on the scrolling list
                   // below) is a deliberate belt-and-braces fix for the horizontal-scrollbar bug
                   // reported on this box - the checkbox list's overflowY: 'auto' alone causes some
-                  // browsers to compute overflow-x as 'auto' too per the CSS overflow spec (any
-                  // axis left at its 'visible' default becomes 'auto' once the other axis is set
-                  // to a scrolling value), so a scrollbar could appear even for content that only
-                  // barely overflows sideways.
+                  // browsers to compute overflow-x as 'auto' too per the CSS overflow spec.
                   <div style={{ border: '1px solid var(--border, #d1d5db)', borderRadius: 6, padding: 10, overflow: 'hidden' }}>
                     <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                       <button type="button" className="btn btn-sm" onClick={selectAllWorkLocations}>Select All</button>
                       <button type="button" className="btn btn-sm" onClick={clearAllWorkLocations}>Clear All</button>
                       <input style={{ flex: '1 1 180px', minWidth: 140, width: 'auto' }} placeholder="Search Group" value={locSearch} onChange={(e) => setLocSearch(e.target.value)} />
-                      <span className="muted" style={{ whiteSpace: 'nowrap' }}>{employeeForm.workLocationCodes.length} of {employeeWorkshops.length} selected</span>
+                      <span className="muted" style={{ whiteSpace: 'nowrap' }}>
+                        {employeeForm.workLocationCodes.filter((c) => employeeWorkshops.some((w) => w.locCode === c)).length} of {employeeWorkshops.length} selected here
+                        {isCorporateOrSystem ? `, ${employeeForm.workLocationCodes.length} in total` : ''}
+                      </span>
                     </div>
                     <div style={{ maxHeight: 180, overflowY: 'auto', overflowX: 'hidden' }}>
                       {filteredWorkshops.map((w) => (
@@ -509,13 +574,26 @@ export function EmployeesPage() {
                     </div>
                   </div>
                 )}
+
+                {/* Locations already saved for this employee that are not in the list shown (another dealer's, or the list is empty / failed): still visible, still saved. */}
+                {employeeForm.workLocationCodes.some((c) => !employeeWorkshops.some((w) => w.locCode === c)) && (
+                  <p className="muted" style={{ margin: '6px 0 0', fontSize: 12 }}>
+                    Also selected (other dealers): {employeeForm.workLocationCodes
+                      .filter((c) => !employeeWorkshops.some((w) => w.locCode === c))
+                      .map((c) => (knownWorkshops[c] ? `${knownWorkshops[c]} (${c})` : c)).join(', ')}
+                  </p>
+                )}
               </div>
 
               <div className="form-row">
-                <div className="field"><label>Email/Login Id.</label><input value={employeeForm.email} disabled={!!employeeForm.id} onChange={(e) => setEmployeeForm({ ...employeeForm, email: e.target.value })} /></div>
+                <div className="field">
+                  <label>Email/Login Id.</label>
+                  <input value={employeeForm.email} disabled={!!employeeForm.id} autoComplete="off" onChange={(e) => setEmployeeForm({ ...employeeForm, email: e.target.value })} />
+                </div>
                 <div className="field">
                   <label>Password{employeeForm.id ? ' (leave blank to keep unchanged)' : ''}</label>
-                  <input type="password" value={employeeForm.password} onChange={(e) => setEmployeeForm({ ...employeeForm, password: e.target.value })} />
+                  {/* autoComplete="new-password": stops the browser filling the signed-in user's own saved password in here */}
+                  <input type="password" name="employee-new-password" autoComplete="new-password" value={employeeForm.password} onChange={(e) => setEmployeeForm({ ...employeeForm, password: e.target.value })} />
                 </div>
               </div>
 
