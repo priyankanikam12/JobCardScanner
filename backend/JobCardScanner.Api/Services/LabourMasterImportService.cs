@@ -167,8 +167,8 @@ public class LabourMasterImportService : ILabourMasterImportService
         _logger = logger;
     }
 
-    private string ConnStr => _config.GetConnectionString("DMSBAPLDATAConnection")
-        ?? throw new InvalidOperationException("DMSBAPLDATAConnection isn't configured in appsettings.json's ConnectionStrings section.");
+    private string ConnStr => _config.GetConnectionString("JobCardScannerDb")
+        ?? throw new InvalidOperationException("JobCardScannerDb isn't configured in appsettings.json's ConnectionStrings section.");
 
     // ---------------------------------------------------------------------------------
     // Reads

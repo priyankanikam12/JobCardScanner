@@ -43,7 +43,8 @@ namespace JobCardScanner.Api.Controllers;
 ///   PUT    /api/zoho/customers/{id or ledgerCode}  - edit: the same fields as POST (a full update - a field left out is cleared; ledgerName is required). isActive true re-activates.
 ///   DELETE /api/zoho/customers/{id or ledgerCode}  - delete = DEACTIVATE (isActive false), exactly what "delete" means in Ledger Master; reversible with PUT isActive true. Nothing is
 ///                                                    physically removed, so the GET list keeps reporting it as changeType "Deleted".
-/// Only customers of the in-scope dealers (see above) can be written, and only plain ledgers (Party / Insurance): Dealer and Company ledgers are copied from the ERP and are refused (403/400).
+/// Only customers of the in-scope dealers (see above) can be written, and only plain ledgers (Party / Insurance): Dealer and Company ledgers are copied from the ERP and are refused (403/400). The Company ledger
+/// (BGauss Auto itself) can still be READ - type=Company, or type=all - even though it is not a Magnemite dealer's.
 /// Created / updated rows carry no "by" user (an API key has none) - the audit log records them as ZohoCustomer.*.
 /// THE ITEM MASTER IS READ-ONLY ON PURPOSE: it is a mirror of the ERP's C_ItemMaster, owned by the ERP, and "Sync from BAPL" replaces the whole table - an item written here would be wiped by
 /// the next sync and would not exist in the ERP. New items are created in the ERP and flow to Zoho through GET /api/zoho/items.
@@ -136,15 +137,20 @@ public class ZohoMasterDataController : ControllerBase
                 ? allowed
                 : allowed.Where(d => string.Equals(d.BaplDmsDealerCode, dealerCode.Trim(), StringComparison.OrdinalIgnoreCase)).ToList())
             .Select(d => d.Id).ToList();
-        if (ids.Count == 0) { Response.Headers["X-Total-Count"] = "0"; return Ok(Array.Empty<object>()); }
-
         // Customers = Party ledgers unless another type (or all) is asked for.
         var typeName = string.IsNullOrWhiteSpace(type) ? "Party" : type.Trim();
         var wantAll = string.Equals(typeName, "all", StringComparison.OrdinalIgnoreCase);
         var typeUpper = typeName.ToUpperInvariant();
 
+        // 2026-10-13 ("in zoho why not shown Company"): the dealer scope above is "Magnemite dealers", but the Company ledger (BGAUSS AUTO PRIVATE LIMITED) belongs to BGauss itself, not to a
+        // Magnemite dealer - so the dealer filter removed it and type=Company always came back []. Company ledgers are company-level master data, so they are now returned whatever dealer they
+        // sit under (or none). Not offered when one dealer is asked for (dealerCode), and the Dealer type stays limited to the in-scope dealers.
+        var includeCompany = string.IsNullOrWhiteSpace(dealerCode) && (wantAll || typeUpper == "COMPANY");
+        if (ids.Count == 0 && !includeCompany) { Response.Headers["X-Total-Count"] = "0"; return Ok(Array.Empty<object>()); }
+
         var query = _db.LedgerMasters.AsNoTracking()
-            .Where(l => l.DealerId != null && ids.Contains(l.DealerId.Value));
+            .Where(l => (l.DealerId != null && ids.Contains(l.DealerId.Value))
+                || (includeCompany && l.LedgerTypeMaster != null && l.LedgerTypeMaster.CustomerType.ToUpper() == "COMPANY"));
         if (!wantAll) query = query.Where(l => l.LedgerTypeMaster != null && l.LedgerTypeMaster.CustomerType.ToUpper() == typeUpper);
         var sinceUtc = AsUtc(updatedSince);
         if (sinceUtc is { } since)
@@ -165,9 +171,15 @@ public class ZohoMasterDataController : ControllerBase
             })
             .ToListAsync(ct);
 
+        // a Company ledger's dealer (BGauss Auto itself) is not in the Magnemite scope: look up its name / code too
+        var missingDealerIds = rows.Where(r => r.DealerId is Guid g && !lookup.ContainsKey(g)).Select(r => r.DealerId!.Value).Distinct().ToList();
+        if (missingDealerIds.Count > 0)
+            foreach (var d in await _db.Dealers.AsNoTracking().Where(d => missingDealerIds.Contains(d.Id)).Select(d => new { d.Id, d.Name, d.BaplDmsDealerCode }).ToListAsync(ct))
+                lookup[d.Id] = (d.Name, d.BaplDmsDealerCode);
+
         return Ok(rows.Select(r =>
         {
-            lookup.TryGetValue(r.DealerId!.Value, out var dealer);
+            var dealer = r.DealerId is Guid dg && lookup.TryGetValue(dg, out var found) ? found : default;
             // Deleted = deactivated. Otherwise Added when it was created inside the window (or never edited), else Edited.
             var changeType = !r.IsActive ? "Deleted"
                 : (r.UpdatedAt is null || (sinceUtc is not null && r.CreatedAt >= sinceUtc.Value)) ? "Added"
@@ -258,13 +270,14 @@ public class ZohoMasterDataController : ControllerBase
     };
 
     /// <summary>A customer by its Id (GUID) or its Ledger Code (e.g. LED/012, slash literal or URL-encoded), only among the in-scope dealers' ledgers.</summary>
-    private async Task<LedgerMaster?> FindInScopeAsync(string reference, List<Guid> allowedIds, bool track, CancellationToken ct)
+    private async Task<LedgerMaster?> FindInScopeAsync(string reference, List<Guid> allowedIds, bool track, CancellationToken ct, bool includeCompany = false)
     {
         var key = Uri.UnescapeDataString(reference ?? "").Trim();
         if (key.Length == 0) return null;
         IQueryable<LedgerMaster> q = _db.LedgerMasters;
         if (!track) q = q.AsNoTracking();
-        q = q.Where(l => l.DealerId != null && allowedIds.Contains(l.DealerId.Value));
+        q = q.Where(l => (l.DealerId != null && allowedIds.Contains(l.DealerId.Value))
+            || (includeCompany && l.LedgerTypeMaster != null && l.LedgerTypeMaster.CustomerType.ToUpper() == "COMPANY"));
         if (Guid.TryParse(key, out var id)) return await q.FirstOrDefaultAsync(l => l.Id == id, ct);
         var upper = key.ToUpperInvariant();
         return await q.FirstOrDefaultAsync(l => l.LedgerCode.ToUpper() == upper, ct);
@@ -281,13 +294,14 @@ public class ZohoMasterDataController : ControllerBase
         if (authFail is not null) return authFail;
 
         var allowed = await ResolveAllowedDealersAsync(ct);
-        var entity = await FindInScopeAsync(reference, allowed.Select(d => d.Id).ToList(), track: false, ct);
+        var entity = await FindInScopeAsync(reference, allowed.Select(d => d.Id).ToList(), track: false, ct, includeCompany: true);
         if (entity is null) return NotFound(new { message = "That customer does not exist." });
 
         var type = await TypeOfAsync(entity.LedgerTypeId, ct);
-        var dealer = allowed.First(d => d.Id == entity.DealerId);
+        var dealerRow = entity.DealerId is null ? null
+            : await _db.Dealers.AsNoTracking().Where(d => d.Id == entity.DealerId).Select(d => new { d.Name, d.BaplDmsDealerCode }).FirstOrDefaultAsync(ct);
         var changeType = !entity.IsActive ? "Deleted" : entity.UpdatedAt is null ? "Added" : "Edited";
-        return Ok(CustomerView(entity, type?.CustomerType, dealer.Name, dealer.BaplDmsDealerCode, changeType));
+        return Ok(CustomerView(entity, type?.CustomerType, dealerRow?.Name, dealerRow?.BaplDmsDealerCode, changeType));
     }
 
     /// <summary>POST /api/zoho/customers - add a customer. 201 with the created customer (its ledgerCode is the key to keep); 409 with the existing one when the same dealer already has an
@@ -372,11 +386,12 @@ public class ZohoMasterDataController : ControllerBase
         if (authFail is not null) return authFail;
 
         var allowed = await ResolveAllowedDealersAsync(ct);
-        var entity = await FindInScopeAsync(reference, allowed.Select(d => d.Id).ToList(), track: true, ct);
+        var entity = await FindInScopeAsync(reference, allowed.Select(d => d.Id).ToList(), track: true, ct, includeCompany: true);
         if (entity is null) return NotFound(new { message = "That customer does not exist." });
 
         var type = await TypeOfAsync(entity.LedgerTypeId, ct);
-        if (type?.IsErpSourced == true || type?.IsOrgLevel == true || entity.ErpCustomerCode is not null)
+        if (type?.IsErpSourced == true || type?.IsOrgLevel == true || entity.ErpCustomerCode is not null
+            || string.Equals(type?.CustomerType, "Company", StringComparison.OrdinalIgnoreCase) || string.Equals(type?.CustomerType, "Dealer", StringComparison.OrdinalIgnoreCase))
             return StatusCode(403, new { message = $"A {type?.CustomerType ?? "ERP"} ledger comes from the ERP and cannot be changed through this API." });
 
         var invalid = ValidateCustomer(req);
@@ -411,11 +426,12 @@ public class ZohoMasterDataController : ControllerBase
         if (authFail is not null) return authFail;
 
         var allowed = await ResolveAllowedDealersAsync(ct);
-        var entity = await FindInScopeAsync(reference, allowed.Select(d => d.Id).ToList(), track: true, ct);
+        var entity = await FindInScopeAsync(reference, allowed.Select(d => d.Id).ToList(), track: true, ct, includeCompany: true);
         if (entity is null) return NotFound(new { message = "That customer does not exist." });
 
         var type = await TypeOfAsync(entity.LedgerTypeId, ct);
-        if (type?.IsErpSourced == true || type?.IsOrgLevel == true || entity.ErpCustomerCode is not null)
+        if (type?.IsErpSourced == true || type?.IsOrgLevel == true || entity.ErpCustomerCode is not null
+            || string.Equals(type?.CustomerType, "Company", StringComparison.OrdinalIgnoreCase) || string.Equals(type?.CustomerType, "Dealer", StringComparison.OrdinalIgnoreCase))
             return StatusCode(403, new { message = $"A {type?.CustomerType ?? "ERP"} ledger comes from the ERP and cannot be deleted through this API." });
 
         if (entity.IsActive)
