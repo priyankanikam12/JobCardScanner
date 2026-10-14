@@ -153,7 +153,12 @@ public class UsersController : ControllerBase
         {
             user.Designation = req.Designation;
             var mappedRole = RoleForDesignation(req.Designation);
-            if (mappedRole.HasValue && !req.Role.HasValue) user.Role = mappedRole.Value; // Designation drives Role unless Role was also explicitly sent
+            // Designation drives Role unless Role was also explicitly sent - but never DEMOTE an admin login (DealerAdmin / CorporateAdmin / SystemAdmin): saving such an
+            // account on the Employees page with Designation "Supervisor" used to silently turn it into a Supervisor (2026-10-14).
+            var isAdminLogin = user.Role is StaffRole.DealerAdmin or StaffRole.CorporateAdmin or StaffRole.SystemAdmin;
+            if (mappedRole.HasValue && !req.Role.HasValue && !isAdminLogin) user.Role = mappedRole.Value;
+            // var mappedRole = RoleForDesignation(req.Designation);
+            // if (mappedRole.HasValue && !req.Role.HasValue) user.Role = mappedRole.Value; // Designation drives Role unless Role was also explicitly sent
         }
         if (req.WorkLocationCodes is not null) user.WorkLocationCodes = SerializeLocationCodes(req.WorkLocationCodes);
         if (!string.IsNullOrWhiteSpace(req.Password))

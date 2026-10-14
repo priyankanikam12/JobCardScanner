@@ -366,6 +366,21 @@ public class BaplDmsController : ControllerBase
     [HttpGet("workshops")]
     public async Task<IActionResult> Workshops([FromQuery] Guid? dealerId, [FromQuery] string? q)
     {
+        // 2026-10-13 ("remove the location dependency on BAPLDMSvadConnection ... fetch from our master table"): the list now comes from JobCardScannerDb's own
+        // WorkshopLocations table first, so a blocked / unreachable DMS no longer empties the Employees Work Area list or leaves a new job card's BaplServiceLocation /
+        // BaplServiceLocationCode NULL. Live DMS is only asked when the table holds nothing for this request (a dealer not loaded yet); what DMS returns is then
+        // saved into the table so the next call needs no DMS at all. Same JSON field names as before (locCode, locName) plus dealerCode / dealerName.
+        try
+        {
+            var local = await WorkshopLocationStore.GetAsync(_db, dealerId, q, HttpContext.RequestAborted);
+            if (local.Count > 0)
+                return Ok(local.Select(r => new { locCode = r.LocCode, locName = r.LocName, dealerCode = r.DealerCode, dealerName = r.DealerName }));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "WorkshopLocations could not be read - falling back to live DMS.");
+        }
+
         string? baplDealerCode = null;
         if (dealerId.HasValue)
         {
@@ -376,6 +391,12 @@ public class BaplDmsController : ControllerBase
         try
         {
             var rows = await _baplDms.GetWorkshopsAsync(baplDealerCode, q, HttpContext.RequestAborted);
+            // remember this dealer's full list (only when it was a whole-dealer request, not a search) so DMS is not needed next time
+            if (dealerId.HasValue && string.IsNullOrWhiteSpace(q) && rows.Count > 0)
+            {
+                try { await WorkshopLocationStore.UpsertAsync(_db, dealerId.Value, rows.Select(w => (w.LocCode, w.LocName)), "DMS", HttpContext.RequestAborted); }
+                catch (Exception ex) when (ex is not OperationCanceledException) { _logger.LogWarning(ex, "Could not save the DMS workshop list into WorkshopLocations."); }
+            }
             return Ok(rows);
         }
         catch (InvalidOperationException ex)

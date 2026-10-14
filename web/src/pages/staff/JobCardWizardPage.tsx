@@ -734,6 +734,12 @@ export function JobCardWizardPage() {
 
   const [workshops, setWorkshops] = useState<BaplDmsWorkshop[]>([])
   const [selectedWorkshopLocCode, setSelectedWorkshopLocCode] = useState('')
+  // 2026-10-14 ("if we do not have access to BAPLDMS db, BaplServiceLocation and BaplServiceLocationCode must not go NULL in the job card"): the workshop list now comes from the app's own
+  // WorkshopLocations table (GET /api/bapl-dms/workshops), but a job card must still never be created without a Service Location - so the list's loading state / error is tracked here,
+  // shown next to the Service Location field with a Retry, and Service Location is REQUIRED to continue (serviceDetailsValid) and to create (submit).
+  const [workshopsLoading, setWorkshopsLoading] = useState(false)
+  const [workshopsError, setWorkshopsError] = useState<string | null>(null)
+  const [workshopsReloadKey, setWorkshopsReloadKey] = useState(0)
 
   // 2026-09-25 ("Customer complaints top 5 radio button dont show in dropdown direct top 5
   // complain show direct in radio button ... button multiple mutiple selection and manual type"):
@@ -763,6 +769,7 @@ export function JobCardWizardPage() {
   // real master-driven dropdown again, not an always-populated 'Normal' default.
   const serviceDetailsValid = !!(
     selectedJobTypeId && selectedServiceHeadId && priority && expectedDeliveryAt && complaints.length > 0
+    && selectedWorkshopLocCode && baplServiceLocation.trim()   // 2026-10-14: a job card is never created without its Service Location
   )
 
   // Overflow Complaint Master rows (past COMPLAINT_BUTTON_LIMIT), filtered by the search box above
@@ -782,7 +789,9 @@ export function JobCardWizardPage() {
     // re-fire on a dealer switch, since it only defaults when the field is still empty.
     setSelectedWorkshopLocCode('')
     setBaplServiceLocation('')
+    setWorkshopsError(null)
     if (!effectiveDealerId) { setWorkshops([]); return }
+    setWorkshopsLoading(true)
     staffApi.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: effectiveDealerId } })
       .then(({ data }) => {
         // 2026-09-18 Work Area scoping: a user with one or more assigned Work Area locations
@@ -796,9 +805,19 @@ export function JobCardWizardPage() {
           ? data.filter((w) => profile.workLocationCodes.includes(w.locCode))
           : data
         setWorkshops(scoped)
+        if (scoped.length === 0) {
+          setWorkshopsError(data.length === 0
+            ? 'No workshop locations are on file for this dealer - ask an admin to load them (Workshop Locations).'
+            : 'None of the Work Area locations given to your login belong to this dealer - ask an admin to correct your Work Area on the Employees page.')
+        }
       })
-      .catch(() => setWorkshops([]))
-  }, [effectiveDealerId, profile?.workLocationCodes])
+      .catch((err: unknown) => {
+        setWorkshops([])
+        const res = (err as { response?: { status?: number; data?: { message?: string } } })?.response
+        setWorkshopsError(res?.data?.message ?? `Could not load the workshop locations${res?.status ? ` (HTTP ${res.status})` : ''}.`)
+      })
+      .finally(() => setWorkshopsLoading(false))
+  }, [effectiveDealerId, profile?.workLocationCodes, workshopsReloadKey])
 
   // Default the Service Location to this dealer's own W-series, lowest number first (W1 if it
   // has one, else W2, and so on) - per your request, so a Service Location is already picked as
@@ -1019,6 +1038,8 @@ export function JobCardWizardPage() {
     if (!customer || !vehicle) return
     if (!effectiveDealerId) { setError('Select a dealer/workshop before creating the job card.'); return }
     if (pendingPhotos.length === 0) { setError('At least one photo is required before creating the job card.'); return }
+    // 2026-10-14: never save a job card with an empty Service Location (BaplServiceLocation / BaplServiceLocationCode) - go back to Service Details and use Retry there.
+    if (!selectedWorkshopLocCode || !baplServiceLocation.trim()) { setError('The Service Location (workshop) is not set, so this job card cannot be created. Go back to Service Details and press Retry next to Service Location.'); return }
     setSubmitting(true)
     setError(null)
     setPhotoUploadWarning(null)
@@ -1718,8 +1739,15 @@ export function JobCardWizardPage() {
                  unchanged) rather than left for the user to pick. Shown read-only so it's still
                  visible which workshop Supervisor/Technician below are scoped to. */}
               <div className="field">
-                <label>Service Location (workshop)</label>
-                <input value={baplServiceLocation || (effectiveDealerId ? 'Resolving…' : 'Select a dealer first')} disabled readOnly />
+                <label>Service Location (workshop)<Req /></label>
+                <input value={baplServiceLocation || (workshopsLoading ? 'Loading…' : effectiveDealerId ? 'Not available' : 'Select a dealer first')} disabled readOnly />
+                {/* 2026-10-14: the list comes from the app's own WorkshopLocations table; if it cannot be read, say so and let the user retry instead of silently saving a job card with no location. */}
+                {!baplServiceLocation && !workshopsLoading && !!effectiveDealerId && (
+                  <p className="error-text" style={{ margin: '4px 0 0', fontSize: 12 }}>
+                    {workshopsError ?? 'No Service Location could be set.'}{' '}
+                    <button type="button" className="btn btn-sm" onClick={() => setWorkshopsReloadKey((k) => k + 1)}>Retry</button>
+                  </p>
+                )}
               </div>
               <div className="field">
                 <label>Manual Job No.</label>
@@ -1747,7 +1775,6 @@ export function JobCardWizardPage() {
                  serviceCatalog.ts). Service Location is still auto-selected behind the scenes (this
                  dealer's own default workshop, or the one tied to a chassis/reg-no hit) even though
                  it's no longer shown or required here. */}
-              Job Type, Service Head, Expected delivery and at least one Complaint are required.
             </p>
           </div>
 
@@ -1881,7 +1908,7 @@ export function JobCardWizardPage() {
           </div>
 
           <div className="field">
-            <label>(Customer Voice) notes</label>
+            <label>Customer Voice</label>
             <textarea rows={3} value={consentNotes} onChange={(e) => setConsentNotes(e.target.value)} />
           </div>
 
@@ -1890,7 +1917,7 @@ export function JobCardWizardPage() {
             <button className="btn btn-primary" disabled={!serviceDetailsValid} onClick={() => setStep(3)}>Continue to Review</button>
           </div>
           {!serviceDetailsValid && (
-            <p className="muted" style={{ marginTop: 8, fontSize: 12 }}>Fill in every field marked with a red * on this step to continue.</p>
+            <p className="muted" style={{ marginTop: 8, fontSize: 12 }}></p>
           )}
         </div>
       )}

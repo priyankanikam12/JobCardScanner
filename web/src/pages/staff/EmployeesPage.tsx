@@ -175,7 +175,7 @@ export function EmployeesPage() {
       })
       .catch((err: unknown) => {
         setEmployeeWorkshops([])
-        setWorkshopsError(apiErrorMessage(err, 'Could not load the workshop locations from DMS.'))
+        setWorkshopsError(apiErrorMessage(err, 'Could not load the workshop locations.'))
       })
       .finally(() => setEmployeeWorkshopsLoading(false))
   }, [workshopsDealerId])
@@ -546,7 +546,7 @@ export function EmployeesPage() {
                 )}
                 {workshopsError && <p className="muted" style={{ color: '#b91c1c' }}>⚠ {workshopsError}</p>}
                 {!!workshopsDealerId && !employeeWorkshopsLoading && !workshopsError && employeeWorkshops.length === 0 && (
-                  <p className="muted">No DMS workshop locations are on file for this dealer.</p>
+                  <p className="muted">No workshop locations are on file for this dealer yet - an admin can load them with the workshop-location sync.</p>
                 )}
                 {employeeWorkshops.length > 0 && (
                   // overflow: hidden here (in addition to overflowX: hidden on the scrolling list
