@@ -241,6 +241,7 @@ builder.Services.AddScoped<IExtendedBatteryWarrantyEligibilityService, ExtendedB
 // doc comment for the full reasoning (plain poll-loop BackgroundService, not Hangfire/Quartz -
 // nothing in this file registers either, so none is assumed to exist).
 builder.Services.AddHostedService<AttendanceAutoCheckoutService>();
+builder.Services.AddHostedService<ZohoPushDispatcher>();
 
 builder.Services.AddControllers().AddJsonOptions(o =>
 {
