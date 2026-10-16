@@ -1,4 +1,5 @@
 using JobCardScanner.Api.Auth;
+using JobCardScanner.Api.Data;
 using JobCardScanner.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -140,7 +141,11 @@ public class ItemMasterController : ControllerBase
     {
         try
         {
+            var before = await _localItemMaster.GetStatusAsync(HttpContext.RequestAborted);
             var result = await _localItemMaster.SyncFromBaplAsync(HttpContext.RequestAborted);
+            // 2026-10-14 (push to Zoho): queue the continuing items this sync created or changed (item.created / item.updated); best-effort, never fails the sync.
+            ZohoPushStore.Configure(HttpContext.RequestServices.GetRequiredService<IConfiguration>());
+            await ZohoPushStore.TryEnqueueItemChangesAsync(HttpContext.RequestServices.GetRequiredService<JobCardScannerDbContext>(), before.TableExists ? before.LastSyncedAt : null, _logger, HttpContext.RequestAborted);
             return Ok(new { rows = result.Rows, seconds = result.Seconds, syncedAt = result.SyncedAt });
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("already running", StringComparison.OrdinalIgnoreCase))

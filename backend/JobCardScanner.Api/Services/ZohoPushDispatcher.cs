@@ -47,6 +47,7 @@ public class ZohoPushDispatcher : BackgroundService
         _scopes = scopes;
         _config = config;
         _logger = logger;
+        ZohoPushStore.Configure(config);
     }
 
     /// <summary>Wakes the dispatcher loop now (called right after an event is queued) so the event goes out immediately instead of at the next timer tick.</summary>
@@ -78,7 +79,10 @@ public class ZohoPushDispatcher : BackgroundService
     }
 
     public static bool IsConfigured(IConfiguration config) =>
-        config.GetValue("ZohoPush:Enabled", false) && !string.IsNullOrWhiteSpace(config["ZohoPush:BaseUrl"]);
+        config.GetValue("ZohoPush:Enabled", false)
+        && (IsZohoBooks(config)
+            ? !string.IsNullOrWhiteSpace(config["ZohoPush:ItemsUrl"]) || !string.IsNullOrWhiteSpace(config["ZohoPush:CustomersUrl"])
+            : !string.IsNullOrWhiteSpace(config["ZohoPush:BaseUrl"]));
 
     private static DateTime? RetryAt(bool retryable, int attemptNo, int maxAttempts) =>
         retryable && attemptNo < maxAttempts ? DateTime.UtcNow.AddMinutes(BackoffMinutes[Math.Min(attemptNo - 1, BackoffMinutes.Length - 1)]) : null;
@@ -87,6 +91,7 @@ public class ZohoPushDispatcher : BackgroundService
     public static async Task<(int Sent, int Failed)> RunOnceAsync(JobCardScannerDbContext db, IConfiguration config, ILogger logger, CancellationToken ct)
     {
         if (!IsConfigured(config)) return (0, 0);
+        if (IsZohoBooks(config)) return await RunZohoBooksAsync(db, config, logger, ct);   // Learnall's Zoho Books webhook: its own URL / reply rules
         if (!await RunLock.WaitAsync(0, ct)) return (0, 0);   // another run is in progress
         try
         {
@@ -155,6 +160,179 @@ public class ZohoPushDispatcher : BackgroundService
                 }
                 if (stop) break;
             }
+            return (sent, failed);
+        }
+        finally { RunLock.Release(); }
+    }
+
+
+    // ======================================================================================================================================================================================
+    // ZOHO BOOKS MODE (2026-10-16) - ZohoPush:Provider = "ZohoBooks". Built from Learnall's "Zoho Books Item Push - Details for BGauss":
+    //   * the URL Zoho gave (the key is INSIDE it) is used exactly as it is - ZohoPush:ItemsUrl - for single AND bulk; NO auth header is sent (ZohoPush:Headers is ignored); keep the URL out of source control
+    //     (environment variable  ZohoPush__ItemsUrl  or user secrets). Customers are only sent if ZohoPush:CustomersUrl is set - until then customer events simply stay queued.
+    //   * the decision comes from the reply BODY, not the HTTP status: 201 + response.code 0 = delivered; 1 = rejected (Failed, kept, reason stored); 2 = temporary (retry on the schedule); 400 = rejected;
+    //     401 / code 57 = wrong or old URL key -> the push PAUSES (nothing is consumed) until Resume; 408 / 429 / 5xx / timeout = retry. Bulk: response.failed lists the events that did not make it
+    //     (code 1 rejected, code 2 retry that event); events not listed were delivered.
+    //   * "Logged only - nothing created in Books" (Zoho's test mode) is NOT delivery: the event is parked as LoggedOnly and re-sent after go-live (POST .../requeue-logged-only).
+    //   * bulk batches are capped at 20 items with at least PauseBetweenBatchesSeconds (default 15) between batches; single mode waits PauseBetweenRequestsMs (default 700) between requests -
+    //     Zoho Books allows 100 API calls a minute and each item needs about one.
+    // ======================================================================================================================================================================================
+    public static bool IsZohoBooks(IConfiguration config) => string.Equals(config["ZohoPush:Provider"], "ZohoBooks", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Set when Zoho answered 401 (wrong / old URL key): nothing is sent until someone calls Resume (POST .../resume) after getting the current URL from Learnall.</summary>
+    public static string? PauseReason { get; private set; }
+    public static void Resume() => PauseReason = null;
+
+    private enum Outcome { Delivered, LoggedOnly, Rejected, Retry, AuthFailed }
+
+    private static string Snip(string? s) => string.IsNullOrEmpty(s) ? "" : (s.Length > 300 ? s[..300] : s);
+
+    /// <summary>Turns Zoho's reply into one outcome per event of the request.</summary>
+    private static Dictionary<long, (Outcome Outcome, string? Detail)> InterpretZoho(int? status, string? body, string? netError, ZohoPushStore.OutboxRow[] rows, bool bulk)
+    {
+        var res = new Dictionary<long, (Outcome, string?)>();
+        void All(Outcome o, string? d) { foreach (var r in rows) res[r.Id] = (o, d); }
+
+        if (status is null) { All(Outcome.Retry, netError ?? "no answer from Zoho"); return res; }
+        if (status == 401) { All(Outcome.AuthFailed, "HTTP 401: " + Snip(body)); return res; }
+        if (status == 400) { All(Outcome.Rejected, "HTTP 400: " + Snip(body)); return res; }
+        if (status is 408 or 429 or >= 500) { All(Outcome.Retry, $"HTTP {status}: " + Snip(body)); return res; }
+        if (status is < 200 or >= 300) { All(Outcome.Rejected, $"HTTP {status}: " + Snip(body)); return res; }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body ?? "");
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) { All(Outcome.Retry, "unreadable reply: " + Snip(body)); return res; }
+            if (root.TryGetProperty("code", out var top) && top.ValueKind == JsonValueKind.Number && top.TryGetInt32(out var topCode) && topCode != 0)
+            {
+                All(Outcome.Rejected, $"Zoho code {topCode}: " + (root.TryGetProperty("message", out var tm) ? tm.GetString() : null));
+                return res;
+            }
+            if (!root.TryGetProperty("response", out var resp) || resp.ValueKind != JsonValueKind.Object) { All(Outcome.Retry, "unreadable reply (no response object): " + Snip(body)); return res; }
+
+            var code = resp.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.Number && c.TryGetInt32(out var ci) ? ci : -99;
+            var message = resp.TryGetProperty("message", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null;
+            var version = resp.TryGetProperty("version", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+            var logOnly = string.Equals(version, "v1-log-only", StringComparison.OrdinalIgnoreCase) || (message?.StartsWith("Logged only", StringComparison.OrdinalIgnoreCase) ?? false);
+
+            switch (code)
+            {
+                case 0:
+                    All(logOnly ? Outcome.LoggedOnly : Outcome.Delivered, message);
+                    if (bulk && resp.TryGetProperty("failed", out var failed) && failed.ValueKind == JsonValueKind.Array)
+                        foreach (var f in failed.EnumerateArray())
+                        {
+                            if (f.ValueKind != JsonValueKind.Object || !f.TryGetProperty("eventId", out var idEl) || !Guid.TryParse(idEl.GetString(), out var eid)) continue;
+                            var row = rows.FirstOrDefault(r => r.EventId == eid);
+                            if (row is null) continue;
+                            var fcode = f.TryGetProperty("code", out var fc) && fc.TryGetInt32(out var fci) ? fci : 1;
+                            var err = f.TryGetProperty("error", out var fe) ? fe.GetString() : null;
+                            res[row.Id] = (fcode == 2 ? Outcome.Retry : Outcome.Rejected, $"code {fcode}: {err}");
+                        }
+                    break;
+                case 1: All(Outcome.Rejected, message); break;
+                case 2: All(Outcome.Retry, message); break;
+                default: All(Outcome.Retry, $"unexpected response.code {code}: {message}"); break;
+            }
+        }
+        catch (JsonException) { All(Outcome.Retry, "unreadable reply (not JSON): " + Snip(body)); }
+        return res;
+    }
+
+    private static async Task<(int? Status, string? Body, string? NetError)> PostRawAsync(string url, string body, string eventName, string idHeaderName, string idValue, CancellationToken ct)
+    {
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, url) { Content = new StringContent(body, Encoding.UTF8) };
+            req.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            req.Headers.TryAddWithoutValidation("X-BGauss-Event", eventName);
+            req.Headers.TryAddWithoutValidation(idHeaderName, idValue);   // no X-API-Key / Authorization: the key is in the URL
+            using var resp = await Http.SendAsync(req, ct);
+            return ((int)resp.StatusCode, await resp.Content.ReadAsStringAsync(ct), null);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex) { return (null, null, $"{ex.GetType().Name}: {ex.GetBaseException().Message}"); }   // the message never contains the URL's query string (the key)
+    }
+
+    private static async Task<(int Sent, int Failed)> RunZohoBooksAsync(JobCardScannerDbContext db, IConfiguration config, ILogger logger, CancellationToken ct)
+    {
+        if (PauseReason is not null) return (0, 0);
+        if (!await RunLock.WaitAsync(0, ct)) return (0, 0);
+        try
+        {
+            var urls = new Dictionary<string, string>();
+            if (!string.IsNullOrWhiteSpace(config["ZohoPush:ItemsUrl"])) urls["Item"] = config["ZohoPush:ItemsUrl"]!.Trim();
+            if (!string.IsNullOrWhiteSpace(config["ZohoPush:CustomersUrl"])) urls["Customer"] = config["ZohoPush:CustomersUrl"]!.Trim();
+            if (urls.Count == 0) return (0, 0);
+
+            var bulk = string.Equals(config["ZohoPush:Mode"], "bulk", StringComparison.OrdinalIgnoreCase);
+            var bulkSize = Math.Clamp(config.GetValue("ZohoPush:BulkSize", 20), 1, 20);   // Zoho: at most 20 items per request
+            var pauseBatchMs = Math.Max(0, config.GetValue("ZohoPush:PauseBetweenBatchesSeconds", 15)) * 1000;
+            var pauseRequestMs = Math.Max(0, config.GetValue("ZohoPush:PauseBetweenRequestsMs", 700));
+            var maxAttempts = Math.Max(1, config.GetValue("ZohoPush:MaxAttempts", 8));
+            var fetch = bulk ? bulkSize * 5 : 50;
+            int sent = 0, failed = 0, logOnlyCount = 0;
+            var first = true;
+
+            for (var loop = 0; loop < 400; loop++)
+            {
+                var rows = await ZohoPushStore.GetDueAsync(db, fetch, ct, urls.Keys.ToArray());
+                if (rows.Count == 0) break;
+                var requests = bulk
+                    ? rows.GroupBy(r => r.EntityType).SelectMany(g => g.Chunk(bulkSize).Select(chunk => (Entity: g.Key, Rows: chunk)))
+                    : rows.Select(r => (Entity: r.EntityType, Rows: new[] { r }));
+
+                var stop = false;
+                foreach (var (entity, chunk) in requests)
+                {
+                    if (!first) { try { await Task.Delay(bulk ? pauseBatchMs : pauseRequestMs, ct); } catch (OperationCanceledException) { throw; } }
+                    first = false;
+
+                    string body, eventName, idHeader, idValue;
+                    if (bulk)
+                    {
+                        var batchId = Guid.NewGuid();
+                        eventName = entity == "Item" ? "item.batch" : "customer.batch";
+                        body = BuildBatchBody(batchId, entity, eventName, chunk);
+                        idHeader = "X-BGauss-Batch-Id"; idValue = batchId.ToString();
+                    }
+                    else { body = chunk[0].PayloadJson; eventName = chunk[0].EventName; idHeader = "X-BGauss-Event-Id"; idValue = chunk[0].EventId.ToString(); }
+
+                    var (status, replyBody, netError) = await PostRawAsync(urls[entity], body, eventName, idHeader, idValue, ct);
+                    var outcomes = InterpretZoho(status, replyBody, netError, chunk, bulk);
+
+                    var authFailed = false;
+                    foreach (var row in chunk)
+                    {
+                        var (outcome, detail) = outcomes[row.Id];
+                        switch (outcome)
+                        {
+                            case Outcome.Delivered: await ZohoPushStore.MarkSentAsync(db, row.Id, status ?? 201, ct); sent++; break;
+                            case Outcome.LoggedOnly: await ZohoPushStore.MarkLoggedOnlyAsync(db, row.Id, status ?? 201, detail, ct); logOnlyCount++; break;
+                            case Outcome.Rejected:
+                                await ZohoPushStore.MarkAttemptFailedAsync(db, row.Id, status, detail ?? "rejected by Zoho", null, ct); failed++;
+                                logger.LogWarning("Zoho push: {Event} {Key} rejected: {Detail}", row.EventName, row.EntityKey, detail);
+                                break;
+                            case Outcome.Retry:
+                                var attemptNo = row.Attempts + 1;
+                                await ZohoPushStore.MarkAttemptFailedAsync(db, row.Id, status, detail ?? "retry", RetryAt(true, attemptNo, maxAttempts), ct); failed++; stop = true;
+                                logger.LogWarning("Zoho push: {Event} {Key} will be retried (attempt {Attempt}): {Detail}", row.EventName, row.EntityKey, attemptNo, detail);
+                                break;
+                            case Outcome.AuthFailed: authFailed = true; break;
+                        }
+                    }
+                    if (authFailed)
+                    {
+                        PauseReason = "Zoho answered 401 (wrong or old URL key). Get the current URL from Learnall, update ZohoPush:ItemsUrl, then call POST /api/zoho-push-ops/resume.";
+                        logger.LogError("Zoho push PAUSED: {Reason}", PauseReason);
+                        return (sent, failed);
+                    }
+                    if (stop) break;   // Zoho is temporarily unavailable or at its API limit: stop this run, the events are retried on the schedule
+                }
+                if (stop) break;
+            }
+            if (logOnlyCount > 0) logger.LogInformation("Zoho push: {Count} event(s) were only LOGGED by Zoho (test mode) - parked as LoggedOnly, not delivered.", logOnlyCount);
             return (sent, failed);
         }
         finally { RunLock.Release(); }

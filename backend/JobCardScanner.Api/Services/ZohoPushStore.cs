@@ -21,6 +21,26 @@ public static class ZohoPushStore
     /// <summary>Same three exclusions as the Zoho GET APIs (matched on the BAPL dealer code).</summary>
     public static readonly string[] ExcludedBaplDealerCodes = { "CUS0347", "CUS0213", "CUS0209" };
 
+    private static IConfiguration? _config;
+    /// <summary>Called once at start-up by ZohoPushDispatcher (and by the push controllers) so the static helpers can read the ZohoPush settings.</summary>
+    public static void Configure(IConfiguration config) => _config = config;
+
+    private static DateTime? Utc(DateTime? d) => d.HasValue ? DateTime.SpecifyKind(d.Value, DateTimeKind.Utc) : null;   // Zoho: every date-time in UTC ending in Z
+
+    /// <summary>Zoho asked for the item type as a NAME. Names come from ZohoPush:ItemTypeNames (e.g. "2": "Spare Parts" - confirm the real meaning of each code); a code with no name is sent as the code itself.</summary>
+    public static string? ItemTypeName(string? code)
+    {
+        if (string.IsNullOrWhiteSpace(code)) return null;
+        var name = _config?[$"ZohoPush:ItemTypeNames:{code.Trim()}"];
+        return string.IsNullOrWhiteSpace(name) ? code.Trim() : name;
+    }
+
+    /// <summary>Zoho Books would reject items that break its field rules (price not above 0, HSN not 8 digits, GST not an allowed rate or CGST / SGST not half of IGST, blank name). With ZohoPush:Provider = ZohoBooks they are held
+    /// back by default (ZohoPush:SkipInvalidItems, default true there); switch it to false to send everything.</summary>
+    private static bool SkipInvalidItems =>
+        _config is not null && (string.Equals(_config["ZohoPush:Provider"], "ZohoBooks", StringComparison.OrdinalIgnoreCase)
+            ? _config.GetValue("ZohoPush:SkipInvalidItems", true) : _config.GetValue("ZohoPush:SkipInvalidItems", false));
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -57,6 +77,8 @@ public static class ZohoPushStore
         public int Events { get; set; }
     }
 
+    public sealed class IntRow { public int Value { get; set; } }
+
     public sealed class ItemData
     {
         public string ItemCode { get; set; } = "";
@@ -90,11 +112,26 @@ public static class ZohoPushStore
         ZohoPushDispatcher.Nudge();   // live: wake the sender now so this event is POSTed to Zoho within seconds
     }
 
-    public static Task<List<OutboxRow>> GetDueAsync(JobCardScannerDbContext db, int max, CancellationToken ct) =>
-        db.Database.SqlQueryRaw<OutboxRow>(
+    /// <summary>The events due to be sent. entityTypes (Customer / Item) limits it to the kinds that have a destination - in Zoho Books mode customers stay queued until a customers URL exists.</summary>
+    public static Task<List<OutboxRow>> GetDueAsync(JobCardScannerDbContext db, int max, CancellationToken ct, string[]? entityTypes = null)
+    {
+        var allowed = (entityTypes ?? new[] { "Customer", "Item" }).Where(t => t is "Customer" or "Item").Select(t => $"N'{t}'").ToArray();
+        if (allowed.Length == 0) return Task.FromResult(new List<OutboxRow>());
+        return db.Database.SqlQueryRaw<OutboxRow>(
             @"SELECT TOP (@n) [Id] AS Id, [EventId] AS EventId, [EntityType] AS EntityType, [EntityKey] AS EntityKey, [EventName] AS EventName, [PayloadJson] AS PayloadJson, [Attempts] AS Attempts
-              FROM [dbo].[ZohoPushOutbox] WHERE [Status] = N'Pending' AND [NextAttemptAt] <= SYSUTCDATETIME() ORDER BY [Id]",
+              FROM [dbo].[ZohoPushOutbox] WHERE [Status] = N'Pending' AND [NextAttemptAt] <= SYSUTCDATETIME() AND [EntityType] IN (" + string.Join(",", allowed) + ") ORDER BY [Id]",
             new SqlParameter("@n", max)).ToListAsync(ct);
+    }
+
+    /// <summary>Zoho answered "Logged only - nothing created in Books" (its test mode): the event is NOT delivered. It is parked as LoggedOnly (not Sent) so it can be re-sent after Zoho goes live - see RequeueLoggedOnlyAsync.</summary>
+    public static Task MarkLoggedOnlyAsync(JobCardScannerDbContext db, long id, int httpStatus, string? note, CancellationToken ct) =>
+        db.Database.ExecuteSqlRawAsync(
+            "UPDATE [dbo].[ZohoPushOutbox] SET [Status] = N'LoggedOnly', [Attempts] = [Attempts] + 1, [LastHttpStatus] = @s, [LastError] = @e WHERE [Id] = @id",
+            new object[] { new SqlParameter("@s", httpStatus), new SqlParameter("@e", SqlDbType.NVarChar, 1000) { Value = (object?)note ?? DBNull.Value }, new SqlParameter("@id", id) }, ct);
+
+    /// <summary>After Zoho confirms the endpoint is live: put every LoggedOnly event back to Pending so it is sent (and created) for real.</summary>
+    public static Task<int> RequeueLoggedOnlyAsync(JobCardScannerDbContext db, CancellationToken ct) =>
+        db.Database.ExecuteSqlRawAsync("UPDATE [dbo].[ZohoPushOutbox] SET [Status] = N'Pending', [Attempts] = 0, [NextAttemptAt] = SYSUTCDATETIME(), [LastError] = NULL WHERE [Status] = N'LoggedOnly'", ct);
 
     public static Task MarkSentAsync(JobCardScannerDbContext db, long id, int httpStatus, CancellationToken ct) =>
         db.Database.ExecuteSqlRawAsync(
@@ -165,8 +202,8 @@ public static class ZohoPushStore
             DealerId = l.DealerId,
             DealerName = dealer.Name,
             DealerCode = dealer.BaplDmsDealerCode,
-            l.CreatedAt,
-            l.UpdatedAt,
+            CreatedAt = DateTime.SpecifyKind(l.CreatedAt, DateTimeKind.Utc),
+            UpdatedAt = Utc(l.UpdatedAt),
         };
     }
 
@@ -217,20 +254,46 @@ public static class ZohoPushStore
                    m.[SGST] AS Sgst, m.[CGST] AS Cgst, m.[IGST] AS Igst, m.[Item_Type] AS ItemType, m.[Status] AS Status, m.[CreatedOn] AS CreatedOn, m.[ModifiedOn] AS ModifiedOn
             FROM [dbo].[C_ItemMaster] m";
 
+    /// <summary>Zoho Books' field rules for an item (see the Zoho document, "Field rules").</summary>
+    private const string ValidItemWhere = @"
+              AND ISNULL(m.[Dlr_Price], 0) > 0
+              AND LEN(LTRIM(RTRIM(ISNULL(m.[HSNCode], '')))) = 8
+              AND LTRIM(RTRIM(ISNULL(m.[ItemName], ''))) <> ''
+              AND m.[IGST] IN (0, 5, 12, 18, 28, 40)
+              AND m.[SGST] = m.[IGST] / 2 AND m.[CGST] = m.[IGST] / 2";
+
+    /// <summary>How many continuing items Zoho would reject (price 0, bad / missing HSN, GST not an allowed rate ...) - the ones held back while SkipInvalidItems is on.</summary>
+    public static async Task<int> CountHeldBackItemsAsync(JobCardScannerDbContext db, CancellationToken ct)
+    {
+        var total = await db.Database.SqlQueryRaw<IntRow>("SELECT COUNT(*) AS [Value] FROM [dbo].[C_ItemMaster] m" + ContinuingWhere).ToListAsync(ct);
+        var valid = await db.Database.SqlQueryRaw<IntRow>("SELECT COUNT(*) AS [Value] FROM [dbo].[C_ItemMaster] m" + ContinuingWhere + ValidItemWhere).ToListAsync(ct);
+        return Math.Max(0, (total.FirstOrDefault()?.Value ?? 0) - (valid.FirstOrDefault()?.Value ?? 0));
+    }
+
     private static object ItemPayload(ItemData r) => new
     {
-        r.ItemCode, r.ItemName, r.DisplayName, r.HsnCode, r.DealerPrice, r.Sgst, r.Cgst, r.Igst, r.ItemType,
-        Status = string.IsNullOrWhiteSpace(r.Status) ? "Y" : r.Status.Trim(), r.CreatedOn, r.ModifiedOn,
+        r.ItemCode, r.ItemName, r.DisplayName, r.HsnCode, r.DealerPrice, r.Sgst, r.Cgst, r.Igst, ItemType = ItemTypeName(r.ItemType),
+        Status = string.IsNullOrWhiteSpace(r.Status) ? "Y" : r.Status.Trim(),
+        // 2026-10-16 (Zoho: "send timestamps in UTC ending in Z"): the ERP dates are marked as UTC as they are stored. If the ERP stores local (IST) time, subtract 5 h 30 min here instead.
+        CreatedOn = Utc(r.CreatedOn), ModifiedOn = Utc(r.ModifiedOn),
     };
 
     /// <summary>Queues the continuing items created or modified since sinceUtc (item.created when createdOn is on/after it, else item.updated); sinceUtc null = every continuing item as item.created (the initial load).
     /// Returns how many were queued.</summary>
-    public static async Task<int> EnqueueItemsAsync(JobCardScannerDbContext db, DateTime? sinceUtc, CancellationToken ct)
+    public static async Task<int> EnqueueItemsAsync(JobCardScannerDbContext db, DateTime? sinceUtc, CancellationToken ct, string[]? codes = null)
     {
-        var sql = ItemSelect + ContinuingWhere + (sinceUtc.HasValue ? " AND (m.[CreatedOn] >= @since OR m.[ModifiedOn] >= @since)" : "") + " ORDER BY m.[ItemCode]";
-        var rows = sinceUtc.HasValue
-            ? await db.Database.SqlQueryRaw<ItemData>(sql, new SqlParameter("@since", SqlDbType.DateTime) { Value = sinceUtc.Value }).ToListAsync(ct)
-            : await db.Database.SqlQueryRaw<ItemData>(sql).ToListAsync(ct);
+        // codes = only these item codes (a small, controlled test or the "3 agreed items" step); the same continuing / valid rules still apply, so a code that is not continuing or that Zoho would reject is simply not queued
+        var wanted = (codes ?? Array.Empty<string>()).Select(c => c.Trim()).Where(c => c.Length > 0 && c.Length <= 30).Distinct(StringComparer.OrdinalIgnoreCase).Take(200).ToArray();
+        var ps = new List<object>();
+        var sql = ItemSelect + ContinuingWhere + (SkipInvalidItems ? ValidItemWhere : "");
+        if (sinceUtc.HasValue) { sql += " AND (m.[CreatedOn] >= @since OR m.[ModifiedOn] >= @since)"; ps.Add(new SqlParameter("@since", SqlDbType.DateTime) { Value = sinceUtc.Value }); }
+        if (wanted.Length > 0)
+        {
+            sql += " AND m.[ItemCode] IN (" + string.Join(",", wanted.Select((_, i) => "@c" + i)) + ")";
+            for (var i = 0; i < wanted.Length; i++) ps.Add(new SqlParameter("@c" + i, SqlDbType.VarChar, 30) { Value = wanted[i] });
+        }
+        sql += " ORDER BY m.[ItemCode]";
+        var rows = await db.Database.SqlQueryRaw<ItemData>(sql, ps.ToArray()).ToListAsync(ct);
         foreach (var r in rows)
         {
             var isNew = sinceUtc is null || (r.CreatedOn.HasValue && r.CreatedOn.Value >= sinceUtc.Value);
