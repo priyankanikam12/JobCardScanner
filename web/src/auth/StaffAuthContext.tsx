@@ -61,6 +61,18 @@ const ROLE_RANK: Record<StaffRole, number> = {
 
 const StaffAuthContext = createContext<StaffAuthValue | undefined>(undefined)
 
+/** 2026-10-20 ("Loading your profile..." forever): the profile call used to wait without any limit - a stuck sign-in token, an API that does not answer, or a database that is unreachable all
+ *  looked the same, an endless spinner. This stops waiting after `ms` (the limit covers getting the sign-in token AND the API's answer) so load() can show a real message. */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject({ code: 'PROFILE_TIMEOUT' }), ms)
+    p.then(
+      (v) => { clearTimeout(timer); resolve(v) },
+      (e) => { clearTimeout(timer); reject(e) },
+    )
+  })
+}
+
 export function StaffAuthProvider({ children }: { children: ReactNode }) {
   const isMsalAuthenticated = useIsAuthenticated()
   const { accounts } = useMsal()
@@ -86,8 +98,9 @@ export function StaffAuthProvider({ children }: { children: ReactNode }) {
     }
     setLoading(true)
     setError(null)
+    const startedAt = Date.now()
     try {
-      const { data } = await staffApi.get<CurrentUser>('/api/auth/me')
+      const { data } = await withTimeout(staffApi.get<CurrentUser>('/api/auth/me', { timeout: 20000 }), 25000)
       setProfile(data)
       // 2026-10-03 ("daily attendance not working"): checkInAfterLogin()/checkOutBeforeLogout()
       // (web/src/services/attendanceCheckin.ts) have existed since 2026-09-28 but were never
@@ -103,9 +116,19 @@ export function StaffAuthProvider({ children }: { children: ReactNode }) {
       // checkInAfterLogin() itself swallows its own errors.
       void checkInAfterLogin()
     } catch (err: unknown) {
+      const e = err as { code?: string; message?: string; response?: { status?: number; data?: { message?: string } } }
+      // the full reason, for the browser console (F12) - includes how long the wait was
+      console.error(`[auth] GET /api/auth/me failed after ${Date.now() - startedAt} ms:`, e?.code ?? '', e?.response?.status ?? '', e?.message ?? '')
+      const timedOut = e?.code === 'PROFILE_TIMEOUT' || e?.code === 'ECONNABORTED'
       const message =
-        (err as { response?: { data?: { message?: string } } })?.response?.data?.message ??
-        'Could not load your JobCardScanner profile. Contact your admin.'
+        e?.response?.data?.message ??
+        (timedOut
+          ? 'No answer within 25 seconds - the Microsoft sign-in token, the API, or the API\'s database is not responding. Check that the API is running and can reach its database, then refresh.'
+          : e?.response?.status === 401
+            ? 'The API did not accept your sign-in (HTTP 401). Sign out and sign in again.'
+            : e?.response?.status
+              ? `The API answered HTTP ${e.response.status}. Open the API terminal for the reason.`
+              : 'Cannot reach the API. Check that it is running and that VITE_API_BASE_URL is correct, then refresh.')
       setError(message)
       setProfile(null)
     } finally {

@@ -251,12 +251,14 @@ public class JobCardScannerDbContext : DbContext
         {
             e.HasOne(x => x.JobCard).WithMany(j => j.PartSuggestions).HasForeignKey(x => x.JobCardId).OnDelete(DeleteBehavior.Cascade);
             e.HasOne(x => x.SuggestedBy).WithMany().HasForeignKey(x => x.SuggestedById);
+            e.Property(x => x.DiscountValue).HasPrecision(18, 2);   // the SQL column is decimal(18,2)
         });
 
         b.Entity<JobCardLabourSuggestion>(e =>
         {
             e.HasOne(x => x.JobCard).WithMany(j => j.LabourSuggestions).HasForeignKey(x => x.JobCardId).OnDelete(DeleteBehavior.Cascade);
             e.HasOne(x => x.SuggestedBy).WithMany().HasForeignKey(x => x.SuggestedById);
+            e.Property(x => x.DiscountValue).HasPrecision(18, 2);
         });
 
         // ----- Invoice -----

@@ -123,6 +123,10 @@ const NAV_ITEMS_BASE: Omit<NavItem, 'key'>[] = [
   // { to: '/oem-models', label: 'OEM Model Master', icon: '🚗', subtitle: 'Shared vehicle model catalog (global, not per-dealer)', roles: ['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
   //{ to: '/oem-model-warranties', label: 'OEM Model Warranty', icon: '🛡️', subtitle: 'Standard manufacturer warranty terms by model', roles: ['WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
   { to: '/reports', label: 'Reports & Search', icon: '📊', subtitle: 'Excel & PDF, by date range', roles: ['ServiceAdvisor', 'Technician', 'PartsUser', 'Cashier', 'WorkshopManager', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin'] },
+  // 2026-10-17 ("that whole project implement in 1 sidebar option caredesk"): the ONE entry that is the door to BGauss Care Desk - the separate ticketing app (off-road, warranty and spare-part
+  // tickets; its own login, users and database) - see web/src/pages/staff/CareDeskPage.tsx and patches/care-desk/README.md. HQ roles only to start with, because Care Desk has its own user list;
+  // Admin: Menu Access can widen it later (the key is 'care-desk'). App.tsx's RequireRole for '/care-desk' matches this list.
+  { to: '/care-desk', label: 'Care Desk', icon: '🎧', subtitle: 'Fleet ticketing - off-road, warranty & spare-part tickets', roles: ['CorporateAdmin', 'SystemAdmin'] },
   // Employees (2026-09-17): create/edit/delete local dealer logins with Work Area location
   // scoping. Gated to DealerAdmin and up - the same DealerAdminUp floor UsersController's API
   // already enforces - so a dealer's own DealerAdmin can manage their own staff here, distinct

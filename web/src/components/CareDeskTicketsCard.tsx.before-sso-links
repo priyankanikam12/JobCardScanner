@@ -1,0 +1,92 @@
+// web\src\components\CareDeskTicketsCard.tsx
+import { useEffect, useState } from 'react'
+import { staffApi } from '../api/client'
+
+/**
+ * 2026-10-17 ("backend files also give for ui controller model appdbcontext services"): the "Care Desk tickets" card on the Job Card page - the tickets BGauss Care Desk (the separate ticketing app) holds for
+ * THIS vehicle, read through GET /api/care-desk/tickets?vin=... (CareDeskController -> CareDeskService -> Care Desk's PostgreSQL, read-only). CorporateAdmin / SystemAdmin only - the page shows it only to them and the
+ * server checks the same policy. Shows nothing at all while the server side is not set up (CareDesk:Enabled / CareDesk:ConnectionString) or there is no chassis no.; a failed read says so in one line.
+ * Each ticket number opens that ticket in Care Desk in a new tab when VITE_CARE_DESK_URL is set (the person must be signed in to Care Desk, which has its own login).
+ */
+const CARE_DESK_URL: string = ((import.meta.env.VITE_CARE_DESK_URL as string | undefined) ?? '').trim().replace(/\/+$/, '')
+
+interface CareDeskTicket {
+  ticketNo: string
+  category: string
+  status: string
+  level: string
+  customerName: string
+  vin: string
+  regNo?: string | null
+  description?: string | null
+  createdAt: string
+  levelDueAt?: string | null
+  closedAt?: string | null
+  isRepeat: boolean
+  open: boolean
+}
+
+interface TicketsReply { configured: boolean; message?: string; tickets: CareDeskTicket[] }
+
+const words = (s: string) => s.replace(/_/g, ' ')
+const day = (iso?: string | null) => (iso ? new Date(iso).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true }) : '—')
+
+export function CareDeskTicketsCard({ vin }: { vin?: string | null }) {
+  const [reply, setReply] = useState<TicketsReply | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    setReply(null)
+    setError(null)
+    if (!vin) return
+    let cancelled = false
+    setLoading(true)
+    staffApi.get<TicketsReply>('/api/care-desk/tickets', { params: { vin } })
+      .then(({ data }) => { if (!cancelled) setReply(data) })
+      .catch((err) => {
+        if (cancelled) return
+        const e = err as { response?: { status?: number; data?: { message?: string } } }
+        setError(e?.response?.data?.message ?? (e?.response?.status ? `Could not read the Care Desk tickets (HTTP ${e.response.status}).` : 'Could not read the Care Desk tickets.'))
+      })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [vin])
+
+  if (!vin) return null
+  if (reply && !reply.configured) return null   // the server side is not set up yet - say nothing rather than clutter the page
+
+  return (
+    <div className="card" id="care-desk-tickets">
+      <h3>🎧 Care Desk tickets for this vehicle</h3>
+      {loading && <p className="muted">Loading…</p>}
+      {error && <p className="error-text">{error}</p>}
+      {reply && reply.tickets.length === 0 && <p className="muted">No Care Desk ticket for this chassis.</p>}
+      {reply && reply.tickets.length > 0 && (
+        <table>
+          <thead>
+            <tr><th>Ticket</th><th>Type</th><th>Status</th><th>Level</th><th>Raised</th><th>Level due</th><th>Closed</th></tr>
+          </thead>
+          <tbody>
+            {reply.tickets.map((t) => (
+              <tr key={t.ticketNo}>
+                <td>
+                  {CARE_DESK_URL
+                    ? <a href={`${CARE_DESK_URL}/desk/tickets/${encodeURIComponent(t.ticketNo)}`} target="_blank" rel="noreferrer">{t.ticketNo} ↗</a>
+                    : t.ticketNo}
+                  {t.isRepeat && <span className="muted"> · repeat</span>}
+                </td>
+                <td>{words(t.category)}</td>
+                <td>{words(t.status)}{t.open ? '' : ' ✓'}</td>
+                <td>{t.level}</td>
+                <td>{day(t.createdAt)}</td>
+                <td>{t.open ? day(t.levelDueAt) : '—'}</td>
+                <td>{day(t.closedAt)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  )
+}

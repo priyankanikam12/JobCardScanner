@@ -67,6 +67,9 @@ import { PortalMyJobCardsPage } from './pages/portal/PortalMyJobCardsPage'
 import { PortalTrackPage } from './pages/portal/PortalTrackPage'
 import { AttendancePage } from './pages/staff/AttendancePage'
 import { DealerRoleReportPage } from './pages/staff/DealerRoleReportPage'
+// 2026-10-17 ("that whole project implement in 1 sidebar option caredesk"): the one page that is the door to BGauss Care Desk (the separate ticketing app) - see CareDeskPage.tsx.
+import { CareDeskPage } from './pages/staff/CareDeskPage'
+
 export default function App() {
   return (
     <Routes>
@@ -406,6 +409,16 @@ export default function App() {
           element={
             <RequireRole roles={['CorporateAdmin', 'SystemAdmin']}>
               <DealerRoleReportPage />
+            </RequireRole>
+          }
+        />
+        {/* 2026-10-17 ("that whole project implement in 1 sidebar option caredesk") - the door to BGauss Care Desk (CareDeskPage.tsx). INSIDE this StaffLayout group on purpose, so the sidebar and
+            top bar stay around it and RequireStaff has already checked the sign-in; HQ roles only, matching StaffLayout.tsx's NAV_ITEMS entry for '/care-desk'. */}
+        <Route
+          path="/care-desk"
+          element={
+            <RequireRole roles={['CorporateAdmin', 'SystemAdmin']}>
+              <CareDeskPage />
             </RequireRole>
           }
         />
