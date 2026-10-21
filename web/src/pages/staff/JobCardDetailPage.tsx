@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { staffApi } from '../../api/client'
+import { CARE_DESK_URL, openCareDesk } from '../../lib/careDesk'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
 import { PasswordInput } from '../../components/PasswordInput'
 import { StatusBadge } from '../../components/StatusBadge'
@@ -17,6 +18,10 @@ import { buildRepairBillTaxInvoicePrintHtml, taxInvoiceContextFromJobCard } from
 // see JobCardsController.UploadPhoto), same origin as the API itself, not the frontend dev server.
 const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL
 const photoSrc = (url: string) => (url.startsWith('http') ? url : `${API_BASE_URL}${url}`)
+
+// 2026-10-17 ("that whole project implement in 1 sidebar option caredesk"): address of BGauss Care Desk, the separate ticketing app (VITE_CARE_DESK_URL, no slash at the end; empty = the
+// "Care Desk tickets for this chassis" link below is not shown). See CareDeskPage.tsx and patches/care-desk/README.md.
+// (CARE_DESK_URL and openCareDesk come from src/lib/careDesk.ts - the link below signs the person in to Care Desk instead of just opening its address)
 
 // 2026-09-28 (SECTION 137): the part-search fetch used to use a blanket `.catch(() => setAvailableParts([]))`,
 // so a REAL backend failure looked exactly like "zero parts matched your search". describeSearchError makes a
@@ -517,6 +522,13 @@ export function JobCardDetailPage() {
           <h3>Customer & Vehicle</h3>
           <p><strong>{jc.customer?.name}</strong><br />{jc.customer?.mobile}</p>
           <p>{jc.vehicle?.model} {jc.vehicle?.variant}<br />Reg: {jc.vehicle?.regNo} | Odometer: {jc.odometerAtCheckIn} km</p>
+          {/* 2026-10-17 ("that whole project implement in 1 sidebar option caredesk"): opens Care Desk's search for this chassis in a new tab. Shown only when VITE_CARE_DESK_URL is set and the
+              login is CorporateAdmin / SystemAdmin (the same roles as the Care Desk sidebar option); the person must be signed in to Care Desk, which has its own login. */}
+          {CARE_DESK_URL && jc.vehicle?.vin && hasRole('CorporateAdmin', 'SystemAdmin') && (
+            <p style={{ marginTop: 2 }}>
+              <a href="#" onClick={(e) => { e.preventDefault(); void openCareDesk(`/field/search?q=${encodeURIComponent(jc.vehicle?.vin ?? '')}`) }}>🎧 Care Desk tickets for this chassis ↗</a>
+            </p>
+          )}
           <p className="muted" style={{ marginTop: 2 }}>
             Technician: <strong>{jc.assignedTechnicianName || 'Not assigned yet'}</strong>
           </p>
