@@ -178,7 +178,7 @@ public record AddLabourSuggestionRequest(
     decimal? RateAtSuggestion,
     int Quantity,
     string? IssueType);
-public record UpdateLabourSuggestionRequest(int Quantity, string? IssueType);
+public record UpdateLabourSuggestionRequest(int Quantity, string? IssueType, decimal? RateAtSuggestion, decimal? Sgst, decimal? Cgst, decimal? Igst, string? LabourDescription, string? HsnCode);
 
 // ---------------- Invoicing ----------------
 public record GenerateInvoiceRequest(decimal DiscountAmount, decimal CgstAmount, decimal SgstAmount, decimal IgstAmount);

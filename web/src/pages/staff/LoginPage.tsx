@@ -113,7 +113,7 @@ export function LoginPage() {
         <div className="jcs-login-card">
           <div className="jcs-brand-mobile">
             <img src={bgaussLogo} alt="BGauss" />
-            <span>JobCardScanner</span>
+            <span>DMS</span>
           </div>
 
           <div className="jcs-tabs">

@@ -1550,11 +1550,14 @@ public class JobCardsController : ControllerBase
         return Ok(suggestion);
     }
 
-    /// <summary>PUT /api/jobcards/labour-suggestions/{suggestionId} - edits a suggested labour
-    /// line's Quantity and/or Issue Type after the fact. RateAtSuggestion is deliberately NOT
-    /// editable here (locked from LabourMaster's own rate card at the time it was suggested - see
-    /// JobCardLabourSuggestion's doc comment) - to change the rate, remove this suggestion and
-    /// re-add it from the current LabourMaster list instead.</summary>
+    /// <summary>PUT /api/jobcards/labour-suggestions/{suggestionId} - edits a suggested labour line after the fact: Quantity and Issue Type always.
+    ///
+    /// 2026-10-22 ("in the Edit button of Labour Suggestion the Rate and HSN are editable, only for a line whose rate is 0, not for all"): Rate and HSN can now ALSO be set - but only on a
+    /// line whose saved RateAtSuggestion is 0 or missing (a labour whose Labour Master rate is 0, so there was nothing to lock it to). A line that already has a rate keeps it locked
+    /// from Labour Master's own rate card (the original design - to change such a rate, remove the line and add it again): a request that sends a rate for it is refused with 400, so
+    /// the rule holds even if someone calls the API directly instead of using the page. Rate and HSN are applied together, only when the request carries a RateAtSuggestion - a caller
+    /// that sends none (e.g. the mobile app today) leaves both exactly as they are. The rate must be 0 or more; the HSN is optional, digits only, up to 8 (blank clears it). Every rate
+    /// change is written to the audit log (old rate, new rate, HSN). REQUIRES UpdateLabourSuggestionRequest (Dtos) to carry the two optional fields RateAtSuggestion and HsnCode.</summary>
     [HttpPut("labour-suggestions/{suggestionId:guid}")]
     [Authorize(Policy = Policies.ServiceAdvisorUp)]
     public async Task<IActionResult> UpdateLabourSuggestion(Guid suggestionId, UpdateLabourSuggestionRequest req)
@@ -1562,9 +1565,32 @@ public class JobCardsController : ControllerBase
         if (req.Quantity < 1) return BadRequest(new { message = "quantity must be at least 1." });
         var suggestion = await _db.JobCardLabourSuggestions.FirstOrDefaultAsync(s => s.Id == suggestionId);
         if (suggestion is null) return NotFound();
+
+        // decided from the SAVED rate, before anything below changes it
+        var rateWasOpen = !((suggestion.RateAtSuggestion ?? 0) > 0);
+        var oldRate = suggestion.RateAtSuggestion;
+
+        if (req.RateAtSuggestion.HasValue)
+        {
+            if (!rateWasOpen)
+                return BadRequest(new { message = "This labour line's rate comes from Labour Master and cannot be changed here. Remove the line and add it again to use a different rate." });
+            if (req.RateAtSuggestion.Value < 0)
+                return BadRequest(new { message = "rate cannot be negative." });
+            var hsn = string.IsNullOrWhiteSpace(req.HsnCode) ? null : req.HsnCode.Trim();
+            if (hsn is not null && (hsn.Length > 8 || !hsn.All(char.IsDigit)))
+                return BadRequest(new { message = "HSN must be digits only (up to 8)." });
+
+            suggestion.RateAtSuggestion = req.RateAtSuggestion;
+            suggestion.HsnCode = hsn;
+        }
+
         suggestion.Quantity = req.Quantity;
         suggestion.IssueType = string.IsNullOrWhiteSpace(req.IssueType) ? null : req.IssueType.Trim();
         await _db.SaveChangesAsync();
+
+        if (req.RateAtSuggestion.HasValue)
+            await _audit.LogAsync("JobCard.LabourRateEdit", "JobCardLabourSuggestion", suggestion.Id.ToString(),
+                new { suggestion.JobCardId, suggestion.LabourCode, OldRate = oldRate, NewRate = suggestion.RateAtSuggestion, suggestion.HsnCode });
         return Ok(suggestion);
     }
 

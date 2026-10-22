@@ -1505,7 +1505,12 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
   const [selected, setSelected] = useState<JobCardsLabourCatalogRow | null>(null)
   const [qty, setQty] = useState<number>(1)
   const [issueType, setIssueType] = useState('')
-  const [editing, setEditing] = useState<{ id: string; qty: number; issueType: string; discountType: DiscountKind; discountValue: string } | null>(null)
+  // 2026-10-22 ("in the Edit button of Labour Suggestion the Rate and HSN fields must be editable - in the Edit row only, not in the search row ... only for a line whose rate is 0, not for all"):
+  // the Edit row of a line whose rate is 0 (or missing) shows an open Rate and HSN; a line that already has a rate keeps them as plain text, exactly as before. rateEditable is decided when
+  // Edit is clicked (from the saved rate), so typing a rate never makes the box disappear. rate / hsn hold what is being typed; Save sends them with the quantity and issue type.
+  const [editing, setEditing] = useState<{ id: string; qty: number; issueType: string; discountType: DiscountKind; discountValue: string; rateEditable: boolean; rate: string; hsn: string } | null>(null)
+  /** A rate can be typed only while it is 0 (or missing) - a rate that is already on the line is never changed from this screen. */
+  const rateIsOpen = (rate: number | null | undefined) => !(Number(rate) > 0)
   // 2026-10-07: discount of the labour line being added
   const [discountType, setDiscountType] = useState<DiscountKind>('None')
   const [discountValue, setDiscountValue] = useState('0')
@@ -1562,6 +1567,7 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
     await staffApi.put(`/api/jobcards/labour-suggestions/${editing.id}`, {
       quantity: editing.qty || 1,
       issueType: editing.issueType.trim() || null,
+      ...(editing.rateEditable ? { rateAtSuggestion: Number(editing.rate) || 0, hsnCode: editing.hsn.trim() || null } : {}),
     })
     const value = Number(editing.discountValue) || 0
     const isFoc = editing.issueType.trim() === 'FOC'
@@ -1572,6 +1578,9 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
     })
     setEditing(null)
   }
+
+  /** Edit row of an open line: the Rate must be a number, 0 or more (0 is allowed - e.g. a free labour); the HSN is optional and digits only (limited as it is typed). A line that already has a rate has nothing to check. */
+  const editRateValid = !!editing && (!editing.rateEditable || (editing.rate.trim() !== '' && Number.isFinite(Number(editing.rate)) && Number(editing.rate) >= 0))
 
   /** Money of a saved labour line (Rate x Qty, less its discount; FOC = 0). */
   const labourMoney = (l: JobCardDetail['labourSuggestions'][number]) => suggestionLineMoney(l.rateAtSuggestion, l.quantity, l.issueType === 'FOC', discountOf(l))
@@ -1593,8 +1602,24 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
                 <td>{l.labourCode}</td>
                 <td>{l.labourDescription ?? '-'}</td>
                 <td><input type="number" min={1} value={editing.qty} onChange={(e) => setEditing({ ...editing, qty: Number(e.target.value) })} style={{ width: '4rem' }} /></td>
-                <td>{l.rateAtSuggestion ?? '-'}</td>
-                <td>{l.hsnCode ?? '-'}</td>
+                <td>
+                  {editing.rateEditable ? (
+                    <input
+                      type="number" min={0} step="0.01" aria-label="Rate" value={editing.rate} autoFocus
+                      onChange={(e) => setEditing({ ...editing, rate: e.target.value })}
+                      style={{ width: '6rem', textAlign: 'right', borderColor: editRateValid ? '#f59e0b' : '#dc2626' }}
+                    />
+                  ) : (l.rateAtSuggestion ?? '-')}
+                </td>
+                <td>
+                  {editing.rateEditable ? (
+                    <input
+                      type="text" inputMode="numeric" maxLength={8} aria-label="HSN" value={editing.hsn} placeholder="HSN"
+                      onChange={(e) => setEditing({ ...editing, hsn: e.target.value.replace(/\D/g, '').slice(0, 8) })}
+                      style={{ width: '6rem' }}
+                    />
+                  ) : (l.hsnCode ?? '-')}
+                </td>
                 <td>{l.sgst ?? '-'}</td>
                 <td>{l.cgst ?? '-'}</td>
                 <td>{l.igst ?? '-'}</td>
@@ -1614,7 +1639,7 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
                     </div>
                   )}
                 </td>
-                <td>₹{suggestionLineMoney(l.rateAtSuggestion, editing.qty, editing.issueType === 'FOC', { type: editing.discountType, value: Number(editing.discountValue) || 0 }).amount.toFixed(2)}</td>
+                <td>₹{suggestionLineMoney(editing.rateEditable ? (Number(editing.rate) || 0) : l.rateAtSuggestion, editing.qty, editing.issueType === 'FOC', { type: editing.discountType, value: Number(editing.discountValue) || 0 }).amount.toFixed(2)}</td>
                 <td>
                   <select value={editing.issueType} onChange={(e) => setEditing({ ...editing, issueType: e.target.value })}>
                     <option value="">Select…</option>
@@ -1622,7 +1647,7 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
                   </select>
                 </td>
                 <td>
-                  <button className="btn btn-sm btn-primary" onClick={() => run(saveEdit)}>Save</button>{' '}
+                  <button className="btn btn-sm btn-primary" disabled={!editRateValid} title={editRateValid ? undefined : 'Type the Rate (0 or more) first.'} onClick={() => run(saveEdit)}>Save</button>{' '}
                   <button className="btn btn-sm" onClick={() => setEditing(null)}>Cancel</button>
                 </td>
               </tr>
@@ -1640,7 +1665,7 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
                 <td>₹{labourMoney(l).amount.toFixed(2)}</td>
                 <td>{l.issueType ?? '-'}</td>
                 <td>
-                  <button className="btn btn-sm" onClick={() => setEditing({ id: l.id, qty: l.quantity, issueType: l.issueType ?? '', discountType: discountOf(l).type, discountValue: String(discountOf(l).value) })}>Edit</button>{' '}
+                  <button className="btn btn-sm" onClick={() => setEditing({ id: l.id, qty: l.quantity, issueType: l.issueType ?? '', discountType: discountOf(l).type, discountValue: String(discountOf(l).value), rateEditable: rateIsOpen(l.rateAtSuggestion), rate: String(l.rateAtSuggestion ?? 0), hsn: l.hsnCode ?? '' })}>Edit</button>{' '}
                   <button
                     className="btn btn-sm"
                     style={{ background: '#dc2626', color: '#fff', border: '1px solid #dc2626' }}
