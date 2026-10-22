@@ -9,6 +9,15 @@ import { useStaffAuth } from '../auth/StaffAuthContext'
 import { JobSearchModal } from '../components/JobSearchModal'
 import { PickerField } from '../components/PickerField'
 import { colors } from '../theme/colors'
+import { InsuranceCompanyPicker } from '../components/InsuranceCompanyPicker'
+
+/** Digits only, at most 10. A pasted "+91 98765 43210", "919876543210" or "09876543210" keeps the 10 real digits (the +91 / 0 prefix is dropped) - web's InsuranceSection tenDigits. */
+const tenDigits = (raw: string): string => {
+  let d = raw.replace(/[^0-9]/g, '')
+  if (d.length > 10 && d.startsWith('91') && d.length <= 12) d = d.slice(2)
+  else if (d.length > 10 && d.startsWith('0') && d.length <= 11) d = d.slice(1)
+  return d.slice(0, 10)
+}
 import type { RootStackParamList } from '../navigation/RootNavigator'
 import type { BaplDmsLabourRow, BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaster, JobSearchResult, LabourMasterPartwise, MaterialTransferItemForJob, RepairBillDoc, RepairBillDocItemType, RepairBillDocStatus } from '../types'
 
@@ -229,8 +238,10 @@ export function RepairBillCreateScreen() {
   const [dmsParts, setDmsParts] = useState<BaplDmsPartStock[]>([])
   useEffect(() => {
     if (!location) { setDmsParts([]); return }
-    apiClient.get<BaplDmsPartStock[]>('/api/bapl-dms/parts', { params: { locationCode: location } })
-      .then(({ data }) => setDmsParts(data))
+    // 2026-10-22 (web parity): the stock list is the app's OWN Part Upload data for this location (GET /api/part-uploads), not DMS's live PartsInventory (the old /api/bapl-dms/parts) - job cards,
+    // Repair Bill and Material Transfer no longer read DMS.
+    apiClient.get<{ partNo: string; balQty: number | null; description: string | null; hsnSacCode: string | null; billPrice: number | null }[]>('/api/part-uploads', { params: { locationCode: location } })
+      .then(({ data }) => setDmsParts(data.map((u): BaplDmsPartStock => ({ itemCode: u.partNo, availableQty: u.balQty ?? 0, description: u.description, hsnCode: u.hsnSacCode, source: 'partUpload', billPrice: u.billPrice }))))
       .catch(() => setDmsParts([]))
   }, [location])
 
@@ -816,7 +827,7 @@ export function RepairBillCreateScreen() {
       </TouchableOpacity>
       {showInsurance && (
         <View style={{ marginTop: 10 }}>
-          <View style={styles.field}><Text style={styles.label}>Insurance Company</Text><TextInput style={styles.input} value={insuranceCompanyName} onChangeText={setInsuranceCompanyName} /></View>
+          <View style={styles.field}><InsuranceCompanyPicker value={insuranceCompanyName} onPick={setInsuranceCompanyName} /></View>
           <View style={styles.field}><Text style={styles.label}>Claim Description</Text><TextInput style={styles.input} value={insuranceDescription} onChangeText={setInsuranceDescription} /></View>
           <View style={styles.field}><Text style={styles.label}>Policy No</Text><TextInput style={styles.input} value={policyNo} onChangeText={setPolicyNo} /></View>
           <View style={styles.field}>
@@ -824,7 +835,7 @@ export function RepairBillCreateScreen() {
             <TouchableOpacity style={styles.input} onPress={() => openDatePicker(insuranceValidTill ?? new Date(), setInsuranceValidTill)}><Text>{insuranceValidTill ? insuranceValidTill.toLocaleDateString('en-IN') : 'Select date'}</Text></TouchableOpacity>
           </View>
           <View style={styles.field}><Text style={styles.label}>Surveyor Name</Text><TextInput style={styles.input} value={surveyorName} onChangeText={setSurveyorName} /></View>
-          <View style={styles.field}><Text style={styles.label}>Surveyor Contact No</Text><TextInput style={styles.input} value={surveyorContactNumber} onChangeText={setSurveyorContactNumber} keyboardType="phone-pad" /></View>
+          <View style={styles.field}><Text style={styles.label}>Surveyor Contact No</Text><TextInput style={styles.input} value={surveyorContactNumber} onChangeText={(v) => setSurveyorContactNumber(tenDigits(v))} keyboardType="phone-pad" maxLength={10} placeholder="10-digit mobile no" /></View>
           <View style={styles.formRow}>
             <View style={{ flex: 1 }}><Text style={styles.label}>Total Discount (₹)</Text><TextInput style={styles.input} value={totalDiscount} onChangeText={setTotalDiscount} keyboardType="numeric" /></View>
             <View style={{ flex: 1 }}><Text style={styles.label}>Amount Received (₹)</Text><TextInput style={styles.input} value={amountReceived} onChangeText={setAmountReceived} keyboardType="numeric" /></View>

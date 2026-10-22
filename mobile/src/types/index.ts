@@ -65,6 +65,11 @@ export interface CurrentUser {
    * Compared against a picked job's Customer.State to auto-detect Same State (CGST+SGST) vs
    * Different State (IGST), same as web/src/types/index.ts's CurrentUser.dealerState. */
   dealerState?: string | null
+  mobile?: string | null
+  avatarColor?: string | null
+  /** 2026-10-01 (web): User.Designation (free text, e.g. "Captain", "ViceCaptain") - separate from Role. GET /api/auth/me returns it; the Menu Access rules
+   * (navigation/menuAccess.ts) match "Captain"/"ViceCaptain" against this, because those two are Designations, not real backend Roles. */
+  designation?: string | null
 }
 
 export interface Dealer {
@@ -120,6 +125,8 @@ export interface JobCardsPartsCatalogRow {
   cgst?: number | null
   igst?: number | null
   availableQty?: number | null
+  /** where the Part Upload balance is held: [{ locationCode: 'CUS0270W1', qty: 17 }, ...] (null = none uploaded) */
+  stockByLocation?: { locationCode: string; qty: number }[] | null
 }
 
 export interface JobCardsLabourCatalogRow {
@@ -498,6 +505,9 @@ export interface JobCardPartSuggestion {
   description?: string | null
   hsnCode?: string | null
   mrp?: number | null
+  /** 2026-10-07 (web): 'Percentage' | 'Amount' | null and its value - see lib/suggestionMoney.ts */
+  discountType?: string | null
+  discountValue?: number | null
   createdAt?: string
 }
 
@@ -537,6 +547,8 @@ export interface JobCardLabourSuggestion {
   rateAtSuggestion?: number | null
   quantity: number
   issueType?: string | null
+  discountType?: string | null
+  discountValue?: number | null
   createdAt?: string
 }
 
@@ -592,6 +604,8 @@ export interface JobCardSummary {
   vehicleRegNo?: string
   stageLabel?: string | null
   technicianName?: string
+  serviceAdvisorName?: string
+  serviceType?: string | null
   createdAt: string
   expectedDeliveryAt?: string | null
   photoCount?: number | null
@@ -835,4 +849,169 @@ export interface DmsBaplDataMaterialTransfer {
   createdAt: string
   updatedAt: string
   items: DmsBaplDataMaterialTransferItem[]
+}
+
+// ---------------- Corporate Dashboard (CorporateAdmin / SystemAdmin) - mirrors web/src/types/index.ts ----------------
+export interface CorporateDashboardData {
+  revenue: number
+  warrantyCost: number
+  csat: CsatSummary
+  pendingVehicles: number
+  jobCardVolumeByDealer: { dealerName: string; count: number }[]
+  jobCardVolumeTrend: { date: string; count: number }[]
+  avgTatByDealer: { dealerName: string; avgHours: number }[]
+  topPartsConsumption: { partName: string; qty: number }[]
+  repeatComplaints: { regNo?: string | null; visits: number }[]
+}
+
+export interface CorporateDashboardFilters {
+  dealers: { id: string; name: string }[]
+  regions: string[]
+  states: string[]
+  cities: string[]
+  models: string[]
+}
+
+// ---------------- Read-only DMSBAPLDATA pages (Service History, Vehicle Sale) - copied from web/src/types/index.ts ----------------
+
+export interface DmsBaplDataServiceHistory {
+  id: number
+  dealerCode?: string | null
+  jobNo?: string | null
+  jobDate?: string | null
+  compName?: string | null
+  location?: string | null
+  inTime?: string | null
+  closeTime?: string | null
+  jobCategory?: string | null
+  ffrpercentage?: string | null
+  docNo?: string | null
+  docType?: string | null
+  docDate?: string | null
+  model?: string | null
+  brandName?: string | null
+  regNo?: string | null
+  vehicleType?: string | null
+  engineNo?: string | null
+  chassisNo?: string | null
+  kms?: string | null
+  batterySerialNo1?: string | null
+  batterySerialNo2?: string | null
+  batterySerialNo3?: string | null
+  batterySerialNo4?: string | null
+  batterySerialNo5?: string | null
+  batterySerialNo6?: string | null
+  individualAhbattery1?: string | null
+  individualAhbattery2?: string | null
+  individualAhbattery3?: string | null
+  individualAhbattery4?: string | null
+  individualAhbattery5?: string | null
+  individualAhbattery6?: string | null
+  partyName?: string | null
+  mobileNumber?: string | null
+  supervisor?: string | null
+  technician?: string | null
+  serviceHead?: string | null
+  jobType?: string | null
+  saleDate?: string | null
+  couponNo?: string | null
+  expectedDeliveryDate?: string | null
+  proformaDate?: string | null
+  invoiceDate?: string | null
+  estimatedJobExpenses?: number | null
+  labourHours?: number | null
+  parts?: number | null
+  accessory?: number | null
+  oil?: number | null
+  labour?: number | null
+  outsideWork?: number | null
+  totalWotax?: number | null
+  gstamount?: number | null
+  igstamount?: number | null
+  netTotal?: number | null
+  createdAt?: string | null
+  updatedAt?: string | null
+  repairType?: string | null
+  completionDate?: string | null
+  jobStatus?: string | null
+  rowHash?: string | null
+  uniqueKey?: string | null
+}
+
+export interface DmsBaplDataServiceHistorySuggestion {
+  chassisNo: string
+  regNo?: string | null
+  model?: string | null
+  lastJobDate?: string | null
+}
+
+export interface DmsBaplDataVehicleSale {
+  id: number
+  dealerName?: string | null
+  dealerCode?: string | null
+  invoiceNo?: string | null
+  regNo?: string | null
+  isImported?: boolean
+  invoiceDate?: string | null
+  location?: string | null
+  locCode?: string | null
+  locationCity?: string | null
+  custDob?: string | null
+  gender?: string | null
+  soldTo?: string | null
+  accountType?: string | null
+  partyEmail?: string | null
+  cusMob?: string | null
+  address1?: string | null
+  address2?: string | null
+  city?: string | null
+  state?: string | null
+  executiveName?: string | null
+  pin?: string | null
+  chassisNo?: string | null
+  motorNo?: string | null
+  remarks?: string | null
+  itemModel?: string | null
+  oemmodel?: string | null
+  colorCode?: string | null
+  vehicleType?: string | null
+  vehicleGroup?: string | null
+  hsnsaccode?: string | null
+  saleType?: string | null
+  financedBy?: string | null
+  finAmount?: number | null
+  itemRate?: number | null
+  insuAmount?: number | null
+  regnAmount?: number | null
+  acsryAmount?: number | null
+  preGstdiscAmount?: number | null
+  discTypeName?: string | null
+  postGstdisc?: number | null
+  fameIi?: number | null
+  stateFameIi?: number | null
+  sgstper?: number | null
+  sgstamount?: number | null
+  cgstper?: number | null
+  cgstamount?: number | null
+  igstper?: number | null
+  igstamount?: number | null
+  netAmount?: number | null
+  referenceNo?: string | null
+  bookingDate?: string | null
+  totalCount?: string | null
+  battery?: string | null
+  batteryChemical?: string | null
+  batteryCapacity?: string | null
+  batteryMake?: string | null
+  chargerNo?: string | null
+  chargerNo2?: string | null
+  converter?: string | null
+  vcu?: string | null
+  controllerNo?: string | null
+  fameIirequired?: string | null
+  segmentName?: string | null
+  institutionalName?: string | null
+  schemeName?: string | null
+  createdAt?: string | null
+  updatedAt?: string | null
 }

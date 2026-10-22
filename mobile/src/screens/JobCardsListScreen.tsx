@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { FlatList, Pressable, RefreshControl, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { apiClient } from '../api/client'
+import { useStaffAuth } from '../auth/StaffAuthContext'
 import { Badge } from '../components/Badge'
 import type { JobCardListResponse, JobCardSummary } from '../types'
 import type { JobCardsListFilter, RootStackParamList } from '../navigation/RootNavigator'
@@ -36,6 +37,10 @@ export function JobCardsListScreen({ navigation, route }: Props) {
   // Dashboard KPI cards deep-link here with one of these set (e.g. { excludeClosed: true } or
   // { status: 'PendingCustomerApproval' }) - see DashboardScreen.tsx's KPIS array.
   const filter = route.params
+  const { hasRole } = useStaffAuth()
+  // 2026-10-12 (web JobCardsListPage): head-office logins (CorporateAdmin / SystemAdmin) see who created each job card.
+  const showCreatedBy = hasRole('CorporateAdmin', 'SystemAdmin')
+  const [createdByMap, setCreatedByMap] = useState<Record<string, string>>({})
   const [jobCards, setJobCards] = useState<JobCardSummary[]>([])
   // Non-null only when a real DMS problem (not "this dealer has no DMS data", which is
   // normal and silent) kept its job cards out of the blended list below - mirrors
@@ -67,6 +72,23 @@ export function JobCardsListScreen({ navigation, route }: Props) {
     return () => clearTimeout(handle)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q])
+
+  // 2026-10-12 (web parity): who created each job card on the screen - one POST for this list's own (JobCardScanner) job cards, only for CorporateAdmin / SystemAdmin. DMS-sourced rows have no creator
+  // here and show "-". Best-effort: when the call fails the line just says "-".
+  useEffect(() => {
+    if (!showCreatedBy) return
+    const ids = jobCards.filter((j) => j.source !== 'BaplDms').map((j) => j.id)
+    if (ids.length === 0) return
+    let cancelled = false
+    apiClient
+      .post<{ id: string; createdByName: string | null }[]>('/api/jobcards/created-by', { ids })
+      .then(({ data }) => {
+        if (cancelled) return
+        setCreatedByMap((prev) => ({ ...prev, ...Object.fromEntries(data.map((d) => [d.id, d.createdByName ?? '-'])) }))
+      })
+      .catch(() => { /* best-effort */ })
+    return () => { cancelled = true }
+  }, [jobCards, showCreatedBy])
 
   const activeFilterLabel = describeFilter(filter)
 
@@ -118,6 +140,8 @@ export function JobCardsListScreen({ navigation, route }: Props) {
                 <Text style={styles.muted}>{item.customerName} - {item.vehicleModel} {item.vehicleRegNo}</Text>
                 <Text style={styles.muted}>{item.vehicleChassisNo ?? '-'}</Text>
                 <Text style={styles.muted}>{isBapl ? '-' : item.stageLabel}</Text>
+                <Text style={styles.muted}>{item.technicianName ? `Technician: ${item.technicianName} · ` : ''}Created {item.createdAt ? new Date(item.createdAt).toLocaleDateString() : '-'}</Text>
+                {showCreatedBy && <Text style={styles.muted}>Created by: {isBapl ? '-' : createdByMap[item.id] ?? '…'}</Text>}
                 {!isBapl && (item.photoCount ?? 0) > 0 && <Text style={styles.photoCount}>📷 {item.photoCount}</Text>}
               </View>
               <Badge status={item.status} />

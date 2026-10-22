@@ -3,7 +3,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import { useAuth as useAzureAuth } from './AuthContext'
 import { getDealerSession, type DealerSession } from './dealerSession'
 import { dealerLogout } from '../services/dealerAuthService'
-import { apiClient, setDealerToken } from '../api/client'
+import { apiClient, setDealerToken, setUnauthorizedHandler } from '../api/client'
 import type { CurrentUser, StaffRole } from '../types'
 // 2026-09-28 (SECTION 135) - "attendance page also fix ... why check in time not shown": this
 // unified signOut() below is the ONE sign-out path every other screen is meant to call (per this
@@ -145,6 +145,20 @@ export function StaffAuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     loadDealerSession()
+  }, [])
+
+  // 2026-10-22 (web parity - web/src/api/client.ts' 401 interceptor): a Dealer/Workshop JWT cannot be renewed, so when the API answers 401 the stored session is dead - clear it and fall back to the
+  // login screen instead of leaving the person stuck on a signed-in-looking app where every call fails. dealerLogout() is the same sign-out the Sign out button uses (without the attendance check-out,
+  // which needs a valid token). Azure AD sessions are not touched here (they refresh themselves).
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      void dealerLogout().finally(() => {
+        setDealerSessionState(null)
+        setDealerMeProfile(null)
+        setDealerToken(null)
+      })
+    })
+    return () => setUnauthorizedHandler(null)
   }, [])
 
   const authMode: StaffAuthValue['authMode'] = dealerSession ? 'dealer' : azure.profile ? 'azureAd' : null

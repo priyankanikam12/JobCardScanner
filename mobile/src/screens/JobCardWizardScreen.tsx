@@ -28,6 +28,30 @@ import { colors } from '../theme/colors'
 
 type Props = NativeStackScreenProps<RootStackParamList, 'JobCardWizard'>
 
+// 2026-10-07 (web JobCardWizardPage): the slice of a Ledger Master row (GET /api/ledger-master, type "Party") this wizard needs - the "Edit anyway" panel lists these and copies the picked one into the
+// Registered Customer fields.
+interface PartyLedgerRow {
+  id: string
+  ledgerCode: string
+  ledgerName: string
+  mobileNumber: string | null
+  eMail: string | null
+  address: string | null
+  address2: string | null
+  city: string | null
+  state: string | null
+  isShared: boolean
+}
+interface LedgerTypeRow { id: number; customerType: string }
+// 2026-10-07: GET /api/jobcards/vehicle-lookup also returns the customer saved on this chassis's LAST job card in our own database (it overrides the Vehicle Sale customer in customerName / customerMobile / ...),
+// plus customerFromJobCard (that job card's number) and vehicleSaleCustomer (what Vehicle Sale itself says, so "Use Vehicle Sale details" can still go back to it). Read through a loose cast so this file
+// compiles whether or not types/index.ts declares these two fields.
+interface LookupCustomerExtras {
+  customerFromJobCard?: string | null
+  vehicleSaleCustomer?: { name: string | null; mobile: string | null; email: string | null; city: string | null; state: string | null; address: string | null } | null
+}
+const customerExtrasOf = (hit: BaplDmsVehicleLookup | null): LookupCustomerExtras => (hit ?? {}) as LookupCustomerExtras
+
 const STEPS = ['Customer', 'Vehicle', 'Service Details', 'Review & Create']
 // 2026-10-02 ("in both web and android jobcardwizards in complaint top 16 complaint shown in
 // Radio button only and after 16 in dropdown dont add in radio only fix 16 Complaint in radio
@@ -234,10 +258,102 @@ export function JobCardWizardScreen({ navigation }: Props) {
     return () => clearTimeout(handle)
   }, [chassisOrRegQ, showVehicleSuggestions, effectiveDealerId])
 
-  const [unlockCustomerFields, setUnlockCustomerFields] = useState(false)
+  // 2026-10-07 (web JobCardWizardPage, "Edit anyway ... party ledger for that dealer"): the Registered Customer section has no manual-typing escape hatch any more. Customer fields stay locked for as
+  // long as a Vehicle Sale hit exists; "Edit anyway" opens a panel listing this dealer's PARTY ledgers (Ledger Master, type Party) and picking one copies its details into the fields. A customer who is
+  // not in the list has to be added to Ledger Master first. (A chassis Vehicle Sale does NOT know at all still falls back to the manual "register a customer" fields - there is no hit to lock then.)
+  // The Vehicle step's own "Edit anyway" is unchanged.
   const [unlockVehicleFields, setUnlockVehicleFields] = useState(false)
-  const customerFieldsLocked = !!baplVehicleHit && !unlockCustomerFields
+  const customerFieldsLocked = !!baplVehicleHit
   const vehicleFieldsLocked = !!baplVehicleHit && !unlockVehicleFields
+
+  // ---- "Edit anyway" panel: this dealer's Party ledgers from Ledger Master ----
+  const [showLedgerPicker, setShowLedgerPicker] = useState(false)
+  const [partyLedgers, setPartyLedgers] = useState<PartyLedgerRow[] | null>(null) // null = still loading
+  const [partyLedgerTotal, setPartyLedgerTotal] = useState(0)
+  const [ledgerPickerError, setLedgerPickerError] = useState<string | null>(null)
+  const [ledgerSearch, setLedgerSearch] = useState('')
+  // the ledger whose details currently fill the Registered Customer fields (null = the Vehicle Sale / last job card customer)
+  const [selectedLedger, setSelectedLedger] = useState<PartyLedgerRow | null>(null)
+  const [partyTypeId, setPartyTypeId] = useState<number | null>(null)
+  // 2026-10-07: true once "Use Vehicle Sale details" is tapped - the customer then shows what Vehicle Sale says instead of the last job card's customer for this chassis
+  const [useVehicleSaleCustomer, setUseVehicleSaleCustomer] = useState(false)
+  const lastJobCardNo = customerExtrasOf(baplVehicleHit).customerFromJobCard ?? null
+  const customerIsFromLastJobCard = !!lastJobCardNo && !useVehicleSaleCustomer && !selectedLedger
+
+  // Loads the Party ledgers each time the panel opens (so a ledger just added in Ledger Master shows up), and again - debounced - as the search changes. A dealer login is scoped to its own dealer's ledgers
+  // (plus ones shared with every dealer) by the server; CorporateAdmin / SystemAdmin (who pick a dealer at the top of this step) get that dealer's ledgers via the dealerId param.
+  useEffect(() => {
+    if (!showLedgerPicker) return
+    let cancelled = false
+    setPartyLedgers(null)
+    setLedgerPickerError(null)
+    const handle = setTimeout(async () => {
+      try {
+        let typeId = partyTypeId
+        if (typeId === null) {
+          const { data: types } = await apiClient.get<LedgerTypeRow[]>('/api/ledger-master/types')
+          const party = types.find((ty) => ty.customerType.trim().toLowerCase() === 'party')
+          if (!party) {
+            if (!cancelled) { setPartyLedgers([]); setPartyLedgerTotal(0); setLedgerPickerError('Ledger Master has no "Party" ledger type.') }
+            return
+          }
+          typeId = party.id
+          setPartyTypeId(party.id)
+        }
+        const { data } = await apiClient.get<{ data: PartyLedgerRow[]; totalRecords: number }>('/api/ledger-master', {
+          params: { ledgerTypeId: typeId, pageIndex: 0, pageSize: 100, includeInactive: false, searchTerm: ledgerSearch.trim() || undefined, dealerId: effectiveDealerId || undefined },
+        })
+        if (!cancelled) { setPartyLedgers(data.data); setPartyLedgerTotal(data.totalRecords) }
+      } catch (err: unknown) {
+        if (!cancelled) {
+          setPartyLedgers([])
+          setPartyLedgerTotal(0)
+          setLedgerPickerError((err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not load the Party ledgers from Ledger Master.')
+        }
+      }
+    }, ledgerSearch ? 300 : 0)
+    return () => { cancelled = true; clearTimeout(handle) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showLedgerPicker, ledgerSearch, effectiveDealerId])
+
+  /** Copies a Party ledger's details into the Registered Customer fields (Sale Date stays the vehicle's own). */
+  const applyLedger = (l: PartyLedgerRow) => {
+    setSelectedLedger(l)
+    setNewCustomer((c) => ({
+      ...c,
+      name: l.ledgerName,
+      mobile: (l.mobileNumber ?? '').replace(/\D/g, '').slice(0, 10),
+      email: l.eMail ?? '',
+      city: l.city ?? '',
+      state: l.state ?? '',
+      address: [l.address, l.address2].filter((a) => a && a.trim()).map((a) => (a as string).trim()).join(', '),
+    }))
+    setShowLedgerPicker(false)
+    setLedgerSearch('')
+  }
+
+  /** Back to the customer Vehicle Sale returned (drops the picked ledger / the last job card's customer). */
+  const revertToVehicleSaleCustomer = () => {
+    setSelectedLedger(null)
+    setShowLedgerPicker(false)
+    setUseVehicleSaleCustomer(true)
+    if (!baplVehicleHit) return
+    // when the lookup replaced the customer with the last job card's, vehicleSaleCustomer still holds what Vehicle Sale itself says
+    const sale = customerExtrasOf(baplVehicleHit).vehicleSaleCustomer
+    const src = sale ?? {
+      name: baplVehicleHit.customerName ?? null, mobile: baplVehicleHit.customerMobile ?? null, email: baplVehicleHit.customerEmail ?? null,
+      city: baplVehicleHit.customerCity ?? null, state: baplVehicleHit.customerState ?? null, address: baplVehicleHit.customerAddress ?? null,
+    }
+    setNewCustomer((c) => ({
+      ...c,
+      name: src.name ?? '',
+      mobile: src.mobile ? src.mobile.replace(/\D/g, '').slice(0, 10) : '',
+      city: src.city ?? '',
+      email: src.email ?? '',
+      address: src.address ?? '',
+      state: src.state ?? '',
+    }))
+  }
 
   // 2026-10-01: State was missing from this mapping entirely - the DMS lookup response was
   // never read for it, so newCustomer.state stayed '' no matter what the source data had, even
@@ -274,7 +390,9 @@ export function JobCardWizardScreen({ navigation }: Props) {
     setVehicleNotSoldNotice(null)
     setOpenJobCardNotice(null)
     setBaplVehicleHit(null)
-    setUnlockCustomerFields(false)
+    setSelectedLedger(null)
+    setShowLedgerPicker(false)
+    setUseVehicleSaleCustomer(false)
     setUnlockVehicleFields(false)
     setShowGlobalSearchOffer(false)
     setGlobalHit(null)
@@ -1114,8 +1232,57 @@ export function JobCardWizardScreen({ navigation }: Props) {
           {customerFieldsLocked && (
             <View>
               <Text style={styles.muted}>🔒 Name, Mobile, Email, City and Address were auto-fetched from DMS and are locked.</Text>
-              <TouchableOpacity onPress={() => setUnlockCustomerFields(true)}><Text style={styles.link}>Edit anyway</Text></TouchableOpacity>
+              {/* 2026-10-07: no manual unlock any more - "Edit anyway" opens the Party-ledger list. */}
+              <TouchableOpacity onPress={() => setShowLedgerPicker((open) => !open)}><Text style={styles.link}>{showLedgerPicker ? 'Close' : 'Edit anyway'}</Text></TouchableOpacity>
             </View>
+          )}
+
+          {/* ---------- "Edit anyway": this dealer's Party ledgers (Ledger Master) ---------- */}
+          {customerFieldsLocked && showLedgerPicker && (
+            <View style={styles.ledgerPanel}>
+              <Text style={styles.ledgerTitle}>Select the customer (Party ledger of this dealer)</Text>
+              <Text style={styles.muted}>
+                📝 The customer you need must already be added in Ledger Master as a Party ledger. Add the customer there first - it will then appear in this list and its details are fetched here automatically. Customer details can't be typed in manually on this page.
+              </Text>
+              <TextInput style={styles.ledgerSearch} value={ledgerSearch} onChangeText={setLedgerSearch} placeholder="Search by name, ledger code, mobile or city…" autoFocus />
+              <ScrollView style={{ maxHeight: 260, marginTop: 8 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                {partyLedgers === null && <Text style={styles.muted}>Loading…</Text>}
+                {(partyLedgers ?? []).map((l) => (
+                  <TouchableOpacity key={l.id} style={styles.ledgerRow} onPress={() => applyLedger(l)}>
+                    <Text style={styles.ledgerName}>{l.ledgerCode} — {l.ledgerName}{l.isShared ? '  (ALL DEALERS)' : ''}</Text>
+                    <Text style={styles.muted}>{l.mobileNumber ?? '—'} · {l.city ?? '—'} · {l.state ?? '—'}</Text>
+                  </TouchableOpacity>
+                ))}
+                {partyLedgers !== null && partyLedgers.length === 0 && (
+                  <Text style={styles.muted}>
+                    {ledgerPickerError ?? (ledgerSearch.trim() ? 'No Party ledger matches your search.' : 'No Party ledgers for this dealer yet - add the customer in Ledger Master (type Party), then open this list again.')}
+                  </Text>
+                )}
+              </ScrollView>
+              {partyLedgers !== null && partyLedgerTotal > partyLedgers.length && (
+                <Text style={styles.muted}>Showing the first {partyLedgers.length} of {partyLedgerTotal} - type in the search box to narrow down.</Text>
+              )}
+            </View>
+          )}
+
+          {/* ---------- where the customer below came from ---------- */}
+          {customerIsFromLastJobCard && (
+            <View style={styles.infoBanner}>
+              <Text style={styles.infoBannerText}>Last job card - customer taken from job card <Text style={{ fontWeight: '700' }}>{lastJobCardNo}</Text> of this chassis.</Text>
+              <TouchableOpacity style={styles.bannerBtn} onPress={revertToVehicleSaleCustomer}><Text style={styles.bannerBtnText}>Use Vehicle Sale details</Text></TouchableOpacity>
+            </View>
+          )}
+          {selectedLedger && (
+            <View style={[styles.infoBanner, { backgroundColor: '#ecfdf5', borderColor: '#a7f3d0' }]}>
+              <Text style={styles.infoBannerText}>Ledger - <Text style={{ fontWeight: '700' }}>{selectedLedger.ledgerCode} — {selectedLedger.ledgerName}</Text></Text>
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 6 }}>
+                <TouchableOpacity style={styles.bannerBtn} onPress={() => setShowLedgerPicker(true)}><Text style={styles.bannerBtnText}>Change</Text></TouchableOpacity>
+                <TouchableOpacity style={styles.bannerBtn} onPress={revertToVehicleSaleCustomer}><Text style={styles.bannerBtnText}>Use Vehicle Sale details</Text></TouchableOpacity>
+              </View>
+            </View>
+          )}
+          {selectedLedger && newCustomer.mobile.length !== 10 && (
+            <Text style={styles.errorText}>This ledger has no valid 10-digit mobile number. Add it to the ledger in Ledger Master, then select the ledger again.</Text>
           )}
           <Field label="Name" value={newCustomer.name} disabled={customerFieldsLocked} onChangeText={(v) => setNewCustomer({ ...newCustomer, name: v })} />
           <Field label="Mobile" value={newCustomer.mobile} disabled={customerFieldsLocked} keyboardType="number-pad" maxLength={10} onChangeText={(v) => setNewCustomer({ ...newCustomer, mobile: v.replace(/\D/g, '').slice(0, 10) })} />
@@ -1200,7 +1367,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
               />
             </>
           )}
-          <Field label="Reg No" value={newVehicle.regNo} disabled={vehicleFieldsLocked} onChangeText={(v) => setNewVehicle({ ...newVehicle, regNo: v })} />
+          <Field label="Reg No" value={newVehicle.regNo} onChangeText={(v) => setNewVehicle({ ...newVehicle, regNo: v })} />
           <Field label="VIN" value={newVehicle.vin} disabled={vehicleFieldsLocked} onChangeText={(v) => setNewVehicle({ ...newVehicle, vin: v })} />
           {/* 2026-09-07: Coupon No. + Job Category, matching DMS's own form and mirroring
              web's JobCardWizardPage.tsx - see the couponNo/jobCategory state above for the
@@ -1476,6 +1643,15 @@ function Field({
 }
 
 const styles = StyleSheet.create({
+  ledgerPanel: { backgroundColor: '#f5f9ff', borderWidth: 1, borderColor: '#bfdcff', borderRadius: 10, padding: 12, marginVertical: 8 },
+  ledgerTitle: { fontWeight: '700', color: '#101828', marginBottom: 4 },
+  ledgerSearch: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 8, padding: 9, marginTop: 8 },
+  ledgerRow: { paddingVertical: 9, paddingHorizontal: 8, borderBottomWidth: 1, borderBottomColor: '#e2e6ec', backgroundColor: '#fff' },
+  ledgerName: { fontWeight: '600', color: '#101828' },
+  infoBanner: { backgroundColor: '#eff6ff', borderWidth: 1, borderColor: '#bfdbfe', borderRadius: 8, padding: 10, marginVertical: 8 },
+  infoBannerText: { color: '#101828' },
+  bannerBtn: { alignSelf: 'flex-start', borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 6, paddingVertical: 6, paddingHorizontal: 10, backgroundColor: '#fff', marginTop: 6 },
+  bannerBtnText: { fontWeight: '600', color: '#101828', fontSize: 13 },
   container: { flex: 1, backgroundColor: '#f4f6f9', padding: 12 },
   stepper: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 12 },
   // 3-state step chips (Hub Pulse reskin): outlined default (not yet reached), solid navy

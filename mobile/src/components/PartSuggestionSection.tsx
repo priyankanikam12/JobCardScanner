@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import * as ImagePicker from 'expo-image-picker'
 import { Alert, Image, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'
 import { apiClient } from '../api/client'
-import { Badge } from './Badge'
+import { apiMessage, discountLabel, discountOf, suggestionLineMoney, type DiscountKind } from '../lib/suggestionMoney'
 import type { JobCardDetail, JobCardPhoto, JobCardsPartsCatalogRow } from '../types'
 
 // Photo/video URLs come back from the API as a relative path (e.g.
@@ -14,64 +14,95 @@ const photoSrc = (url: string) => (url.startsWith('http') ? url : `${API_BASE_UR
 
 /**
  * "Part Suggestion" panel - mirrors web/src/pages/staff/JobCardDetailPage.tsx's PartSuggestionCard.
- * A type-ahead search bound to item code/description, a Qty field, and a Remove button per
- * suggestion. 2026-09-24 CHANGE ("Part Suggestion and Labour Suggestion that link with our
- * labour-master, item-master and part-upload"): parts now come from this app's OWN Item Master +
- * Part Upload data (GET /api/jobcards/parts-catalog?locationCode=... -
- * JobCardsController.PartsCatalog) instead of DMS's live PartsInventory (the old
- * GET /api/bapl-dms/parts) - consistent with job cards no longer being written into/read from DMS.
- * Description/HsnCode/Mrp are snapshotted onto the suggestion at add time (POST
- * .../part-suggestions), not re-fetched afterwards.
+ *
+ * 2026-10-22 (Android brought level with web) - what this card gained:
+ *   * the parts are searched ON THE SERVER as you type (GET /api/jobcards/parts-catalog?q=) instead of downloading the whole Item Master (thousands of rows) when the card opens;
+ *   * every match shows its GST % and where the Part Upload balance is held ("Stock: CUS0270W1 17 + CUS0270W3 10 = 27"; "Available 0" when none);
+ *   * Issue Type FOC (free of cost - the line's Amount is 0), switchable on a saved line too;
+ *   * Discount (None / % / ₹) when a part is added or later with the line's Discount button (PUT /api/jobcards/part-suggestions/{id}/discount); an FOC part takes none;
+ *   * MRP / Qty / Discount / Amount per line.
+ * Unchanged: Description / HSN / MRP are snapshotted onto the suggestion at add time; the part picture strip; the Technician Work Log timer must be running to add a part.
  */
 export function PartSuggestionSection({ jc, onChanged, estimatesLocked, totalLockReached }: { jc: JobCardDetail; onChanged: () => void; estimatesLocked: boolean; totalLockReached: boolean }) {
   const [availableParts, setAvailableParts] = useState<JobCardsPartsCatalogRow[]>([])
   const [search, setSearch] = useState('')
+  const [showSuggestions, setShowSuggestions] = useState(false)
   const [itemCode, setItemCode] = useState('')
+  const [selectedPart, setSelectedPart] = useState<JobCardsPartsCatalogRow | null>(null)
   const [qty, setQty] = useState('1')
-  const [status, setStatus] = useState<'Paid' | 'U/W'>('Paid')
+  const [status, setStatus] = useState<'Paid' | 'U/W' | 'FOC'>('Paid')
+  const [searchError, setSearchError] = useState<string | null>(null)
+  const [discountType, setDiscountType] = useState<DiscountKind>('None')
+  const [discountValue, setDiscountValue] = useState('0')
   const [saving, setSaving] = useState(false)
+  const [editing, setEditing] = useState<{ id: string; type: DiscountKind; value: string } | null>(null)
 
   useEffect(() => {
-    // 2026-09-24: locationCode is now optional (only used for the availableQty enrichment) -
-    // fetched even with no Service Location on this job card, unlike the old DMS-scoped endpoint.
-    apiClient
-      .get<JobCardsPartsCatalogRow[]>('/api/jobcards/parts-catalog', { params: jc.baplServiceLocationCode ? { locationCode: jc.baplServiceLocationCode } : {} })
-      .then(({ data }) => setAvailableParts(data))
-      .catch(() => setAvailableParts([]))
-  }, [jc.baplServiceLocationCode])
+    const handle = setTimeout(() => {
+      const trimmed = search.trim()
+      if (trimmed.length === 0) { setAvailableParts([]); setSearchError(null); return }
+      // No locationCode: the quantity is the combined Part Upload balance across the locations this login may access.
+      apiClient
+        .get<JobCardsPartsCatalogRow[]>('/api/jobcards/parts-catalog', { params: { q: trimmed } })
+        .then(({ data }) => { setAvailableParts(data); setSearchError(null) })
+        .catch((err) => { setAvailableParts([]); setSearchError(apiMessage(err, 'Search failed')) })
+    }, 300)
+    return () => clearTimeout(handle)
+  }, [search])
 
-  const selectedPart = availableParts.find((p) => p.itemCode === itemCode)
-  const q = search.trim().toLowerCase()
-  const matches = q.length === 0 ? [] : availableParts
-    .filter((p) => p.itemCode.toLowerCase().includes(q) || (p.description ?? '').toLowerCase().includes(q))
-    .slice(0, 20)
+  const q = search.trim()
+  const matches = availableParts.slice(0, 20)
 
   const pickPart = (p: JobCardsPartsCatalogRow) => {
     setItemCode(p.itemCode)
+    setSelectedPart(p)
     setSearch(`${p.itemCode}${p.description ? ' - ' + p.description : ''}`)
+    setShowSuggestions(false)
   }
 
   const removeSuggestion = async (id: string) => {
     try {
       await apiClient.delete(`/api/jobcards/part-suggestions/${id}`)
       onChanged()
-    } catch {
-      Alert.alert('Could not remove part suggestion')
+    } catch (err) {
+      Alert.alert(apiMessage(err, 'Could not remove part suggestion'))
+    }
+  }
+
+  const changeStatus = async (id: string, next: 'Paid' | 'U/W' | 'FOC') => {
+    try {
+      await apiClient.put(`/api/jobcards/part-suggestions/${id}`, { status: next })
+      onChanged()
+    } catch (err) {
+      Alert.alert(apiMessage(err, 'Could not change the issue type'))
+    }
+  }
+
+  const saveDiscountEdit = async () => {
+    if (!editing) return
+    const value = Number(editing.value) || 0
+    try {
+      await apiClient.put(`/api/jobcards/part-suggestions/${editing.id}/discount`, {
+        discountType: editing.type === 'None' ? null : editing.type,
+        discountValue: editing.type === 'None' ? 0 : editing.type === 'Percentage' ? Math.min(value, 100) : value,
+      })
+      setEditing(null)
+      onChanged()
+    } catch (err) {
+      Alert.alert(apiMessage(err, 'Could not save the discount'))
     }
   }
 
   const addSuggestion = async () => {
     if (!itemCode) return
-    // 2026-09-07: gated on an open Technician Work Log timer - see WorklogCard/hasOpenWorklog in
-    // JobCardDetailScreen.tsx's doc comment ("Part Suggestion, Labour Suggestion not can update
-    // give alret in this process start the timer").
+    // gated on an open Technician Work Log timer (2026-09-07)
     if (!jc.worklogs.some((w) => !w.endedAt)) {
       Alert.alert('Start the Technician Work Log timer before adding a part suggestion.')
       return
     }
     setSaving(true)
     try {
-      await apiClient.post(`/api/jobcards/${jc.id}/part-suggestions`, {
+      const { data: created } = await apiClient.post<{ id: string }>(`/api/jobcards/${jc.id}/part-suggestions`, {
         itemCode,
         availableQtyAtSuggestion: selectedPart?.availableQty ?? null,
         status,
@@ -80,84 +111,128 @@ export function PartSuggestionSection({ jc, onChanged, estimatesLocked, totalLoc
         hsnCode: selectedPart?.hsnCode ?? null,
         mrp: selectedPart?.mrp ?? null,
       })
+      // the discount is saved right after the part is added (an FOC part is free of cost, so it never takes one)
+      const value = Number(discountValue) || 0
+      if (status !== 'FOC' && discountType !== 'None' && value > 0) {
+        try {
+          await apiClient.put(`/api/jobcards/part-suggestions/${created.id}/discount`, { discountType, discountValue: discountType === 'Percentage' ? Math.min(value, 100) : value })
+        } catch {
+          Alert.alert('The part was added, but its discount could not be saved - use the Discount button on its row to set it.')
+        }
+      }
       setItemCode('')
+      setSelectedPart(null)
       setSearch('')
       setQty('1')
       setStatus('Paid')
+      setDiscountType('None')
+      setDiscountValue('0')
       onChanged()
-    } catch {
-      Alert.alert('Could not add part suggestion')
+    } catch (err) {
+      Alert.alert(apiMessage(err, 'Could not add part suggestion'))
     } finally {
       setSaving(false)
     }
   }
+
+  const pills = <T extends string>(options: { value: T; label: string }[], value: T, onPick: (v: T) => void, disabled = false) => (
+    <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
+      {options.map((o) => (
+        <TouchableOpacity key={o.value} disabled={disabled} style={[styles.pill, value === o.value && styles.pillSelected, disabled && { opacity: 0.45 }]} onPress={() => onPick(o.value)}>
+          <Text style={[styles.pillText, value === o.value && styles.pillTextSelected]}>{o.label}</Text>
+        </TouchableOpacity>
+      ))}
+    </View>
+  )
+  const STATUS_OPTIONS = (['Paid', 'U/W', 'FOC'] as const).map((s) => ({ value: s, label: s }))
+  const DISCOUNT_OPTIONS: { value: DiscountKind; label: string }[] = [{ value: 'None', label: 'None' }, { value: 'Percentage', label: '%' }, { value: 'Amount', label: '₹' }]
 
   return (
     <View style={styles.card}>
       <Text style={styles.cardTitle}>Part Suggestion</Text>
 
       {jc.partSuggestions.length === 0 && <Text style={styles.muted}>No parts suggested yet.</Text>}
-      {jc.partSuggestions.map((p, i) => (
-        <View key={p.id} style={styles.row}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.rowTitle}>{i + 1}. {p.itemCode} {p.description ? `- ${p.description}` : ''}</Text>
-            <Text style={styles.muted}>MRP {p.mrp != null ? `₹${p.mrp}` : '-'} · Qty {p.quantity}</Text>
-            <PartPictureRow
-              jcId={jc.id}
-              suggestionId={p.id}
-              photos={jc.photos.filter((ph) => ph.partSuggestionId === p.id)}
-              onChanged={onChanged}
-            />
+      {jc.partSuggestions.map((p, i) => {
+        const d = discountOf(p)
+        const money = suggestionLineMoney(p.mrp, p.quantity, p.status === 'FOC', d)
+        return (
+          <View key={p.id} style={styles.row}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowTitle}>{i + 1}. {p.itemCode} {p.description ? `- ${p.description}` : ''}</Text>
+              <Text style={styles.muted}>MRP {p.mrp != null ? `₹${p.mrp}` : '-'} · Qty {p.quantity} · Discount {p.status === 'FOC' ? 'FOC' : discountLabel(d)} · Amount ₹{money.amount.toFixed(2)}</Text>
+              <View style={{ marginTop: 6 }}>{pills(STATUS_OPTIONS, p.status, (v) => changeStatus(p.id, v))}</View>
+              {editing?.id === p.id && (
+                <View style={styles.editBox}>
+                  <Text style={styles.label}>Discount</Text>
+                  <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    {pills(DISCOUNT_OPTIONS, editing.type, (v) => setEditing({ ...editing, type: v }))}
+                    <TextInput style={[styles.input, { width: 90 }, editing.type === 'None' && { opacity: 0.45 }]} editable={editing.type !== 'None'} value={editing.value} keyboardType="decimal-pad" onChangeText={(v) => setEditing({ ...editing, value: v })} />
+                  </View>
+                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                    <TouchableOpacity style={[styles.addBtn, { flex: 1 }]} onPress={saveDiscountEdit}><Text style={styles.addBtnText}>Save</Text></TouchableOpacity>
+                    <TouchableOpacity style={styles.cancelBtn} onPress={() => setEditing(null)}><Text style={styles.cancelBtnText}>Cancel</Text></TouchableOpacity>
+                  </View>
+                </View>
+              )}
+              <PartPictureRow
+                jcId={jc.id}
+                suggestionId={p.id}
+                photos={jc.photos.filter((ph) => ph.partSuggestionId === p.id)}
+                onChanged={onChanged}
+              />
+            </View>
+            <View style={{ gap: 6 }}>
+              <TouchableOpacity
+                style={[styles.smallBtn, p.status === 'FOC' && { opacity: 0.4 }]}
+                disabled={p.status === 'FOC'}
+                onPress={() => setEditing({ id: p.id, type: d.type, value: String(d.value) })}
+              >
+                <Text style={styles.smallBtnText}>Discount</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.removeBtn} onPress={() => removeSuggestion(p.id)}>
+                <Text style={styles.removeBtnText}>Remove</Text>
+              </TouchableOpacity>
+            </View>
           </View>
-          <Badge status={p.status === 'Paid' ? 'Closed' : 'InProgress'} />
-          {/* 2026-09-03: red now, matching web's Part Suggestion Remove button - its own style
-             (removeBtn), not the shared smallBtn the "+ Picture" button below uses, so that one
-             doesn't turn red too. */}
-          <TouchableOpacity style={styles.removeBtn} onPress={() => removeSuggestion(p.id)}>
-            <Text style={styles.removeBtnText}>Remove</Text>
-          </TouchableOpacity>
-        </View>
-      ))}
+        )
+      })}
 
       {estimatesLocked || totalLockReached ? (
         <Text style={styles.muted}>
-          {estimatesLocked
-            ? 'Estimate is marked Done - tap Edit on the Estimates Amount card below to add more parts.'
-            : 'Grand Total has reached ₹2000 - no more parts can be suggested on this estimate.'}
+          {jc.status === 'Closed'
+            ? 'Job card is closed - no more parts can be suggested.'
+            : 'Estimate is marked Done - tap Edit on the Estimates Amount card below to add more parts.'}
         </Text>
       ) : (
       <>
-      <Text style={styles.subheading}>Suggest a part (from Item Master{jc.baplServiceLocationCode ? ' / Part Upload' : ''})</Text>
-      {!jc.baplServiceLocationCode && (
-        <Text style={styles.muted}>No Service Location on this job card - Available Qty won't be shown (the part list itself still works).</Text>
-      )}
+      <Text style={styles.subheading}>Suggest a part (from Item Master / Part Upload)</Text>
 
       <TextInput
         style={styles.input}
         value={search}
         placeholder="Start typing an item code or description…"
-        onChangeText={(v) => { setSearch(v); setItemCode('') }}
+        onChangeText={(v) => { setSearch(v); setItemCode(''); setSelectedPart(null); setShowSuggestions(true) }}
+        onFocus={() => setShowSuggestions(true)}
+        onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+        autoCorrect={false}
       />
-      {q.length > 0 && matches.length > 0 && (
-        // Item: dropdown scroll wasn't working on Android - a plain View with maxHeight clips
-        // overflow instead of scrolling it. nestedScrollEnabled is required on Android for a
-        // ScrollView inside another ScrollView (this whole card sits inside one) to scroll at all.
+      {showSuggestions && q.length > 0 && matches.length > 0 && (
+        // nestedScrollEnabled is required on Android for a ScrollView inside another ScrollView (this whole card sits inside one) to scroll at all.
         <ScrollView style={styles.pickerBox} nestedScrollEnabled keyboardShouldPersistTaps="handled">
           {matches.map((p) => (
             <TouchableOpacity key={p.itemCode} style={styles.pickerRow} onPress={() => pickPart(p)}>
               <Text style={styles.pickerRowText}>
-                <Text style={{ fontWeight: '700' }}>{p.itemCode}</Text>{p.description ? ` — ${p.description}` : ''} (avail. {p.availableQty ?? '—'})
+                <Text style={{ fontWeight: '700' }}>{p.itemCode}</Text>{p.description ? ` — ${p.description}` : ''} (avail. {p.availableQty ?? '—'} · GST {partGstText(p)})
               </Text>
             </TouchableOpacity>
           ))}
         </ScrollView>
       )}
-      {/* Item 4: was silently blank when nothing matched - now says explicitly why. */}
-      {q.length > 0 && matches.length === 0 && (
+      {showSuggestions && q.length > 0 && matches.length === 0 && (
         <View style={styles.pickerBox}>
           <View style={styles.pickerRow}>
-            <Text style={[styles.pickerRowText, styles.muted]}>
-              {`Part number "${search.trim()}" does not exist in Item Master.`}
+            <Text style={[styles.pickerRowText, searchError ? { color: '#dc2626' } : styles.muted]}>
+              {searchError ?? `Part number "${search.trim()}" does not exist in Item Master.`}
             </Text>
           </View>
         </View>
@@ -168,19 +243,26 @@ export function PartSuggestionSection({ jc, onChanged, estimatesLocked, totalLoc
           <Text style={styles.label}>QTY</Text>
           <TextInput style={styles.input} value={qty} onChangeText={setQty} keyboardType="numeric" placeholder="Qty" />
         </View>
-        <View style={{ flex: 1 }}>
+        <View style={{ flex: 2 }}>
           <Text style={styles.label}>Issue Type (Status)</Text>
-          <View style={{ flexDirection: 'row', gap: 6 }}>
-            {(['Paid', 'U/W'] as const).map((s) => (
-              <TouchableOpacity key={s} style={[styles.pill, status === s && styles.pillSelected]} onPress={() => setStatus(s)}>
-                <Text style={[styles.pillText, status === s && styles.pillTextSelected]}>{s}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
+          {pills(STATUS_OPTIONS, status, setStatus)}
         </View>
       </View>
+      <Text style={styles.label}>Discount</Text>
+      <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+        {pills(DISCOUNT_OPTIONS, discountType, setDiscountType, status === 'FOC')}
+        <TextInput
+          style={[styles.input, { width: 90 }, (status === 'FOC' || discountType === 'None') && { opacity: 0.45 }]}
+          editable={!(status === 'FOC' || discountType === 'None')}
+          value={discountValue} keyboardType="decimal-pad" onChangeText={setDiscountValue}
+        />
+      </View>
       {selectedPart && (
-        <Text style={styles.muted}>MRP {selectedPart.mrp != null ? `₹${selectedPart.mrp}` : '-'} · HSN {selectedPart.hsnCode ?? '-'} · Available {selectedPart.availableQty}</Text>
+        <Text style={styles.muted}>
+          MRP {selectedPart.mrp != null ? `₹${selectedPart.mrp}` : '-'} · GST {partGstText(selectedPart)} · HSN {selectedPart.hsnCode ?? '-'} · {partStockLines(selectedPart)}
+          {' · '}Amount ₹{suggestionLineMoney(selectedPart.mrp, Number(qty) || 1, status === 'FOC', { type: discountType, value: Number(discountValue) || 0 }).amount.toFixed(2)}
+          {status === 'FOC' ? ' (FOC - free of cost)' : discountType !== 'None' && Number(discountValue) > 0 ? ' after discount' : ''}
+        </Text>
       )}
 
       <TouchableOpacity
@@ -194,6 +276,20 @@ export function PartSuggestionSection({ jc, onChanged, estimatesLocked, totalLoc
       )}
     </View>
   )
+}
+
+/** GST % of a parts-catalog row: SGST + CGST when present, otherwise IGST ('—' for an upload-only part, which carries no GST rate). */
+function partGstText(p: JobCardsPartsCatalogRow): string {
+  const split = (p.sgst ?? 0) + (p.cgst ?? 0)
+  const total = split > 0 ? split : (p.igst ?? 0)
+  return total > 0 ? `${total}%` : '—'
+}
+
+/** Where the balance is held: "Stock: CUS0270W1 17 + CUS0270W3 10 = 27" (one location: "Stock: CUS0270W1 17"; none: "Available 0"). */
+function partStockLines(p: JobCardsPartsCatalogRow): string {
+  const parts = (p.stockByLocation ?? []).map((s) => `${s.locationCode || '—'} ${s.qty}`)
+  if (parts.length === 0) return `Available ${p.availableQty ?? 0}`
+  return parts.length === 1 ? `Stock: ${parts[0]}` : `Stock: ${parts.join(' + ')} = ${p.availableQty ?? 0}`
 }
 
 const isVideoPhoto = (ph: JobCardPhoto) => /\.(mp4|mov|webm|3gp|avi)$/i.test(ph.url)
@@ -300,6 +396,9 @@ const styles = StyleSheet.create({
   addBtn: { backgroundColor: '#2563eb', borderRadius: 8, paddingVertical: 10, alignItems: 'center' },
   addBtnDisabled: { backgroundColor: '#93c5fd' },
   addBtnText: { color: '#fff', fontWeight: '700' },
+  editBox: { backgroundColor: '#f9fafb', borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 8, padding: 10, marginTop: 8 },
+  cancelBtn: { borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 8, paddingVertical: 10, paddingHorizontal: 16, alignItems: 'center', backgroundColor: '#fff' },
+  cancelBtnText: { color: '#374151', fontWeight: '700' },
   pictureRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 6 },
   pictureThumb: { width: 32, height: 32, borderRadius: 4, borderWidth: 1, borderColor: '#e2e6ec' },
   videoBadge: { width: 32, height: 32, borderRadius: 4, backgroundColor: '#101828', alignItems: 'center', justifyContent: 'center' },

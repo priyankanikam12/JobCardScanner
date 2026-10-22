@@ -34,6 +34,9 @@ import { buildRepairBillTaxInvoicePrintHtml, taxInvoiceContextFromJobCard } from
 import type { BaplDmsJobCardHistory, JobCardDetail, RepairBillDoc, Technician, WorkflowStage } from '../types'
 import type { RootStackParamList } from '../navigation/RootNavigator'
 import { colors } from '../theme/colors'
+// 2026-10-22 (web parity): discounted estimate rows shared with the suggestion cards, the API error text, and the Care Desk door.
+import { apiMessage, buildEstimateRows } from '../lib/suggestionMoney'
+import { CARE_DESK_URL, openCareDesk } from '../lib/careDesk'
 
 type Props = NativeStackScreenProps<RootStackParamList, 'JobCardDetail'>
 
@@ -136,7 +139,7 @@ function WorkflowHistoryGrid({ jc }: { jc: JobCardDetail }) {
 
 type Run = (fn: () => Promise<unknown>, successMsg?: string) => void
 
-export function JobCardDetailScreen({ route }: Props) {
+export function JobCardDetailScreen({ route, navigation }: Props) {
   const { id } = route.params
   const { profile, hasRole } = useStaffAuth()
   const [jc, setJc] = useState<JobCardDetail | null>(null)
@@ -175,10 +178,22 @@ export function JobCardDetailScreen({ route }: Props) {
       await load()
       if (successMsg) setMsg(successMsg)
     } catch (err: unknown) {
-      setMsg((err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Action failed.')
+      // the API's own message and, when it sends one, the raw detail (tells "migration not run" apart from a genuinely new bug) - same as web
+      setMsg(apiMessage(err, 'Action failed.'))
     } finally {
       setBusy(false)
     }
+  }
+
+  // 2026-10-09 (web): CorporateAdmin / SystemAdmin can put a Closed job card back to work. The server (POST /api/jobcards/{id}/reopen) refuses while a Repair Bill is still saved as Invoice for it -
+  // delete that bill first. Alert.prompt is iOS-only, so on Android the reason is typed in a small dialog of our own.
+  const [reopenOpen, setReopenOpen] = useState(false)
+  const [reopenReason, setReopenReason] = useState('')
+  const reopenJobCard = () => {
+    setReopenOpen(false)
+    const reason = reopenReason.trim()
+    setReopenReason('')
+    run(() => apiClient.post(`/api/jobcards/${jc.id}/reopen`, { reason: reason || null }), 'Job card reopened - start the Technician Work Log timer, then create the Material Transfer and Repair Bill again.')
   }
 
   const baplLine = [
@@ -203,6 +218,24 @@ export function JobCardDetailScreen({ route }: Props) {
           <PrintMenu jc={jc} />
         </View>
       </View>
+      {jc.status === 'Closed' && hasRole('CorporateAdmin', 'SystemAdmin') && (
+        <TouchableOpacity style={[styles.reopenBtn, busy && styles.btnDisabled]} disabled={busy} onPress={() => setReopenOpen(true)}>
+          <Text style={styles.reopenBtnText}>↩ Reopen job card</Text>
+        </TouchableOpacity>
+      )}
+      <Modal visible={reopenOpen} transparent animationType="fade" onRequestClose={() => setReopenOpen(false)}>
+        <Pressable style={styles.printBackdrop} onPress={() => setReopenOpen(false)}>
+          <Pressable style={styles.reopenSheet} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.bold}>Reopen this job card?</Text>
+            <Text style={styles.muted}>Reason (its Material Transfer and Repair Bill can then be created again):</Text>
+            <TextInput style={[styles.input, { marginTop: 8 }]} value={reopenReason} onChangeText={setReopenReason} placeholder="Reason…" multiline />
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 12, justifyContent: 'flex-end' }}>
+              <TouchableOpacity style={styles.btn} onPress={() => setReopenOpen(false)}><Text style={styles.btnText}>Cancel</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.btnPrimarySm} onPress={reopenJobCard}><Text style={styles.btnPrimaryText}>Reopen</Text></TouchableOpacity>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
       <ScrollView style={styles.container}>
       {msg && <Text style={styles.muted}>{msg}</Text>}
 
@@ -220,6 +253,14 @@ export function JobCardDetailScreen({ route }: Props) {
            jc.baplTechnicianName, a different, effectively-always-empty field set once at job-card
            creation (removed from the wizard on 2026-09-25). This line shows the real, live
            assigned technician to every role that can view this screen. */}
+        {/* 2026-10-17 (web): Care Desk for this chassis. Shown only when Care Desk is set up in this build and the login is CorporateAdmin / SystemAdmin (the same roles as web's Care Desk page). The first
+           link signs the person in to Care Desk and opens its search for this chassis; the second opens the in-app Care Desk screen (live tickets + raise a ticket) on this vehicle. */}
+        {CARE_DESK_URL !== '' && jc.vehicle?.vin && hasRole('CorporateAdmin', 'SystemAdmin') && (
+          <View style={{ marginTop: 6, gap: 4 }}>
+            <Text style={styles.linkText} onPress={() => void openCareDesk(`/field/search?q=${encodeURIComponent(jc.vehicle?.vin ?? '')}`)}>🎧 Care Desk tickets for this chassis ↗</Text>
+            <Text style={styles.linkText} onPress={() => navigation.navigate('CareDesk', { vehicle: jc.vehicle?.vin ?? undefined })}>🎧 Open in the Care Desk screen (live tickets, raise a ticket)</Text>
+          </View>
+        )}
         <Text style={styles.muted}>Technician: {jc.assignedTechnicianName || 'Not assigned yet'}</Text>
         {/* <Text style={styles.muted}>Tracking link: /track/{jc.trackingToken}</Text> */}
         {jc.customer && hasRole('WorkshopManager', 'Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin') && (
@@ -600,6 +641,22 @@ function UpdateWorkflowStageCard({
   const [notes, setNotes] = useState('')
   const [technicianOptions, setTechnicianOptions] = useState<Technician[]>([])
 
+  // 2026-10-07 (web): Mark Repair Completed / Invoice Generated / Ready for Delivery need a Material Transfer AND a Repair Bill on this job card. GET /api/jobcards/{id}/stage-prerequisites says whether
+  // they exist (null = not known / that endpoint is not there: nothing is greyed out and the server's own check in ChangeStage still refuses the tap).
+  const [prereq, setPrereq] = useState<{ hasMaterialTransfer: boolean; hasRepairBill: boolean } | null>(null)
+  const loadPrereq = () => {
+    apiClient.get<{ hasMaterialTransfer: boolean; hasRepairBill: boolean }>(`/api/jobcards/${jc.id}/stage-prerequisites`)
+      .then(({ data }) => setPrereq(data))
+      .catch(() => setPrereq(null))
+  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { loadPrereq() }, [jc.id, jc.currentStage?.id])
+  const missingPrereqs = prereq ? [!prereq.hasMaterialTransfer && 'Material Transfer', !prereq.hasRepairBill && 'Repair Bill'].filter((x): x is string => !!x) : []
+  const stageBlocked = missingPrereqs.length > 0
+  const blockedMessage = `Please do ${missingPrereqs.join(' and ')} for this job card first - Repair Completed, Ready for Delivery and Invoice Generated can't be marked before that.`
+  // a blocked button is dimmed but still tappable: tapping it explains why instead of doing nothing, and never calls the server
+  const guarded = (action: () => void) => () => { if (stageBlocked) { Alert.alert(blockedMessage); return } action() }
+
   useEffect(() => {
     setTechnicianName(jc.assignedTechnicianName ?? '')
     setExpectedDeliveryAt(jc.expectedDeliveryAt ? new Date(jc.expectedDeliveryAt) : null)
@@ -720,6 +777,12 @@ function UpdateWorkflowStageCard({
         <Text style={styles.label}>Remarks (attached to the buttons below)</Text>
         <TextInput style={styles.input} value={notes} onChangeText={setNotes} placeholder="Stage remarks…" />
       </View>
+      {stageBlocked && (
+        <View style={styles.blockedBox}>
+          <Text style={styles.blockedText}>⚠ {blockedMessage}</Text>
+          <TouchableOpacity style={styles.smallBtn} onPress={loadPrereq}><Text style={styles.smallBtnText}>Re-check</Text></TouchableOpacity>
+        </View>
+      )}
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
         {/* 2026-09-28 (SECTION 153, "when repaill bill generate invoice then Repair Completed but
            dont shown in ui"): was `repairCompletedStage && (...)` - shown always, just greyed out
@@ -735,9 +798,9 @@ function UpdateWorkflowStageCard({
            Mark Ready for Delivery"). */}
         {repairCompletedStage && currentSeq < repairCompletedStage.seq && (
           <TouchableOpacity
-            style={[styles.btnPrimarySm, busy && styles.btnDisabled]}
+            style={[styles.btnPrimarySm, busy && styles.btnDisabled, stageBlocked && { opacity: 0.55 }]}
             disabled={busy}
-            onPress={() => run(() => markStage(repairCompletedStage), 'Marked Repair Completed.')}
+            onPress={guarded(() => run(() => markStage(repairCompletedStage), 'Marked Repair Completed.'))}
           >
             <Text style={styles.btnPrimaryText}>Mark Repair Completed</Text>
           </TouchableOpacity>
@@ -752,18 +815,18 @@ function UpdateWorkflowStageCard({
            needed to also reorder that stepper. */}
         {invoiceGeneratedStage && (
           <TouchableOpacity
-            style={[styles.btnPrimarySm, (busy || currentSeq >= invoiceGeneratedStage.seq) && styles.btnDisabled]}
+            style={[styles.btnPrimarySm, (busy || currentSeq >= invoiceGeneratedStage.seq) && styles.btnDisabled, stageBlocked && { opacity: 0.55 }]}
             disabled={busy || currentSeq >= invoiceGeneratedStage.seq}
-            onPress={() => run(() => markStage(invoiceGeneratedStage), 'Marked Invoice Generated. Job card closed.')}
+            onPress={guarded(() => run(() => markStage(invoiceGeneratedStage), 'Marked Invoice Generated. Job card closed.'))}
           >
             <Text style={styles.btnPrimaryText}>Mark Invoice Generated</Text>
           </TouchableOpacity>
         )}
         {readyForDeliveryStage && (
           <TouchableOpacity
-            style={[styles.btnPrimarySm, (busy || currentSeq >= readyForDeliveryStage.seq) && styles.btnDisabled]}
+            style={[styles.btnPrimarySm, (busy || currentSeq >= readyForDeliveryStage.seq) && styles.btnDisabled, stageBlocked && { opacity: 0.55 }]}
             disabled={busy || currentSeq >= readyForDeliveryStage.seq}
-            onPress={() => run(() => markStage(readyForDeliveryStage), 'Marked Ready for Delivery.')}
+            onPress={guarded(() => run(() => markStage(readyForDeliveryStage), 'Marked Ready for Delivery.'))}
           >
             <Text style={styles.btnPrimaryText}>Mark Ready for Delivery</Text>
           </TouchableOpacity>
@@ -992,32 +1055,17 @@ function EstimatesCard({
   }
 
   const money = (n: number) => `₹${n.toFixed(2)}`
-  const partRows = jc.partSuggestions.map((p, i) => {
-    const mrp = p.mrp ?? 0
-    const qty = p.quantity ?? 1
-    // 2026-10-03 ("that FOC logic add in android also"): an FOC Part shows its real MRP/Qty but a
-    // ₹0 Amount - mirrors JobCardDetailPage.tsx's own EstimatesCard partRows exactly.
-    const isFoc = p.status === 'FOC'
-    return { sr: i + 1, code: p.itemCode, description: p.description ?? '-', hsn: p.hsnCode ?? '-', rate: mrp, qty, amount: isFoc ? 0 : mrp * qty }
-  })
-  const labourRows = jc.labourSuggestions.map((l, i) => {
-    const rate = l.rateAtSuggestion ?? 0
-    const qty = l.quantity ?? 1
-    const isFoc = l.issueType === 'FOC'
-    return { sr: i + 1, code: l.labourCode, description: l.labourDescription ?? '-', hsn: l.hsnCode ?? '-', rate, qty, amount: isFoc ? 0 : rate * qty }
-  })
-  const partsTotal = partRows.reduce((sum, r) => sum + r.amount, 0)
-  const labourTotal = labourRows.reduce((sum, r) => sum + r.amount, 0)
-  const grandTotal = partsTotal + labourTotal
+  // 2026-10-07 (web parity): amounts are net of each line's discount (and 0 for FOC) - the same buildEstimateRows the Estimate print uses, so screen and paper always agree.
+  const { partRows, labourRows, partsTotal, labourTotal, grandTotal } = buildEstimateRows(jc)
   // 2026-10-01: a closed job card has nothing left to lock/unlock, so the Done/Edit toggle is
   // hidden entirely below - see this component's doc comment.
   const closed = jc.status === 'Closed'
 
-  const Row = ({ r, rateLabel }: { r: { sr: number; code: string; description: string; hsn: string; rate: number; qty: number; amount: number }; rateLabel: string }) => (
+  const Row = ({ r, rateLabel }: { r: { sr: number; code: string; description: string; hsn: string; rate: number; qty: number; amount: number; discountText: string }; rateLabel: string }) => (
     <View style={styles.estimateRow}>
       <View style={{ flex: 1 }}>
         <Text style={styles.bold}>{r.sr}. {r.code} - {r.description}</Text>
-        <Text style={styles.muted}>HSN {r.hsn} · {r.qty} x {rateLabel} {money(r.rate)}</Text>
+        <Text style={styles.muted}>HSN {r.hsn} · {r.qty} x {rateLabel} {money(r.rate)} · Discount {r.discountText}</Text>
       </View>
       <Text style={styles.bold}>{money(r.amount)}</Text>
     </View>
@@ -1130,22 +1178,8 @@ function PrintMenu({ jc }: { jc: JobCardDetail }) {
     setBusy('estimate')
     setError(null)
     try {
-      const partRows = jc.partSuggestions.map((p, i) => {
-        const mrp = p.mrp ?? 0
-        const qty = p.quantity ?? 1
-        // 2026-10-03 ("that FOC logic add in android also"): matches EstimatesCard's own fix
-        // above - an FOC Part prints a ₹0 amount, not its real MRP x Qty.
-        const isFoc = p.status === 'FOC'
-        return { sr: i + 1, code: p.itemCode, description: p.description ?? '-', hsn: p.hsnCode ?? '-', mrp, qty, amount: isFoc ? 0 : mrp * qty }
-      })
-      const labourRows = jc.labourSuggestions.map((l, i) => {
-        const rate = l.rateAtSuggestion ?? 0
-        const qty = l.quantity ?? 1
-        const isFoc = l.issueType === 'FOC'
-        return { sr: i + 1, code: l.labourCode, description: l.labourDescription ?? '-', hsn: l.hsnCode ?? '-', rate, qty, amount: isFoc ? 0 : rate * qty }
-      })
-      const partsTotal = partRows.reduce((sum, r) => sum + r.amount, 0)
-      const labourTotal = labourRows.reduce((sum, r) => sum + r.amount, 0)
+      // 2026-10-07 (web parity): net of each line's discount, FOC = 0 - same rows as the Estimates Amount card
+      const { partRows, labourRows, partsTotal, labourTotal } = buildEstimateRows(jc)
       const html = buildEstimatePrintHtml({
         dealerName: jc.dealer?.name,
         dealerCode: jc.dealer?.code,
@@ -1306,6 +1340,12 @@ function ClosureCard({ jc, run }: { jc: JobCardDetail; run: Run }) {
 }
 
 const styles = StyleSheet.create({
+  reopenBtn: { marginHorizontal: 12, marginTop: 8, borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 8, paddingVertical: 9, alignItems: 'center', backgroundColor: '#fff' },
+  reopenBtnText: { color: '#101828', fontWeight: '700' },
+  reopenSheet: { backgroundColor: '#fff', margin: 24, borderRadius: 12, padding: 16 },
+  linkText: { color: '#2563eb', fontWeight: '600' },
+  blockedBox: { backgroundColor: '#fffbeb', borderWidth: 1, borderColor: '#fde68a', borderRadius: 8, padding: 10, marginBottom: 10, gap: 8 },
+  blockedText: { color: '#92400e' },
   screen: { flex: 1, backgroundColor: colors.bg },
   container: { flex: 1, padding: 12 },
   loadingContainer: { flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center' },

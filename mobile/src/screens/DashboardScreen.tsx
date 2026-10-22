@@ -4,7 +4,9 @@ import { ActivityIndicator, Image, Pressable, RefreshControl, ScrollView, StyleS
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { apiClient } from '../api/client'
 import { useStaffAuth } from '../auth/StaffAuthContext'
-import type { DashboardKpis } from '../types'
+import { PickerField } from '../components/PickerField'
+import { ANDROID_PAGES, useMenuAccess, type NavItem } from '../navigation/menuAccess'
+import type { CorporateDashboardData, CorporateDashboardFilters, DashboardKpis } from '../types'
 import type { JobCardsListFilter, RootStackParamList } from '../navigation/RootNavigator'
 import { colors } from '../theme/colors'
 import { DealerRoleReportScreen } from './DealerRoleReportScreen'
@@ -49,30 +51,40 @@ const TILES: { key: keyof DashboardKpis; label: string; icon: string; to: JobCar
   { key: 'warrantyJobsOpen', label: 'Warranty Jobs', icon: '🛡️', to: { warrantyOnly: true, excludeClosed: true } },
 ]
 
-export function DashboardScreen({ navigation }: Props) {
-  const ADMIN_CARDS = [
-    { key: 'created', label: 'Job cards created', icon: '📋' },
-    { key: 'inProgress', label: 'In Progress', icon: '🔧' },
-    { key: 'materialTransfers', label: 'Material Transfer', icon: '🔄' },
-    { key: 'repairBills', label: 'Repair Bill', icon: '🧾' },
-    { key: 'readyForDelivery', label: 'Ready For Delivery', icon: '🏁' },
-  ] as const
-  // SECTION 172 (2026-09-30) - hasRole is no longer used here: Technician Employee (the one card
-  // that read it, to gate Supervisor+) was removed from this screen's Actions list per your "show
-  // only menu 1-6" request - see the Actions block below.
+/**
+ * 2026-10-22 (web/src/pages/staff/DashboardPage.tsx parity): the dashboard branches by role, exactly like web - CorporateAdmin / SystemAdmin get the "Corporate Dashboard" (Today / Overall roll-up across
+ * every dealer, dealer-wise volume, filters, revenue / warranty cost / CSAT and the trend charts), everyone else gets the single-dealer "Dealer Dashboard" (today's operations board). Both end with the
+ * "All Pages" list: every page the signed-in role may open, decided by the Menu Access rules (navigation/menuAccess.ts) - the same ones that drive web's sidebar and its own "All Pages" grid - so a role
+ * never sees a page here that web would hide from it. The six fixed shortcut cards of 30.09.2026 are replaced by that list.
+ */
+export function DashboardScreen(props: Props) {
+  const { hasRole } = useStaffAuth()
+  return hasRole('CorporateAdmin', 'SystemAdmin') ? <CorporateDashboard {...props} /> : <DealerDashboard {...props} />
+}
+
+type PageNav = Props['navigation']
+
+/** "All Pages": every Android page this login may open (Menu Access rules), as tappable cards. */
+function AllPages({ navigation }: { navigation: PageNav }) {
+  const { isVisibleForCurrentRole } = useMenuAccess()
+  const go = (item: NavItem) => (navigation.navigate as (screen: string, params?: object) => void)(item.screen as string, item.params)
+  const pages = ANDROID_PAGES.filter(isVisibleForCurrentRole)
+  return (
+    <View>
+      <Text style={styles.sectionTitle}>All Pages</Text>
+      <Text style={styles.sectionNote}>Every page you have access to, in one place.</Text>
+      <View style={styles.actions}>
+        {pages.map((n, i) => (
+          <ActionCard key={n.key} icon={n.icon} accent={ACCENTS[i % ACCENTS.length]} title={n.label} subtitle={n.subtitle ?? n.label} onPress={() => go(n)} />
+        ))}
+        {pages.length === 0 && <Text style={styles.sectionNote}>No page is assigned to your role yet. Ask your administrator.</Text>}
+      </View>
+    </View>
+  )
+}
+
+function DealerDashboard({ navigation }: Props) {
   const { profile } = useStaffAuth()
-  const isAdmin = profile?.role === 'SystemAdmin' || profile?.role === 'CorporateAdmin'
-  const [todaySummary, setTodaySummary] = useState<DealerStageSummary | null>(null)
-  const [overallSummary, setOverallSummary] = useState<DealerStageSummary | null>(null)
-  const [todayError, setTodayError] = useState(false)
-  const todayStr = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` })()
-  useEffect(() => {
-    if (!isAdmin) return
-    apiClient.get<DealerStageSummary>('/api/dashboard/dealer-stage-report/summary', { params: { dateFrom: todayStr, dateTo: todayStr } })
-      .then((r) => setTodaySummary(r.data)).catch(() => setTodayError(true))
-    apiClient.get<DealerStageSummary>('/api/dashboard/dealer-stage-report/summary')
-      .then((r) => setOverallSummary(r.data)).catch(() => setTodayError(true))
-  }, [isAdmin, todayStr])
   const [kpis, setKpis] = useState<DashboardKpis | null>(null)
   const [refreshing, setRefreshing] = useState(false)
 
@@ -151,74 +163,6 @@ export function DashboardScreen({ navigation }: Props) {
       .catch(() => setStockError(true))
   }, [])
 
-  // 2026-09-30 (SECTION 164, "...give alert menu assigned sucessfully for web and mobile give
-  // thus" - read as: the Admin: Menu Access feature (web/src/pages/admin/MenuAccessPage.tsx,
-  // Models/MenuAccessOverride.cs) should also actually affect this screen, not just web's sidebar,
-  // which is the only place it did anything before this change): this screen's own "menu" is this
-  // ActionCard list below - there's no separate drawer/sidebar component on Android - so each
-  // ActionCard that has a web-sidebar equivalent is now hidden the same way web's NAV_ITEMS are,
-  // reading the SAME GET /api/menu-access overrides web's StaffLayout.tsx reads.
-  //
-  // NAV KEYS below are hand-matched to web/src/components/StaffLayout.tsx's own navKeyOf(to)
-  // output for the corresponding sidebar route (e.g. '/item-master' -> 'item-master') - so ONE
-  // Admin: Menu Access row controls both platforms at once. "Repair Bill List" has NO web sidebar
-  // equivalent (that item is commented out of web's own NAV_ITEMS_BASE - never shipped there), so
-  // it is NOT wired to any key here and stays exactly as visible as it always was - there is
-  // nothing to restrict it from on the Admin: Menu Access page today. "+ New Job Card" is tied to
-  // the same 'jobcards' key as "Job Cards" (there's no separate web sidebar entry just for
-  // creating one - it's reached from within the Job Cards page itself).
-  //
-  // DEFAULT (no override saved for a key): every ActionCard below keeps showing to every role,
-  // exactly as before this change - this only ever NARROWS visibility once an admin actually saves
-  // a restriction naming that key, same fail-open convention as web's own effectiveRoles(). This
-  // was a deliberate choice: mobile never had web's hardcoded default `roles` floors to begin with
-  // (see this screen's own pre-existing notes on Attendance/Item Master etc. never being
-  // role-gated here), and introducing new DEFAULT restrictions nobody asked for risks hiding a
-  // page some role could already reach - only Menu Access's explicit, opt-in overrides apply.
-  const [menuOverrides, setMenuOverrides] = useState<Record<string, string[]>>({})
-  // SECTION 170 (2026-09-30) "only give 3 sidebar menu acess only in sidebar this 3 option" -
-  // mirrors web's StaffLayout.tsx own SECTION 170 addition exactly, see that file's doc comment
-  // for the full design (Models/RoleMenuMode.cs). true = this login's own role is in "only show
-  // checked" allow-list mode.
-  const [roleModes, setRoleModes] = useState<Record<string, boolean>>({})
-  useEffect(() => {
-    apiClient
-      .get<{ navKey: string; roles: string[] }[]>('/api/menu-access')
-      .then((r) => {
-        const map: Record<string, string[]> = {}
-        r.data.forEach((row) => { map[row.navKey] = row.roles })
-        setMenuOverrides(map)
-      })
-      .catch(() => {
-        // Fail-open - see doc comment above. An endpoint hiccup never hides this screen's own menu.
-      })
-    apiClient
-      .get<{ role: string; onlyShowChecked: boolean }[]>('/api/menu-access/role-modes')
-      .then((r) => {
-        const map: Record<string, boolean> = {}
-        r.data.forEach((row) => { map[row.role] = row.onlyShowChecked })
-        setRoleModes(map)
-      })
-      .catch(() => {
-        // Fail-open (mode stays false) - same reasoning as the overrides fetch above.
-      })
-  }, [])
-
-  /** true = show this ActionCard. SECTION 170: when this login's own role is in "only show
-   * checked" allow-list mode, the logic INVERTS - hidden unless an explicit, non-empty override
-   * for navKey lists this role (no override at all no longer means "everyone" for that role).
-   * Otherwise, unchanged from before: no override saved for navKey -> always true; an override
-   * that exists but is empty also means "everyone"; only a non-empty override that excludes this
-   * login's own role hides it. */
-  const menuVisible = (navKey: string): boolean => {
-    const override = menuOverrides[navKey]
-    if (profile?.role && roleModes[profile.role]) {
-      return !!override && override.length > 0 && override.includes(profile.role)
-    }
-    if (override === undefined || override.length === 0) return true
-    return !!profile?.role && override.includes(profile.role)
-  }
-
   return (
     <View style={styles.screen}>
       <ScrollView style={styles.container} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={load} />}>
@@ -230,28 +174,6 @@ export function DashboardScreen({ navigation }: Props) {
           </View>
           <Image source={SCOOTER} style={styles.heroScooter} resizeMode="contain" />
         </View>
-
-        {isAdmin && ([
-          { title: 'Today', note: 'Job cards, Material Transfers and Repair Bills dated today, across all dealers.', src: todaySummary, from: todayStr, to: todayStr },
-          { title: 'Overall', note: 'All dates. In Progress and Ready For Delivery are what is in that stage right now.', src: overallSummary, from: '', to: '' },
-        ] as const).map((row) => (
-          <View key={row.title} style={styles.card}>
-            <Text style={styles.cardTitle}>{row.title}</Text>
-            <Text style={styles.cardSubtitle}>{row.note} Tap a card for the dealer-wise detail.</Text>
-            <View style={[styles.grid, { marginTop: 10, marginBottom: 0 }]}>
-              {ADMIN_CARDS.map((c, i) => (
-                <Kpi
-                  key={c.key}
-                  icon={c.icon}
-                  label={c.label}
-                  value={todayError ? '—' : row.src ? row.src.totals[c.key] : '…'}
-                  accent={ACCENTS[i % ACCENTS.length]}
-                  onPress={() => navigation.navigate('DealerRoleReport', { status: c.key, scope: 'all', from: row.from, to: row.to })}
-                />
-              ))}
-            </View>
-          </View>
-        ))}
 
         {!kpis ? (
           <View style={styles.loading}>
@@ -284,21 +206,7 @@ export function DashboardScreen({ navigation }: Props) {
               />
             </View>
 
-            <View style={styles.grid}>
-              {/* Revenue/turnaround are both driven by CLOSED (invoiced) job cards - same closest
-                 equivalent filter web's own Revenue/Avg. Service Time tiles link to, even though
-                 neither is an exact reproduction of the number (both are computed off Invoices,
-                 not a job-card count). */}
-              <Kpi icon="₹" label="Revenue (Paid Invoices)" value={`₹${kpis.revenuePaidInvoices.toLocaleString()}`} accent={colors.success} onPress={() => navigation.navigate('JobCardsList', { status: 'Closed' })} />
-              <Kpi icon="⏱️" label="Avg. Service Time" value={`${kpis.avgTurnaroundHours} hrs`} accent={colors.primary} onPress={() => navigation.navigate('JobCardsList', { status: 'Closed' })} />
-              {/* Not pressable - there's no rating/feedback capture in the schema yet, same as
-                 web's own CSAT tile, so no job-card filter corresponds to this number. */}
-              <View style={[styles.kpi, { borderLeftColor: '#db2777' }]}>
-                <Text style={styles.kpiIcon}>⭐</Text>
-                <Text style={styles.kpiValue}>{kpis.csat.average != null ? `${kpis.csat.average.toFixed(1)} / 5` : '—'}</Text>
-                <Text style={styles.kpiLabel}>Customer Satisfaction{kpis.csat.ratingsCount > 0 ? ` (${kpis.csat.ratingsCount})` : ' (no ratings yet)'}</Text>
-              </View>
-            </View>
+            {/* 2026-10-22 (web parity): the Revenue (Paid Invoices) / Avg. Service Time / Customer Satisfaction tiles are commented out of web's Dealer Dashboard, so they are not shown here either. */}
 
             <View style={styles.card}>
               <Text style={styles.cardTitle}>Job Cards by Status</Text>
@@ -308,57 +216,8 @@ export function DashboardScreen({ navigation }: Props) {
           </>
         )}
 
-        <View style={styles.actions}>
-          {/* SECTION 172 (2026-09-30) "in dashboardpage in android show only menu 1. Job Cards
-             2. Labour Master 3. Stock Report 4. Material Transfer Bill 5. Repair Bill 6.
-             Attendance only personal and according which changes done in web add in android" -
-             this Actions list is now exactly these 6 cards, in this order, replacing the previous
-             9-card list. REMOVED from here:
-               - "+ New Job Card" (was a separate card sharing the 'jobcards' key with "Job Cards"
-                 below) - not in your list. Job Cards below is now the only entry point into that
-                 flow from this screen; if JobCardsListScreen.tsx has no "add" affordance of its
-                 own, quick-create from the Dashboard is gone until one's added there - flagging
-                 since I don't have that screen's source this session to confirm either way.
-               - Item Master and Technician Employee - both still live, un-commented entries on
-                 web's own sidebar (StaffLayout.tsx NAV_ITEMS_BASE), so this removal is
-                 Android-only, per your explicit list, not a mirror of a web change.
-               - "Repair Bill List" - this one DOES mirror a real web change: web's own
-                 NAV_ITEMS_BASE already has '/repair-bill-list' (and '/material-transfer-list')
-                 commented out of its sidebar, so dropping it here brings Android back in line with
-                 what web currently shows, per "according which changes done in web add in
-                 android".
-             Every remaining card still goes through menuVisible() - same SECTION 155/164/170 Menu
-             Access gating as before. Trimming this fixed list doesn't touch backend permissions
-             for the removed items - Item Master/Technician Employee's own routes/APIs are
-             unchanged, they're just no longer offered a shortcut from this screen. */}
-          {menuVisible('jobcards') && (
-            <ActionCard title="Job Cards" subtitle="View & update assigned job cards" onPress={() => navigation.navigate('JobCardsList')} />
-          )}
-          {menuVisible('labour-master') && (
-            <ActionCard title="Labour Master" subtitle="Import & manage labour rate cards (Partwise / Without Partwise)" onPress={() => navigation.navigate('LabourMaster')} />
-          )}
-          {menuVisible('part-upload') && (
-            <ActionCard title="Stock Report" subtitle="Stock Summary Detail Report - own stock table" onPress={() => navigation.navigate('PartUpload')} />
-          )}
-          {menuVisible('material-transfer-bill') && (
-            <ActionCard title="Material Transfer Bill" subtitle="Create & view material transfers" onPress={() => navigation.navigate('MaterialTransferCreate')} />
-          )}
-          {menuVisible('repair-bill-new') && (
-            <ActionCard title="Repair Bill" subtitle="Create a repair bill" onPress={() => navigation.navigate('RepairBillCreate')} />
-          )}
-          {/* "Attendance only personal" - this card now always opens straight to the read-only
-             "my own attendance" view, even for a WorkshopManager+ login that would otherwise get
-             the full dealer staff roster/marking view - see AttendanceScreen.tsx's own SECTION 172
-             doc comment and RootNavigator.tsx's Attendance param type for the mechanics
-             (route param { onlyMine: true }). The full manager flow itself is untouched, just no
-             longer reachable from this particular card. */}
-          {menuVisible('attendance') && (
-            <ActionCard title="Attendance" subtitle="Mark your own attendance" onPress={() => navigation.navigate('Attendance', { onlyMine: true })} />
-          )}
-          {(profile?.role === 'SystemAdmin' || profile?.role === 'CorporateAdmin') && (
-            <ActionCard title="Dealer Role Report" subtitle="Dealer & role-wise job cards: submitted / open / closed" onPress={() => navigation.navigate('DealerRoleReport')} />
-          )}
-        </View>
+        <AllPages navigation={navigation} />
+        <View style={{ height: 24 }} />
       </ScrollView>
     </View>
   )
@@ -396,12 +255,191 @@ function StatusBars({ data, onPress }: { data: { status: string; count: number }
   )
 }
 
-function ActionCard({ title, subtitle, onPress }: { title: string; subtitle: string; onPress: () => void }) {
+function ActionCard({ title, subtitle, icon, accent, onPress }: { title: string; subtitle: string; icon?: string; accent?: string; onPress: () => void }) {
   return (
-    <Pressable style={styles.actionCard} onPress={onPress}>
-      <Text style={styles.actionTitle}>{title}</Text>
-      <Text style={styles.actionSubtitle}>{subtitle}</Text>
+    <Pressable style={[styles.actionCard, accent ? { borderLeftColor: accent, borderLeftWidth: 4 } : null]} onPress={onPress}>
+      {icon ? <Text style={styles.actionIcon}>{icon}</Text> : null}
+      <View style={{ flex: 1 }}>
+        <Text style={styles.actionTitle}>{title}</Text>
+        <Text style={styles.actionSubtitle}>{subtitle}</Text>
+      </View>
     </Pressable>
+  )
+}
+
+/** A horizontal bar list standing in for web's recharts bars - widths are relative to the largest value. */
+function BarList({ rows, color = colors.primary, unit = '' }: { rows: { label: string; value: number }[]; color?: string; unit?: string }) {
+  if (rows.length === 0) return <Text style={styles.cardSubtitle}>Nothing in this selection.</Text>
+  const max = Math.max(1, ...rows.map((r) => r.value))
+  return (
+    <View style={{ gap: 8, marginTop: 6 }}>
+      {rows.map((r, i) => (
+        <View key={`${r.label}-${i}`} style={styles.statusRow}>
+          <Text style={[styles.statusLabel, { width: 110 }]} numberOfLines={1}>{r.label}</Text>
+          <View style={styles.statusTrack}>
+            <View style={[styles.statusFill, { backgroundColor: color, width: `${Math.max(4, (r.value / max) * 100)}%` }]} />
+          </View>
+          <Text style={[styles.statusCount, { width: 46 }]}>{r.value}{unit}</Text>
+        </View>
+      ))}
+    </View>
+  )
+}
+
+const WARRANTY_OPTIONS = [
+  { value: '', label: 'Warranty & Non-Warranty' },
+  { value: 'warranty', label: 'Warranty Only' },
+  { value: 'nonwarranty', label: 'Non-Warranty Only' },
+]
+const allOption = (label: string, values: string[]) => [{ value: '', label }, ...values.map((v) => ({ value: v, label: v }))]
+
+/**
+ * Corporate Dashboard (CorporateAdmin / SystemAdmin) - web's CorporateDashboard: the Today / Overall roll-up across every dealer (a tap opens the Dealer Role Report on that card), the dealer-wise job
+ * card volume, the All Pages list, then the filterable Revenue / Warranty Cost / CSAT tiles with the volume trend, average TAT by dealer, top parts consumption and repeat complaints. Web's
+ * commented-out "Open Job Cards / Dealers / Staff / Parts Stock" tile row is not shown here either. recharts bars become the proportional bar lists above.
+ */
+function CorporateDashboard({ navigation }: Props) {
+  const { profile } = useStaffAuth()
+  const [filterOptions, setFilterOptions] = useState<CorporateDashboardFilters | null>(null)
+  const [filters, setFilters] = useState({ region: '', state: '', city: '', dealerId: '', model: '', warranty: '' })
+  const [data, setData] = useState<CorporateDashboardData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [todaySummary, setTodaySummary] = useState<DealerStageSummary | null>(null)
+  const [overallSummary, setOverallSummary] = useState<DealerStageSummary | null>(null)
+  const [todayError, setTodayError] = useState(false)
+  const todayStr = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` })()
+
+  const loadSummaries = () => {
+    apiClient.get<DealerStageSummary>('/api/dashboard/dealer-stage-report/summary', { params: { dateFrom: todayStr, dateTo: todayStr } })
+      .then((r) => setTodaySummary(r.data)).catch(() => setTodayError(true))
+    apiClient.get<DealerStageSummary>('/api/dashboard/dealer-stage-report/summary')
+      .then((r) => setOverallSummary(r.data)).catch(() => setTodayError(true))
+  }
+  useEffect(loadSummaries, [todayStr])
+  useEffect(() => {
+    apiClient.get<CorporateDashboardFilters>('/api/dashboard/corporate/filters').then((r) => setFilterOptions(r.data)).catch(() => { /* the filters just stay empty */ })
+  }, [])
+  const loadData = () => {
+    setLoading(true)
+    apiClient
+      .get<CorporateDashboardData>('/api/dashboard/corporate', {
+        params: {
+          region: filters.region || undefined, state: filters.state || undefined, city: filters.city || undefined,
+          dealerId: filters.dealerId || undefined, model: filters.model || undefined, warranty: filters.warranty || undefined,
+        },
+      })
+      .then((r) => setData(r.data))
+      .catch(() => setData(null))
+      .finally(() => { setLoading(false); setRefreshing(false) })
+  }
+  useEffect(loadData, [filters])
+
+  const ROWS = [
+    { title: 'Today', src: todaySummary, from: todayStr, to: todayStr },
+    { title: 'Overall', src: overallSummary, from: '', to: '' },
+  ] as const
+  const CARDS = [
+    { key: 'created', label: 'Job cards created', icon: '📋' },
+    { key: 'inProgress', label: 'In Progress', icon: '🔧' },
+    { key: 'materialTransfers', label: 'Material Transfer', icon: '🔄' },
+    { key: 'repairBills', label: 'Repair Bill', icon: '🧾' },
+    { key: 'readyForDelivery', label: 'Ready For Delivery', icon: '🏁' },
+  ] as const
+
+  return (
+    <View style={styles.screen}>
+      <ScrollView style={styles.container} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); loadSummaries(); loadData() }} />}>
+        <View style={styles.hero}>
+          <View style={styles.heroLeft}>
+            <Image source={LOGO} style={styles.heroLogo} resizeMode="contain" />
+            <Text style={styles.hello}>Hi, {profile?.name?.split(' ')[0]}</Text>
+            <Text style={styles.role}>{profile?.role} · {profile?.dealerName ?? 'All Dealers'}</Text>
+          </View>
+          <Image source={SCOOTER} style={styles.heroScooter} resizeMode="contain" />
+        </View>
+
+        {ROWS.map((row) => (
+          <View key={row.title} style={styles.card}>
+            <Text style={styles.cardTitle}>{row.title}</Text>
+            <Text style={styles.cardSubtitle}>{row.title === 'Today' ? 'Job cards, Material Transfers and Repair Bills dated today, across all dealers.' : 'All dates. In Progress and Ready For Delivery are what is in that stage right now.'} Tap a card for the dealer-wise detail.</Text>
+            <View style={[styles.grid, { marginTop: 10, marginBottom: 0 }]}>
+              {CARDS.map((c, i) => (
+                <Kpi
+                  key={c.key}
+                  icon={c.icon}
+                  label={c.label}
+                  value={todayError ? '—' : row.src ? row.src.totals[c.key] : '…'}
+                  accent={ACCENTS[i % ACCENTS.length]}
+                  onPress={() => navigation.navigate('DealerRoleReport', { status: c.key, scope: 'all', from: row.from, to: row.to })}
+                />
+              ))}
+            </View>
+          </View>
+        ))}
+
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Job Card Volume by Dealer</Text>
+          <Text style={styles.cardSubtitle}>Dealer-wise count of job cards.</Text>
+          {loading || !data ? <ActivityIndicator color={colors.primary} style={{ marginTop: 10 }} /> : <BarList rows={data.jobCardVolumeByDealer.map((d) => ({ label: d.dealerName, value: d.count }))} color={colors.success} />}
+        </View>
+
+        <ActionCard icon="📈" accent={colors.primary} title="Dealer Role Report" subtitle="Dealer & role-wise job cards: submitted / open / closed" onPress={() => navigation.navigate('DealerRoleReport')} />
+        <View style={{ height: 16 }} />
+
+        <AllPages navigation={navigation} />
+
+        <View style={[styles.card, { marginTop: 8 }]}>
+          <Text style={styles.cardTitle}>Filters</Text>
+          <View style={{ gap: 8, marginTop: 8 }}>
+            <PickerField label="Region" value={filters.region} onChange={(v) => setFilters({ ...filters, region: v })} options={allOption('All Regions', filterOptions?.regions ?? [])} />
+            <PickerField label="State" value={filters.state} onChange={(v) => setFilters({ ...filters, state: v })} options={allOption('All States', filterOptions?.states ?? [])} />
+            <PickerField label="City" value={filters.city} onChange={(v) => setFilters({ ...filters, city: v })} options={allOption('All Cities', filterOptions?.cities ?? [])} />
+            <PickerField label="Dealer" value={filters.dealerId} onChange={(v) => setFilters({ ...filters, dealerId: v })} options={[{ value: '', label: 'All Dealers' }, ...(filterOptions?.dealers ?? []).map((d) => ({ value: d.id, label: d.name }))]} />
+            <PickerField label="Model" value={filters.model} onChange={(v) => setFilters({ ...filters, model: v })} options={allOption('All Models', filterOptions?.models ?? [])} />
+            <PickerField label="Warranty" value={filters.warranty} onChange={(v) => setFilters({ ...filters, warranty: v })} options={WARRANTY_OPTIONS} />
+          </View>
+        </View>
+
+        {loading || !data ? (
+          <View style={styles.loading}>
+            <ActivityIndicator size="large" color={colors.primary} />
+            <Text style={styles.loadingText}>Loading dashboard...</Text>
+          </View>
+        ) : (
+          <>
+            <View style={styles.grid}>
+              <Kpi icon="₹" label="Revenue" value={`₹${data.revenue.toLocaleString()}`} accent={colors.success} onPress={() => undefined} />
+              <Kpi icon="🛡️" label="Warranty Cost" value={`₹${data.warrantyCost.toLocaleString()}`} accent={colors.amber} onPress={() => undefined} />
+              <Kpi icon="⭐" label={`CSAT${data.csat.average == null ? ' (no ratings yet)' : ''}`} value={data.csat.average != null ? `${data.csat.average.toFixed(1)} / 5` : '—'} accent="#db2777" onPress={() => undefined} />
+            </View>
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Job Card Volume Trend</Text>
+              <BarList rows={data.jobCardVolumeTrend.map((d) => ({ label: d.date, value: d.count }))} color={colors.success} />
+            </View>
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Average TAT by Dealer (hours)</Text>
+              <BarList rows={data.avgTatByDealer.map((d) => ({ label: d.dealerName, value: Math.round(d.avgHours * 10) / 10 }))} color="#0ea5e9" unit=" h" />
+            </View>
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Top Parts Consumption</Text>
+              <BarList rows={data.topPartsConsumption.map((d) => ({ label: d.partName, value: d.qty }))} color="#8b5cf6" />
+            </View>
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Repeat Complaints (vehicles with {'>'}1 visit)</Text>
+              {data.repeatComplaints.length === 0 && <Text style={styles.cardSubtitle}>No repeat visits in this selection.</Text>}
+              {data.repeatComplaints.map((r, i) => (
+                <View key={i} style={styles.repeatRow}>
+                  <Text style={styles.statusLabel}>{r.regNo ?? '-'}</Text>
+                  <Text style={styles.statusCount}>{r.visits}</Text>
+                </View>
+              ))}
+            </View>
+          </>
+        )}
+        <View style={{ height: 24 }} />
+      </ScrollView>
+    </View>
   )
 }
 
@@ -445,8 +483,12 @@ const styles = StyleSheet.create({
   statusFill: { height: '100%', borderRadius: 7, backgroundColor: colors.primary },
   statusCount: { width: 28, textAlign: 'right', fontSize: 12, fontWeight: '700', color: colors.text },
 
+  sectionTitle: { fontSize: 16, fontWeight: '700', color: colors.text, marginTop: 4 },
+  sectionNote: { fontSize: 12, color: colors.textMuted, marginTop: 2, marginBottom: 8 },
+  repeatRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.border },
   actions: { gap: 10, marginBottom: 8 },
-  actionCard: { backgroundColor: colors.surface, borderRadius: 10, padding: 16, borderWidth: 1, borderColor: colors.border },
+  actionCard: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: colors.surface, borderRadius: 10, padding: 16, borderWidth: 1, borderColor: colors.border },
+  actionIcon: { fontSize: 22 },
   actionTitle: { fontSize: 16, fontWeight: '700', color: colors.text },
   actionSubtitle: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
 })

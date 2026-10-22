@@ -41,13 +41,19 @@ export function TechnicianEmployeesScreen() {
   const [includeInactive, setIncludeInactive] = useState(false)
   const [loading, setLoading] = useState(false)
 
+  // 2026-10-03 (web TechnicianEmployeesPage - "add filter for search technician and dropdown of location"): a name search box and a Location dropdown above the list. The location is sent to the
+  // server (GET /api/technicians?locationCode=..., the same param the Assign Technician dropdown uses), the name search is applied in the phone.
+  const [search, setSearch] = useState('')
+  const [locationFilter, setLocationFilter] = useState('')
   const load = () => {
     setLoading(true)
-    apiClient.get<Technician[]>('/api/technicians', { params: { includeInactive } })
+    apiClient.get<Technician[]>('/api/technicians', { params: { includeInactive, locationCode: locationFilter || undefined } })
       .then((r) => setTechnicians(r.data))
       .finally(() => setLoading(false))
   }
-  useEffect(load, [includeInactive])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(load, [includeInactive, locationFilter])
+  const shown = technicians.filter((t) => !search.trim() || t.name.toLowerCase().includes(search.trim().toLowerCase()))
 
   const [workshops, setWorkshops] = useState<BaplDmsWorkshop[]>([])
   useEffect(() => {
@@ -116,7 +122,7 @@ export function TechnicianEmployeesScreen() {
     <View style={styles.screen}>
       <FlatList
         style={styles.list}
-        data={technicians}
+        data={shown}
         keyExtractor={(t) => t.id}
         ListHeaderComponent={
           <>
@@ -152,6 +158,10 @@ export function TechnicianEmployeesScreen() {
                 </View>
               </View>
             )}
+            <TextInput style={[styles.input, { marginBottom: 8 }]} value={search} onChangeText={setSearch} placeholder="Search technician by name…" placeholderTextColor={colors.textMuted} />
+            <View style={{ marginBottom: 8 }}>
+              <PickerField label="Location" value={locationFilter} options={[{ label: 'All locations', value: '' }, ...workshopOptions]} placeholder="All locations" onChange={setLocationFilter} />
+            </View>
             <View style={styles.toggleRow}>
               <Text style={styles.label}>Show inactive</Text>
               <Switch value={includeInactive} onValueChange={setIncludeInactive} />

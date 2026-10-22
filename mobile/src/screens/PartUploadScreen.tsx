@@ -16,6 +16,7 @@ import {
 import * as DocumentPicker from 'expo-document-picker'
 import { apiClient } from '../api/client'
 import { useStaffAuth } from '../auth/StaffAuthContext'
+import { PickerField } from '../components/PickerField'
 import { colors } from '../theme/colors'
 
 /**
@@ -104,25 +105,49 @@ const PAGE_SIZE = 25
 export function PartUploadScreen() {
   const { profile } = useStaffAuth()
 
-  const [workshops, setWorkshops] = useState<Workshop[]>([])
+  // 2026-10-12 (web PartUploadPage): a head-office login (CorporateAdmin / SystemAdmin) has no dealer of its own. It reads EVERY dealer's stock (GET /api/part-uploads answers org-wide for it) with a Dealer
+  // filter to narrow to one dealer, and its Location list follows the chosen dealer. The Upload card and the Edit / Delete buttons are for dealer logins only (an upload belongs to a dealer). `!!profile` keeps
+  // this false while the profile is still loading, so a dealer login never flashes the head-office view.
+  const isOrgWide = !!profile && !profile.dealerId
+  const [dealerOptions, setDealerOptions] = useState<{ value: string; label: string }[]>([])
+  const [filterDealerId, setFilterDealerId] = useState('')
   useEffect(() => {
-    if (!profile?.dealerId) return
+    if (!isOrgWide) return
+    type DealerRow = { id: string; name?: string; active?: boolean; isActive?: boolean }
+    apiClient.get<DealerRow[]>('/api/dealers')
+      .then(({ data }) => setDealerOptions([
+        { value: '', label: 'All dealers' },
+        ...(Array.isArray(data) ? data : [])
+          .filter((d) => d.active !== false && d.isActive !== false)
+          .map((d) => ({ value: d.id, label: d.name ?? d.id }))
+          .sort((a, b) => a.label.localeCompare(b.label)),
+      ]))
+      .catch(() => setDealerOptions([]))
+  }, [isOrgWide])
+
+  const [workshops, setWorkshops] = useState<Workshop[]>([])
+  const workshopDealerId = profile?.dealerId || filterDealerId
+  useEffect(() => {
+    if (!workshopDealerId) { setWorkshops([]); return }
     apiClient
-      .get<Workshop[]>('/api/bapl-dms/workshops', { params: { dealerId: profile.dealerId } })
+      .get<Workshop[]>('/api/bapl-dms/workshops', { params: { dealerId: workshopDealerId } })
       .then(({ data }: any) => {
         const scoped = profile?.workLocationCodes?.length
           ? data.filter((w: Workshop) => profile.workLocationCodes.includes(w.locCode))
           : data
         setWorkshops(scoped)
-        if (scoped.length > 0) setUploadLocation((prev) => prev || scoped[0].locCode)
+        if (profile?.dealerId && scoped.length > 0) setUploadLocation((prev) => prev || scoped[0].locCode)
       })
       .catch(() => setWorkshops([]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile?.dealerId])
+  }, [workshopDealerId, profile?.workLocationCodes])
 
   const [rows, setRows] = useState<PartUploadRow[]>([])
   const [search, setSearch] = useState('')
   const [filterLocation, setFilterLocation] = useState('')
+  // 2026-10-03 (web): Date From / Date To filter on each row's Report Date (typed YYYY-MM-DD; empty = no filter)
+  const [filterDateFrom, setFilterDateFrom] = useState('')
+  const [filterDateTo, setFilterDateTo] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [page, setPage] = useState(0)
@@ -138,14 +163,23 @@ export function PartUploadScreen() {
     setLoading(true)
     setError(null)
     apiClient
-      .get<PartUploadRow[]>('/api/part-uploads', { params: { search: search || undefined, locationCode: filterLocation || undefined } })
+      .get<PartUploadRow[]>('/api/part-uploads', {
+        params: {
+          search: search || undefined,
+          locationCode: filterLocation || undefined,
+          dateFrom: filterDateFrom.trim() || undefined,
+          dateTo: filterDateTo.trim() || undefined,
+          // only a head-office login's dealer filter is honoured by the server; a dealer login always reads its own dealer
+          dealerId: isOrgWide ? filterDealerId || undefined : undefined,
+        },
+      })
       .then((res: any) => { setRows(res.data); setPage(0) })
       .catch((err: unknown) => setError(describeError(err, 'Could not load uploaded part data.')))
       .finally(() => setLoading(false))
   }
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load() }, [filterLocation])
+  useEffect(() => { load() }, [filterLocation, filterDealerId, isOrgWide])
 
   const pageRows = rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
   const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE))
@@ -230,7 +264,13 @@ export function PartUploadScreen() {
           Upload a Stock Summary Detail Report (.xlsx) - saved into JobCardScanner’s own database, scoped to your dealer.
         </Text>
 
-        {/* ---------------- Upload card ---------------- */}
+        {/* ---------------- Upload card (dealer logins only) ---------------- */}
+        {isOrgWide && (
+          <View style={styles.card}>
+            <Text style={styles.muted}>Head office reads every dealer's stock here. Uploading a stock report belongs to a dealer login, so the upload card is not shown.</Text>
+          </View>
+        )}
+        {!isOrgWide && (
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Upload Excel</Text>
           <Text style={styles.label}>Date * (YYYY-MM-DD)</Text>
@@ -268,9 +308,15 @@ export function PartUploadScreen() {
             </Text>
           )}
         </View>
+        )}
 
         {/* ---------------- Filter / search ---------------- */}
         <View style={styles.card}>
+          {isOrgWide && (
+            <View style={{ marginBottom: 10 }}>
+              <PickerField label="Dealer" value={filterDealerId} onChange={(v) => { setFilterDealerId(v); setFilterLocation('') }} options={dealerOptions.length > 0 ? dealerOptions : [{ value: '', label: 'All dealers' }]} />
+            </View>
+          )}
           <Text style={styles.label}>Location filter</Text>
           <View style={styles.chipRow}>
             <Pressable style={[styles.chip, filterLocation === '' && styles.chipActive]} onPress={() => setFilterLocation('')}>
@@ -281,6 +327,10 @@ export function PartUploadScreen() {
                 <Text style={[styles.chipText, filterLocation === w.locCode && styles.chipTextActive]}>{w.locName}</Text>
               </Pressable>
             ))}
+          </View>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <TextInput style={[styles.input, { flex: 1 }]} placeholder="Date from (YYYY-MM-DD)" value={filterDateFrom} onChangeText={setFilterDateFrom} autoCapitalize="none" />
+            <TextInput style={[styles.input, { flex: 1 }]} placeholder="Date to (YYYY-MM-DD)" value={filterDateTo} onChangeText={setFilterDateTo} autoCapitalize="none" />
           </View>
           <TextInput
             style={styles.input}
@@ -315,6 +365,7 @@ export function PartUploadScreen() {
                   Bal Qty {fmtNum(item.balQty)} · Bal Amt ₹{fmtNum(item.balAmnt)} · Bill ₹{fmtNum(item.billPrice)}
                 </Text>
               </View>
+              {!isOrgWide && (
               <View style={{ gap: 6 }}>
                 <Pressable style={styles.smallButton} onPress={() => setEditing(item)}>
                   <Text style={styles.smallButtonText}>Edit</Text>
@@ -323,6 +374,7 @@ export function PartUploadScreen() {
                   <Text style={[styles.smallButtonText, styles.smallButtonTextDanger]}>Delete</Text>
                 </Pressable>
               </View>
+              )}
             </View>
           )}
         />

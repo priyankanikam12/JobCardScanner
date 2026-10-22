@@ -193,8 +193,9 @@ export function MaterialTransferCreateScreen() {
   const [dmsParts, setDmsParts] = useState<BaplDmsPartStock[]>([])
   useEffect(() => {
     if (!location) { setDmsParts([]); return }
-    apiClient.get<BaplDmsPartStock[]>('/api/bapl-dms/parts', { params: { locationCode: location } })
-      .then(({ data }) => setDmsParts(data))
+    // 2026-10-22 (web parity): the stock list is the app's OWN Part Upload data for this location (GET /api/part-uploads), not DMS's live PartsInventory (the old /api/bapl-dms/parts).
+    apiClient.get<{ partNo: string; balQty: number | null; description: string | null; hsnSacCode: string | null; billPrice: number | null }[]>('/api/part-uploads', { params: { locationCode: location } })
+      .then(({ data }) => setDmsParts(data.map((u): BaplDmsPartStock => ({ itemCode: u.partNo, availableQty: u.balQty ?? 0, description: u.description, hsnCode: u.hsnSacCode, source: 'partUpload', billPrice: u.billPrice }))))
       .catch(() => setDmsParts([]))
   }, [location])
 
