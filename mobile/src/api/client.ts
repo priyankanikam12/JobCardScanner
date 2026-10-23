@@ -1,5 +1,7 @@
 // mobile\src\api\client.ts
 import axios from 'axios'
+import { getDealerSession, setDealerSession } from '../auth/dealerSession'
+import { createRenewer } from '../auth/tokenRenew'
 
 const baseURL = process.env.EXPO_PUBLIC_API_BASE_URL
 
@@ -24,7 +26,23 @@ export function setDealerToken(token: string | null) {
   cachedDealerToken = token
 }
 
-apiClient.interceptors.request.use((config) => {
+// 2026-10-23 (VAPT DMS-16): a Dealer / Workshop token lives at most an hour; during its last 15 minutes it is swapped for a fresh one (POST /api/session/renew), kept in SecureStore like the rest of the session -
+// see auth/tokenRenew.ts. A person who keeps working is not signed out; a Microsoft session renews itself.
+const renewDealerTokenIfNeeded = createRenewer({
+  getToken: () => cachedDealerToken,
+  saveToken: async (accessToken) => {
+    cachedDealerToken = accessToken
+    const session = await getDealerSession()
+    if (session) await setDealerSession({ ...session, accessToken })
+  },
+  post: async (token) => {
+    const { data } = await axios.post<{ accessToken?: string }>(`${baseURL}/api/session/renew`, null, { headers: { Authorization: `Bearer ${token}` } })
+    return data.accessToken
+  },
+})
+
+apiClient.interceptors.request.use(async (config) => {
+  await renewDealerTokenIfNeeded()
   const token = cachedDealerToken ?? cachedAzureAdToken
   if (token) {
     config.headers.Authorization = `Bearer ${token}`

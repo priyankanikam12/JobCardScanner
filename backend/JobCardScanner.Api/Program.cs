@@ -17,6 +17,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 // 2026-10-17 (VAPT): security layer - Security/*.cs
 builder.AddAppSecurity();
+builder.AddAppSecurityEf();   // 2026-10-23 (VAPT DMS-16): the database part of the session checks
 
 // QuestPDF Community license (free for this use case) - required as of QuestPDF 2023+.
 QuestPDF.Settings.License = LicenseType.Community;
@@ -40,9 +41,13 @@ static string RequireSecret(IConfigurationSection section, IHostEnvironment env)
 // was forcibly closed by the remote host" / SQL error 10054 - a transient network blip, not a bug
 // in a query) which otherwise surfaces as a raw 500 on whatever request happened to be running.
 // This makes EF Core transparently retry a handful of times before giving up.
-builder.Services.AddDbContext<JobCardScannerDbContext>(opt =>
+builder.Services.AddDbContext<JobCardScannerDbContext>((sp, opt) =>
+{
     opt.UseSqlServer(builder.Configuration.GetConnectionString("JobCardScannerDb"),
-        sql => sql.EnableRetryOnFailure(maxRetryCount: 5, maxRetryDelay: TimeSpan.FromSeconds(10), errorNumbersToAdd: null)));
+        sql => sql.EnableRetryOnFailure(maxRetryCount: 5, maxRetryDelay: TimeSpan.FromSeconds(10), errorNumbersToAdd: null));
+    // 2026-10-23 (VAPT DMS-16): a change of a user's role / active flag / dealer / password, or a delete, ends that user's sessions (Security/SessionFreshnessEf.cs)
+    opt.AddInterceptors(sp.GetRequiredService<UserChangeRevocationInterceptor>());
+});
 builder.Services.AddDbContext<CareDeskDbContext>(o =>
     o.UseSqlServer(builder.Configuration.GetConnectionString("CareDeskDb") ?? "Server=.;Database=CareDesk;Trusted_Connection=True",   // placeholder is never used while CareDesk:Enabled is false
                    sql => sql.CommandTimeout(60)));

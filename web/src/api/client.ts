@@ -1,7 +1,8 @@
 import axios from 'axios'
 import { InteractionRequiredAuthError } from '@azure/msal-browser'
 import { msalInstance, apiLoginRequest } from '../auth/msalConfig'
-import { getDealerToken, getDealerSession, clearDealerSession } from '../auth/dealerSession'
+import { getDealerToken, getDealerSession, clearDealerSession, setDealerSession } from '../auth/dealerSession'
+import { createRenewer } from '../auth/dealerRenew'
 import { tokenStorage } from '../auth/tokenStorage'
 
 const baseURL = import.meta.env.VITE_API_BASE_URL
@@ -16,7 +17,21 @@ const baseURL = import.meta.env.VITE_API_BASE_URL
  */
 export const staffApi = axios.create({ baseURL })
 
+// 2026-10-23 (VAPT DMS-16): a Dealer / Workshop token lives at most an hour; during its last 15 minutes it is swapped for a fresh one (POST /api/session/renew) - see auth/dealerRenew.ts
+const renewDealerTokenIfNeeded = createRenewer({
+  getToken: getDealerToken,
+  saveToken: (accessToken) => {
+    const session = getDealerSession()
+    if (session) setDealerSession({ ...session, accessToken })
+  },
+  post: async (token) => {
+    const { data } = await axios.post<{ accessToken?: string }>(`${baseURL}/api/session/renew`, null, { headers: { Authorization: `Bearer ${token}` } })
+    return data.accessToken
+  },
+})
+
 staffApi.interceptors.request.use(async (config) => {
+  await renewDealerTokenIfNeeded()
   const dealerToken = getDealerToken()
   if (dealerToken) {
     config.headers.Authorization = `Bearer ${dealerToken}`
