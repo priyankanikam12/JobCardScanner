@@ -20,6 +20,7 @@ export function PortalLoginPage() {
   const [mobile, setMobile] = useState('')
   const [otpRequestId, setOtpRequestId] = useState<string | null>(null)
   const [devOtpCode, setDevOtpCode] = useState<string | null>(null)
+  const [otpInfo, setOtpInfo] = useState<string | null>(null)
   const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
 
@@ -28,11 +29,14 @@ export function PortalLoginPage() {
     try {
       const { data } = await portalApi.post('/api/portal/otp/request', { mobile })
       setOtpRequestId(data.otpRequestId)
+      // 2026-10-23 (VAPT DMS-12): the API answers the same thing for every number ("If this number is registered, an OTP has been sent to it."), so this page can no longer say whether a number is registered.
+      setOtpInfo(data.message ?? 'If this number is registered, an OTP has been sent to it.')
       // Only set when the API is running in Development - see OtpService. No real SMS provider is
       // wired up yet, so this is the only way to actually get the code during local testing.
       setDevOtpCode(data.devOtpCode ?? null)
     } catch {
-      setError('No account found for this mobile number.')
+      // 2026-10-23 (VAPT DMS-12): was "No account found for this mobile number." - that sentence told anyone which numbers are customers. Only a badly formed number or the rate limit reach this point now.
+      setError('Could not send the OTP. Check the mobile number and try again in a minute.')
     }
   }
 
@@ -140,6 +144,7 @@ export function PortalLoginPage() {
               </>
             ) : (
               <>
+                {otpInfo && <p className="muted" style={{ marginBottom: 8 }}>{otpInfo}</p>}
                 {devOtpCode && (
                   <p className="muted" style={{ marginBottom: 8 }}>
                     Dev mode (no SMS provider configured) &mdash; OTP code: <strong>{devOtpCode}</strong>

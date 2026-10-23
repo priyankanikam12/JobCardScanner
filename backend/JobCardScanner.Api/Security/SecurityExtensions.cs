@@ -12,7 +12,8 @@ namespace JobCardScanner.Api.Security;
 ///   app.UseAppSecurityEarly();           right after Build(): forwarded headers (real client IP / https behind the proxy) + security headers
 ///   app.UseAppRateLimit();               after CORS: request rate limits + failed-login lockout
 ///   app.UseAppStaticFiles(provider);     replaces UseStaticFiles: /uploads served only as safe media types, never as HTML (DMS-06)
-///   app.UseAppGuards();                  after UseAuthorization(): route guard + response sanitizer
+///   app.UseAppGuards();                  after UseAuthorization(): session checks + route guard + OTP answer normalizer + response sanitizer
+///   builder.AddAppSecurityEf();          (2026-10-23, DMS-16) right after AddAppSecurity(): the database part of the session checks - see SessionFreshnessEf.cs
 /// </summary>
 public static class SecurityExtensions
 {
@@ -39,7 +40,8 @@ public static class SecurityExtensions
 
         builder.Services.AddSingleton<ILoginThrottle, LoginThrottle>();
         builder.Services.AddSingleton<SignedMedia>();          // DMS-14: expiring photo links
-        builder.Services.AddSingleton<RevokedTokenStore>();    // DMS-16: signed-out tokens
+        builder.Services.AddSingleton<RevokedTokenStore>();    // DMS-16: signed-out tokens, and users whose role / password changed
+        builder.Services.AddMemoryCache();                     // DMS-16: SessionFreshnessMiddleware remembers a user's database state for a few seconds
         builder.Services.AddScoped<TenantIsolationFilter>();
         builder.Services.Configure<MvcOptions>(o => o.Filters.AddService<TenantIsolationFilter>());
 
@@ -100,7 +102,9 @@ public static class SecurityExtensions
 
     public static WebApplication UseAppGuards(this WebApplication app)
     {
+        app.UseMiddleware<SessionFreshnessMiddleware>();    // DMS-16: token age, user changed / deactivated / role changed (needs ISessionUserLookup - AddAppSecurityEf())
         app.UseMiddleware<RouteGuardMiddleware>();
+        app.UseMiddleware<OtpEnumerationMiddleware>();      // DMS-12: one answer for every mobile number (outside the sanitizer, so it sees the answer after devOtpCode was removed)
         app.UseMiddleware<ResponseSanitizerMiddleware>();
         return app;
     }

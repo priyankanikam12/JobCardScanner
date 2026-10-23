@@ -9,13 +9,30 @@ namespace JobCardScanner.Api.Security;
 /// 2026-10-23 (VAPT DMS-16): "Signing out only deletes the key locally; the token itself remains valid on the server for up to eight hours." Now sign-out (POST /api/session/logout, SessionController) puts the
 /// token on this list and RevokedTokenMiddleware answers 401 for it from then on - whichever sign-in produced it (dealer / workshop login, Microsoft, customer portal). Only a SHA-256 fingerprint of the
 /// token is kept (never the token), and each entry disappears when the token would have expired anyway.
-/// Limits to know: the list lives in the API's memory, so an API restart / IIS recycle clears it (a token stolen before that can then be used until it expires). A role change or a password change does not
-/// revoke tokens yet - that needs UsersController / DealerAuthController (call Revoke there); a shorter dealer token lifetime (the report asks for 1 hour or less) is DealerAuthJwt:ExpiryMinutes.
+/// 2026-10-23 (DMS-16, second part): RevokeUser(userId) ends EVERY session that user had before this moment - called by UserChangeRevocationInterceptor whenever a user's role, active flag, dealer or password
+/// changes (or the user is deleted), so no controller has to remember to do it. SessionFreshnessMiddleware asks IsUserRevoked for every Dealer / Workshop token.
+/// Limit to know: the lists live in the API's memory, so an API restart / IIS recycle clears them (a token stolen before that can then be used until it expires - at most MaxTokenMinutes).
 /// </summary>
 public sealed class RevokedTokenStore
 {
     private const int PurgeAbove = 5000;
     private readonly ConcurrentDictionary<string, DateTimeOffset> _revoked = new();
+    private readonly ConcurrentDictionary<Guid, DateTimeOffset> _usersChangedAt = new();
+
+    /// <summary>Ends every session this user had before now. Compared in whole seconds (a token's issue time has no fraction), and a token issued in the SAME second as the change stays valid - so a sign-in
+    /// that itself saves the user (for example a password re-hash) is not thrown out at once.</summary>
+    public void RevokeUser(Guid userId)
+    {
+        _usersChangedAt[userId] = DateTimeOffset.FromUnixTimeSeconds(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        if (_usersChangedAt.Count > 2000)
+        {
+            var old = DateTimeOffset.UtcNow.AddHours(-24);
+            foreach (var kv in _usersChangedAt.Where(kv => kv.Value < old).ToList()) _usersChangedAt.TryRemove(kv.Key, out _);
+        }
+    }
+
+    public bool IsUserRevoked(Guid userId, DateTimeOffset issuedAt) =>
+        _usersChangedAt.TryGetValue(userId, out var at) && DateTimeOffset.FromUnixTimeSeconds(issuedAt.ToUnixTimeSeconds()) < at;
 
     public static string Fingerprint(string token) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
 

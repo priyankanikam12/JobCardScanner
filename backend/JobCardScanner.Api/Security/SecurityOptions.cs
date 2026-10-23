@@ -34,5 +34,17 @@ public sealed class SecurityOptions
     /// <summary>2026-10-23 (DMS-12): false (default) = outside Development the API never returns "devOtpCode" / "devResetToken" (the development shortcuts that put an OTP or a password-reset token into the response). Set true ONLY as a temporary measure if dealers still reset passwords with the on-screen token because no e-mail provider is configured yet - and understand that anyone who knows a login e-mail can then reset that account.</summary>
     public bool AllowDevTokens { get; set; } = false;
 
+    /// <summary>2026-10-23 (DMS-16): "Enforce" (default) | "LogOnly" (logs what it would refuse) | "Off" - the session checks of a Dealer / Workshop login and a customer-portal login: a token older than
+    /// MaxTokenMinutes is refused, and a Dealer / Workshop token is refused once its user was deactivated, deleted, moved to another dealer, given another role or got a new password (SessionFreshnessMiddleware).</summary>
+    public string SessionFreshnessMode { get; set; } = "Enforce";
+    /// <summary>Longest time a Dealer / Workshop or customer-portal token is accepted after it was issued (the report asks for 1 hour or less). The web and Android apps renew it silently (POST /api/session/renew).</summary>
+    public int MaxTokenMinutes { get; set; } = 60;
+    /// <summary>Lifetime of a token issued by POST /api/session/renew.</summary>
+    public int RenewedTokenMinutes { get; set; } = 60;
+    /// <summary>How long the database answer about one user is remembered between two requests (a role change reaches a running session within this time unless the change itself ends it, which it does).</summary>
+    public int SessionCheckSeconds { get; set; } = 30;
+    /// <summary>2026-10-23 (DMS-12): every answer of POST /api/portal/otp/request takes at least this long (milliseconds), so a registered number (SMS sent) and an unregistered one cannot be told apart by timing.</summary>
+    public int OtpMinResponseMs { get; set; } = 700;
+
     public static bool Is(string? value, string expected) => string.Equals(value, expected, StringComparison.OrdinalIgnoreCase);
 }

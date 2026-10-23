@@ -12,7 +12,9 @@
  *      set VAPT_DEALERADMIN_TOKEN=...   (a DealerAdmin test login)
  *      set VAPT_CAPTAIN_TOKEN=...       (a Captain / ServiceAdvisor test login of the SAME dealer as --test-jobcard)
  *      set VAPT_SUPERVISOR_TOKEN=...    (a Supervisor / ViceCaptain test login)
- * Usage:  node vapt-retest.js --base https://dms.bgauss.com [--readonly] [--test-jobcard <guid>] [--other-jobcard <guid>] [--other-dealer <guid>] [--keep-session]
+ * Usage:  node vapt-retest.js --base https://dms.bgauss.com [--readonly] [--test-jobcard <guid>] [--other-jobcard <guid>] [--other-dealer <guid>] [--keep-session] [--registered-mobile <n> --unregistered-mobile <n>]
+ *   --registered-mobile / --unregistered-mobile   (DMS-12, optional, give BOTH) a TEST customer's mobile number and a number you KNOW is not registered: the OTP request and verify answers for the two are compared.
+ *                    The registered one really receives an OTP (SMS, or the dev code on screen) - use a test customer, never a real one; the unregistered one must really be unregistered.
  *   --test-jobcard   an open job card of the Captain's dealer made for testing (needs a Technician assigned and, for the photo check, at least one photo)
  *   --other-jobcard  a job card of ANOTHER dealer (only read, and edited only when the scope is proven to be enforced)
  *   --keep-session   do not sign the Captain token out at the end (DMS-16 is skipped)
@@ -137,7 +139,19 @@ async function denied(id, text, method, path, token, body, allowed, whyNot) {
   ok('DMS-12', 'forgot-password never returns a reset token (devResetToken)', !/devResetToken/i.test(forgot.text), 'the response contains devResetToken')
   const otp = await call('POST', '/api/portal/otp/request', { body: { mobile: '0000000000' } })
   ok('DMS-12', 'an OTP request never returns the code (devOtpCode)', !/devOtpCode/i.test(otp.text), 'the response contains devOtpCode')
-  console.log(`INFO  DMS-12  OTP request for an unregistered number answered HTTP ${otp.status} - it must look the SAME as for a registered number (needs the OtpService fix; compare by hand)`)
+  ok('DMS-12', 'an OTP request for a made-up number does not say "No account found" - it answers the generic message (or HTTP 400 for a badly formed number)',
+    !/no account|not found|not registered/i.test(otp.text) && (otp.status === 400 || (otp.status === 200 && !!otp.json && !!otp.json.otpRequestId && /if this number is registered/i.test(String(otp.json.message || '')))), `HTTP ${otp.status}: ${otp.text.slice(0, 140)}`)
+  if (args['registered-mobile'] && args['unregistered-mobile']) {
+    const timed = async (mobile) => { const t0 = Date.now(); const r = await call('POST', '/api/portal/otp/request', { body: { mobile } }); return { r, ms: Date.now() - t0 } }
+    const reg = await timed(String(args['registered-mobile'])); const unreg = await timed(String(args['unregistered-mobile']))
+    const keys = (x) => (x.json ? Object.keys(x.json).filter((k) => !/devOtpCode/i.test(k)).sort().join(',') : '')
+    ok('DMS-12', 'registered and unregistered number: same status, same fields, same message', reg.r.status === unreg.r.status && keys(reg.r) === keys(unreg.r) && String(reg.r.json && reg.r.json.message) === String(unreg.r.json && unreg.r.json.message),
+      `registered HTTP ${reg.r.status} [${keys(reg.r)}] ${reg.r.text.slice(0, 80)} | unregistered HTTP ${unreg.r.status} [${keys(unreg.r)}] ${unreg.r.text.slice(0, 80)}`)
+    console.log(`INFO  DMS-12  answer time: registered ${reg.ms} ms, unregistered ${unreg.ms} ms (the API holds both for at least Security:OtpMinResponseMs; a difference of a few hundred ms is network noise)`)
+    const vReg = await call('POST', '/api/portal/otp/verify', { body: { otpRequestId: reg.r.json && reg.r.json.otpRequestId, code: '000000', mobile: String(args['registered-mobile']) } })
+    const vUnreg = await call('POST', '/api/portal/otp/verify', { body: { otpRequestId: unreg.r.json && unreg.r.json.otpRequestId, code: '000000', mobile: String(args['unregistered-mobile']) } })
+    ok('DMS-12', 'a wrong code for a registered number and for an unregistered one answer the same (HTTP 400, same message)', vReg.status === 400 && vUnreg.status === 400 && vReg.text === vUnreg.text, `registered ${vReg.status} ${vReg.text.slice(0, 80)} | unregistered ${vUnreg.status} ${vUnreg.text.slice(0, 80)}`)
+  } else skp('DMS-12', 'registered vs unregistered number answers', 'give --registered-mobile (a TEST customer) and --unregistered-mobile')
 
   const home = await call('GET', '/')
   for (const n of ['x-frame-options', 'x-content-type-options', 'referrer-policy', 'permissions-policy']) ok('DMS-13', `response header ${n} is present`, home.headers.get(n) !== null, 'missing')
@@ -153,7 +167,12 @@ async function denied(id, text, method, path, token, body, allowed, whyNot) {
     if (Array.isArray(d.json)) leaks = d.json.filter((row) => Object.keys(row).some((k) => /mail|phone|mobile|contact/i.test(k) && row[k])).length
     ok('DMS-15', "GET /api/dealers shows contact details for at most the caller's own dealer", leaks >= 0 && leaks <= 1, `rows with contact fields: ${leaks}`)
   } else skp('DMS-15', '/api/dealers contact fields', 'Captain token not set')
-  console.log('INFO  DMS-15  GET /api/menu-access still returns the whole role matrix to every login (needs MenuAccessController - open item)')
+  if (T.captain) {
+    const matrix = await call('GET', '/api/menu-access', { token: T.captain })
+    const modes = await call('GET', '/api/menu-access/role-modes', { token: T.captain })
+    ok('DMS-15', 'the role matrix a Captain / ServiceAdvisor can read (/api/menu-access, /role-modes) does not name SystemAdmin or CorporateAdmin', matrix.status === 200 && modes.status === 200 && !/SystemAdmin|CorporateAdmin/.test(matrix.text + modes.text),
+      `HTTP ${matrix.status}/${modes.status}, names found: ${[...new Set((matrix.text + modes.text).match(/SystemAdmin|CorporateAdmin|DealerAdmin/g) || [])].join(', ') || 'none'}`)
+  } else skp('DMS-15', 'role matrix of /api/menu-access', 'Captain token not set')
 
   if (T.captain && tj) {
     const det = await call('GET', `/api/jobcards/${tj}`, { token: T.captain })
@@ -168,6 +187,18 @@ async function denied(id, text, method, path, token, body, allowed, whyNot) {
     }
   } else skp('DMS-14', 'photo addresses are signed', 'needs --test-jobcard and the Captain token')
 
+  if (T.captain && !readonly) {
+    const rn = await call('POST', '/api/session/renew', { token: T.captain })
+    if (rn.status === 400) skp('DMS-16', 'silent renewal of a Dealer / Workshop token', 'the Captain token is a Microsoft session - MSAL renews that one itself; use a Dealer / Workshop login token')
+    else {
+      const fresh = rn.json && rn.json.accessToken
+      let expSec = null
+      try { expSec = fresh ? JSON.parse(Buffer.from(String(fresh).split('.')[1], 'base64url').toString('utf8')).exp : null } catch { /* unreadable */ }
+      ok('DMS-16', 'POST /api/session/renew answers a new token that lives at most about an hour', rn.status === 200 && !!fresh && expSec !== null && expSec - Date.now() / 1000 <= 3660 && expSec - Date.now() / 1000 > 0, `HTTP ${rn.status}${expSec ? `, expires in ${Math.round(expSec - Date.now() / 1000)} s` : ''}`)
+      if (fresh) { const me2 = await call('GET', '/api/auth/me', { token: fresh }); ok('DMS-16', 'the renewed token is accepted', me2.status === 200, `/api/auth/me ${me2.status}`) }
+    }
+  } else if (T.captain) skp('DMS-16', 'silent renewal', '--readonly')
+
   if (T.captain && !readonly && !args['keep-session']) {
     const out = await call('POST', '/api/session/logout', { token: T.captain })
     const me = await call('GET', '/api/auth/me', { token: T.captain })
@@ -176,6 +207,6 @@ async function denied(id, text, method, path, token, body, allowed, whyNot) {
 
   console.log(`\nResult: ${pass} passed, ${fail} failed, ${skip} skipped.`)
   if (cleanup.length) { console.log('\nCLEANUP NEEDED (a fix is not working and the server accepted a test request):'); cleanup.forEach((c) => console.log('  - ' + c)) }
-  console.log('\nStill manual: DMS-12 (identical OTP answers for registered / unregistered numbers), DMS-15 (/api/menu-access matrix), DMS-16 (token lifetime of the dealer login, role / password change).')
+  console.log('\nStill manual (cannot be checked from outside): DMS-16 - change a test user\'s role or password in Admin: Users and watch that user\'s open session end (HTTP 401) within about 30 seconds; the Android build has allowBackup=false and no cleartext (decompile or `adb shell dumpsys package com.bgauss.jobcardscanner | findstr /i backup`).')
   process.exit(fail ? 1 : 0)
 })()
