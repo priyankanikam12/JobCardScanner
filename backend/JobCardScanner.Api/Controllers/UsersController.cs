@@ -16,7 +16,7 @@ namespace JobCardScanner.Api.Controllers;
 /// so the older Azure AD sync / manual-add panels keep working unchanged.</summary>
 [ApiController]
 [Route("api/users")]
-[Authorize(Policy = Policies.DealerAdminUp)]
+[Authorize(Policy = Policies.Staff)]
 public class UsersController : ControllerBase
 {
     private readonly JobCardScannerDbContext _db;

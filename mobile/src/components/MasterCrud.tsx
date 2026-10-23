@@ -3,6 +3,8 @@ import { useEffect, useState } from 'react'
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native'
 import { apiClient } from '../api/client'
 import { PickerField, type PickerOption } from './PickerField'
+import { PagerBar, SearchBox, SortChips } from './ListControls'
+import { useListView, type Field } from '../lib/listView'
 import { colors } from '../theme/colors'
 
 /**
@@ -35,7 +37,6 @@ export function MasterCrud<R extends MasterRowBase>({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showInactive, setShowInactive] = useState(false)
-  const [search, setSearch] = useState('')
   const [form, setForm] = useState<FormState>(emptyForm)
   const [editId, setEditId] = useState<string | null>(null)
   const [formOpen, setFormOpen] = useState(false)
@@ -80,17 +81,25 @@ export function MasterCrud<R extends MasterRowBase>({
     }
   }
 
-  const q = search.trim().toLowerCase()
-  const shown = rows.filter((r) => (showInactive || r.isActive) && (!q || `${rowTitle(r)} ${rowSubtitle(r)}`.toLowerCase().includes(q)))
+// 2026-10-23 ("all pages add in sorting and pagination and ui attractive"): search on every field, sort chips and 10 rows per page (lib/listView.ts + components/ListControls.tsx).
+  const listFields: Field<R>[] = [
+    { key: 'name', value: (r) => rowTitle(r) },
+    { key: 'details', value: (r) => rowSubtitle(r) },
+    { key: 'status', value: (r) => (r.isActive ? 'Active' : 'Inactive') },
+  ]
+  const view = useListView(rows, listFields, { getKey: (r) => r.id, prefilter: (r) => showInactive || r.isActive, version: showInactive })
+  const shown = view.pageRows
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={{ padding: 12, paddingBottom: 40 }} keyboardShouldPersistTaps="handled">
       <Text style={styles.muted}>{intro}</Text>
-      <TextInput style={styles.input} value={search} onChangeText={setSearch} placeholder="Search…" placeholderTextColor={colors.textMuted} />
+      <View style={{ marginTop: 8 }}><SearchBox value={view.query} onChangeText={view.setQuery} placeholder={`Search ${nounSingular}s…`} /></View>
       <View style={styles.toolbar}>
         <View style={styles.switchRow}><Switch value={showInactive} onValueChange={setShowInactive} /><Text style={styles.muted}>Show inactive</Text></View>
         {canManage && <TouchableOpacity style={styles.primaryBtn} onPress={openAdd}><Text style={styles.primaryBtnText}>+ Add</Text></TouchableOpacity>}
       </View>
+      <SortChips options={[{ key: 'name', label: 'Name' }, { key: 'status', label: 'Status' }]} sort={view.sort} onToggle={view.toggleSort} />
+      <Text style={[styles.muted, { marginTop: 8 }]}>{view.total === view.allTotal ? `${view.allTotal} ${nounSingular}${view.allTotal === 1 ? '' : 's'}` : `${view.total} of ${view.allTotal} ${nounSingular}s`}</Text>
 
       {formOpen && canManage && (
         <View style={styles.card}>
@@ -141,6 +150,9 @@ export function MasterCrud<R extends MasterRowBase>({
           )}
         </View>
       ))}
+      {!loading && view.total > 0 && (
+        <PagerBar page={view.page} pageCount={view.pageCount} total={view.total} onPage={view.setPage} pageSize={view.pageSize} onPageSize={view.setPageSize} />
+      )}
     </ScrollView>
   )
 }

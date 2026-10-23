@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { staffApi } from '../../api/client'
+import { SortTh, StatusBadge, TablePager, TableSearch, useTableView, type Column } from '../../components/TableControls'
 import { NAV_ITEMS } from '../../components/StaffLayout'
 
 /**
@@ -159,14 +160,21 @@ export function DocPrefixMasterPage() {
     }
   }
 
-  const visibleRows = rows
-    .filter((r) => showInactive || r.isActive)
-    .filter((r) => !moduleFilter || r.moduleKey === moduleFilter)
-    .filter((r) => {
-      if (!search.trim()) return true
-      const q = search.trim().toLowerCase()
-      return moduleLabel(r.moduleKey).toLowerCase().includes(q) || r.moduleKey.toLowerCase().includes(q) || r.prefix.toLowerCase().includes(q)
-    })
+// 2026-10-23 ("all pages add in sorting and pagination and ui attractive"): search on every column, sortable headers and 10 rows per page (components/TableControls.tsx); the filters sit in one flex row.
+  const baseRows = useMemo(
+    () => rows.filter((r) => showInactive || r.isActive).filter((r) => !moduleFilter || r.moduleKey === moduleFilter),
+    [rows, showInactive, moduleFilter],
+  )
+  const prefixColumns: Column<PrefixRow>[] = [
+    { key: 'module', label: 'Module', value: (r) => moduleLabel(r.moduleKey) },
+    { key: 'prefix', label: 'Prefix', value: (r) => r.prefix },
+    { key: 'fy', label: 'Financial Year', value: (r) => (r.usesFinancialYear ? 'Yes' : 'None') },
+    { key: 'status', label: 'Status', value: (r) => (r.isActive ? 'Active' : 'Deactivated') },
+    { key: 'key', label: 'Key', value: (r) => r.moduleKey },
+  ]
+  const view = useTableView(baseRows, prefixColumns, { pageSize: 10, query: search })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { view.setPage(1) }, [showInactive, moduleFilter])
 
   // Modules that don't already have a prefix row - only these are offered on "Add new module" so
   // you can't accidentally try to create a second row for the same page (the backend's unique
@@ -234,66 +242,60 @@ export function DocPrefixMasterPage() {
         {formError && <p className="error-text">{formError}</p>}
       </div>
 
-      {/* SECTION 174 - search + dropdown filter, see class-level SECTION 174 comment above. */}
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
-        <input
-          type="text"
-          placeholder="Search Module / Prefix…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          style={{ maxWidth: 280 }}
-        />
-        <select value={moduleFilter} onChange={(e) => setModuleFilter(e.target.value)}>
-          <option value="">All Modules</option>
-          {MODULE_OPTIONS.filter((m) => usedModuleKeys.has(m.key)).map((m) => (
-            <option key={m.key} value={m.key}>{m.label}</option>
-          ))}
-        </select>
-        {(search || moduleFilter) && (
-          <button type="button" className="btn btn-sm" onClick={() => { setSearch(''); setModuleFilter('') }}>
-            Clear filters
-          </button>
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="tc-toolbar">
+          <TableSearch value={search} onChange={setSearch} placeholder="Search module or prefix…" ariaLabel="Search the prefixes" />
+          <label className="tc-field">
+            Module
+            <select value={moduleFilter} onChange={(e) => setModuleFilter(e.target.value)} aria-label="Module">
+              <option value="">All Modules</option>
+              {MODULE_OPTIONS.filter((m) => usedModuleKeys.has(m.key)).map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+            </select>
+          </label>
+          {(search || moduleFilter) && (
+            <button type="button" className="btn" onClick={() => { setSearch(''); setModuleFilter('') }}>Clear filters</button>
+          )}
+          <span className="tc-count">{view.total === view.allTotal ? `${view.allTotal} rows` : `${view.total} of ${view.allTotal} rows`}</span>
+        </div>
+
+        {loading && <p className="muted">Loading…</p>}
+        {error && <p className="error-text">{error}</p>}
+        {!loading && !error && (
+          <>
+            <div className="tc-tablewrap">
+              <table>
+                <thead>
+                  <tr>
+                    <SortTh label="Module" sortKey="module" sort={view.sort} onSort={view.toggleSort} />
+                    <SortTh label="Prefix" sortKey="prefix" sort={view.sort} onSort={view.toggleSort} />
+                    <SortTh label="Financial Year" sortKey="fy" sort={view.sort} onSort={view.toggleSort} />
+                    <SortTh label="Status" sortKey="status" sort={view.sort} onSort={view.toggleSort} />
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {view.pageRows.map((r) => (
+                    <tr key={r.id} style={r.isActive ? undefined : { opacity: 0.6 }}>
+                      <td>{moduleLabel(r.moduleKey)}</td>
+                      <td>{r.prefix}</td>
+                      <td>{r.usesFinancialYear ? 'Yes' : 'None'}</td>
+                      <td><StatusBadge active={r.isActive} /></td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        <button className="btn btn-sm" onClick={() => startEdit(r)}>Edit</button>
+                        <button className="btn btn-sm" onClick={() => toggleActive(r)}>{r.isActive ? 'Deactivate' : 'Reactivate'}</button>
+                      </td>
+                    </tr>
+                  ))}
+                  {view.pageRows.length === 0 && (
+                    <tr><td colSpan={5} className="muted">{rows.length === 0 ? 'No rows yet - add one above.' : 'No rows match your search/filter.'}</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <TablePager view={view} />
+          </>
         )}
       </div>
-
-      {loading && <p className="muted">Loading…</p>}
-      {error && <p className="error-text">{error}</p>}
-
-      {!loading && !error && (
-        <div className="card" style={{ padding: 0, marginBottom: 16 }}>
-          {visibleRows.length === 0 ? (
-            <p className="muted" style={{ padding: 16 }}>
-              {rows.length === 0 ? 'No rows yet - add one above.' : 'No rows match your search/filter.'}
-            </p>
-          ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th style={TH_STYLE}>Module</th>
-                  <th style={TH_STYLE}>Prefix</th>
-                  <th style={TH_STYLE}>Financial Year</th>
-                  <th style={TH_STYLE}>Status</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleRows.map((r) => (
-                  <tr key={r.id} style={r.isActive ? undefined : { opacity: 0.5 }}>
-                    <td>{moduleLabel(r.moduleKey)}</td>
-                    <td>{r.prefix}</td>
-                    <td>{r.usesFinancialYear ? 'Yes' : 'None'}</td>
-                    <td>{r.isActive ? 'Active' : 'Deactivated'}</td>
-                    <td style={{ whiteSpace: 'nowrap' }}>
-                      <button className="btn" onClick={() => startEdit(r)}>Edit</button>{' '}
-                      <button className="btn" onClick={() => toggleActive(r)}>{r.isActive ? 'Deactivate' : 'Reactivate'}</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      )}
 
       <div className="card">
         <h3 style={SECTION_TITLE_STYLE}>Preview next number</h3>

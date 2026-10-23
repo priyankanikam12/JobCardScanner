@@ -1,0 +1,77 @@
+/* web\src\components\table-controls.css - 2026-10-23: shared table controls (search box, sortable headers, segmented filter, status chips) + the tab strip of Admin: Users.
+   .form-row is a CSS GRID, so a button put in it stretches across its whole cell (that is why "Load DMS Logins" / "Check Status" looked so long). Everything here uses flex rows instead. */
+.tc-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 12px; }
+.tc-toolbar .btn { height: 38px; padding: 0 16px; white-space: nowrap; justify-content: center; flex: 0 0 auto; }
+.tc-grow { flex: 1 1 280px; min-width: 220px; }
+.tc-spacer { margin-left: auto; }
+
+.tc-search { position: relative; display: flex; align-items: center; }
+.tc-search input { width: 100%; height: 38px; padding: 0 34px 0 36px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); font-size: 14px; color: var(--text); }
+.tc-search input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+.tc-search .tc-ico { position: absolute; left: 12px; font-size: 14px; color: var(--text-muted); pointer-events: none; }
+.tc-search .tc-clear { position: absolute; right: 6px; width: 24px; height: 24px; border: 0; border-radius: 50%; background: transparent; color: var(--text-muted); font-size: 12px; cursor: pointer; }
+.tc-search .tc-clear:hover { background: #eef1f7; color: var(--text); }
+
+.tc-count { color: var(--text-muted); font-size: 13px; white-space: nowrap; }
+.tc-hint { margin: -4px 0 12px; }
+
+.tc-seg { display: inline-flex; padding: 3px; gap: 2px; background: #eef1f7; border-radius: var(--radius-sm); flex: 0 0 auto; }
+.tc-seg-btn { height: 32px; padding: 0 12px; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.tc-seg-btn:hover { color: var(--text); }
+.tc-seg-btn.active { background: var(--surface); color: var(--primary); box-shadow: var(--shadow-sm); }
+
+.tc-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.tc-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; background: var(--primary-soft); color: var(--primary-dark); font-size: 13px; font-weight: 600; white-space: nowrap; }
+.tc-chip b { font-size: 14px; }
+.tc-chip.tc-chip-ok { background: var(--success-soft); color: var(--success); }
+.tc-chip.tc-chip-warn { background: var(--warning-soft); color: var(--warning); }
+
+.btn-success { background: var(--success); color: #fff; border-color: var(--success); }
+.btn-success:hover { background: #047857; border-color: #047857; color: #fff; }
+
+.tc-tablewrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.tc-tablewrap table { margin: 0; }
+.tc-tablewrap tbody tr:hover { background: #f8fafc; }
+.tc-tablewrap td.muted { text-align: center; padding: 22px 12px; }
+.tc-pager { border: 1px solid var(--border); border-top: 0; border-radius: 0 0 var(--radius-sm) var(--radius-sm); margin-top: -1px; }
+.tc-pager > div { border-top: 0 !important; }
+
+th.tc-sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+th.tc-sortable:hover { color: var(--primary); }
+th.tc-sortable .tc-sort { margin-left: 6px; font-size: 10px; opacity: .5; }
+th.tc-sortable.tc-active { color: var(--primary); }
+th.tc-sortable.tc-active .tc-sort { opacity: 1; }
+
+.au-tabs { display: flex; flex-wrap: wrap; gap: 4px; width: fit-content; max-width: 100%; margin-bottom: 16px; padding: 4px; background: #eef1f7; border-radius: 10px; }
+.au-tab { padding: 8px 16px; border: 0; border-radius: 8px; background: transparent; color: var(--text-muted); font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.au-tab:hover { color: var(--text); }
+.au-tab.active { background: var(--surface); color: var(--primary); box-shadow: var(--shadow-sm); }
+@media (max-width: 640px) { .tc-grow { flex-basis: 100%; } .au-tab { padding: 8px 12px; } }
+
+/* ---- Admin: Menu Access (2026-10-23) ---- */
+.ma-field { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--text-muted); }
+.ma-field select { height: 38px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); font-size: 14px; color: var(--text); }
+.ma-btnrow { display: flex; flex-wrap: wrap; gap: 8px; }
+.ma-checkgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px 14px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: #f9fafb; }
+.ma-checkgrid label { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+.ma-checkgrid label:hover { background: #fff; }
+.ma-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.ma-pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px; background: #fff; color: var(--text-muted); font-size: 12px; cursor: pointer; }
+.ma-pill.on { background: var(--primary-soft); border-color: var(--primary); color: var(--primary-dark); font-weight: 600; }
+.ma-pill input { margin: 0; }
+.ma-access { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.ma-modes { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
+.ma-mode { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: #fff; cursor: pointer; }
+.ma-mode.on { border-color: var(--primary); background: var(--primary-soft); }
+.ma-mode small { display: block; margin-top: 2px; color: var(--text-muted); font-size: 12px; font-weight: 400; }
+.ma-mode strong { font-size: 14px; }
+.ma-savebar { position: sticky; bottom: 0; z-index: 5; display: flex; justify-content: flex-end; align-items: center; gap: 12px; margin-top: 16px; padding: 12px 16px; background: rgba(255, 255, 255, 0.97); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 -4px 16px rgba(16, 24, 40, 0.08); }
+.ma-savebar .btn { height: 38px; padding: 0 22px; }
+
+/* ---- generic toolbar bits used by the list pages (2026-10-23) ---- */
+.tc-field { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
+.tc-field select { height: 38px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); font-size: 14px; color: var(--text); max-width: 260px; }
+.tc-check { display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; height: 38px; border-radius: var(--radius-sm); background: #f3f4f6; color: #374151; font-size: 13px; font-weight: 500; white-space: nowrap; cursor: pointer; }
+.tc-check input { width: auto; margin: 0; }
+.tc-card-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+.tc-tablewrap td .btn + .btn { margin-left: 4px; }

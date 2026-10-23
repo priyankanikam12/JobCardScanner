@@ -480,6 +480,18 @@ public class RepairBillDocsController : ControllerBase
             }
         }
 
+        // 2026-10-17 (VAPT DMS-08, Securepoint report v1.0): the browser used to be trusted for prices, tax rates and quantities - a bill could be saved with a price of -100, a 99% GST and a quantity of
+        // 999,999,999. Same kind of server-side check the discount already had, now for every line on BOTH create and update (this method serves both): price / rate / discount within limits,
+        // GST only at the allowed rates, quantity 1 .. 10,000. Limits and rates: Security/FinancialInputValidator.cs.
+        foreach (var it in req.Items)
+        {
+            var lineLabel = !string.IsNullOrWhiteSpace(it.ItemDescription) ? it.ItemDescription
+                : !string.IsNullOrWhiteSpace(it.ItemCode) ? it.ItemCode : "This line";
+            var lineProblem = JobCardScanner.Api.Security.FinancialInputValidator.ValidateLine(
+                lineLabel, (decimal)it.Qty, it.Rate, it.DiscountType, it.DiscountValue, it.CgstPct, it.SgstPct, it.IgstPct);
+            if (lineProblem is not null) return lineProblem;
+        }
+
         // 2026-09-22 (Extended Battery Warranty Scheme) - resolved once per save, not per line:
         // candidate schemes only depend on the vehicle's Model/PurchaseDate/Odometer and the bill
         // date, none of which vary line to line.
@@ -821,4 +833,3 @@ public class RepairBillDocsController : ControllerBase
             i.IsUnderExtendedWarranty,
         }).ToList());
 }
-

@@ -1,9 +1,11 @@
 // mobile\src\screens\LedgerMasterScreen.tsx
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ActivityIndicator, Alert, FlatList, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native'
 import { apiClient } from '../api/client'
 import { useStaffAuth } from '../auth/StaffAuthContext'
 import { PickerField } from '../components/PickerField'
+import { PagerBar, SearchBox, SortChips } from '../components/ListControls'
+import { sortRows, type Field, type SortState } from '../lib/listView'
 import { colors } from '../theme/colors'
 
 /**
@@ -26,7 +28,15 @@ interface Form {
   city: string; state: string; pin: string; gstno: string; pan: string; aadharNumber: string; isShared: boolean
 }
 const EMPTY: Form = { ledgerTypeId: 0, dealerId: '', ledgerName: '', mobileNumber: '', alternateMobileNo: '', eMail: '', address: '', address2: '', city: '', state: '', pin: '', gstno: '', pan: '', aadharNumber: '', isShared: false }
-const PAGE_SIZE = 50
+// 2026-10-23: the list is now paged page by page (10 per page, 10 / 25 / 50 to choose from) - the server answers one page at a time with the total - instead of loading 50 more as you scroll; the sort chips
+// order the rows of the page on screen (the search and the Ledger Type filter are still done by the server across every page).
+const LEDGER_FIELDS: Field<LedgerRow>[] = [
+  { key: 'code', value: (r) => r.ledgerCode },
+  { key: 'name', value: (r) => r.ledgerName },
+  { key: 'type', value: (r) => r.ledgerType },
+  { key: 'city', value: (r) => r.city },
+  { key: 'status', value: (r) => (r.isActive ? 'Active' : 'Inactive') },
+]
 const errText = (err: unknown, fallback: string) => (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? fallback
 
 export function LedgerMasterScreen() {
@@ -39,6 +49,8 @@ export function LedgerMasterScreen() {
   const [rows, setRows] = useState<LedgerRow[]>([])
   const [total, setTotal] = useState(0)
   const [pageIndex, setPageIndex] = useState(0)
+  const [pageSize, setPageSize] = useState(10)
+  const [sort, setSort] = useState<SortState | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [formOpen, setFormOpen] = useState(false)
@@ -54,13 +66,13 @@ export function LedgerMasterScreen() {
   }, [])
   const typeById = (id: number | null | undefined) => types.find((t) => t.id === id)
 
-  const fetchPage = (index: number, append: boolean) => {
+  const fetchPage = (index: number, _append = false) => {
     setLoading(true)
     setError(null)
     apiClient
-      .get<{ data: LedgerRow[]; totalRecords: number }>('/api/ledger-master', { params: { searchTerm: search.trim() || undefined, pageIndex: index, pageSize: PAGE_SIZE, ledgerTypeId: typeFilter || undefined, includeInactive: true } })
-      .then((res) => { setRows((prev) => (append ? [...prev, ...res.data.data] : res.data.data)); setTotal(res.data.totalRecords); setPageIndex(index) })
-      .catch((err) => { if (!append) setRows([]); setError(errText(err, 'Could not load Ledger Master data.')) })
+      .get<{ data: LedgerRow[]; totalRecords: number }>('/api/ledger-master', { params: { searchTerm: search.trim() || undefined, pageIndex: index, pageSize, ledgerTypeId: typeFilter || undefined, includeInactive: true } })
+      .then((res) => { setRows(res.data.data); setTotal(res.data.totalRecords); setPageIndex(index) })
+      .catch((err) => { setRows([]); setError(errText(err, 'Could not load Ledger Master data.')) })
       .finally(() => setLoading(false))
   }
   useEffect(() => {
@@ -68,7 +80,10 @@ export function LedgerMasterScreen() {
     const handle = setTimeout(() => fetchPage(0, false), 300)
     return () => clearTimeout(handle)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile?.role, typeFilter, search])
+  }, [profile?.role, typeFilter, search, pageSize])
+  const sortedRows = useMemo(() => sortRows(rows, LEDGER_FIELDS, sort), [rows, sort])
+  const pageCount = Math.max(1, Math.ceil(total / pageSize))
+  const toggleSort = (key: string) => setSort((s) => (s && s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }))
 
   /** Who can change a row (the server enforces the same). */
   const canChangeRow = (r: LedgerRow) => {
@@ -170,14 +185,12 @@ export function LedgerMasterScreen() {
       <FlatList
         style={{ flex: 1 }}
         contentContainerStyle={{ padding: 12, paddingBottom: 40 }}
-        data={formOpen ? [] : rows}
+        data={formOpen ? [] : sortedRows}
         keyExtractor={(r) => r.id}
         keyboardShouldPersistTaps="handled"
-        onEndReachedThreshold={0.4}
-        onEndReached={() => { if (!loading && !formOpen && rows.length < total) fetchPage(pageIndex + 1, true) }}
         ListHeaderComponent={
           <>
-            <TextInput style={styles.input} value={search} onChangeText={setSearch} placeholder="Search name, ledger code, mobile or city…" placeholderTextColor={colors.textMuted} />
+            <SearchBox value={search} onChangeText={setSearch} placeholder="Search name, ledger code, mobile or city…" />
             <View style={{ marginTop: 8 }}>
               <PickerField label="Ledger Type" value={typeFilter} onChange={setTypeFilter} options={[{ value: '', label: 'All types' }, ...types.map((t) => ({ value: String(t.id), label: t.customerType }))]} />
             </View>
@@ -185,6 +198,7 @@ export function LedgerMasterScreen() {
               <Text style={styles.muted}>{total.toLocaleString('en-IN')} ledger{total === 1 ? '' : 's'}</Text>
               {!formOpen && <TouchableOpacity style={styles.primaryBtn} onPress={openAdd}><Text style={styles.primaryBtnText}>+ Add Ledger</Text></TouchableOpacity>}
             </View>
+            {!formOpen && <SortChips options={[{ key: 'code', label: 'Code' }, { key: 'name', label: 'Name' }, { key: 'type', label: 'Type' }, { key: 'city', label: 'City' }, { key: 'status', label: 'Status' }]} sort={sort} onToggle={toggleSort} />}
             {error && <Text style={styles.errorText}>{error}</Text>}
 
             {formOpen && (
@@ -229,7 +243,14 @@ export function LedgerMasterScreen() {
             )}
           </>
         }
-        ListFooterComponent={loading ? <ActivityIndicator color={colors.primary} style={{ margin: 12 }} /> : null}
+        ListFooterComponent={
+          <>
+            {loading && <ActivityIndicator color={colors.primary} style={{ margin: 12 }} />}
+            {!formOpen && total > 0 && (
+              <PagerBar page={pageIndex + 1} pageCount={pageCount} total={total} onPage={(p) => fetchPage(p - 1)} pageSize={pageSize} onPageSize={setPageSize} />
+            )}
+          </>
+        }
         ListEmptyComponent={!loading && !error && !formOpen ? <Text style={styles.muted}>No ledgers found.</Text> : null}
         renderItem={({ item: r }) => (
           <TouchableOpacity style={[styles.row, !r.isActive && { opacity: 0.55 }]} onPress={() => openEdit(r)}>

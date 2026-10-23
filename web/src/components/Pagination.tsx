@@ -5,6 +5,8 @@ interface Props {
   onPageChange: (page: number) => void
   pageSize: number
   onPageSizeChange: (size: number) => void
+  /** 2026-10-23: optional - the choices of the "Rows per page" list (default 25 / 50 / 100 / 200, unchanged for every existing page). */
+  pageSizeOptions?: number[]
 }
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200]
@@ -15,7 +17,7 @@ const PAGE_SIZE_OPTIONS = [25, 50, 100, 200]
  * logic. 2026-09-18 "count add 100 in 1 page all" - defaults to 100/page there; this dropdown makes
  * that adjustable instead of a number you'd have to come back and ask me to change again.
  */
-export function Pagination({ page, pageCount, total, onPageChange, pageSize, onPageSizeChange }: Props) {
+export function Pagination({ page, pageCount, total, onPageChange, pageSize, onPageSizeChange, pageSizeOptions = PAGE_SIZE_OPTIONS }: Props) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', borderTop: '1px solid #e5e7eb', flexWrap: 'wrap', gap: 8 }}>
       <span className="muted">{total} row{total === 1 ? '' : 's'} total — page {page} of {pageCount}</span>
@@ -23,7 +25,7 @@ export function Pagination({ page, pageCount, total, onPageChange, pageSize, onP
         <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
           Rows per page
           <select value={pageSize} onChange={(e) => onPageSizeChange(Number(e.target.value))} style={{ padding: '3px 6px' }}>
-            {PAGE_SIZE_OPTIONS.map((n) => <option key={n} value={n}>{n}</option>)}
+            {pageSizeOptions.map((n) => <option key={n} value={n}>{n}</option>)}
           </select>
         </label>
         <div style={{ display: 'flex', gap: 6 }}>

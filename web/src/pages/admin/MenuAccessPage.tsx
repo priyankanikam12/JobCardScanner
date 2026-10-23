@@ -1,7 +1,9 @@
 // web\src\pages\admin\MenuAccessPage.tsx
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { staffApi } from '../../api/client'
 import { NAV_ITEMS } from '../../components/StaffLayout'
+import { Pagination } from '../../components/Pagination'
+import { SortTh, TableSearch, useTableView, type Column } from '../../components/TableControls'
 import type { StaffRole } from '../../types'
 
 /**
@@ -136,12 +138,25 @@ interface RowState {
   restrictedTo: Set<StaffRole> | null
 }
 
+// 2026-10-23 ("this menu access ui also fix"): the per-item table now has a search box, an All / Restricted / Everyone switch, sortable headers and 10 rows per page (shared table controls,
+// components/TableControls.tsx); the buttons sit in flex rows instead of stretching; the Save button lives in a bar that stays at the bottom of the screen and says when there are unsaved changes.
+// While you edit a row the table does NOT re-order or re-filter itself (the row you are ticking would jump away) - it only re-orders when you change the search, the sort or the switch.
+const PAGE_SIZES = [10, 25, 50]
+type AccessFilter = 'all' | 'restricted' | 'everyone'
+
+/** What "unsaved" means: the access of every page and the mode of every role, in a form that is the same whenever the data is the same. */
+function signatureOf(rows: RowState[], modes: Record<StaffRole, boolean>): string {
+  return JSON.stringify([
+    rows.map((r) => [r.key, r.restrictedTo ? Array.from(r.restrictedTo).sort() : null]),
+    ALL_ROLES.map((role) => !!modes[role]),
+  ])
+}
+
 export function MenuAccessPage() {
   const [rows, setRows] = useState<RowState[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
-  const [savedMessage, setSavedMessage] = useState<string | null>(null)
   // 2026-10-02 ("after click Apply to table below alert shown applied then after save also alert
   // message"): "Apply to table below" previously gave no feedback at all - you only knew it ran by
   // noticing the checkboxes below change. Separate from savedMessage (the Save button's own banner,
@@ -150,48 +165,52 @@ export function MenuAccessPage() {
   const [appliedMessage, setAppliedMessage] = useState<string | null>(null)
   // SECTION 170 - per-role allow-list mode, see class doc comment above.
   const [roleModes, setRoleModes] = useState<Record<StaffRole, boolean>>({} as Record<StaffRole, boolean>)
+  const [accessFilter, setAccessFilter] = useState<AccessFilter>('all')
+  // the data as last loaded / saved: everything that differs from it is "unsaved"
+  const [baseline, setBaseline] = useState<string | null>(null)
 
   const load = () => {
     setLoading(true)
     setError(null)
-    staffApi
-      .get<{ navKey: string; roles: string[] }[]>('/api/menu-access')
-      .then((res) => {
+    // both lists are requested together and shown together (the second one fails OPEN: if it cannot be read, every role simply stays in today's behaviour)
+    Promise.allSettled([
+      staffApi.get<{ navKey: string; roles: string[] }[]>('/api/menu-access'),
+      staffApi.get<{ role: string; onlyShowChecked: boolean }[]>('/api/menu-access/role-modes'),
+    ]).then(([itemsResult, modesResult]) => {
+      let nextRows: RowState[] = []
+      if (itemsResult.status === 'fulfilled') {
         const overrideMap: Record<string, string[]> = {}
-        res.data.forEach((r) => { overrideMap[r.navKey] = r.roles })
-        setRows(
-          NAV_ITEMS.map((item) => {
-            // If an override row exists for this item, it wins (even an empty one, meaning an
-            // admin explicitly set it back to "everyone") - otherwise fall back to the item's own
-            // shipped default `roles`, exactly like StaffLayout.tsx's own effectiveRoles() does.
-            const override = overrideMap[item.key]
-            const effective = override !== undefined ? override : item.roles
-            return {
-              key: item.key,
-              to: item.to,
-              label: item.label,
-              icon: item.icon,
-              restrictedTo: effective && effective.length > 0 ? new Set(effective as StaffRole[]) : null,
-            }
-          }),
-        )
-      })
-      .catch((err) => setError(describeError(err, 'Could not load menu access settings.')))
-      .finally(() => setLoading(false))
-    staffApi
-      .get<{ role: string; onlyShowChecked: boolean }[]>('/api/menu-access/role-modes')
-      .then((res) => {
-        const map = {} as Record<StaffRole, boolean>
-        res.data.forEach((r) => { map[r.role as StaffRole] = r.onlyShowChecked })
-        setRoleModes(map)
-      })
-      .catch(() => {
-        // Fail-open (every role stays in today's existing behavior) - same reasoning as the item
-        // overrides fetch above.
-      })
+        itemsResult.value.data.forEach((r) => { overrideMap[r.navKey] = r.roles })
+        nextRows = NAV_ITEMS.map((item) => {
+          // If an override row exists for this item, it wins (even an empty one, meaning an
+          // admin explicitly set it back to "everyone") - otherwise fall back to the item's own
+          // shipped default `roles`, exactly like StaffLayout.tsx's own effectiveRoles() does.
+          const override = overrideMap[item.key]
+          const effective = override !== undefined ? override : item.roles
+          return {
+            key: item.key,
+            to: item.to,
+            label: item.label,
+            icon: item.icon,
+            restrictedTo: effective && effective.length > 0 ? new Set(effective as StaffRole[]) : null,
+          }
+        })
+      } else {
+        setError(describeError(itemsResult.reason, 'Could not load menu access settings.'))
+      }
+      const nextModes = {} as Record<StaffRole, boolean>
+      if (modesResult.status === 'fulfilled') modesResult.value.data.forEach((r) => { nextModes[r.role as StaffRole] = r.onlyShowChecked })
+      setRows(nextRows)
+      setRoleModes(nextModes)
+      setBaseline(signatureOf(nextRows, nextModes))
+      setLoading(false)
+    })
   }
 
   useEffect(load, [])
+
+  const signature = useMemo(() => signatureOf(rows, roleModes), [rows, roleModes])
+  const dirty = !loading && baseline !== null && signature !== baseline
 
   const toggleRoleMode = (role: StaffRole) => {
     setRoleModes((prev) => ({ ...prev, [role]: !prev[role] }))
@@ -294,7 +313,6 @@ export function MenuAccessPage() {
   const save = async () => {
     setSaving(true)
     setAppliedMessage(null)
-    setSavedMessage(null)
     setError(null)
     const body = rows.map((r) => ({
       navKey: r.key,
@@ -321,7 +339,11 @@ export function MenuAccessPage() {
       // just clicking any link), and the mobile Dashboard's tiles now read these same overrides too
       // (see mobile/src/screens/DashboardScreen.tsx's own SECTION 164 doc comment) - next time that
       // screen opens/refreshes.
-      setSavedMessage('Menu access assigned successfully. Web picks it up on the next click anywhere in the app; the mobile Dashboard picks it up next time that screen opens.')
+      // 2026-10-23 ("after save an alert screen shown 'Menu access assigned successfully.', after click OK it is gone"): the confirmation is now a pop-up alert (one OK button) instead of a green
+      // banner that stays on the page. Web picks the new access up on the next click anywhere in the app; the mobile Dashboard the next time that screen opens.
+      setBaseline(signatureOf(rows, roleModes))
+      setSaving(false)
+      window.alert('Menu access assigned successfully.')
     } catch (err: unknown) {
       setError(describeError(err, 'Save failed at Role Sidebar Mode (the per-item table above was saved OK)'))
     } finally {
@@ -329,13 +351,25 @@ export function MenuAccessPage() {
     }
   }
 
+  // ---- the per-item table: search on every column (including the allowed role names), sort, 10 per page ----
+  const accessColumns: Column<RowState>[] = [
+    { key: 'page', label: 'Page', value: (r) => r.label },
+    { key: 'route', label: 'Route', value: (r) => r.to },
+    { key: 'access', label: 'Access', value: (r) => (r.restrictedTo === null ? 'Everyone' : 'Restricted') },
+    { key: 'roles', label: 'Allowed roles', value: (r) => (r.restrictedTo === null ? ALL_ROLES.length + 1 : r.restrictedTo.size), search: false },
+    { key: 'roleNames', label: 'Role names', value: (r) => (r.restrictedTo === null ? 'all roles' : Array.from(r.restrictedTo).join(' ')) },
+  ]
+  const view = useTableView(rows, accessColumns, {
+    pageSize: 10,
+    version: accessFilter,
+    prefilter: (r) => accessFilter === 'all' || (accessFilter === 'restricted') === (r.restrictedTo !== null),
+    frozen: { getKey: (r) => r.key },
+  })
+
   return (
     <div>
       <h2>Admin: Menu Access</h2>
-      {/* <p className="muted">
-        Choose which roles can see each sidebar page. A page with "Restrict to specific roles" off is visible to
-        every signed-in staff member - the same as leaving it unset in code.
-      </p> */}
+      {/* <p className="muted" style={{ marginTop: -4 }}>Choose which roles see which pages. Nothing changes for anyone until you click Save.</p> */}
 
       {loading && <p className="muted">Loading…</p>}
       {/* 2026-10-02: all three banners (error/Save success/Apply confirmation) now render in this
@@ -344,147 +378,135 @@ export function MenuAccessPage() {
          Only one of these three is ever showing at once in practice (each action clears the other
          two - see save()/applyQuickSetup() above), so stacking them here costs nothing. */}
       {error && <Banner kind="error">{error}</Banner>}
-      {savedMessage && <Banner kind="success">{savedMessage}</Banner>}
       {appliedMessage && <Banner kind="info">{appliedMessage}</Banner>}
 
       {!loading && (
         <div className="card" style={{ marginBottom: 16 }}>
           <h3 style={{ marginTop: 0 }}>Quick setup by role</h3>
           {/* <p className="muted" style={{ marginTop: -4 }}>
-            Pick a role, check only the pages it should see, then Apply. That fills in the per-item table and Role
-            Sidebar Mode toggle below for you - review or adjust by hand if you like, then click Save at the bottom
-            to actually commit it.
+            Pick a role, tick only the pages it should see, then Apply. That fills in the table and the Role Sidebar Mode below for you; review it, then Save.
           </p> */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-            <label className="muted" style={{ fontWeight: 600 }}>Role</label>
-            <select value={quickRole} onChange={(e) => setQuickRole(e.target.value as StaffRole)}>
-              {ALL_ROLES.map((role) => (
-                <option key={role} value={role}>{role}</option>
-              ))}
-            </select>
+          <div className="tc-toolbar">
+            <label className="ma-field">
+              Role
+              <select value={quickRole} onChange={(e) => setQuickRole(e.target.value as StaffRole)} aria-label="Role">
+                {ALL_ROLES.map((role) => (
+                  <option key={role} value={role}>{role}</option>
+                ))}
+              </select>
+            </label>
+            <span className="tc-chip"><b>{quickChecked.size}</b> of {rows.length} pages ticked</span>
+            <div className="ma-btnrow tc-spacer">
+              <button type="button" className="btn" onClick={() => setQuickChecked(new Set(rows.map((r) => r.key)))}>Select all</button>
+              <button type="button" className="btn" onClick={() => setQuickChecked(new Set())}>Clear all</button>
+              <button type="button" className="btn btn-primary" onClick={applyQuickSetup}>Apply to table below</button>
+            </div>
           </div>
-          {/* 2026-10-02 ("Quick Setup panel is cluttered"): the checkbox wall now sits in its own
-             bordered/shaded box (was a bare flex-wrap row blending straight into the page
-             background) with a proper CSS grid instead of flex-wrap - items line up in even
-             columns instead of ragged-wrapping wherever a label happens to be long. Select all /
-             Clear all added so you don't have to click all 17 by hand for either extreme case. */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 8 }}>
-            <span className="muted" style={{ fontSize: 12 }}>Pages visible to {quickRole}:</span>
-            <button
-              type="button"
-              className="btn btn-sm"
-              onClick={() => setQuickChecked(new Set(rows.map((r) => r.key)))}
-            >
-              Select all
-            </button>
-            <button
-              type="button"
-              className="btn btn-sm"
-              onClick={() => setQuickChecked(new Set())}
-            >
-              Clear all
-            </button>
-          </div>
-          <div
-            style={{
-              display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-              gap: '8px 16px', marginBottom: 14, padding: 12, borderRadius: 8,
-              background: '#f9fafb', border: '1px solid var(--border)',
-            }}
-          >
+          {/* 2026-10-02 ("Quick Setup panel is cluttered"): the checkbox wall sits in its own shaded box with a CSS grid, so items line up in even columns. */}
+          <div className="ma-checkgrid" aria-label={`Pages visible to ${quickRole}`}>
             {rows.map((r) => (
-              <label key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+              <label key={r.key}>
                 <input type="checkbox" checked={quickChecked.has(r.key)} onChange={() => toggleQuickChecked(r.key)} />
                 <span>{r.icon}</span> {r.label}
               </label>
             ))}
           </div>
-          <button className="btn" onClick={applyQuickSetup}>Apply to table below</button>
         </div>
       )}
 
       {!loading && (
-        <div className="card" style={{ padding: 0 }}>
-          <table>
-            <thead>
-              <tr>
-                <th>Page</th>
-                <th>Route</th>
-                <th>Restrict to specific roles</th>
-                <th>Allowed roles</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.key}>
-                  <td>
-                    <span style={{ marginRight: 6 }}>{r.icon}</span>
-                    {r.label}
-                  </td>
-                  <td className="muted">{r.to}</td>
-                  <td>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <input
-                        type="checkbox"
-                        checked={r.restrictedTo !== null}
-                        onChange={() => toggleRestricted(r.key)}
-                      />
-                      {r.restrictedTo !== null ? 'Restricted' : 'Everyone'}
-                    </label>
-                  </td>
-                  <td>
-                    {r.restrictedTo === null ? (
-                      <span className="muted">— all roles —</span>
-                    ) : (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 12px' }}>
-                        {ALL_ROLES.map((role) => (
-                          <label key={role} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
-                            <input
-                              type="checkbox"
-                              checked={r.restrictedTo!.has(role)}
-                              onChange={() => toggleRole(r.key, role)}
-                            />
-                            {role}
-                          </label>
-                        ))}
-                      </div>
-                    )}
-                  </td>
-                </tr>
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Pages and roles</h3>
+          <div className="tc-toolbar">
+            <TableSearch value={view.query} onChange={view.setQuery} placeholder="Search a page, route or role, e.g. repair or DealerAdmin" ariaLabel="Search pages" />
+            <div className="tc-seg" role="group" aria-label="Show pages">
+              {([['all', 'All'], ['restricted', 'Restricted'], ['everyone', 'Everyone']] as const).map(([key, label]) => (
+                <button key={key} type="button" className={`tc-seg-btn${accessFilter === key ? ' active' : ''}`} onClick={() => setAccessFilter(key)}>{label}</button>
               ))}
-            </tbody>
-          </table>
+            </div>
+            <span className="tc-count">{view.total === view.allTotal ? `${view.allTotal} pages` : `${view.total} of ${view.allTotal} pages`}</span>
+          </div>
+          <div className="tc-tablewrap">
+            <table>
+              <thead>
+                <tr>
+                  <SortTh label="Page" sortKey="page" sort={view.sort} onSort={view.toggleSort} />
+                  <SortTh label="Route" sortKey="route" sort={view.sort} onSort={view.toggleSort} />
+                  <SortTh label="Restrict to specific roles" sortKey="access" sort={view.sort} onSort={view.toggleSort} />
+                  <SortTh label="Allowed roles" sortKey="roles" sort={view.sort} onSort={view.toggleSort} />
+                </tr>
+              </thead>
+              <tbody>
+                {view.pageRows.map((r) => (
+                  <tr key={r.key}>
+                    <td>
+                      <span style={{ marginRight: 6 }}>{r.icon}</span>
+                      {r.label}
+                    </td>
+                    <td className="muted">{r.to}</td>
+                    <td>
+                      <label className="ma-access">
+                        <input type="checkbox" checked={r.restrictedTo !== null} onChange={() => toggleRestricted(r.key)} />
+                        {r.restrictedTo !== null ? 'Restricted' : 'Everyone'}
+                      </label>
+                    </td>
+                    <td>
+                      {r.restrictedTo === null ? (
+                        <span className="muted">— all roles —</span>
+                      ) : (
+                        <div className="ma-pills">
+                          {ALL_ROLES.map((role) => {
+                            const on = r.restrictedTo!.has(role)
+                            return (
+                              <label key={role} className={`ma-pill${on ? ' on' : ''}`}>
+                                <input type="checkbox" checked={on} onChange={() => toggleRole(r.key, role)} />
+                                {role}
+                              </label>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {view.pageRows.length === 0 && (
+                  <tr><td colSpan={4} className="muted">No page matches{view.query ? ` "${view.query}"` : ''}{accessFilter !== 'all' ? ` among the ${accessFilter} pages` : ''}.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="tc-pager">
+            <Pagination page={view.page} pageCount={view.pageCount} total={view.total} onPageChange={view.setPage} pageSize={view.pageSize} onPageSizeChange={view.setPageSize} pageSizeOptions={PAGE_SIZES} />
+          </div>
         </div>
       )}
 
       {/* SECTION 170 (2026-09-30) "only give 3 sidebar menu acess only in sidebar this 3 option" -
-         see this page's own class doc comment for the full explanation.
-         SECTION 179 (2026-09-30) - was narrowed to DealerAdmin only. SECTION 182 (2026-10-01,
-         "DealerAdmin role menu working but other role not working why") - reopened to every role,
-         confirmed via AskUserQuestion - see ROLE_SIDEBAR_MODE_ROLES' own doc comment above for the
-         full reasoning. Back to generic per-role wording below (was hardcoded to "Dealer Admin"
-         while this panel only ever showed that one role). */}
+         see this page's own class doc comment for the full explanation. SECTION 182 (2026-10-01) -
+         reopened to every role, see ROLE_SIDEBAR_MODE_ROLES' own doc comment above. */}
       {!loading && (
         <div className="card" style={{ marginTop: 16 }}>
           <h3 style={{ marginTop: 0 }}>Role Sidebar Mode</h3>
           {/* <p className="muted" style={{ marginTop: -4 }}>
-            Off (default): this role sees every page above unless you've restricted it away. On: this role sees
-            ONLY the pages above where you've checked it - everything else, including any new page added later,
-            stays hidden until you check it too.
+            Off: the role sees every page unless you restricted it away. On: the role sees ONLY the pages above where it is ticked; any new page added later stays hidden until you tick it.
           </p> */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 20px' }}>
+          <div className="ma-modes">
             {ROLE_SIDEBAR_MODE_ROLES.map((role) => (
-              <label key={role} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <input type="checkbox" checked={!!roleModes[role]} onChange={() => toggleRoleMode(role)} />
-                {role} <span className="muted">{roleModes[role] ? '(only checked items)' : '(everyone by default)'}</span>
+              <label key={role} className={`ma-mode${roleModes[role] ? ' on' : ''}`}>
+                <span>
+                  <strong>{role}</strong>
+                  <small>{roleModes[role] ? 'only the ticked pages' : 'everyone by default'}</small>
+                </span>
+                <input type="checkbox" checked={!!roleModes[role]} onChange={() => toggleRoleMode(role)} aria-label={`${role} only checked items`} />
               </label>
             ))}
           </div>
         </div>
       )}
 
-      <div style={{ marginTop: 12 }}>
-        <button className="btn btn-primary" disabled={saving || loading} onClick={save}>
+      <div className="ma-savebar">
+        {dirty && <span className="tc-chip tc-chip-warn">Unsaved changes</span>}
+        <button type="button" className="btn btn-primary" disabled={saving || loading} onClick={save}>
           {saving ? 'Saving…' : 'Save'}
         </button>
       </div>

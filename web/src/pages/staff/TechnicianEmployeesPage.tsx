@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
+import { SortTh, StatusBadge, TablePager, TableSearch, useTableView, type Column } from '../../components/TableControls'
 import type { BaplDmsWorkshop, Technician } from '../../types'
 
 /**
@@ -20,11 +21,11 @@ import type { BaplDmsWorkshop, Technician } from '../../types'
  * StaffRole.Supervisor's own doc comment). Reading the list (GET /api/technicians) is
  * ServiceAdvisorUp underneath, wide enough for the Wizard/Detail page dropdowns everyone else uses.
  *
- * KNOWN GAP (disclosed, not silently dropped): unlike EmployeesPage.tsx, this page has no
- * Corporate/System Admin cross-dealer view - TechniciansController.List only returns rows for a
- * dealerId a Corporate/System Admin explicitly passes, and this page never passes one, so it will
- * show an empty list for those two roles today. Dealer-scoped Supervisor/DealerAdmin (the actual
- * intended users of this tab) are unaffected.
+ * 2026-10-23: TechniciansController.List now returns every dealer's technicians to a Corporate /
+ * System Admin (same as UsersController.List), so the grid is no longer empty for them. Their
+ * Location filter is built from the technicians' own locations (no dealer -> no workshops fetch).
+ * STILL A GAP: for those two roles "+ Add Technician" has no dealer to create under (the backend
+ * needs POST /api/technicians?dealerId=...) and the Add/Edit modal's Location list is empty.
  *
  * 2026-10-03 ("add filter for search technician and dropdown of location"): a name search box and
  * a Location dropdown sit above the list table - see the two pieces of state below their own doc
@@ -60,9 +61,26 @@ export function TechnicianEmployeesPage() {
   // text-search param for this endpoint) - filtered below, right before rendering the table.
   const [locationFilter, setLocationFilter] = useState('')
   const [search, setSearch] = useState('')
-  const load = () => staffApi.get<Technician[]>('/api/technicians', { params: { includeInactive, locationCode: locationFilter || undefined } }).then((r) => setTechnicians(r.data))
+  // 2026-10-23: a Corporate / System Admin has no dealer of its own, so the workshops fetch below never runs for them and the Location dropdown showed only "All locations". Fallback: the
+  // locations that appear on the technicians themselves, collected from the unfiltered list (kept as-is while a location filter is active, so the dropdown doesn't shrink to one option).
+  const [techLocations, setTechLocations] = useState<{ locCode: string; locName: string }[]>([])
+  const load = () => staffApi.get<Technician[]>('/api/technicians', { params: { includeInactive, locationCode: locationFilter || undefined } }).then((r) => {
+    setTechnicians(r.data)
+    if (!locationFilter) {
+      const seen = new Map<string, string>()
+      r.data.forEach((t) => { if (t.locationCode && !seen.has(t.locationCode)) seen.set(t.locationCode, t.locationName || t.locationCode) })
+      setTechLocations([...seen].map(([locCode, locName]) => ({ locCode, locName })).sort((a, b) => a.locName.localeCompare(b.locName)))
+    }
+  })
   useEffect(() => { load() }, [includeInactive, locationFilter])
-  const visibleTechnicians = technicians.filter((t) => t.name.toLowerCase().includes(search.trim().toLowerCase()))
+// 2026-10-23 ("all pages add in sorting and pagination and ui attractive"): search on every column, sortable headers and 10 rows per page (components/TableControls.tsx); the filters sit in one flex row.
+  const technicianColumns: Column<Technician>[] = [
+    { key: 'name', label: 'Name', value: (t) => t.name },
+    { key: 'location', label: 'Location', value: (t) => (t.locationName ? `${t.locationName} (${t.locationCode})` : t.locationCode) },
+    { key: 'active', label: 'Active', value: (t) => (t.active ? 'Yes' : 'No') },
+  ]
+  // the search box above the table feeds the view (name, location and status are all searched)
+  const view = useTableView(technicians, technicianColumns, { pageSize: 10, query: search })
 
   const [workshops, setWorkshops] = useState<BaplDmsWorkshop[]>([])
   useEffect(() => {
@@ -142,53 +160,56 @@ export function TechnicianEmployeesPage() {
         login/password - this is a name-only roster, not a staff account.
       </p> */}
 
-      <div className="card" style={{ padding: 0 }}>
-        {/* 2026-10-03 - search by name + Location dropdown, above the Show-inactive toggle row. */}
-        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', padding: '12px 14px 0' }}>
-          <div className="field" style={{ marginBottom: 0, flex: 1, minWidth: 200 }}>
-            <label>Search Technician</label>
-            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by name…" />
-          </div>
-          <div className="field" style={{ marginBottom: 0, minWidth: 220 }}>
-            <label>Location</label>
-            <select value={locationFilter} onChange={(e) => setLocationFilter(e.target.value)}>
+      <div className="card">
+        <div className="tc-toolbar">
+          <TableSearch value={search} onChange={setSearch} placeholder="Search technician by name or location…" ariaLabel="Search technician" />
+          <label className="tc-field">
+            Location
+            <select value={locationFilter} onChange={(e) => setLocationFilter(e.target.value)} aria-label="Location">
               <option value="">All locations</option>
-              {workshops.map((w) => <option key={w.locCode} value={w.locCode}>{w.locName} ({w.locCode})</option>)}
+              {(workshops.length ? workshops : techLocations).map((w) => <option key={w.locCode} value={w.locCode}>{w.locName} ({w.locCode})</option>)}
             </select>
-          </div>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '10px 14px' }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
-            <input type="checkbox" checked={includeInactive} onChange={(e) => setIncludeInactive(e.target.checked)} style={{ width: 'auto' }} />
+          </label>
+          <label className="tc-check">
+            <input type="checkbox" checked={includeInactive} onChange={(e) => setIncludeInactive(e.target.checked)} />
             Show inactive
           </label>
+          <span className="tc-count">{view.total === view.allTotal ? `${view.allTotal} technicians` : `${view.total} of ${view.allTotal} technicians`}</span>
         </div>
-        <table>
-          <thead>
-            <tr><th>Name</th><th>Location</th><th>Active</th>{canManage && <th></th>}</tr>
-          </thead>
-          <tbody>
-            {visibleTechnicians.map((t) => (
-              <tr key={t.id}>
-                <td>{t.name}</td>
-                <td>{t.locationName ? `${t.locationName} (${t.locationCode})` : t.locationCode}</td>
-                <td>{t.active ? 'Yes' : 'No'}</td>
-                {canManage && (
-                  <td style={{ whiteSpace: 'nowrap' }}>
-                    <button className="btn btn-sm" onClick={() => editTechnician(t)}>Edit</button>{' '}
-                    <button className="btn btn-sm" onClick={() => toggleActive(t)}>{t.active ? 'Deactivate' : 'Activate'}</button>{' '}
-                    <button className="btn btn-sm" style={{ color: '#b91c1c' }} onClick={() => remove(t)}>Delete</button>
-                  </td>
-                )}
+        <div className="tc-tablewrap">
+          <table>
+            <thead>
+              <tr>
+                <SortTh label="Name" sortKey="name" sort={view.sort} onSort={view.toggleSort} />
+                <SortTh label="Location" sortKey="location" sort={view.sort} onSort={view.toggleSort} />
+                <SortTh label="Active" sortKey="active" sort={view.sort} onSort={view.toggleSort} />
+                {canManage && <th></th>}
               </tr>
-            ))}
-            {visibleTechnicians.length === 0 && (
-              <tr><td colSpan={canManage ? 4 : 3} className="muted">
-                {technicians.length === 0 ? `No technicians yet${canManage ? ' - add one above.' : '.'}` : 'No technicians match this search/filter.'}
-              </td></tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {view.pageRows.map((t) => (
+                <tr key={t.id}>
+                  <td>{t.name}</td>
+                  <td>{t.locationName ? `${t.locationName} (${t.locationCode})` : t.locationCode}</td>
+                  <td><StatusBadge active={t.active} yes="Yes" no="No" /></td>
+                  {canManage && (
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      <button className="btn btn-sm" onClick={() => editTechnician(t)}>Edit</button>
+                      <button className="btn btn-sm" onClick={() => toggleActive(t)}>{t.active ? 'Deactivate' : 'Activate'}</button>
+                      <button className="btn btn-sm" style={{ color: '#b91c1c' }} onClick={() => remove(t)}>Delete</button>
+                    </td>
+                  )}
+                </tr>
+              ))}
+              {view.pageRows.length === 0 && (
+                <tr><td colSpan={canManage ? 4 : 3} className="muted">
+                  {technicians.length === 0 ? `No technicians yet${canManage ? ' - add one above.' : '.'}` : 'No technicians match this search/filter.'}
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <TablePager view={view} />
       </div>
 
       {/* 2026-10-03 ("then open this atrractive page") - a self-contained modal overlay (no shared
