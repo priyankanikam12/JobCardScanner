@@ -30,7 +30,7 @@ namespace JobCardScanner.Api.Controllers;
 /// roles going forward.</summary>
 [ApiController]
 [Route("api/technicians")]
-[Authorize(Policy = Policies.ServiceAdvisorUp)]
+[Authorize(Policy = Policies.Staff)]
 public class TechniciansController : ControllerBase
 {
     private readonly JobCardScannerDbContext _db;
@@ -53,14 +53,24 @@ public class TechniciansController : ControllerBase
     /// omit it for the management grid's own "every technician at my dealer" view. includeInactive
     /// (default false) - the two dropdowns never want a retired technician offered as a choice; the
     /// management grid passes true so a Supervisor can still see (and reactivate) one they
-    /// previously deactivated.</summary>
+    /// previously deactivated.
+    ///
+    /// 2026-10-23 ("in login of systemadmin and corporate admin all Technician Employee not showing"): same behaviour as UsersController.List - a CorporateAdmin / SystemAdmin has no dealer of its own,
+    /// so with no dealerId they get the technicians of EVERY dealer (dealerId, when given, narrows to that one dealer). A dealer-level login is always limited to its own dealer, whatever it sends.
+    /// (The earlier allDealers=true opt-in is gone - a client that still sends it is simply ignored.)</summary>
     [HttpGet]
     public async Task<IActionResult> List([FromQuery] Guid? dealerId, [FromQuery] string? locationCode, [FromQuery] bool includeInactive = false)
     {
-        var effectiveDealerId = IsCorporateOrSystem ? dealerId : _currentUser.DealerId;
-        if (effectiveDealerId is null) return Ok(Array.Empty<object>());
-
-        var q = _db.Technicians.AsNoTracking().Where(t => t.DealerId == effectiveDealerId);
+        IQueryable<Technician> q = _db.Technicians.AsNoTracking();
+        if (IsCorporateOrSystem)
+        {
+            if (dealerId is not null) q = q.Where(t => t.DealerId == dealerId);
+        }
+        else
+        {
+            if (_currentUser.DealerId is null) return Ok(Array.Empty<object>());
+            q = q.Where(t => t.DealerId == _currentUser.DealerId);
+        }
         if (!includeInactive) q = q.Where(t => t.Active);
         if (!string.IsNullOrWhiteSpace(locationCode)) q = q.Where(t => t.LocationCode == locationCode);
 
@@ -108,15 +118,20 @@ public class TechniciansController : ControllerBase
 
     [HttpPost]
     [Authorize(Policy = Policies.SupervisorUp)]
-    public async Task<IActionResult> Create(CreateTechnicianRequest req)
+    public async Task<IActionResult> Create(CreateTechnicianRequest req, [FromQuery] Guid? dealerId = null)
     {
-        if (_currentUser.DealerId is null) return BadRequest(new { message = "Your account isn't linked to a dealer - a Technician can't be created without one." });
+        // 2026-10-23: a dealer-level login creates for its own dealer (as before); a CorporateAdmin / SystemAdmin has no dealer of its own and names the dealer in the query string (POST /api/technicians?dealerId=...).
+        var dealerForNew = IsCorporateOrSystem ? dealerId : _currentUser.DealerId;
+        if (dealerForNew is null)
+            return BadRequest(new { message = IsCorporateOrSystem ? "Pick the dealer this technician works for." : "Your account isn't linked to a dealer - a Technician can't be created without one." });
+        if (IsCorporateOrSystem && !await _db.Dealers.AnyAsync(d => d.Id == dealerForNew.Value))
+            return BadRequest(new { message = "That dealer was not found." });
         if (string.IsNullOrWhiteSpace(req.Name)) return BadRequest(new { message = "Name is required." });
         if (string.IsNullOrWhiteSpace(req.LocationCode)) return BadRequest(new { message = "Location is required." });
 
         var technician = new Technician
         {
-            DealerId = _currentUser.DealerId.Value,
+            DealerId = dealerForNew.Value,
             Name = req.Name.Trim(),
             LocationCode = req.LocationCode.Trim(),
             LocationName = string.IsNullOrWhiteSpace(req.LocationName) ? null : req.LocationName.Trim(),

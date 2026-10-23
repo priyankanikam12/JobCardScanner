@@ -1,111 +1,48 @@
-# JobCardScanner
+# BGauss DMS - VAPT backend security layer (23.10.2026)
 
-A full rebuild of the EV two-wheeler workshop job card management system on: **React +
-TypeScript** (web), **ASP.NET Core 8 Web API** (backend, C#), a **SQL Server database named
-`JobCardScanner`** (EF Core Code-First), **Azure AD (Microsoft Entra ID)** authentication
-for staff via an App Registration, and a **React Native (Expo) Android app** alongside the
-web app.
+WHY THIS PACKAGE: files such as SignedMedia.cs, ResponseSanitizerMiddleware.cs and JobCardsController.cs need the REST of the Security folder.
+Errors like "SecurityOptions / SafeUpload / FinancialInputValidator could not be found" mean the Security folder is not in the project yet.
+Copy the whole folder, once. Nothing here changes the database.
 
-This is a second, parallel implementation of the same product covered by the earlier
-Node/Express + SQLite + plain React prototype - kept as-is elsewhere and not touched by this
-build. Everything in this folder is the new .NET/Azure AD/TypeScript stack, built for full
-feature parity with that prototype.
+## 1. Copy (API project folder = backend/JobCardScanner.Api)
+| From this package | To your project |
+|---|---|
+| Security\*.cs  (12 files) | Security\  (new folder, add all 12) |
+| Controllers\SessionController.cs | Controllers\  (new file) |
+| Controllers\JobCardsController.cs | replaces your JobCardsController.cs (keep a backup) |
+| Controllers\RepairBillDocsController.cs | replaces yours (keep a backup) |
 
-## What's inside
+If your JobCardsController.cs / RepairBillDocsController.cs differ from the ones this package was built on, do NOT overwrite: ask for a merge.
 
-```
-backend/    ASP.NET Core 8 Web API, C#, EF Core -> SQL Server ("JobCardScanner" database)
-web/        React + TypeScript + Vite - staff app (MSAL/Azure AD) + customer tracking portal
-mobile/     React Native (Expo, TypeScript) - Android staff app (Azure AD via expo-auth-session)
-docs/       AZURE_AD_SETUP.md - step-by-step Azure Portal instructions
-```
+## 2. Program.cs
+EASIEST: replace your Program.cs with backend\JobCardScanner.Api\Program.cs from this package (built from the file you sent on 23.10.2026: your file + the six security lines + two fixes - see the list below). Keep a backup of yours first.
+SET BEFORE STARTING: CustomerPortalJwt__Secret and DealerAuthJwt__Secret (32+ random characters). Outside Development the API now refuses to start without them (before, a public default text was used).
+The two fixes besides the six lines: (a) the JWT secrets no longer fall back to a public text; (b) "ServiceAdvisorUpNoSupervisor" no longer lists Supervisor (it was in the list although the policy is named NoSupervisor) - Supervisor logins lose access to the controllers that use that policy (Material Transfer / Repair Bill), as the 30.09.2026 lock intended.
 
-Each folder has its own `README.md` with detailed setup instructions. The short version:
+ALTERNATIVE (only the six lines, nothing else) - backup is written first:
+    cd backend\JobCardScanner.Api
+    node ..\..\patches\apply-program-cs-security.js Program.cs
+(if the folders are laid out differently, give the real path of both files). It changes nothing when an anchor is not found.
 
-```bash
-# 1. Backend
-cd backend && dotnet restore
-# ... configure connection string + Azure AD (see backend/README.md and docs/AZURE_AD_SETUP.md)
-dotnet run --project JobCardScanner.Api
+## 3. Settings (environment variables on the server - NOT appsettings.json)
+    Security__MediaSigningKey = <32 or more random characters>     photo links; without it links stop working at every restart
+    Security__RouteGuardMode  = LogOnly      first day, then Enforce
+    Security__DealerScopeMode = LogOnly      first day, then Enforce
+    Security__CspMode         = ReportOnly   until the browser console shows no violations
+Optional: Security__MediaLinkMinutes (default 120), Security__AllowDevTokens (default false - see below).
 
-# 2. Web app
-cd web && npm install
-cp .env.example .env   # fill in Azure AD values
-npm run dev
+## 4. Build and test
+    dotnet build
+The first build may need a small fix in TenantIsolationFilter.cs (it assumes JobCardScannerDbContext in JobCardScanner.Api.Data and JobCards.DealerId).
+Then: merge deploy\web.config.security-snippet.xml, and run tests\Run-VaptRetest.ps1 against UAT.
 
-# 3. Android app
-cd mobile && npm install
-cp .env.example .env   # fill in Azure AD values
-npx expo start
-```
+## 5. What changed for users
+- Photos: addresses returned by the API now carry ?exp=...&sig=... (valid 2 hours). Web / Android builds from 23.10.2026 handle this.
+- Sign-out calls POST /api/session/logout (no login needed); the token is refused afterwards.
+- devOtpCode / devResetToken are removed from responses outside Development. If dealers still reset passwords with the on-screen token (no e-mail provider), that stops working: set Security__AllowDevTokens=true only as a temporary measure.
+- Uploads: only photo / video bytes are accepted; the file name is always a GUID.
+- Part / labour lines: price 0..1 crore, quantity 1..10,000, statutory GST rates (list in Security\FinancialInputValidator.cs).
 
-**Start with `docs/AZURE_AD_SETUP.md`** - nothing signs in until an Azure AD App
-Registration exists and its IDs are in the three `.env`/`appsettings.json` files above.
-
-## Why two implementations exist
-
-The first prototype (Node/Express + SQLite + plain React, delivered earlier in this
-conversation as `voltcare-ev-jobcard-app.zip`) satisfied the original spec end-to-end and
-was fully QA-tested in this sandbox. This second build was requested afterward, specifically
-asking for the React+TypeScript / ASP.NET / SQL Server / Azure AD / Android stack. Both are
-legitimate, independent implementations of the same product; this one is what you asked for
-most recently.
-
-## Architecture decisions made without asking
-
-A few calls were made in the interest of moving forward rather than blocking on questions
-that already had a reasonable default - each is documented in more detail where it's
-implemented:
-
-- **Azure AD authenticates identity only; JobCardScanner's own `Users` table decides
-  role/dealer.** This avoids needing to configure Azure AD App Roles or Enterprise
-  Application role assignments - see `backend/JobCardScanner.Api/Auth/AppClaimsTransformation.cs`.
-- **Customers are not Azure AD principals.** They sign in to the tracking portal with
-  mobile + OTP through a separate, simple JWT scheme - see
-  `backend/JobCardScanner.Api/Auth/CustomerTokenService.cs`.
-- **The Android app covers staff on-the-floor actions** (dashboard, job card list/detail,
-  stage advance, work timer, quick QC, parts catalog) rather than the full web feature set -
-  the Job Card Opening Wizard, additional-work estimate creation, invoicing, Admin, and
-  Reports/export stay web-only, where a larger screen suits them better. See
-  `mobile/README.md` "What's implemented" for the exact list and how to extend it.
-- **Entity primary keys are `Guid`** (idiomatic EF Core/C#), versus the original Node
-  prototype's string nanoids.
-- **No EF Core `Migrations/` folder is checked in** - see "About this build" below and
-  `backend/README.md`'s last section for how to add real migrations once you've confirmed
-  the project builds on your machine.
-
-## About this build - what was and wasn't verified here
-
-This project was built in a sandboxed environment with restricted outbound network access.
-Concretely, that meant:
-
-- **`web/` and `mobile/` (TypeScript)**: fully installable and buildable here. `npm install`
-  succeeded for both (npm's registry was reachable), `npx tsc --noEmit` passes cleanly for
-  both projects, and `npm run build` (web) completes a full production Vite build with no
-  errors. These were genuinely compiled and checked, not just written and assumed correct.
-- **`backend/` (C#/.NET)**: **could not be compiled or run here** - this sandbox's network
-  proxy allowlist does not include `api.nuget.org`, so `dotnet restore` fails immediately
-  (confirmed, not assumed) and nothing that depends on it - `dotnet build`, `dotnet ef
-  migrations add`, running the API - could be executed. Every `.cs` file was instead written
-  carefully by hand against the exact pinned package versions and reviewed line by line
-  (namespace resolution, DbContext/DbSet names matching every usage, EF Core relationship
-  configuration, the dual-auth scheme wiring, controller route/policy correctness) - this
-  review caught and fixed several real bugs before delivery (a namespace-resolution bug in
-  `Program.cs` calling the seeder, an authentication-scheme detection bug in the Azure AD
-  claims transformation that would have silently broken all staff sign-ins, and a premature
-  auto-close bug in the quality-check endpoint). Even so, **you should run `dotnet restore
-  && dotnet build` yourself as the very first step** - that is the one check this
-  environment genuinely could not perform.
-
-Please run `dotnet build` right after unzipping and treat any errors it surfaces as
-legitimate bug reports against this delivery, not configuration problems on your end.
-
-## Demo data
-
-`backend/JobCardScanner.Api/Data/DbSeeder.cs` seeds 2 dealers, staff across all 8 roles, 6
-customers with vehicles/warranties, a 10-item spare-parts catalog, and the default 15-stage
-workflow template automatically on first run (Development only). Staff sign in via Azure AD
-- there's no password to seed - so before your first sign-in, either add your own email to
-`DbSeeder.cs` with the `SystemAdmin` role, or add yourself through **Admin > Users** once
-someone with `SystemAdmin`/`DealerAdmin` access has signed in (see
-`docs/AZURE_AD_SETUP.md` Part 4 for why this step exists).
+## Verified (23.10.2026)
+Security folder + SessionController compile on .NET 8 (0 errors, 0 warnings, TenantIsolationFilter replaced by a stand-in) and 29 checks pass against an in-process server.
+NOT verified: the full project build (JobCardsController, RepairBillDocsController, TenantIsolationFilter need your project), anything on your server.

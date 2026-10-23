@@ -1,7 +1,8 @@
 // web\src\pages\staff\EmployeesPage.tsx
-import { Fragment, useEffect, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
+import { SortTh, StatusBadge, TablePager, TableSearch, useTableView, type Column } from '../../components/TableControls'
 import type { BaplDmsWorkshop, StaffRole } from '../../types'
 
 /**
@@ -324,14 +325,38 @@ export function EmployeesPage() {
   // already has (so a Corporate / System Admin, whose list is loaded dealer by dealer, can still filter by them).
   const [search, setSearch] = useState('')
   const [locationFilter, setLocationFilter] = useState('')
-  const locationFilterOptions = Array.from(new Set([...Object.keys(knownWorkshops), ...users.flatMap((u) => u.workLocationCodes)])).sort()
-  const visibleUsers = users.filter((u) => {
-    const matchesSearch = !search.trim()
-      || u.name.toLowerCase().includes(search.trim().toLowerCase())
-      || u.email.toLowerCase().includes(search.trim().toLowerCase())
-    const matchesLocation = !locationFilter || u.workLocationCodes.includes(locationFilter)
-    return matchesSearch && matchesLocation
-  })
+  // 2026-10-23 ("in dropdown location with dealer name ... now only shown location"): the Location dropdown now reads "Dealer name - Location name (code)". The dealer comes from the dealer code in the
+  // location code (CUS0288W4 -> CUS0288, matched against the dealers list a Corporate / System Admin loads), else from the dealerName of an employee who is scoped to that dealer and has the location.
+  const dealerNameForCode = (code: string): string => {
+    const prefix = code.replace(/W\d+$/i, '').toUpperCase()
+    const byCode = workDealers.find((d) => (d.baplDmsDealerCode ?? '').toUpperCase() === prefix)?.name
+    return byCode ?? users.find((u) => u.dealerName && u.workLocationCodes.includes(code))?.dealerName ?? ''
+  }
+  const locationOptionLabel = (code: string) => {
+    const dealer = dealerNameForCode(code)
+    const place = knownWorkshops[code] ? `${knownWorkshops[code]} (${code})` : code
+    return dealer ? `${dealer} - ${place}` : place
+  }
+  const locationFilterOptions = Array.from(new Set([...Object.keys(knownWorkshops), ...users.flatMap((u) => u.workLocationCodes)]))
+    .sort((a, b) => locationOptionLabel(a).localeCompare(locationOptionLabel(b)))
+  // 2026-10-23 ("all pages add in sorting and pagination and ui attractive"): search on every column (name, email, designation, role, dealer, city / state, work area names, active), sortable headers and
+  // 10 rows per page (components/TableControls.tsx). The Location dropdown stays a filter on the rows before the search.
+  const locationRows = useMemo(() => users.filter((u) => !locationFilter || u.workLocationCodes.includes(locationFilter)), [users, locationFilter])
+  const workAreaText = (u: StaffUser) => (u.workLocationCodes.length === 0 ? 'All' : u.workLocationCodes.map((code) => (workshopNameByCode.get(code) ? `${workshopNameByCode.get(code)} (${code})` : code)).join(' '))
+  const employeeColumns: Column<StaffUser>[] = [
+    { key: 'name', label: 'Name', value: (u) => u.name },
+    { key: 'email', label: 'Email', value: (u) => u.email },
+    { key: 'designation', label: 'Designation', value: (u) => u.designation ?? '-' },
+    { key: 'role', label: 'Role', value: (u) => u.role },
+    { key: 'dealer', label: 'Dealer', value: (u) => u.dealerName ?? 'All' },
+    { key: 'cityState', label: 'City / State', value: (u) => [u.city, u.state].filter(Boolean).join(', ') || '-' },
+    { key: 'workArea', label: 'Work Area', value: (u) => workAreaText(u) },
+    { key: 'workCount', label: 'Work Area count', value: (u) => u.workLocationCodes.length, search: false },
+    { key: 'active', label: 'Active', value: (u) => (u.active ? 'Yes' : 'No') },
+  ]
+  const view = useTableView(locationRows, employeeColumns, { pageSize: 10, query: search })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { view.setPage(1) }, [locationFilter])
 
   return (
     <div>
@@ -343,39 +368,43 @@ export function EmployeesPage() {
       </div>
       <br/>
 
-      <div className="card" style={{ padding: 0 }}>
-        {/* 2026-10-03 - search by name/email + Location dropdown, matching
-            TechnicianEmployeesPage.tsx's placement/pattern. */}
-        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', padding: '14px 14px 0' }}>
-          <div className="field" style={{ marginBottom: 0, flex: 1, minWidth: 200 }}>
-            <label>Search Employee</label>
-            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by name or email…" />
-          </div>
-          <div className="field" style={{ marginBottom: 0, minWidth: 220 }}>
-            <label>Location</label>
-            <select value={locationFilter} onChange={(e) => setLocationFilter(e.target.value)}>
+      <div className="card">
+        <div className="tc-toolbar">
+          <TableSearch value={search} onChange={setSearch} placeholder="Search by name, email, designation, role, dealer or location…" ariaLabel="Search employees" />
+          <label className="tc-field">
+            Location
+            <select value={locationFilter} onChange={(e) => setLocationFilter(e.target.value)} aria-label="Location">
               <option value="">All locations</option>
               {locationFilterOptions.map((code) => (
-                <option key={code} value={code}>{knownWorkshops[code] ? `${knownWorkshops[code]} (${code})` : code}</option>
+                <option key={code} value={code}>{locationOptionLabel(code)}</option>
               ))}
             </select>
-          </div>
+          </label>
+          <span className="tc-count">{view.total === view.allTotal ? `${view.allTotal} employees` : `${view.total} of ${view.allTotal} employees`}</span>
         </div>
-        <table style={{ marginTop: 10 }}>
+        <div className="tc-tablewrap">
+        <table>
           <thead>
             <tr>
-              <th>Name</th><th>Email</th><th>Designation</th><th>Role</th><th>Dealer</th>
-              <th>City / State</th><th>Work Area</th><th>Active</th><th></th>
+              <SortTh label="Name" sortKey="name" sort={view.sort} onSort={view.toggleSort} />
+              <SortTh label="Email" sortKey="email" sort={view.sort} onSort={view.toggleSort} />
+              <SortTh label="Designation" sortKey="designation" sort={view.sort} onSort={view.toggleSort} />
+              <SortTh label="Role" sortKey="role" sort={view.sort} onSort={view.toggleSort} />
+              <SortTh label="Dealer" sortKey="dealer" sort={view.sort} onSort={view.toggleSort} />
+              <SortTh label="City / State" sortKey="cityState" sort={view.sort} onSort={view.toggleSort} />
+              <SortTh label="Work Area" sortKey="workCount" sort={view.sort} onSort={view.toggleSort} />
+              <SortTh label="Active" sortKey="active" sort={view.sort} onSort={view.toggleSort} />
+              <th></th>
             </tr>
           </thead>
           <tbody>
-            {visibleUsers.map((u) => (
+            {view.pageRows.map((u) => (
               <Fragment key={u.id}>
                 <tr>
                   <td>{u.name}</td><td>{u.email}</td><td>{u.designation ?? '-'}</td><td>{u.role}</td><td>{u.dealerName ?? 'All'}</td>
                   <td>{[u.city, u.state].filter(Boolean).join(', ') || '-'}</td>
                   <td>{u.workLocationCodes.length > 0 ? `${u.workLocationCodes.length} location${u.workLocationCodes.length === 1 ? '' : 's'}` : 'All'}</td>
-                  <td>{u.active ? 'Yes' : 'No'}</td>
+                  <td><StatusBadge active={u.active} yes="Yes" no="No" /></td>
                   <td style={{ whiteSpace: 'nowrap' }}>
                     <button className="btn btn-sm" onClick={() => editEmployee(u)}>Edit</button>{' '}
                     <button className="btn btn-sm" onClick={() => toggleActive(u)}>{u.active ? 'Deactivate' : 'Activate'}</button>{' '}
@@ -415,13 +444,15 @@ export function EmployeesPage() {
                 )}
               </Fragment>
             ))}
-            {visibleUsers.length === 0 && (
+            {view.pageRows.length === 0 && (
               <tr><td colSpan={9} className="muted">
                 {users.length === 0 ? 'No employees yet - add one above.' : 'No employees match this search/filter.'}
               </td></tr>
             )}
           </tbody>
         </table>
+        </div>
+        <TablePager view={view} />
       </div>
 
       {/* 2026-10-03 ("then open this atrractive page", matching TechnicianEmployeesPage.tsx) - the

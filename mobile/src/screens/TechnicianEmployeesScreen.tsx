@@ -1,8 +1,11 @@
+// mobile\src\screens\TechnicianEmployeesScreen.tsx
 import { useEffect, useState } from 'react'
 import { ActivityIndicator, Alert, FlatList, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native'
 import { apiClient } from '../api/client'
 import { useStaffAuth } from '../auth/StaffAuthContext'
 import { PickerField, type PickerOption } from '../components/PickerField'
+import { PagerBar, SearchBox, SortChips } from '../components/ListControls'
+import { useListView, type Field } from '../lib/listView'
 import { colors } from '../theme/colors'
 import type { BaplDmsWorkshop, Technician } from '../types'
 
@@ -23,9 +26,10 @@ import type { BaplDmsWorkshop, Technician } from '../types'
  * actions are SupervisorUp-gated server-side regardless (TechniciansController.Create/Update/
  * Delete).
  *
- * KNOWN GAP (disclosed, not silently dropped - same as web's own doc comment): no Corporate/System
- * Admin cross-dealer view - TechniciansController.List only returns rows for a dealerId a
- * Corporate/System Admin explicitly passes, and this screen never passes one.
+ * 2026-10-23: TechniciansController.List now returns every dealer's technicians to a Corporate /
+ * System Admin, and their Location filter is built from the technicians' own locations (no dealer
+ * -> no workshops fetch). STILL A GAP (same as web): for those two roles Add has no dealer to create
+ * under (POST /api/technicians?dealerId=...) and the form's Location list is empty.
  */
 
 const apiErrorMessage = (err: unknown, fallback: string): string =>
@@ -43,17 +47,33 @@ export function TechnicianEmployeesScreen() {
 
   // 2026-10-03 (web TechnicianEmployeesPage - "add filter for search technician and dropdown of location"): a name search box and a Location dropdown above the list. The location is sent to the
   // server (GET /api/technicians?locationCode=..., the same param the Assign Technician dropdown uses), the name search is applied in the phone.
-  const [search, setSearch] = useState('')
   const [locationFilter, setLocationFilter] = useState('')
+  // 2026-10-23: a Corporate / System Admin has no dealer, so the workshops fetch below never runs for them and the Location dropdown showed only "All locations". Fallback: the locations that appear
+  // on the technicians themselves, collected from the unfiltered list (kept as-is while a location filter is active, so the dropdown doesn't shrink to one option).
+  const [techLocations, setTechLocations] = useState<PickerOption[]>([])
   const load = () => {
     setLoading(true)
     apiClient.get<Technician[]>('/api/technicians', { params: { includeInactive, locationCode: locationFilter || undefined } })
-      .then((r) => setTechnicians(r.data))
+      .then((r) => {
+        setTechnicians(r.data)
+        if (!locationFilter) {
+          const seen = new Map<string, string>()
+          r.data.forEach((t) => { if (t.locationCode && !seen.has(t.locationCode)) seen.set(t.locationCode, t.locationName ? `${t.locationName} (${t.locationCode})` : t.locationCode) })
+          setTechLocations([...seen].map(([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label)))
+        }
+      })
       .finally(() => setLoading(false))
   }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(load, [includeInactive, locationFilter])
-  const shown = technicians.filter((t) => !search.trim() || t.name.toLowerCase().includes(search.trim().toLowerCase()))
+// 2026-10-23 ("all pages add in sorting and pagination and ui attractive"): search on every field, sort chips and 10 rows per page (lib/listView.ts + components/ListControls.tsx).
+  const technicianFields: Field<Technician>[] = [
+    { key: 'name', value: (t) => t.name },
+    { key: 'location', value: (t) => (t.locationName ? `${t.locationName} (${t.locationCode})` : t.locationCode) },
+    { key: 'status', value: (t) => (t.active ? 'Active' : 'Inactive') },
+  ]
+  const view = useListView(technicians, technicianFields, { getKey: (t) => t.id })
+  const shown = view.pageRows
 
   const [workshops, setWorkshops] = useState<BaplDmsWorkshop[]>([])
   useEffect(() => {
@@ -158,24 +178,27 @@ export function TechnicianEmployeesScreen() {
                 </View>
               </View>
             )}
-            <TextInput style={[styles.input, { marginBottom: 8 }]} value={search} onChangeText={setSearch} placeholder="Search technician by name…" placeholderTextColor={colors.textMuted} />
+            <View style={{ marginBottom: 8 }}><SearchBox value={view.query} onChangeText={view.setQuery} placeholder="Search technician by name or location…" /></View>
             <View style={{ marginBottom: 8 }}>
-              <PickerField label="Location" value={locationFilter} options={[{ label: 'All locations', value: '' }, ...workshopOptions]} placeholder="All locations" onChange={setLocationFilter} />
+              <PickerField label="Location" value={locationFilter} options={[{ label: 'All locations', value: '' }, ...(workshopOptions.length ? workshopOptions : techLocations)]} placeholder="All locations" onChange={setLocationFilter} />
             </View>
             <View style={styles.toggleRow}>
               <Text style={styles.label}>Show inactive</Text>
               <Switch value={includeInactive} onValueChange={setIncludeInactive} />
             </View>
+            <SortChips options={[{ key: 'name', label: 'Name' }, { key: 'location', label: 'Location' }, { key: 'status', label: 'Status' }]} sort={view.sort} onToggle={view.toggleSort} />
+            <Text style={[styles.muted, { marginTop: 8, marginBottom: 6 }]}>{view.total === view.allTotal ? `${view.allTotal} technicians` : `${view.total} of ${view.allTotal} technicians`}</Text>
             {loading && <ActivityIndicator style={{ marginVertical: 10 }} color={colors.primary} />}
           </>
         }
-        ListEmptyComponent={!loading ? <Text style={styles.muted}>No technicians yet{canManage ? ' - add one above.' : '.'}</Text> : null}
+        ListEmptyComponent={!loading ? <Text style={styles.muted}>{technicians.length === 0 ? `No technicians yet${canManage ? ' - add one above.' : '.'}` : 'No technicians match this search.'}</Text> : null}
+        ListFooterComponent={view.total > 0 ? <PagerBar page={view.page} pageCount={view.pageCount} total={view.total} onPage={view.setPage} pageSize={view.pageSize} onPageSize={view.setPageSize} /> : null}
         renderItem={({ item: t }) => (
           <View style={styles.row}>
             <View style={{ flex: 1 }}>
               <Text style={styles.name}>{t.name}</Text>
               <Text style={styles.muted}>{t.locationName ? `${t.locationName} (${t.locationCode})` : t.locationCode}</Text>
-              <Text style={styles.muted}>{t.active ? 'Active' : 'Inactive'}</Text>
+              <Text style={[styles.badge, t.active ? styles.badgeOn : styles.badgeOff]}>{t.active ? 'Active' : 'Inactive'}</Text>
             </View>
             {canManage && (
               <View style={{ gap: 6 }}>
@@ -212,4 +235,7 @@ const styles = StyleSheet.create({
   row: { backgroundColor: colors.surface, borderRadius: 10, borderWidth: 1, borderColor: colors.border, padding: 12, marginBottom: 8, flexDirection: 'row', alignItems: 'center', gap: 10 },
   name: { fontWeight: '700', color: colors.text },
   muted: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  badge: { alignSelf: 'flex-start', marginTop: 4, paddingVertical: 2, paddingHorizontal: 9, borderRadius: 999, fontSize: 11, fontWeight: '700', overflow: 'hidden' },
+  badgeOn: { backgroundColor: colors.successSoft, color: colors.success },
+  badgeOff: { backgroundColor: '#f3f4f6', color: colors.textMuted },
 })

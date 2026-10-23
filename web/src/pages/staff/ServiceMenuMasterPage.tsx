@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { staffApi } from '../../api/client'
+import { SortTh, StatusBadge, TablePager, TableSearch, useTableView, type Column } from '../../components/TableControls'
 
 /**
  * SECTION 163 (2026-09-30) + SECTION 166 (2026-09-30) "for this 3 master create edit delete
@@ -162,18 +163,22 @@ export function ServiceMenuMasterPage() {
   // option list. Sorted so the dropdown is stable/scannable, not insertion-order.
   const jobTypeOptions = Array.from(new Set(rows.map((r) => r.jobTypeName))).sort((a, b) => a.localeCompare(b))
 
-  const visibleRows = rows
-    .filter((r) => showInactive || r.isActive)
-    .filter((r) => !jobTypeFilter || r.jobTypeName === jobTypeFilter)
-    .filter((r) => {
-      if (!search.trim()) return true
-      const q = search.trim().toLowerCase()
-      return (
-        r.jobTypeName.toLowerCase().includes(q) ||
-        r.serviceHeadName.toLowerCase().includes(q) ||
-        r.priorityLabel.toLowerCase().includes(q)
-      )
-    })
+// 2026-10-23 ("all pages add in sorting and pagination and ui attractive"): search on every column, sortable headers and 10 rows per page (components/TableControls.tsx); the filters sit in one flex row.
+  const baseRows = useMemo(
+    () => rows.filter((r) => showInactive || r.isActive).filter((r) => !jobTypeFilter || r.jobTypeName === jobTypeFilter),
+    [rows, showInactive, jobTypeFilter],
+  )
+  const menuColumns: Column<Row>[] = [
+    { key: 'jobType', label: 'Job Type', value: (r) => r.jobTypeName },
+    { key: 'serviceHead', label: 'Service Head', value: (r) => r.serviceHeadName },
+    { key: 'priority', label: 'Priority', value: (r) => r.priorityLabel },
+    { key: 'order', label: 'Sort Order', value: (r) => r.sortOrder },
+    { key: 'status', label: 'Status', value: (r) => (r.isActive ? 'Active' : 'Deactivated') },
+    { key: 'ids', label: 'Ids', value: (r) => `#${r.jobTypeId} #${r.serviceHeadId} ${r.priorityValue}` },
+  ]
+  const view = useTableView(baseRows, menuColumns, { pageSize: 10, query: search })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { view.setPage(1) }, [showInactive, jobTypeFilter])
 
   return (
     <div>
@@ -233,67 +238,62 @@ export function ServiceMenuMasterPage() {
         {formError && <p className="error-text">{formError}</p>}
       </div>
 
-      {/* SECTION 174 - search + dropdown filter, see class doc comment above. */}
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
-        <input
-          type="text"
-          placeholder="Search Job Type / Service Head / Priority…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          style={{ maxWidth: 280 }}
-        />
-        <select value={jobTypeFilter} onChange={(e) => setJobTypeFilter(e.target.value)}>
-          <option value="">All Job Types</option>
-          {jobTypeOptions.map((jt) => (
-            <option key={jt} value={jt}>{jt}</option>
-          ))}
-        </select>
-        {(search || jobTypeFilter) && (
-          <button type="button" className="btn btn-sm" onClick={() => { setSearch(''); setJobTypeFilter('') }}>
-            Clear filters
-          </button>
+      <div className="card">
+        <div className="tc-toolbar">
+          <TableSearch value={search} onChange={setSearch} placeholder="Search Job Type, Service Head or Priority…" ariaLabel="Search the service menu" />
+          <label className="tc-field">
+            Job Type
+            <select value={jobTypeFilter} onChange={(e) => setJobTypeFilter(e.target.value)} aria-label="Job Type">
+              <option value="">All Job Types</option>
+              {jobTypeOptions.map((jt) => <option key={jt} value={jt}>{jt}</option>)}
+            </select>
+          </label>
+          {(search || jobTypeFilter) && (
+            <button type="button" className="btn" onClick={() => { setSearch(''); setJobTypeFilter('') }}>Clear filters</button>
+          )}
+          <span className="tc-count">{view.total === view.allTotal ? `${view.allTotal} rows` : `${view.total} of ${view.allTotal} rows`}</span>
+        </div>
+
+        {loading && <p className="muted">Loading…</p>}
+        {error && <p className="error-text">{error}</p>}
+        {!loading && !error && (
+          <>
+            <div className="tc-tablewrap">
+              <table>
+                <thead>
+                  <tr>
+                    <SortTh label="Job Type" sortKey="jobType" sort={view.sort} onSort={view.toggleSort} />
+                    <SortTh label="Service Head" sortKey="serviceHead" sort={view.sort} onSort={view.toggleSort} />
+                    <SortTh label="Priority" sortKey="priority" sort={view.sort} onSort={view.toggleSort} />
+                    <SortTh label="Sort Order" sortKey="order" sort={view.sort} onSort={view.toggleSort} />
+                    <SortTh label="Status" sortKey="status" sort={view.sort} onSort={view.toggleSort} />
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {view.pageRows.map((r) => (
+                    <tr key={r.id} style={r.isActive ? undefined : { opacity: 0.6 }}>
+                      <td>{r.jobTypeName} <span className="muted">(#{r.jobTypeId})</span></td>
+                      <td>{r.serviceHeadName} <span className="muted">(#{r.serviceHeadId})</span></td>
+                      <td>{r.priorityLabel} <span className="muted">({r.priorityValue})</span></td>
+                      <td>{r.sortOrder}</td>
+                      <td><StatusBadge active={r.isActive} /></td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        <button className="btn btn-sm" onClick={() => startEdit(r)}>Edit</button>
+                        <button className="btn btn-sm" onClick={() => toggleActive(r)}>{r.isActive ? 'Deactivate' : 'Reactivate'}</button>
+                      </td>
+                    </tr>
+                  ))}
+                  {view.pageRows.length === 0 && (
+                    <tr><td colSpan={6} className="muted">{rows.length === 0 ? 'No rows yet - add one above.' : 'No rows match your search/filter.'}</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <TablePager view={view} />
+          </>
         )}
       </div>
-
-      {loading && <p className="muted">Loading…</p>}
-      {error && <p className="error-text">{error}</p>}
-      {!loading && !error && (
-        <div className="card" style={{ padding: 0 }}>
-          {visibleRows.length === 0 ? (
-            <p className="muted" style={{ padding: 16 }}>
-              {rows.length === 0 ? 'No rows yet - add one above.' : 'No rows match your search/filter.'}
-            </p>
-          ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th style={TH_STYLE}>Job Type</th>
-                  <th style={TH_STYLE}>Service Head</th>
-                  <th style={TH_STYLE}>Priority</th>
-                  <th style={TH_STYLE}>Sort Order</th>
-                  <th style={TH_STYLE}>Status</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleRows.map((r) => (
-                  <tr key={r.id} style={r.isActive ? undefined : { opacity: 0.5 }}>
-                    <td>{r.jobTypeName} <span className="muted">(#{r.jobTypeId})</span></td>
-                    <td>{r.serviceHeadName} <span className="muted">(#{r.serviceHeadId})</span></td>
-                    <td>{r.priorityLabel} <span className="muted">({r.priorityValue})</span></td>
-                    <td>{r.sortOrder}</td>
-                    <td>{r.isActive ? 'Active' : 'Deactivated'}</td>
-                    <td style={{ whiteSpace: 'nowrap' }}>
-                      <button className="btn" onClick={() => startEdit(r)}>Edit</button>{' '}
-                      <button className="btn" onClick={() => toggleActive(r)}>{r.isActive ? 'Deactivate' : 'Reactivate'}</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      )}
     </div>
   )
 }

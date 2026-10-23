@@ -1,5 +1,5 @@
 // mobile\src\screens\LabourMasterScreen.tsx
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
@@ -15,6 +15,8 @@ import {
 } from 'react-native'
 import * as DocumentPicker from 'expo-document-picker'
 import { apiClient } from '../api/client'
+import { PagerBar, SearchBox, SortChips } from '../components/ListControls'
+import { sortRows, type Field, type SortState } from '../lib/listView'
 import { colors } from '../theme/colors'
 
 /**
@@ -69,7 +71,13 @@ interface ImportResult {
   warnings: string[]
 }
 
-const PAGE_SIZE = 25
+// 2026-10-23 ("all pages add in sorting and pagination and ui attractive"): 10 rows per page (10 / 25 / 50 to choose from) and sort chips; the search box asks the server as before.
+const LABOUR_FIELDS: Field<LabourRow>[] = [
+  { key: 'code', value: (r) => r.labourCode },
+  { key: 'model', value: (r) => r.model },
+  { key: 'rate', value: (r) => r.labourRate },
+  { key: 'status', value: (r) => (r.isActive ? 'Active' : 'Inactive') },
+]
 
 export function LabourMasterScreen() {
   const [rateType, setRateType] = useState<RateType>('withoutPartwise')
@@ -80,6 +88,8 @@ export function LabourMasterScreen() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [page, setPage] = useState(0)
+  const [pageSize, setPageSize] = useState(10)
+  const [sort, setSort] = useState<SortState | null>(null)
 
   const [importing, setImporting] = useState(false)
   const [importResult, setImportResult] = useState<ImportResult | null>(null)
@@ -99,8 +109,11 @@ export function LabourMasterScreen() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load() }, [rateType])
 
-  const pageRows = rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
-  const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE))
+  const sortedRows = useMemo(() => sortRows(rows, LABOUR_FIELDS, sort), [rows, sort])
+  const pageRows = sortedRows.slice(page * pageSize, (page + 1) * pageSize)
+  const pageCount = Math.max(1, Math.ceil(sortedRows.length / pageSize))
+  const toggleSort = (key: string) => { setSort((s) => (s && s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' })); setPage(0) }
+  const changePageSize = (n: number) => { setPageSize(n); setPage(0) }
 
   const pickAndImport = async () => {
     if (!effectiveDate) {
@@ -211,25 +224,21 @@ export function LabourMasterScreen() {
           </Pressable>
           {importError && <Text style={styles.errorText}>{importError}</Text>}
           {importResult && (
-            <p className="jcs-info-text" style={{ margin: 0, padding: '10px 12px', borderRadius: 8, background: '#ecfdf3', color: '#065f46', fontSize: 13 }}>
-              File uploaded successfully.
-            </p>
+            <Text style={styles.successBanner}>File uploaded successfully.</Text>
           )}
         </View>
 
         {/* ---------------- Search ---------------- */}
         <View style={styles.card}>
-          <TextInput
-            style={styles.input}
-            placeholder="Search Labour Code / Model / Category…"
-            value={search}
-            onChangeText={setSearch}
-            onSubmitEditing={load}
-            returnKeyType="search"
-          />
-          <Pressable style={styles.button} onPress={load} disabled={loading}>
-            <Text style={styles.buttonText}>{loading ? 'Loading…' : '↻ Search'}</Text>
-          </Pressable>
+          <View style={styles.searchRow}>
+            <View style={{ flex: 1 }}>
+              <SearchBox value={search} onChangeText={setSearch} onSubmit={load} placeholder="Search Labour Code / Model / Category…" />
+            </View>
+            <Pressable style={[styles.searchBtn, loading && styles.buttonDisabled]} onPress={load} disabled={loading}>
+              <Text style={styles.buttonText}>{loading ? '…' : 'Search'}</Text>
+            </Pressable>
+          </View>
+          <SortChips options={[{ key: 'code', label: 'Code' }, { key: 'model', label: 'Model' }, { key: 'rate', label: 'Rate' }, { key: 'status', label: 'Status' }]} sort={sort} onToggle={toggleSort} />
         </View>
         {error && <Text style={styles.errorText}>{error}</Text>}
 
@@ -272,16 +281,8 @@ export function LabourMasterScreen() {
             </View>
           )}
         />
-        {rows.length > PAGE_SIZE && (
-          <View style={styles.pagerRow}>
-            <Pressable disabled={page === 0} onPress={() => setPage((p) => Math.max(0, p - 1))} style={styles.pagerButton}>
-              <Text style={styles.pagerButtonText}>‹ Prev</Text>
-            </Pressable>
-            <Text style={styles.muted}>Page {page + 1} of {pageCount}</Text>
-            <Pressable disabled={page >= pageCount - 1} onPress={() => setPage((p) => Math.min(pageCount - 1, p + 1))} style={styles.pagerButton}>
-              <Text style={styles.pagerButtonText}>Next ›</Text>
-            </Pressable>
-          </View>
+        {rows.length > 0 && (
+          <PagerBar page={page + 1} pageCount={pageCount} total={sortedRows.length} onPage={(p) => setPage(p - 1)} pageSize={pageSize} onPageSize={changePageSize} />
         )}
       </ScrollView>
 
@@ -374,6 +375,9 @@ const styles = StyleSheet.create({
   chipTextActive: { color: '#fff', fontWeight: '600' },
   button: { backgroundColor: colors.primary, borderRadius: 8, paddingVertical: 10, alignItems: 'center', marginTop: 10 },
   buttonDisabled: { opacity: 0.5 },
+  searchRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  searchBtn: { backgroundColor: colors.primary, borderRadius: 10, height: 42, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'center' },
+  successBanner: { backgroundColor: '#ecfdf3', color: '#065f46', fontSize: 13, padding: 10, borderRadius: 8, marginTop: 8, overflow: 'hidden' },
   buttonText: { color: '#fff', fontWeight: '600', fontSize: 14 },
   buttonSecondary: { backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border },
   buttonSecondaryText: { color: colors.text, fontWeight: '600', fontSize: 14 },

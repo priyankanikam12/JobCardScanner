@@ -2,6 +2,7 @@ using JobCardScanner.Api.Auth;
 using JobCardScanner.Api.Data;
 using JobCardScanner.Api.Dtos;
 using JobCardScanner.Api.Models;
+using JobCardScanner.Api.Security;
 using JobCardScanner.Api.Services;
 using JobCardScanner.Api.Services.Integrations;
 using Microsoft.AspNetCore.Authorization;
@@ -997,7 +998,14 @@ public class JobCardsController : ControllerBase
     public async Task<IActionResult> AddPhoto(Guid id, AddPhotoRequest req)
     {
         if (!await _db.JobCards.AnyAsync(j => j.Id == id)) return NotFound();
-        var photo = new JobCardPhoto { JobCardId = id, Stage = req.Stage, Url = req.Url, Caption = req.Caption, UploadedById = _currentUser.UserId };
+        // 2026-10-23 (VAPT DMS-06 / DMS-14): this action used to store ANY caller-supplied address. It now accepts only an address inside this job card's own photo folder (what UploadPhoto returns) -
+        // never another site, a javascript: / data: address, a path climb or a query string.
+        var photoUrl = (req.Url ?? "").Trim();
+        if (!photoUrl.StartsWith($"/uploads/jobcard-photos/{id}/", StringComparison.OrdinalIgnoreCase)
+            || photoUrl.Contains("..") || photoUrl.Contains('?') || photoUrl.Contains('#') || photoUrl.Contains('\\'))
+            return BadRequest(new { message = "Photos are added through the upload; an address that is not one of this job card's uploaded photos is not accepted." });
+        if (req.Caption is { Length: > 500 }) return BadRequest(new { message = "The caption can be at most 500 characters." });
+        var photo = new JobCardPhoto { JobCardId = id, Stage = req.Stage, Url = photoUrl, Caption = req.Caption, UploadedById = _currentUser.UserId };
         _db.JobCardPhotos.Add(photo);
         await _db.SaveChangesAsync();
         return Ok(photo);
@@ -1034,12 +1042,12 @@ public class JobCardsController : ControllerBase
         // 2026-09-03: video is only ever sent by the Part Suggestion grid's Picture column today,
         // but this check is intentionally not gated on PartSuggestionId being set - no reason to
         // reject a video from a future caller that also has a legitimate reason to upload one.
-        var isVideo = AllowedVideoContentTypes.Contains(form.File.ContentType, StringComparer.OrdinalIgnoreCase);
-        if (!isVideo && !AllowedPhotoContentTypes.Contains(form.File.ContentType, StringComparer.OrdinalIgnoreCase))
-            return BadRequest(new { message = $"Unsupported file type '{form.File.ContentType}'. Upload a photo (JPEG, PNG, WEBP, or HEIC) or a video (MP4, MOV, WEBM, 3GP, or AVI)." });
-
-        var ext = Path.GetExtension(form.File.FileName);
-        if (string.IsNullOrWhiteSpace(ext) || ext.Length > 10) ext = isVideo ? ".mp4" : ".jpg";
+        // 2026-10-23 (VAPT DMS-06, stored XSS): the file is judged by what is IN it (its first bytes), never by the Content-Type the browser claims or by its file name - a file called x.png.html,
+        // declared image/png and holding a web page was accepted, kept as .html and served as a page on this site's own address. Now: photo / video bytes only, stored under a GUID with the extension
+        // the CONTENT proves (SafeUpload); everything else (HTML, SVG, scripts, executables ...) is refused. 1 GB is the same size cap as the [RequestSizeLimit] above.
+        var check = await SafeUpload.ValidateAsync(form.File, 1_000_000_000L, HttpContext.RequestAborted);
+        if (!check.Ok) return BadRequest(new { message = check.Error });
+        var ext = check.Extension;
         var fileName = $"{Guid.NewGuid():N}{ext}";
         var webRoot = _env.WebRootPath ?? Path.Combine(_env.ContentRootPath, "wwwroot");
         var relativeDir = Path.Combine("uploads", "jobcard-photos", id.ToString());
@@ -1061,7 +1069,7 @@ public class JobCardsController : ControllerBase
             JobCardId = id,
             Stage = form.Stage,
             Url = url,
-            Caption = form.Caption,
+            Caption = form.Caption is { Length: > 500 } ? form.Caption[..500] : form.Caption,
             Latitude = form.Latitude,
             Longitude = form.Longitude,
             PartSuggestionId = form.PartSuggestionId,
@@ -1422,6 +1430,10 @@ public class JobCardsController : ControllerBase
         if (string.IsNullOrWhiteSpace(req.ItemCode)) return BadRequest(new { message = "itemCode is required." });
         if (req.Status != "Paid" && req.Status != "U/W" && req.Status != "FOC")
             return BadRequest(new { message = "status must be 'Paid', 'U/W', or 'FOC'." });
+        // 2026-10-23 (VAPT DMS-08): the same kind of server-side check discounts already had - the price (MRP) must be 0 .. 1 crore and the quantity 1 .. 10,000. The browser could send a negative price
+        // or a quantity of 999,999,999 and it was saved as it came.
+        var partCheck = FinancialInputValidator.ValidateRateQty(req.ItemCode.Trim(), Convert.ToDecimal(req.Quantity), Convert.ToDecimal(req.Mrp ?? 0));
+        if (partCheck is not null) return BadRequest(new { message = partCheck });
         var suggestion = new JobCardPartSuggestion
         {
             JobCardId = id,
@@ -1514,6 +1526,9 @@ public class JobCardsController : ControllerBase
         if (technicianGate is not null) return technicianGate;
         if (string.IsNullOrWhiteSpace(req.LabourCode)) return BadRequest(new { message = "labourCode is required." });
         if (req.Quantity < 1) return BadRequest(new { message = "quantity must be at least 1." });
+        // 2026-10-23 (VAPT DMS-08): rate 0 .. 1 crore, quantity up to 10,000, and the tax rates must be statutory ones (see FinancialInputValidator for the allowed lists).
+        var labourCheck = FinancialInputValidator.ValidateLine(req.LabourCode.Trim(), Convert.ToDecimal(req.Quantity), Convert.ToDecimal(req.RateAtSuggestion ?? 0), null, 0m, Convert.ToDecimal(req.Cgst ?? 0), Convert.ToDecimal(req.Sgst ?? 0), Convert.ToDecimal(req.Igst ?? 0));
+        if (labourCheck is not null) return BadRequest(new { message = labourCheck });
 
         var suggestion = new JobCardLabourSuggestion
         {
@@ -1563,6 +1578,7 @@ public class JobCardsController : ControllerBase
     public async Task<IActionResult> UpdateLabourSuggestion(Guid suggestionId, UpdateLabourSuggestionRequest req)
     {
         if (req.Quantity < 1) return BadRequest(new { message = "quantity must be at least 1." });
+        if (req.Quantity > FinancialInputValidator.MaxQty) return BadRequest(new { message = $"quantity can be at most {FinancialInputValidator.MaxQty:0}." });
         var suggestion = await _db.JobCardLabourSuggestions.FirstOrDefaultAsync(s => s.Id == suggestionId);
         if (suggestion is null) return NotFound();
 
@@ -1574,8 +1590,8 @@ public class JobCardsController : ControllerBase
         {
             if (!rateWasOpen)
                 return BadRequest(new { message = "This labour line's rate comes from Labour Master and cannot be changed here. Remove the line and add it again to use a different rate." });
-            if (req.RateAtSuggestion.Value < 0)
-                return BadRequest(new { message = "rate cannot be negative." });
+            if (req.RateAtSuggestion.Value < 0 || req.RateAtSuggestion.Value > FinancialInputValidator.MaxMoney)
+                return BadRequest(new { message = $"rate must be between 0 and {FinancialInputValidator.MaxMoney:0}." });
             var hsn = string.IsNullOrWhiteSpace(req.HsnCode) ? null : req.HsnCode.Trim();
             if (hsn is not null && (hsn.Length > 8 || !hsn.All(char.IsDigit)))
                 return BadRequest(new { message = "HSN must be digits only (up to 8)." });

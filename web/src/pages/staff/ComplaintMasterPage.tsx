@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import * as XLSX from 'xlsx'
 import { staffApi } from '../../api/client'
+import { SortTh, StatusBadge, TablePager, TableSearch, useTableView, type Column } from '../../components/TableControls'
 
 /**
  * SECTION 163 (2026-09-30) + SECTION 166 (2026-09-30) "for this 3 master create edit delete
@@ -212,9 +213,17 @@ export function ComplaintMasterPage() {
     reader.readAsArrayBuffer(file)
   }
 
-  const visibleRows = rows
-    .filter((r) => statusFilter === 'all' || (statusFilter === 'active' ? r.isActive : !r.isActive))
-    .filter((r) => !search.trim() || r.complaintText.toLowerCase().includes(search.trim().toLowerCase()))
+// 2026-10-23 ("all pages add in sorting and pagination and ui attractive"): search on every column, sortable headers and 10 rows per page (components/TableControls.tsx); the filters sit in one flex row.
+  const statusRows = useMemo(() => rows.filter((r) => statusFilter === 'all' || (statusFilter === 'active' ? r.isActive : !r.isActive)), [rows, statusFilter])
+  const complaintColumns: Column<Row>[] = [
+    { key: 'text', label: 'Complaint', value: (r) => r.complaintText },
+    { key: 'order', label: 'Sort Order', value: (r) => r.sortOrder },
+    { key: 'status', label: 'Status', value: (r) => (r.isActive ? 'Active' : 'Deactivated') },
+  ]
+  const view = useTableView(statusRows, complaintColumns, { pageSize: 10, query: search })
+  // switching the Status filter goes back to page 1
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { view.setPage(1) }, [statusFilter])
 
   return (
     <div>
@@ -287,61 +296,53 @@ export function ComplaintMasterPage() {
         )}
       </div>
 
-      {/* SECTION 174 - search box + (2026-10-02) Status dropdown filter, see class-level SECTION
-         174 doc comment above. */}
-      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
-        <input
-          type="text"
-          placeholder="Search Complaint Text…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          style={{ maxWidth: 280 }}
-        />
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151' }}>
-          Status
-          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}>
-            <option value="active">Active only</option>
-            <option value="inactive">Deactivated only</option>
-            <option value="all">All</option>
-          </select>
-        </label>
-      </div>
-
-      {loading && <p className="muted">Loading…</p>}
-      {error && <p className="error-text">{error}</p>}
-      {!loading && !error && (
-        <div className="card" style={{ padding: 0 }}>
-          {visibleRows.length === 0 ? (
-            <p className="muted" style={{ padding: 16 }}>
-              {rows.length === 0 ? 'No complaints yet - add one above.' : 'No complaints match your search.'}
-            </p>
-          ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th style={TH_STYLE}>Complaint</th>
-                  <th style={TH_STYLE}>Sort Order</th>
-                  <th style={TH_STYLE}>Status</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleRows.map((r) => (
-                  <tr key={r.id} style={r.isActive ? undefined : { opacity: 0.5 }}>
-                    <td>{r.complaintText}</td>
-                    <td>{r.sortOrder}</td>
-                    <td>{r.isActive ? 'Active' : 'Deactivated'}</td>
-                    <td style={{ whiteSpace: 'nowrap' }}>
-                      <button className="btn" onClick={() => startEdit(r)}>Edit</button>{' '}
-                      <button className="btn" onClick={() => toggleActive(r)}>{r.isActive ? 'Deactivate' : 'Reactivate'}</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+      <div className="card">
+        <div className="tc-toolbar">
+          <TableSearch value={search} onChange={setSearch} placeholder="Search complaints…" ariaLabel="Search complaints" />
+          <div className="tc-seg" role="group" aria-label="Status">
+            {([['active', 'Active'], ['inactive', 'Deactivated'], ['all', 'All']] as const).map(([key, label]) => (
+              <button key={key} type="button" className={`tc-seg-btn${statusFilter === key ? ' active' : ''}`} onClick={() => setStatusFilter(key)}>{label}</button>
+            ))}
+          </div>
+          <span className="tc-count">{view.total === view.allTotal ? `${view.allTotal} complaints` : `${view.total} of ${view.allTotal} complaints`}</span>
         </div>
-      )}
+
+        {loading && <p className="muted">Loading…</p>}
+        {error && <p className="error-text">{error}</p>}
+        {!loading && !error && (
+          <>
+            <div className="tc-tablewrap">
+              <table>
+                <thead>
+                  <tr>
+                    <SortTh label="Complaint" sortKey="text" sort={view.sort} onSort={view.toggleSort} />
+                    <SortTh label="Sort Order" sortKey="order" sort={view.sort} onSort={view.toggleSort} />
+                    <SortTh label="Status" sortKey="status" sort={view.sort} onSort={view.toggleSort} />
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {view.pageRows.map((r) => (
+                    <tr key={r.id} style={r.isActive ? undefined : { opacity: 0.6 }}>
+                      <td>{r.complaintText}</td>
+                      <td>{r.sortOrder}</td>
+                      <td><StatusBadge active={r.isActive} /></td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        <button className="btn btn-sm" onClick={() => startEdit(r)}>Edit</button>
+                        <button className="btn btn-sm" onClick={() => toggleActive(r)}>{r.isActive ? 'Deactivate' : 'Reactivate'}</button>
+                      </td>
+                    </tr>
+                  ))}
+                  {view.pageRows.length === 0 && (
+                    <tr><td colSpan={4} className="muted">{rows.length === 0 ? 'No complaints yet - add one above.' : 'No complaints match your search.'}</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <TablePager view={view} />
+          </>
+        )}
+      </div>
     </div>
   )
 }

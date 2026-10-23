@@ -10,12 +10,28 @@ using JobCardScanner.Api.Auth;
 using JobCardScanner.Api.Data;
 using JobCardScanner.Api.Services;
 using JobCardScanner.Api.Services.Integrations;
+using JobCardScanner.Api.Security;
 using QuestPDF.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// 2026-10-17 (VAPT): security layer - Security/*.cs
+builder.AddAppSecurity();
+
 // QuestPDF Community license (free for this use case) - required as of QuestPDF 2023+.
 QuestPDF.Settings.License = LicenseType.Community;
+
+// 2026-10-23 (VAPT, found while reviewing this file): the two JWT secrets below used to fall back to a fixed text that is public in this
+// source file ("dev-only-insecure-secret-...") when the setting was missing - then anyone could sign a token with any role. Outside Development
+// a missing or short (< 32 characters) secret now stops the API from starting instead. Set CustomerPortalJwt__Secret and DealerAuthJwt__Secret
+// (32+ random characters) as environment variables / in appsettings.Production.json BEFORE deploying this file.
+static string RequireSecret(IConfigurationSection section, IHostEnvironment env)
+{
+    var value = section["Secret"];
+    if (!string.IsNullOrWhiteSpace(value) && value.Length >= 32) return value;
+    if (env.IsDevelopment()) return "dev-only-insecure-secret-change-me-min-32-chars";
+    throw new InvalidOperationException($"{section.Path}:Secret is missing or shorter than 32 characters - set it before starting the API.");
+}
 
 // ---------------------------------------------------------------------
 // Database
@@ -96,7 +112,7 @@ builder.Services.Configure<JwtBearerOptions>(AuthSchemes.AzureAd, options =>
 builder.Services.AddAuthentication().AddJwtBearer(AuthSchemes.CustomerPortal, options =>
 {
     var section = builder.Configuration.GetSection("CustomerPortalJwt");
-    var secret = section["Secret"] ?? "dev-only-insecure-secret-change-me-min-32-chars";
+    var secret = RequireSecret(section, builder.Environment);   // 2026-10-23 (VAPT): no public fallback outside Development
     options.TokenValidationParameters = new TokenValidationParameters
     {
         ValidateIssuer = true,
@@ -116,7 +132,7 @@ builder.Services.AddAuthentication().AddJwtBearer(AuthSchemes.CustomerPortal, op
 builder.Services.AddAuthentication().AddJwtBearer(AuthSchemes.DealerJwt, options =>
 {
     var section = builder.Configuration.GetSection("DealerAuthJwt");
-    var secret = section["Secret"] ?? "dev-only-insecure-secret-change-me-min-32-chars";
+    var secret = RequireSecret(section, builder.Environment);   // 2026-10-23 (VAPT): no public fallback outside Development
     options.TokenValidationParameters = new TokenValidationParameters
     {
         ValidateIssuer = true,
@@ -236,7 +252,7 @@ builder.Services.AddAuthorization(options =>
     // with every other policy name in this file, paste me the file that defines the Policies class
     // and I'll add them there and switch these two literals over to it - purely cosmetic, not a
     // behavior change.
-    options.AddPolicy("ServiceAdvisorUpNoSupervisor", p => RoleUp(p, "ServiceAdvisor", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin","Captain","ViceCaptain","PartsUser","Cashier","Supervisor"));
+    options.AddPolicy("ServiceAdvisorUpNoSupervisor", p => RoleUp(p, "ServiceAdvisor", "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin","Captain","ViceCaptain","PartsUser","Cashier"));   // 2026-10-23 (VAPT): "Supervisor" was in this list although the policy is named NoSupervisor - removed so the SECTION 162 lock is real
     options.AddPolicy("WorkshopManagerUpNoSupervisor", p => RoleUp(p, "WorkshopManager", "DealerAdmin", "CorporateAdmin", "SystemAdmin"));
 });
 
@@ -322,6 +338,7 @@ builder.Services.AddCors(options =>
 });
 
 var app = builder.Build();
+app.UseAppSecurityEarly();   // 2026-10-17 (VAPT): forwarded headers + security headers (DMS-13)
 
 if (app.Environment.IsDevelopment())
 {
@@ -351,11 +368,13 @@ if (!builder.Configuration.GetValue<bool>("DisableHttpsRedirection"))
         branch => branch.UseHttpsRedirection());
 }
 app.UseCors("AppCors");
+app.UseAppRateLimit();        // 2026-10-17 (VAPT): rate limits + failed-login lockout (DMS-11, DMS-12)
 
 // Serves job card photos uploaded via POST /api/jobcards/{id}/photos/upload (JobCardsController)
 // from wwwroot/uploads/... at the matching /uploads/... URL. No [Authorize] on static files
-// themselves (ASP.NET Core static file middleware doesn't support that) - the file names are
-// unguessable GUIDs, same tradeoff as most "public CDN link" photo storage.
+// themselves (ASP.NET Core static file middleware doesn't support that). 2026-10-23 (VAPT DMS-14): that is no longer
+// the only protection - UseAppStaticFiles (Security/SecurityExtensions.cs) serves /uploads/jobcard-photos only for an
+// address with a valid, unexpired signature, which the API adds to every photo address it returns to a signed-in user.
 Directory.CreateDirectory(Path.Combine(app.Environment.ContentRootPath, "wwwroot", "uploads", "jobcard-photos"));
 
 // Default FileExtensionContentTypeProvider doesn't know ".apk" - without this, UseStaticFiles()
@@ -366,10 +385,11 @@ Directory.CreateDirectory(Path.Combine(app.Environment.ContentRootPath, "wwwroot
 // this app's own middleware is what actually serves wwwroot.
 var staticFileProvider = new Microsoft.AspNetCore.StaticFiles.FileExtensionContentTypeProvider();
 staticFileProvider.Mappings[".apk"] = "application/vnd.android.package-archive";
-app.UseStaticFiles(new StaticFileOptions { ContentTypeProvider = staticFileProvider });
+app.UseAppStaticFiles(staticFileProvider);   // 2026-10-17 (VAPT DMS-06): /uploads only as safe media types, never HTML
 
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseAppGuards();   // 2026-10-17 (VAPT): route guard + response sanitizer (DMS-01, 02, 04, 05, 09, 10, 12, 15)
 app.MapControllers();
 
 // Lets this same app also host the built React SPA straight out of wwwroot (see

@@ -4,6 +4,8 @@ import { ActivityIndicator, Alert, FlatList, StyleSheet, Switch, Text, TextInput
 import { apiClient } from '../api/client'
 import { useStaffAuth } from '../auth/StaffAuthContext'
 import { PickerField } from '../components/PickerField'
+import { PagerBar, SearchBox, SortChips } from '../components/ListControls'
+import { useListView, type Field } from '../lib/listView'
 import { colors } from '../theme/colors'
 import type { BaplDmsWorkshop, StaffRole } from '../types'
 
@@ -49,7 +51,6 @@ export function EmployeesScreen() {
   const [users, setUsers] = useState<StaffUser[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [search, setSearch] = useState('')
   const [locationFilter, setLocationFilter] = useState('')
   const [showInactive, setShowInactive] = useState(false)
   const [form, setForm] = useState(emptyForm)
@@ -137,9 +138,33 @@ export function EmployeesScreen() {
   ])
   const toggleLoc = (code: string) => setForm((f) => ({ ...f, workLocationCodes: f.workLocationCodes.includes(code) ? f.workLocationCodes.filter((c) => c !== code) : [...f.workLocationCodes, code] }))
 
-  const allLocationCodes = useMemo(() => Array.from(new Set(users.flatMap((u) => u.workLocationCodes))).sort(), [users])
-  const q = search.trim().toLowerCase()
-  const shown = users.filter((u) => (showInactive || u.active) && (!q || `${u.name} ${u.email}`.toLowerCase().includes(q)) && (!locationFilter || u.workLocationCodes.includes(locationFilter)))
+  // 2026-10-23 ("in dropdown location with dealer name"): the Work Area location filter reads "Dealer name - Location name - code". The dealer comes from the dealer code in the location code
+  // (CUS0288W4 -> CUS0288, matched against the dealers a Corporate / System Admin loads), else from the dealerName of an employee scoped to a dealer who has that location.
+  const dealerNameForCode = (code: string): string => {
+    const prefix = code.replace(/W\d+$/i, '').toUpperCase()
+    return dealers.find((d) => (d.baplDmsDealerCode ?? '').toUpperCase() === prefix)?.name ?? users.find((u) => u.dealerName && u.workLocationCodes.includes(code))?.dealerName ?? ''
+  }
+  const locationLabel = (c: string) => [dealerNameForCode(c), knownWorkshops[c], c].filter(Boolean).join(' - ')
+  const allLocationCodes = useMemo(
+    () => Array.from(new Set(users.flatMap((u) => u.workLocationCodes))).sort((a, b) => locationLabel(a).localeCompare(locationLabel(b))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [users, dealers, knownWorkshops],
+  )
+// 2026-10-23 ("all pages add in sorting and pagination and ui attractive"): search on every field, sort chips and 10 rows per page (lib/listView.ts + components/ListControls.tsx).
+  const employeeFields: Field<StaffUser>[] = [
+    { key: 'name', value: (u) => u.name },
+    { key: 'email', value: (u) => u.email },
+    { key: 'designation', value: (u) => u.designation ?? u.role },
+    { key: 'dealer', value: (u) => u.dealerName ?? '' },
+    { key: 'status', value: (u) => (u.active ? 'Active' : 'Inactive') },
+    { key: 'workArea', value: (u) => (u.workLocationCodes.length === 0 ? 'all' : u.workLocationCodes.map((c) => knownWorkshops[c] ?? c).join(' ')) },
+  ]
+  const employeesView = useListView(users, employeeFields, {
+    getKey: (u) => u.id,
+    prefilter: (u) => (showInactive || u.active) && (!locationFilter || u.workLocationCodes.includes(locationFilter)),
+    version: `${showInactive}|${locationFilter}`,
+  })
+  const shown = employeesView.pageRows
   const field = (label: string, key: 'name' | 'email' | 'password' | 'mobile' | 'state' | 'city' | 'pincode' | 'dateOfJoining', extra: { secure?: boolean; keyboard?: 'default' | 'number-pad' | 'email-address'; max?: number; placeholder?: string; disabled?: boolean } = {}) => (
     <View style={{ marginTop: 8 }}>
       <Text style={styles.label}>{label}</Text>
@@ -160,14 +185,16 @@ export function EmployeesScreen() {
       keyboardShouldPersistTaps="handled"
       ListHeaderComponent={
         <>
-          <TextInput style={styles.input} value={search} onChangeText={setSearch} placeholder="Search name or email…" placeholderTextColor={colors.textMuted} />
+          <SearchBox value={employeesView.query} onChangeText={employeesView.setQuery} placeholder="Search name, email, designation or dealer…" />
           <View style={{ marginTop: 8 }}>
-            <PickerField label="Work Area location" value={locationFilter} onChange={setLocationFilter} options={[{ value: '', label: 'All locations' }, ...allLocationCodes.map((c) => ({ value: c, label: `${knownWorkshops[c] ? `${knownWorkshops[c]} - ` : ''}${c}` }))]} />
+            <PickerField label="Work Area location" value={locationFilter} onChange={setLocationFilter} options={[{ value: '', label: 'All locations' }, ...allLocationCodes.map((c) => ({ value: c, label: locationLabel(c) }))]} />
           </View>
           <View style={styles.toolbar}>
             <View style={styles.switchRow}><Switch value={showInactive} onValueChange={setShowInactive} /><Text style={styles.muted}>Show inactive</Text></View>
             {!formOpen && <TouchableOpacity style={styles.primaryBtn} onPress={openAdd}><Text style={styles.primaryBtnText}>+ Add Employee</Text></TouchableOpacity>}
           </View>
+          {!formOpen && <SortChips options={[{ key: 'name', label: 'Name' }, { key: 'designation', label: 'Designation' }, { key: 'dealer', label: 'Dealer' }, { key: 'status', label: 'Status' }]} sort={employeesView.sort} onToggle={employeesView.toggleSort} />}
+          {!formOpen && <Text style={[styles.muted, { marginTop: 8 }]}>{employeesView.total === employeesView.allTotal ? `${employeesView.allTotal} employees` : `${employeesView.total} of ${employeesView.allTotal} employees`}</Text>}
           {error && <Text style={styles.errorText}>{error}</Text>}
           {loading && <ActivityIndicator color={colors.primary} style={{ marginTop: 10 }} />}
 
@@ -214,6 +241,7 @@ export function EmployeesScreen() {
         </>
       }
       ListEmptyComponent={!loading && !error && !formOpen ? <Text style={styles.muted}>No employees found.</Text> : null}
+      ListFooterComponent={!formOpen && employeesView.total > 0 ? <PagerBar page={employeesView.page} pageCount={employeesView.pageCount} total={employeesView.total} onPage={employeesView.setPage} pageSize={employeesView.pageSize} onPageSize={employeesView.setPageSize} /> : null}
       renderItem={({ item: u }) => (
         <View style={[styles.row, !u.active && { opacity: 0.55 }]}>
           <View style={{ flex: 1 }}>
@@ -237,7 +265,6 @@ export function AdminUsersScreen() {
   const [users, setUsers] = useState<StaffUser[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [search, setSearch] = useState('')
   const [roleFilter, setRoleFilter] = useState('')
   const [editing, setEditing] = useState<{ id: string; role: string } | null>(null)
 
@@ -257,8 +284,16 @@ export function AdminUsersScreen() {
   }
   const toggleActive = (u: StaffUser) => apiClient.put(`/api/users/${u.id}`, { active: !u.active }).then(load).catch((err) => Alert.alert('Admin: Users', apiErrorMessage(err, 'Could not change this user.')))
 
-  const q = search.trim().toLowerCase()
-  const shown = users.filter((u) => (!q || `${u.name} ${u.email} ${u.dealerName ?? ''}`.toLowerCase().includes(q)) && (!roleFilter || u.role === roleFilter))
+// 2026-10-23 ("all pages add in sorting and pagination and ui attractive"): search on every field, sort chips and 10 rows per page (lib/listView.ts + components/ListControls.tsx).
+  const adminFields: Field<StaffUser>[] = [
+    { key: 'name', value: (u) => u.name },
+    { key: 'email', value: (u) => u.email },
+    { key: 'role', value: (u) => u.role },
+    { key: 'dealer', value: (u) => u.dealerName ?? 'All dealers' },
+    { key: 'status', value: (u) => (u.active ? 'Active' : 'Inactive') },
+  ]
+  const adminView = useListView(users, adminFields, { getKey: (u) => u.id, prefilter: (u) => !roleFilter || u.role === roleFilter, version: roleFilter })
+  const shown = adminView.pageRows
 
   return (
     <FlatList
@@ -269,14 +304,16 @@ export function AdminUsersScreen() {
       keyboardShouldPersistTaps="handled"
       ListHeaderComponent={
         <>
-          <TextInput style={styles.input} value={search} onChangeText={setSearch} placeholder="Search name, email or dealer…" placeholderTextColor={colors.textMuted} />
+          <SearchBox value={adminView.query} onChangeText={adminView.setQuery} placeholder="Search name, email, role or dealer…" />
           <View style={{ marginTop: 8 }}><PickerField label="Role" value={roleFilter} onChange={setRoleFilter} options={[{ value: '', label: 'All roles' }, ...ALL_ROLES.map((r) => ({ value: r, label: r }))]} /></View>
-          <Text style={[styles.muted, { marginTop: 8 }]}>{shown.length} of {users.length} logins. Azure AD directory sync and the BAPL dealer import are on the web page.</Text>
+          <SortChips options={[{ key: 'name', label: 'Name' }, { key: 'role', label: 'Role' }, { key: 'dealer', label: 'Dealer' }, { key: 'status', label: 'Status' }]} sort={adminView.sort} onToggle={adminView.toggleSort} />
+          <Text style={[styles.muted, { marginTop: 8 }]}>{adminView.total} of {adminView.allTotal} logins. Azure AD directory sync and the BAPL dealer import are on the web page.</Text>
           {error && <Text style={styles.errorText}>{error}</Text>}
           {loading && <ActivityIndicator color={colors.primary} style={{ marginTop: 10 }} />}
         </>
       }
       ListEmptyComponent={!loading && !error ? <Text style={styles.muted}>No users found.</Text> : null}
+      ListFooterComponent={adminView.total > 0 ? <PagerBar page={adminView.page} pageCount={adminView.pageCount} total={adminView.total} onPage={adminView.setPage} pageSize={adminView.pageSize} onPageSize={adminView.setPageSize} /> : null}
       renderItem={({ item: u }) => (
         <View style={[styles.row, !u.active && { opacity: 0.55 }]}>
           <View style={{ flex: 1 }}>

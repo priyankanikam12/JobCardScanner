@@ -1,0 +1,14 @@
+<!-- 17.10.2026 (VAPT DMS-13): IIS adds "X-Powered-By: ASP.NET" and a Server header BEFORE the application can touch them, so they are removed here. Merge these two blocks into the existing
+     <system.webServer> of the site's web.config (keep the aspNetCore handler that is already there). -->
+<configuration>
+  <system.webServer>
+    <security>
+      <requestFiltering removeServerHeader="true" />
+    </security>
+    <httpProtocol>
+      <customHeaders>
+        <remove name="X-Powered-By" />
+      </customHeaders>
+    </httpProtocol>
+  </system.webServer>
+</configuration>
