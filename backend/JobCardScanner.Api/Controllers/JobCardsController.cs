@@ -1527,7 +1527,8 @@ public class JobCardsController : ControllerBase
         if (string.IsNullOrWhiteSpace(req.LabourCode)) return BadRequest(new { message = "labourCode is required." });
         if (req.Quantity < 1) return BadRequest(new { message = "quantity must be at least 1." });
         // 2026-10-23 (VAPT DMS-08): rate 0 .. 1 crore, quantity up to 10,000, and the tax rates must be statutory ones (see FinancialInputValidator for the allowed lists).
-        var labourCheck = FinancialInputValidator.ValidateLine(req.LabourCode.Trim(), Convert.ToDecimal(req.Quantity), Convert.ToDecimal(req.RateAtSuggestion ?? 0), null, 0m, Convert.ToDecimal(req.Cgst ?? 0), Convert.ToDecimal(req.Sgst ?? 0), Convert.ToDecimal(req.Igst ?? 0));
+        // Labour Master keeps GST as a FRACTION (0.09 / 0.18), so the rates are turned into percent first (GstAsPercent) - checked as 0.09 the line was refused and could never be added.
+        var labourCheck = FinancialInputValidator.ValidateLine(req.LabourCode.Trim(), Convert.ToDecimal(req.Quantity), Convert.ToDecimal(req.RateAtSuggestion ?? 0), null, 0m, GstAsPercent(req.Cgst), GstAsPercent(req.Sgst), GstAsPercent(req.Igst));
         if (labourCheck is not null) return BadRequest(new { message = labourCheck });
 
         var suggestion = new JobCardLabourSuggestion
@@ -1563,6 +1564,15 @@ public class JobCardsController : ControllerBase
             return StatusCode(500, new { message = "Could not save the labour suggestion.", detail = ex.GetBaseException().Message });
         }
         return Ok(suggestion);
+    }
+
+    /// <summary>2026-10-23 ("in Labour Suggestion when i try to add labour its not added"): the Labour Master stores GST as a FRACTION (0.09, 0.18 - the Repair Bill page multiplies it by 100), but the VAPT rate
+    /// check compares PERCENT (9, 18), so every labour line picked from the catalogue was refused with "CGST / SGST must be one of ...". A value between 0 and 1 is a fraction and becomes percent here;
+    /// a value typed as a percent (9, 18) stays as it is. Only the check uses the converted number - what is saved is exactly what was sent.</summary>
+    private static decimal GstAsPercent(object? value)
+    {
+        var x = value is null ? 0m : Convert.ToDecimal(value);
+        return x > 0m && x < 1m ? x * 100m : x;
     }
 
     /// <summary>PUT /api/jobcards/labour-suggestions/{suggestionId} - edits a suggested labour line after the fact: Quantity and Issue Type always.

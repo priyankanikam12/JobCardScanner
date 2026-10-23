@@ -1,6 +1,7 @@
 // web\src\auth\msalConfig.ts
 import type { Configuration } from '@azure/msal-browser'
 import { PublicClientApplication } from '@azure/msal-browser'
+import { msalCacheLocation } from './tokenStorage'
 
 // Staff sign-in configuration - see docs/AZURE_AD_SETUP.md for how to obtain these values
 // from the Azure Portal. Customers never touch MSAL; they use mobile+OTP (see
@@ -17,7 +18,8 @@ export const msalConfig: Configuration = {
     // tab/window - otherwise MSAL forgets you the moment the tab closes and every visit
     // requires a fresh "Continue with Microsoft" sign-in, even though your Microsoft account
     // itself may still be signed in behind the scenes.
-    cacheLocation: 'localStorage',
+    // 2026-10-23 (VAPT DMS-16): sessionStorage by default - see tokenStorage.ts (VITE_TOKEN_STORAGE=local brings the old behaviour back)
+    cacheLocation: msalCacheLocation,
     storeAuthStateInCookie: false,
   },
 }

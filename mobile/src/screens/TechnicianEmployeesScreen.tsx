@@ -1,4 +1,3 @@
-// mobile\src\screens\TechnicianEmployeesScreen.tsx
 import { useEffect, useState } from 'react'
 import { ActivityIndicator, Alert, FlatList, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native'
 import { apiClient } from '../api/client'
@@ -26,20 +25,35 @@ import type { BaplDmsWorkshop, Technician } from '../types'
  * actions are SupervisorUp-gated server-side regardless (TechniciansController.Create/Update/
  * Delete).
  *
- * 2026-10-23: TechniciansController.List now returns every dealer's technicians to a Corporate /
- * System Admin, and their Location filter is built from the technicians' own locations (no dealer
- * -> no workshops fetch). STILL A GAP (same as web): for those two roles Add has no dealer to create
- * under (POST /api/technicians?dealerId=...) and the form's Location list is empty.
+ * KNOWN GAP (disclosed, not silently dropped - same as web's own doc comment): no Corporate/System
+ * Admin cross-dealer view - TechniciansController.List only returns rows for a dealerId a
+ * Corporate/System Admin explicitly passes, and this screen never passes one.
  */
 
 const apiErrorMessage = (err: unknown, fallback: string): string =>
   (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? fallback
 
-const emptyForm = { id: null as string | null, name: '', locationCode: '' }
+const emptyForm = { id: null as string | null, name: '', locationCode: '', dealerId: '' }
+
+/** A dealer offered to Corporate / System Admin (GET /api/dealers); only those with a DMS dealer code have workshop locations. */
+interface DealerOption { id: string; name: string; baplDmsDealerCode?: string | null }
 
 export function TechnicianEmployeesScreen() {
   const { profile, hasRole } = useStaffAuth()
   const canManage = hasRole('Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin')
+  // 2026-10-23 ("in login of systemadmin and corporate admin all Technician Employee not showing"): a Corporate / System Admin has no dealer of its own and the API answered with an EMPTY list unless a dealerId
+  // was passed (the KNOWN GAP in this file's header). Now this screen asks for every dealer's technicians (allDealers=true), shows the dealer on each row, has a Dealer filter, and the Add form has a Dealer
+  // picker (POST /api/technicians?dealerId=...). A dealer-level login is unchanged.
+  const isOrgWide = hasRole('CorporateAdmin', 'SystemAdmin')
+  const [dealers, setDealers] = useState<DealerOption[]>([])
+  const [dealerFilter, setDealerFilter] = useState('')
+  useEffect(() => {
+    if (!isOrgWide) return
+    apiClient.get<DealerOption[]>('/api/dealers')
+      .then((r) => setDealers((Array.isArray(r.data) ? r.data : []).sort((a, b) => a.name.localeCompare(b.name))))
+      .catch(() => setDealers([]))
+  }, [isOrgWide])
+  const dealerNameById = new Map(dealers.map((d) => [d.id, d.name]))
 
   const [technicians, setTechnicians] = useState<Technician[]>([])
   const [includeInactive, setIncludeInactive] = useState(false)
@@ -48,53 +62,56 @@ export function TechnicianEmployeesScreen() {
   // 2026-10-03 (web TechnicianEmployeesPage - "add filter for search technician and dropdown of location"): a name search box and a Location dropdown above the list. The location is sent to the
   // server (GET /api/technicians?locationCode=..., the same param the Assign Technician dropdown uses), the name search is applied in the phone.
   const [locationFilter, setLocationFilter] = useState('')
-  // 2026-10-23: a Corporate / System Admin has no dealer, so the workshops fetch below never runs for them and the Location dropdown showed only "All locations". Fallback: the locations that appear
-  // on the technicians themselves, collected from the unfiltered list (kept as-is while a location filter is active, so the dropdown doesn't shrink to one option).
-  const [techLocations, setTechLocations] = useState<PickerOption[]>([])
   const load = () => {
     setLoading(true)
-    apiClient.get<Technician[]>('/api/technicians', { params: { includeInactive, locationCode: locationFilter || undefined } })
-      .then((r) => {
-        setTechnicians(r.data)
-        if (!locationFilter) {
-          const seen = new Map<string, string>()
-          r.data.forEach((t) => { if (t.locationCode && !seen.has(t.locationCode)) seen.set(t.locationCode, t.locationName ? `${t.locationName} (${t.locationCode})` : t.locationCode) })
-          setTechLocations([...seen].map(([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label)))
-        }
-      })
+    apiClient.get<Technician[]>('/api/technicians', { params: { includeInactive, locationCode: locationFilter || undefined, ...(isOrgWide ? { allDealers: true, dealerId: dealerFilter || undefined } : {}) } })
+      .then((r) => setTechnicians(r.data))
       .finally(() => setLoading(false))
   }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(load, [includeInactive, locationFilter])
+  useEffect(load, [includeInactive, locationFilter, dealerFilter])
 // 2026-10-23 ("all pages add in sorting and pagination and ui attractive"): search on every field, sort chips and 10 rows per page (lib/listView.ts + components/ListControls.tsx).
   const technicianFields: Field<Technician>[] = [
     { key: 'name', value: (t) => t.name },
     { key: 'location', value: (t) => (t.locationName ? `${t.locationName} (${t.locationCode})` : t.locationCode) },
+    { key: 'dealer', value: (t) => dealerNameById.get(t.dealerId) ?? '' },
     { key: 'status', value: (t) => (t.active ? 'Active' : 'Inactive') },
   ]
   const view = useListView(technicians, technicianFields, { getKey: (t) => t.id })
   const shown = view.pageRows
 
+  // Locations: the FORM lists the workshops of the dealer it is for (a dealer login: its own; Corporate / System Admin: the dealer picked in the form); the Location FILTER lists those of the dealer being filtered.
   const [workshops, setWorkshops] = useState<BaplDmsWorkshop[]>([])
+  const [filterWorkshops, setFilterWorkshops] = useState<BaplDmsWorkshop[]>([])
+  const [form, setForm] = useState(emptyForm)
+  const formDealerId = isOrgWide ? form.dealerId : (profile?.dealerId ?? '')
+  const filterDealerId = isOrgWide ? dealerFilter : (profile?.dealerId ?? '')
   useEffect(() => {
-    if (!profile?.dealerId) { setWorkshops([]); return }
-    apiClient.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: profile.dealerId } })
+    if (!formDealerId) { setWorkshops([]); return }
+    apiClient.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: formDealerId } })
       .then((r) => setWorkshops(r.data))
       .catch(() => setWorkshops([]))
-  }, [profile?.dealerId])
+  }, [formDealerId])
+  useEffect(() => {
+    if (!filterDealerId) { setFilterWorkshops([]); return }
+    apiClient.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: filterDealerId } })
+      .then((r) => setFilterWorkshops(r.data))
+      .catch(() => setFilterWorkshops([]))
+  }, [filterDealerId])
+  const filterWorkshopOptions: PickerOption[] = filterWorkshops.map((w) => ({ label: `${w.locName} (${w.locCode})`, value: w.locCode }))
   const workshopOptions: PickerOption[] = workshops.map((w) => ({ label: `${w.locName} (${w.locCode})`, value: w.locCode }))
 
-  const [form, setForm] = useState(emptyForm)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
   const resetForm = () => { setForm(emptyForm); setError(null) }
 
-  const editTechnician = (t: Technician) => { setForm({ id: t.id, name: t.name, locationCode: t.locationCode }); setError(null) }
+  const editTechnician = (t: Technician) => { setForm({ id: t.id, name: t.name, locationCode: t.locationCode, dealerId: t.dealerId }); setError(null) }
 
   const save = async () => {
     setError(null)
     if (!form.name.trim()) { setError('Name is required.'); return }
+    if (isOrgWide && !form.id && !form.dealerId) { setError('Dealer is required.'); return }
     if (!form.locationCode) { setError('Location is required.'); return }
     const locationName = workshops.find((w) => w.locCode === form.locationCode)?.locName ?? null
     setBusy(true)
@@ -102,7 +119,7 @@ export function TechnicianEmployeesScreen() {
       if (form.id) {
         await apiClient.put(`/api/technicians/${form.id}`, { name: form.name.trim(), locationCode: form.locationCode, locationName })
       } else {
-        await apiClient.post('/api/technicians', { name: form.name.trim(), locationCode: form.locationCode, locationName })
+        await apiClient.post('/api/technicians', { name: form.name.trim(), locationCode: form.locationCode, locationName }, isOrgWide ? { params: { dealerId: form.dealerId } } : undefined)
       }
       resetForm()
       load()
@@ -156,12 +173,23 @@ export function TechnicianEmployeesScreen() {
                 <Text style={styles.cardTitle}>{form.id ? 'Edit Technician' : 'Add Technician'}</Text>
                 <Text style={styles.label}>Name</Text>
                 <TextInput style={styles.input} value={form.name} onChangeText={(v) => setForm({ ...form, name: v })} placeholder="Technician name" />
+                {isOrgWide && (
+                  <View style={{ marginTop: 10 }}>
+                    <PickerField
+                      label="Dealer"
+                      value={form.dealerId}
+                      options={dealers.filter((d) => !!d.baplDmsDealerCode || d.id === form.dealerId).map((d) => ({ label: `${d.name}${d.baplDmsDealerCode ? ` (${d.baplDmsDealerCode})` : ''}`, value: d.id }))}
+                      placeholder="Select dealer…"
+                      onChange={(v) => setForm({ ...form, dealerId: v, locationCode: '' })}
+                    />
+                  </View>
+                )}
                 <View style={{ marginTop: 10 }}>
                   <PickerField
                     label="Location"
                     value={form.locationCode}
                     options={workshopOptions}
-                    placeholder={workshops.length ? 'Select workshop…' : 'No workshops found for this dealer yet'}
+                    placeholder={isOrgWide && !form.dealerId ? 'Pick a dealer first' : workshops.length ? 'Select workshop…' : 'No workshops found for this dealer yet'}
                     onChange={(v) => setForm({ ...form, locationCode: v })}
                   />
                 </View>
@@ -179,8 +207,13 @@ export function TechnicianEmployeesScreen() {
               </View>
             )}
             <View style={{ marginBottom: 8 }}><SearchBox value={view.query} onChangeText={view.setQuery} placeholder="Search technician by name or location…" /></View>
+            {isOrgWide && (
+              <View style={{ marginBottom: 8 }}>
+                <PickerField label="Dealer" value={dealerFilter} options={[{ label: 'All dealers', value: '' }, ...dealers.map((d) => ({ label: d.name, value: d.id }))]} placeholder="All dealers" onChange={(v) => { setDealerFilter(v); setLocationFilter('') }} />
+              </View>
+            )}
             <View style={{ marginBottom: 8 }}>
-              <PickerField label="Location" value={locationFilter} options={[{ label: 'All locations', value: '' }, ...(workshopOptions.length ? workshopOptions : techLocations)]} placeholder="All locations" onChange={setLocationFilter} />
+              <PickerField label="Location" value={locationFilter} options={[{ label: isOrgWide && !dealerFilter ? 'Pick a dealer first' : 'All locations', value: '' }, ...filterWorkshopOptions]} placeholder={isOrgWide && !dealerFilter ? 'Pick a dealer first' : 'All locations'} onChange={setLocationFilter} />
             </View>
             <View style={styles.toggleRow}>
               <Text style={styles.label}>Show inactive</Text>
@@ -197,6 +230,7 @@ export function TechnicianEmployeesScreen() {
           <View style={styles.row}>
             <View style={{ flex: 1 }}>
               <Text style={styles.name}>{t.name}</Text>
+              {isOrgWide && <Text style={styles.muted}>{dealerNameById.get(t.dealerId) ?? 'Dealer'}</Text>}
               <Text style={styles.muted}>{t.locationName ? `${t.locationName} (${t.locationCode})` : t.locationCode}</Text>
               <Text style={[styles.badge, t.active ? styles.badgeOn : styles.badgeOff]}>{t.active ? 'Active' : 'Inactive'}</Text>
             </View>

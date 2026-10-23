@@ -5,6 +5,7 @@ import { useMsal } from '@azure/msal-react'
 import { useStaffAuth } from '../auth/StaffAuthContext'
 import { dealerLogout } from '../services/dealerAuthService'
 import { checkOutBeforeLogout } from '../services/attendanceCheckin'
+import { revokeStaffSession } from '../lib/sessionRevoke'
 import { staffApi } from '../api/client'
 import type { StaffRole } from '../types'
 // 2026-09-18 "in place of JobCardScanner i want add web\src\assets\BGauss_Logo.png": this file lives
@@ -443,6 +444,8 @@ export function StaffLayout() {
   // succeeded.
   const signOut = async () => {
     await checkOutBeforeLogout()
+    // 2026-10-23 (VAPT DMS-16): the API refuses this token from now on - before the local copy is thrown away (never blocks sign-out)
+    await revokeStaffSession()
     if (authMode === 'dealer') {
       dealerLogout()
       navigate('/login', { replace: true })

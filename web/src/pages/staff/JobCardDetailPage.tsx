@@ -13,6 +13,8 @@ import { buildEstimatePrintHtml, buildJobCardPrintHtml } from '../../lib/jobCard
 // print in that same format"): the Invoice print option uses the DMS "GST TAX INVOICE" layout -
 // see lib/repairBillInvoicePrintHtml.ts.
 import { buildRepairBillTaxInvoicePrintHtml, taxInvoiceContextFromJobCard } from '../../lib/repairBillInvoicePrintHtml'
+// 2026-10-23: one size for the boxes and buttons of the Part / Labour suggestion rows and tables - see components/suggest-row.css
+import '../../components/suggest-row.css'
 
 // Photo URLs come back from the API as a relative path (e.g. "/uploads/jobcard-photos/.../x.jpg" -
 // see JobCardsController.UploadPhoto), same origin as the API itself, not the frontend dev server.
@@ -477,19 +479,24 @@ export function JobCardDetailPage() {
 
   if (!jc) return <p className="muted">Loading...</p>
 
-  const run = async (fn: () => Promise<unknown>, successMsg?: string) => {
+  // 2026-10-23 ("in Labour Suggestion when i try to add labour its not added"): run() now also RETURNS the error text (null = it worked), so the Part / Labour suggestion cards can show a refused
+  // "Add Suggestion" right under their own row - before, the reason appeared only in the line at the very TOP of the page, far from the card, so it looked as if nothing had happened.
+  const run = async (fn: () => Promise<unknown>, successMsg?: string): Promise<string | null> => {
     setBusy(true)
     setMsg(null)
     try {
       await fn()
       await load()
       if (successMsg) setMsg(successMsg)
+      return null
     } catch (err: unknown) {
       // Surface both the friendly message and the raw exception detail when the backend sends one (see
       // JobCardsController.AddPartSuggestion/AddLabourSuggestion's catch blocks) - this is what tells
       // apart "migration wasn't run against this database" from a genuinely new bug.
       const data = (err as { response?: { data?: { message?: string; detail?: string } } })?.response?.data
-      setMsg(data ? [data.message, data.detail].filter(Boolean).join(' — ') || 'Action failed.' : 'Action failed.')
+      const text = data ? [data.message, data.detail].filter(Boolean).join(' — ') || 'Action failed.' : 'Action failed.'
+      setMsg(text)
+      return text
     } finally {
       setBusy(false)
     }
@@ -1103,7 +1110,7 @@ function EstimatesCard({
         )}
       </div>
       {estimatesLocked && !closed && (
-        <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+        <div className="sg-inline" style={{ marginTop: 12 }}>
           <input
             type="email"
             value={email}
@@ -1111,7 +1118,7 @@ function EstimatesCard({
             placeholder="Customer email address…"
             style={{ minWidth: 240 }}
           />
-          <button className="btn btn-sm btn-primary" disabled={sending} onClick={sendEmail}>
+          <button className="btn btn-primary" disabled={sending} onClick={sendEmail}>
             {sending ? 'Sending…' : 'Send Estimate'}
           </button>
         </div>
@@ -1156,7 +1163,9 @@ function partStockLines(p: JobCardsPartsCatalogRow): string {
   return parts.length === 1 ? `Stock: ${parts[0]}` : `Stock: ${parts.join(' + ')} = ${x.availableQty ?? 0}`
 }
 
-function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => void; estimatesLocked: boolean }) {
+function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => Promise<string | null>; estimatesLocked: boolean }) {
+  // why the last "Add Suggestion" was refused (shown under the row)
+  const [addError, setAddError] = useState<string | null>(null)
   const [availableParts, setAvailableParts] = useState<JobCardsPartsCatalogRow[]>([])
   const [search, setSearch] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(false)
@@ -1239,7 +1248,7 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
   return (
     <div className="card">
       <h3>Part Suggestion</h3>
-      <table>
+      <table className="sg-table">
         <thead><tr><th>Sr no.</th><th>Item Code</th><th>Description</th><th>MRP</th><th>QTY</th><th>Discount</th><th>Amount</th><th>Issue Type</th><th>Picture</th><th></th></tr></thead>
         <tbody>
           {jc.partSuggestions.map((p, i) => (
@@ -1277,7 +1286,8 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
                   run={run}
                 />
               </td>
-              <td style={{ display: 'flex', gap: 4 }}>
+              <td>
+                <div className="sg-actions">
                 <select
                   value={p.status}
                   onChange={(e) => run(() => staffApi.put(`/api/jobcards/part-suggestions/${p.id}`, { status: e.target.value }))}
@@ -1308,6 +1318,7 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
                 >
                   Remove
                 </button>
+                </div>
               </td>
             </tr>
           ))}
@@ -1330,9 +1341,8 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
          Item Code/QTY/Issue Type/Add read as one tidy line (the same single-line fix as
          RepairBillCreatePage's Labour staging row). .suggest-row's shared flex-wrap:wrap in global.css is
          left untouched, so other .suggest-row users (Labour Suggestion's own row below) are unaffected. */}
-      <div style={{ overflowX: 'auto' }}>
-      <div className="suggest-row" style={{ flexWrap: 'nowrap' }}>
-        <div className="field field-grow" style={{ position: 'relative' }}>
+      <div className="sg-row">
+        <div className="field sg-grow">
           <label>Item Code / Description</label>
           <input
             value={search}
@@ -1375,11 +1385,11 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
             )
           )}
         </div>
-        <div className="field field-compact">
+        <div className="field sg-qty">
           <label>QTY</label>
-          <input type="number" min={1} value={qty} onChange={(e) => setQty(Number(e.target.value))} style={{ width: '4rem' }} />
+          <input type="number" min={1} max={10000} value={qty} onChange={(e) => setQty(Math.min(Number(e.target.value), 10000))} style={{ width: '4rem' }} />
         </div>
-        <div className="field field-compact">
+        <div className="field sg-type">
           <label>Disc. Type</label>
           <select value={discountType} onChange={(e) => setDiscountType(e.target.value as DiscountKind)} disabled={status === 'FOC'}>
             <option value="None">None</option>
@@ -1387,16 +1397,15 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
             <option value="Amount">₹</option>
           </select>
         </div>
-        <div className="field field-compact">
+        <div className="field sg-disc">
           <label>Discount</label>
           <input
             type="number" min={0} value={discountValue}
             onChange={(e) => setDiscountValue(e.target.value)}
             disabled={status === 'FOC' || discountType === 'None'}
-            style={{ width: '5.5rem', textAlign: 'right' }}
           />
         </div>
-        <div className="field field-compact">
+        <div className="field sg-issue">
           <label>Issue Type</label>
           <select value={status} onChange={(e) => setStatus(e.target.value as 'Paid' | 'U/W' | 'FOC')}>
             <option value="Paid">Paid</option>
@@ -1404,18 +1413,19 @@ function PartSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; r
             <option value="FOC">FOC</option>
           </select>
         </div>
-        <div className="field field-compact">
+        <div className="field sg-add">
           <button
-            className="btn btn-sm btn-primary"
+            className="btn btn-primary"
             disabled={!itemCode}
-            onClick={() => {
+            onClick={async () => {
               if (!hasOpenWorklog(jc)) { alert('Start the Technician Work Log timer before adding a part suggestion.'); return }
-              run(addSuggestion, 'Part suggestion added.')
+              setAddError(null)
+              setAddError(await run(addSuggestion, 'Part suggestion added.'))
             }}
           >Add Suggestion</button>
         </div>
       </div>
-      </div>
+      {addError && <p className="sg-error" role="alert">⚠ {addError}</p>}
       {selectedPart && (
         <p className="muted">
           MRP {selectedPart.mrp != null ? `₹${selectedPart.mrp}` : '-'} · GST {partGstText(selectedPart)} · HSN {selectedPart.hsnCode ?? '-'} · {partStockLines(selectedPart)}
@@ -1458,7 +1468,8 @@ function PartPictureCell({
     }
   }
 
-  const isVideo = (ph: JobCardPhoto) => /\.(mp4|mov|webm|3gp|avi)$/i.test(ph.url)
+  // 2026-10-23 (VAPT DMS-14): the API now returns photo addresses with an expiring signature ("x.mp4?exp=...&sig=..."), so the extension is no longer at the very end
+  const isVideo = (ph: JobCardPhoto) => /\.(mp4|mov|webm|3gp|avi)(\?|$)/i.test(ph.url)
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
@@ -1497,7 +1508,9 @@ function PartPictureCell({
 
 const LABOUR_ISSUE_TYPES = ['Paid', 'U/W', 'FOC'] as const
 
-function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => void; estimatesLocked: boolean }) {
+function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail; run: (fn: () => Promise<unknown>, successMsg?: string) => Promise<string | null>; estimatesLocked: boolean }) {
+  // why the last "Add Suggestion" was refused (shown under the row)
+  const [addError, setAddError] = useState<string | null>(null)
   const [rows, setRows] = useState<JobCardsLabourCatalogRow[]>([])
   const [q, setQ] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(false)
@@ -1588,7 +1601,7 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
   return (
     <div className="card">
       <h3>Labour Suggestion</h3>
-      <table>
+      <table className="sg-table">
         <thead>
           <tr>
             <th>Labour Code</th><th>Description</th><th>Qty</th><th>Rate</th><th>HSN</th>
@@ -1601,7 +1614,7 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
               <tr key={l.id}>
                 <td>{l.labourCode}</td>
                 <td>{l.labourDescription ?? '-'}</td>
-                <td><input type="number" min={1} value={editing.qty} onChange={(e) => setEditing({ ...editing, qty: Number(e.target.value) })} style={{ width: '4rem' }} /></td>
+                <td><input type="number" min={1} max={10000} value={editing.qty} onChange={(e) => setEditing({ ...editing, qty: Math.min(Number(e.target.value), 10000) })} style={{ width: '4rem' }} /></td>
                 <td>
                   {editing.rateEditable ? (
                     <input
@@ -1647,8 +1660,10 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
                   </select>
                 </td>
                 <td>
-                  <button className="btn btn-sm btn-primary" disabled={!editRateValid} title={editRateValid ? undefined : 'Type the Rate (0 or more) first.'} onClick={() => run(saveEdit)}>Save</button>{' '}
-                  <button className="btn btn-sm" onClick={() => setEditing(null)}>Cancel</button>
+                  <div className="sg-actions">
+                    <button className="btn btn-sm btn-primary" disabled={!editRateValid} title={editRateValid ? undefined : 'Type the Rate (0 or more) first.'} onClick={() => run(saveEdit)}>Save</button>
+                    <button className="btn btn-sm" onClick={() => setEditing(null)}>Cancel</button>
+                  </div>
                 </td>
               </tr>
             ) : (
@@ -1665,7 +1680,8 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
                 <td>₹{labourMoney(l).amount.toFixed(2)}</td>
                 <td>{l.issueType ?? '-'}</td>
                 <td>
-                  <button className="btn btn-sm" onClick={() => setEditing({ id: l.id, qty: l.quantity, issueType: l.issueType ?? '', discountType: discountOf(l).type, discountValue: String(discountOf(l).value), rateEditable: rateIsOpen(l.rateAtSuggestion), rate: String(l.rateAtSuggestion ?? 0), hsn: l.hsnCode ?? '' })}>Edit</button>{' '}
+                  <div className="sg-actions">
+                  <button className="btn btn-sm" onClick={() => setEditing({ id: l.id, qty: l.quantity, issueType: l.issueType ?? '', discountType: discountOf(l).type, discountValue: String(discountOf(l).value), rateEditable: rateIsOpen(l.rateAtSuggestion), rate: String(l.rateAtSuggestion ?? 0), hsn: l.hsnCode ?? '' })}>Edit</button>
                   <button
                     className="btn btn-sm"
                     style={{ background: '#dc2626', color: '#fff', border: '1px solid #dc2626' }}
@@ -1673,6 +1689,7 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
                   >
                     Remove
                   </button>
+                  </div>
                 </td>
               </tr>
             )
@@ -1692,9 +1709,8 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
       ) : (
       <>
       <h4>Suggest labour (from Labour Master)</h4>
-      <div style={{ overflowX: 'auto' }}>
-      <div className="suggest-row" style={{ flexWrap: 'nowrap' }}>
-        <div className="field field-grow" style={{ position: 'relative' }}>
+      <div className="sg-row">
+        <div className="field sg-grow">
           <label>Labour Code</label>
           <input
             type="text"
@@ -1739,11 +1755,11 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
             )
           )}
         </div>
-        <div className="field field-compact">
+        <div className="field sg-qty">
           <label>Qty</label>
-          <input type="number" min={1} value={qty} onChange={(e) => setQty(Number(e.target.value))} style={{ width: '4rem' }} />
+          <input type="number" min={1} max={10000} value={qty} onChange={(e) => setQty(Math.min(Number(e.target.value), 10000))} style={{ width: '4rem' }} />
         </div>
-        <div className="field field-compact">
+        <div className="field sg-type">
           <label>Disc. Type</label>
           <select value={discountType} onChange={(e) => setDiscountType(e.target.value as DiscountKind)} disabled={issueType === 'FOC'}>
             <option value="None">None</option>
@@ -1751,34 +1767,34 @@ function LabourSuggestionCard({ jc, run, estimatesLocked }: { jc: JobCardDetail;
             <option value="Amount">₹</option>
           </select>
         </div>
-        <div className="field field-compact">
+        <div className="field sg-disc">
           <label>Discount</label>
           <input
             type="number" min={0} value={discountValue}
             onChange={(e) => setDiscountValue(e.target.value)}
             disabled={issueType === 'FOC' || discountType === 'None'}
-            style={{ width: '5.5rem', textAlign: 'right' }}
           />
         </div>
-        <div className="field field-compact">
+        <div className="field sg-issue">
           <label>Issue Type</label>
           <select value={issueType} onChange={(e) => setIssueType(e.target.value)}>
             <option value="">Select…</option>
             {LABOUR_ISSUE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
         </div>
-        <div className="field field-compact">
+        <div className="field sg-add">
           <button
-            className="btn btn-sm btn-primary"
+            className="btn btn-primary"
             disabled={!selectedId}
-            onClick={() => {
+            onClick={async () => {
               if (!hasOpenWorklog(jc)) { alert('Start the Technician Work Log timer before adding a labour suggestion.'); return }
-              run(addSuggestion, 'Labour suggestion added.')
+              setAddError(null)
+              setAddError(await run(addSuggestion, 'Labour suggestion added.'))
             }}
           >Add Suggestion</button>
         </div>
       </div>
-      </div>
+      {addError && <p className="sg-error" role="alert">⚠ {addError}</p>}
       {selected && (
         <p className="muted">
           Rate ₹{selected.labourRate ?? '-'} · HSN {selected.hsnCode ?? '-'} · SGST {selected.sgst ?? '-'} · CGST {selected.cgst ?? '-'} · IGST {selected.igst ?? '-'}

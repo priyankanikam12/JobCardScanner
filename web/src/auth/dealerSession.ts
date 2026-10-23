@@ -5,6 +5,8 @@
 // dependency-free module (localStorage, not Zustand) so it slots into the existing
 // axios-interceptor pattern already used for the customer portal in api/client.ts.
 
+import { tokenStorage } from './tokenStorage'
+
 export interface DealerUser {
   id: string
   name: string
@@ -26,7 +28,7 @@ const STORAGE_KEY = 'jobcardscanner.dealerSession'
 
 export function getDealerSession(): DealerSession | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = tokenStorage.getItem(STORAGE_KEY)
     return raw ? (JSON.parse(raw) as DealerSession) : null
   } catch {
     return null
@@ -38,11 +40,11 @@ export function getDealerToken(): string | null {
 }
 
 export function setDealerSession(session: DealerSession) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(session))
+  tokenStorage.setItem(STORAGE_KEY, JSON.stringify(session))
 }
 
 export function clearDealerSession() {
-  localStorage.removeItem(STORAGE_KEY)
+  tokenStorage.removeItem(STORAGE_KEY)
 }
 
 /** Called right after changeMyPassword()/resetDealerPassword() succeeds, so the forced

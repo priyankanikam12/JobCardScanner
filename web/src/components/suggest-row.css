@@ -1,0 +1,29 @@
+/* web\src\components\suggest-row.css - 2026-10-23: the "Suggest a part" / "Suggest labour" rows and the tables above them on the Job Card Detail page.
+   One height for every box and button of a row (38px), labels above, buttons aligned to the boxes' bottom edge, wraps onto a second line on a narrow screen instead of scrolling sideways. */
+.sg-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 12px; margin: 6px 0 4px; }
+.sg-row .field { margin: 0; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sg-row label { margin: 0; font-size: 12px; font-weight: 600; color: var(--text-muted); }
+.sg-row input, .sg-row select { height: 38px; box-sizing: border-box; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font-size: 14px; }
+.sg-row input:focus, .sg-row select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+.sg-row input:disabled, .sg-row select:disabled { background: #f3f4f6; color: #9ca3af; cursor: not-allowed; }
+.sg-row .sg-grow { flex: 1 1 300px; min-width: 240px; position: relative; }
+.sg-row .sg-grow input { width: 100%; }
+.sg-row .sg-qty input { width: 84px; }
+.sg-row .sg-type select { width: 92px; }
+.sg-row .sg-disc input { width: 112px; text-align: right; }
+.sg-row .sg-issue select { width: 112px; }
+.sg-row .sg-add .btn { height: 38px; padding: 0 22px; white-space: nowrap; font-weight: 600; }
+
+/* the saved lines above the row: boxes and buttons of one size, vertically centred, actions in one tidy line */
+.sg-table td { vertical-align: middle; }
+.sg-table input, .sg-table select { height: 30px; box-sizing: border-box; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font-size: 13px; }
+.sg-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.sg-actions .btn, .sg-actions select { height: 30px; padding: 0 10px; font-size: 13px; white-space: nowrap; box-sizing: border-box; }
+
+/* e-mail row of the Estimates Amount card */
+.sg-inline { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.sg-inline input { height: 38px; box-sizing: border-box; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); font-size: 14px; }
+.sg-inline .btn { height: 38px; padding: 0 18px; white-space: nowrap; }
+
+/* a refused "Add Suggestion" says why right under the row (the page-level line at the top is far away from here) */
+.sg-error { margin: 8px 0 0; padding: 8px 12px; border-radius: 8px; background: #fef2f2; color: #991b1b; font-size: 13px; border: 1px solid #fecaca; }

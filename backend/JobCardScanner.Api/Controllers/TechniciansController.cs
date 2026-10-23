@@ -55,16 +55,18 @@ public class TechniciansController : ControllerBase
     /// management grid passes true so a Supervisor can still see (and reactivate) one they
     /// previously deactivated.
     ///
-    /// 2026-10-23 ("in login of systemadmin and corporate admin all Technician Employee not showing"): same behaviour as UsersController.List - a CorporateAdmin / SystemAdmin has no dealer of its own,
-    /// so with no dealerId they get the technicians of EVERY dealer (dealerId, when given, narrows to that one dealer). A dealer-level login is always limited to its own dealer, whatever it sends.
-    /// (The earlier allDealers=true opt-in is gone - a client that still sends it is simply ignored.)</summary>
+    /// 2026-10-23 ("in login of systemadmin and corporate admin all Technician Employee not showing"): a CorporateAdmin / SystemAdmin has no dealer of its own, and this action used to answer an EMPTY list
+    /// for them unless a dealerId was passed - which the Technician Employee grid never did. allDealers=true (sent only by that grid, for those two roles) now returns the technicians of EVERY dealer
+    /// (dealerId, when also given, narrows to one dealer). Without it nothing changes: the Wizard's and the Job Card Detail page's dropdowns still pass the dealer they mean and get that dealer's list,
+    /// and a Corporate / System Admin who passes neither still gets an empty list. A dealer-level login is always limited to its own dealer, whatever it sends.</summary>
     [HttpGet]
-    public async Task<IActionResult> List([FromQuery] Guid? dealerId, [FromQuery] string? locationCode, [FromQuery] bool includeInactive = false)
+    public async Task<IActionResult> List([FromQuery] Guid? dealerId, [FromQuery] string? locationCode, [FromQuery] bool includeInactive = false, [FromQuery] bool allDealers = false)
     {
         IQueryable<Technician> q = _db.Technicians.AsNoTracking();
         if (IsCorporateOrSystem)
         {
             if (dealerId is not null) q = q.Where(t => t.DealerId == dealerId);
+            else if (!allDealers) return Ok(Array.Empty<object>());
         }
         else
         {

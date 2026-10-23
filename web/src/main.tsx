@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import { MsalProvider } from '@azure/msal-react'
+import { purgeLegacyTokenCopies } from './auth/tokenStorage'
 import { msalInstance } from './auth/msalConfig'
 import { StaffAuthProvider } from './auth/StaffAuthContext'
 import { CustomerAuthProvider } from './auth/CustomerAuthContext'
@@ -9,6 +10,7 @@ import App from './App'
 import './styles/global.css'
 
 async function bootstrap() {
+  purgeLegacyTokenCopies() // 2026-10-23 (VAPT DMS-16): tokens an older build left in localStorage are removed
   try {
     await msalInstance.initialize()
   } catch (err) {

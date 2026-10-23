@@ -183,6 +183,12 @@ export function StaffAuthProvider({ children }: { children: ReactNode }) {
     // comment requires this call to happen before the token is cleared (the request needs the
     // still-valid token) and to never block logout (it swallows its own errors - see that file).
     await checkOutBeforeLogout()
+    // 2026-10-23 (VAPT DMS-16): the API refuses this token from now on (POST /api/session/logout) - before the local copy is thrown away; never blocks sign-out
+    try {
+      await apiClient.post('/api/session/logout', null, { timeout: 3000 })
+    } catch {
+      // already expired / offline / API older than this fix
+    }
     if (dealerSession) {
       await dealerLogout()
       setDealerSessionState(null)

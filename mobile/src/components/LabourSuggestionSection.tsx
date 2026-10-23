@@ -68,7 +68,7 @@ export function LabourSuggestionSection({ jc, onChanged, estimatesLocked, totalL
         cgst: selected.cgst ?? null,
         igst: selected.igst ?? null,
         rateAtSuggestion: selected.labourRate ?? null,
-        quantity: Number(qty) || 1,
+        quantity: Math.min(Number(qty) || 1, 10000), // the API accepts 1 .. 10,000 (VAPT DMS-08)
         issueType: issueType || null,
       })
       // the discount is saved right after the line is added (an FOC line is free of cost, so it never takes one)
@@ -112,7 +112,7 @@ export function LabourSuggestionSection({ jc, onChanged, estimatesLocked, totalL
     setSaving(true)
     try {
       await apiClient.put(`/api/jobcards/labour-suggestions/${editing.id}`, {
-        quantity: Number(editing.qty) || 1,
+        quantity: Math.min(Number(editing.qty) || 1, 10000),
         issueType: editing.issueType.trim() || null,
         ...(editing.rateEditable ? { rateAtSuggestion: Number(editing.rate) || 0, hsnCode: editing.hsn.trim() || null } : {}),
       })

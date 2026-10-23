@@ -21,11 +21,11 @@ import type { BaplDmsWorkshop, Technician } from '../../types'
  * StaffRole.Supervisor's own doc comment). Reading the list (GET /api/technicians) is
  * ServiceAdvisorUp underneath, wide enough for the Wizard/Detail page dropdowns everyone else uses.
  *
- * 2026-10-23: TechniciansController.List now returns every dealer's technicians to a Corporate /
- * System Admin (same as UsersController.List), so the grid is no longer empty for them. Their
- * Location filter is built from the technicians' own locations (no dealer -> no workshops fetch).
- * STILL A GAP: for those two roles "+ Add Technician" has no dealer to create under (the backend
- * needs POST /api/technicians?dealerId=...) and the Add/Edit modal's Location list is empty.
+ * KNOWN GAP (disclosed, not silently dropped): unlike EmployeesPage.tsx, this page has no
+ * Corporate/System Admin cross-dealer view - TechniciansController.List only returns rows for a
+ * dealerId a Corporate/System Admin explicitly passes, and this page never passes one, so it will
+ * show an empty list for those two roles today. Dealer-scoped Supervisor/DealerAdmin (the actual
+ * intended users of this tab) are unaffected.
  *
  * 2026-10-03 ("add filter for search technician and dropdown of location"): a name search box and
  * a Location dropdown sit above the list table - see the two pieces of state below their own doc
@@ -43,14 +43,31 @@ const emptyTechnicianForm = {
   id: null as string | null,
   name: '',
   locationCode: '',
+  dealerId: '', // 2026-10-23: only used by Corporate / System Admin (which dealer the technician works for)
 }
 
 const apiErrorMessage = (err: unknown, fallback: string): string =>
   (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? fallback
 
+/** A dealer offered to Corporate / System Admin (GET /api/dealers); only those with a DMS dealer code have workshop locations. */
+interface DealerOption { id: string; name: string; code?: string; baplDmsDealerCode?: string | null }
+
 export function TechnicianEmployeesPage() {
   const { profile, hasRole } = useStaffAuth()
   const canManage = hasRole('Supervisor', 'DealerAdmin', 'CorporateAdmin', 'SystemAdmin')
+  // 2026-10-23 ("in login of systemadmin and corporate admin all Technician Employee not showing"): a Corporate / System Admin has no dealer of its own, and the API answered with an EMPTY list unless a
+  // dealerId was passed - which this page never did (the "KNOWN GAP" in this file's header). Now the page asks for every dealer's technicians (allDealers=true), shows a Dealer column, offers a Dealer
+  // filter, and the Add dialog has a Dealer picker (POST /api/technicians?dealerId=...). A dealer-level login is unchanged.
+  const isOrgWide = hasRole('CorporateAdmin', 'SystemAdmin')
+  const [dealers, setDealers] = useState<DealerOption[]>([])
+  const [dealerFilter, setDealerFilter] = useState('')
+  useEffect(() => {
+    if (!isOrgWide) return
+    staffApi.get<DealerOption[]>('/api/dealers')
+      .then(({ data }) => setDealers((Array.isArray(data) ? data : []).sort((a, b) => a.name.localeCompare(b.name))))
+      .catch(() => setDealers([]))
+  }, [isOrgWide])
+  const dealerNameById = new Map(dealers.map((d) => [d.id, d.name]))
 
   const [technicians, setTechnicians] = useState<Technician[]>([])
   const [includeInactive, setIncludeInactive] = useState(false)
@@ -61,34 +78,17 @@ export function TechnicianEmployeesPage() {
   // text-search param for this endpoint) - filtered below, right before rendering the table.
   const [locationFilter, setLocationFilter] = useState('')
   const [search, setSearch] = useState('')
-  // 2026-10-23: a Corporate / System Admin has no dealer of its own, so the workshops fetch below never runs for them and the Location dropdown showed only "All locations". Fallback: the
-  // locations that appear on the technicians themselves, collected from the unfiltered list (kept as-is while a location filter is active, so the dropdown doesn't shrink to one option).
-  const [techLocations, setTechLocations] = useState<{ locCode: string; locName: string }[]>([])
-  const load = () => staffApi.get<Technician[]>('/api/technicians', { params: { includeInactive, locationCode: locationFilter || undefined } }).then((r) => {
-    setTechnicians(r.data)
-    if (!locationFilter) {
-      const seen = new Map<string, string>()
-      r.data.forEach((t) => { if (t.locationCode && !seen.has(t.locationCode)) seen.set(t.locationCode, t.locationName || t.locationCode) })
-      setTechLocations([...seen].map(([locCode, locName]) => ({ locCode, locName })).sort((a, b) => a.locName.localeCompare(b.locName)))
-    }
-  })
-  useEffect(() => { load() }, [includeInactive, locationFilter])
+  const load = () => staffApi.get<Technician[]>('/api/technicians', { params: { includeInactive, locationCode: locationFilter || undefined, ...(isOrgWide ? { allDealers: true, dealerId: dealerFilter || undefined } : {}) } }).then((r) => setTechnicians(r.data))
+  useEffect(() => { load() }, [includeInactive, locationFilter, dealerFilter])
 // 2026-10-23 ("all pages add in sorting and pagination and ui attractive"): search on every column, sortable headers and 10 rows per page (components/TableControls.tsx); the filters sit in one flex row.
   const technicianColumns: Column<Technician>[] = [
     { key: 'name', label: 'Name', value: (t) => t.name },
+    ...(isOrgWide ? [{ key: 'dealer', label: 'Dealer', value: (t: Technician) => dealerNameById.get(t.dealerId) ?? '' }] : []),
     { key: 'location', label: 'Location', value: (t) => (t.locationName ? `${t.locationName} (${t.locationCode})` : t.locationCode) },
     { key: 'active', label: 'Active', value: (t) => (t.active ? 'Yes' : 'No') },
   ]
   // the search box above the table feeds the view (name, location and status are all searched)
   const view = useTableView(technicians, technicianColumns, { pageSize: 10, query: search })
-
-  const [workshops, setWorkshops] = useState<BaplDmsWorkshop[]>([])
-  useEffect(() => {
-    if (!profile?.dealerId) { setWorkshops([]); return }
-    staffApi.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: profile.dealerId } })
-      .then((r) => setWorkshops(r.data))
-      .catch(() => setWorkshops([]))
-  }, [profile?.dealerId])
 
   const [form, setForm] = useState(emptyTechnicianForm)
   const [error, setError] = useState<string | null>(null)
@@ -98,11 +98,21 @@ export function TechnicianEmployeesPage() {
   // it, so the same modal serves both.
   const [showModal, setShowModal] = useState(false)
 
-  const openAddModal = () => { setForm(emptyTechnicianForm); setError(null); setShowModal(true) }
+  // Locations offered: a dealer login sees its own dealer's workshops; Corporate / System Admin see the dealer picked in the Add / Edit dialog, or - while the dialog is closed - the dealer picked in the filter row.
+  const [workshops, setWorkshops] = useState<BaplDmsWorkshop[]>([])
+  const workshopsDealerId = isOrgWide ? (showModal ? form.dealerId : dealerFilter) : (profile?.dealerId ?? '')
+  useEffect(() => {
+    if (!workshopsDealerId) { setWorkshops([]); return }
+    staffApi.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: workshopsDealerId } })
+      .then((r) => setWorkshops(r.data))
+      .catch(() => setWorkshops([]))
+  }, [workshopsDealerId])
+
+  const openAddModal = () => { setForm({ ...emptyTechnicianForm, dealerId: isOrgWide ? dealerFilter : '' }); setError(null); setShowModal(true) }
   const closeModal = () => { setShowModal(false); setForm(emptyTechnicianForm); setError(null) }
 
   const editTechnician = (t: Technician) => {
-    setForm({ id: t.id, name: t.name, locationCode: t.locationCode })
+    setForm({ id: t.id, name: t.name, locationCode: t.locationCode, dealerId: t.dealerId })
     setError(null)
     setShowModal(true)
   }
@@ -110,6 +120,7 @@ export function TechnicianEmployeesPage() {
   const save = async () => {
     setError(null)
     if (!form.name.trim()) { setError('Name is required.'); return }
+    if (isOrgWide && !form.id && !form.dealerId) { setError('Dealer is required.'); return }
     if (!form.locationCode) { setError('Location is required.'); return }
     const locationName = workshops.find((w) => w.locCode === form.locationCode)?.locName ?? null
     setBusy(true)
@@ -117,7 +128,7 @@ export function TechnicianEmployeesPage() {
       if (form.id) {
         await staffApi.put(`/api/technicians/${form.id}`, { name: form.name.trim(), locationCode: form.locationCode, locationName })
       } else {
-        await staffApi.post('/api/technicians', { name: form.name.trim(), locationCode: form.locationCode, locationName })
+        await staffApi.post('/api/technicians', { name: form.name.trim(), locationCode: form.locationCode, locationName }, isOrgWide ? { params: { dealerId: form.dealerId } } : undefined)
       }
       closeModal()
       load()
@@ -163,11 +174,20 @@ export function TechnicianEmployeesPage() {
       <div className="card">
         <div className="tc-toolbar">
           <TableSearch value={search} onChange={setSearch} placeholder="Search technician by name or location…" ariaLabel="Search technician" />
+          {isOrgWide && (
+            <label className="tc-field">
+              Dealer
+              <select value={dealerFilter} onChange={(e) => { setDealerFilter(e.target.value); setLocationFilter('') }} aria-label="Dealer">
+                <option value="">All dealers</option>
+                {dealers.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            </label>
+          )}
           <label className="tc-field">
             Location
-            <select value={locationFilter} onChange={(e) => setLocationFilter(e.target.value)} aria-label="Location">
-              <option value="">All locations</option>
-              {(workshops.length ? workshops : techLocations).map((w) => <option key={w.locCode} value={w.locCode}>{w.locName} ({w.locCode})</option>)}
+            <select value={locationFilter} onChange={(e) => setLocationFilter(e.target.value)} aria-label="Location" disabled={isOrgWide && !dealerFilter}>
+              <option value="">{isOrgWide && !dealerFilter ? 'Pick a dealer first' : 'All locations'}</option>
+              {workshops.map((w) => <option key={w.locCode} value={w.locCode}>{w.locName} ({w.locCode})</option>)}
             </select>
           </label>
           <label className="tc-check">
@@ -181,6 +201,7 @@ export function TechnicianEmployeesPage() {
             <thead>
               <tr>
                 <SortTh label="Name" sortKey="name" sort={view.sort} onSort={view.toggleSort} />
+                {isOrgWide && <SortTh label="Dealer" sortKey="dealer" sort={view.sort} onSort={view.toggleSort} />}
                 <SortTh label="Location" sortKey="location" sort={view.sort} onSort={view.toggleSort} />
                 <SortTh label="Active" sortKey="active" sort={view.sort} onSort={view.toggleSort} />
                 {canManage && <th></th>}
@@ -190,6 +211,7 @@ export function TechnicianEmployeesPage() {
               {view.pageRows.map((t) => (
                 <tr key={t.id}>
                   <td>{t.name}</td>
+                  {isOrgWide && <td>{dealerNameById.get(t.dealerId) ?? <span className="muted">-</span>}</td>}
                   <td>{t.locationName ? `${t.locationName} (${t.locationCode})` : t.locationCode}</td>
                   <td><StatusBadge active={t.active} yes="Yes" no="No" /></td>
                   {canManage && (
@@ -202,7 +224,7 @@ export function TechnicianEmployeesPage() {
                 </tr>
               ))}
               {view.pageRows.length === 0 && (
-                <tr><td colSpan={canManage ? 4 : 3} className="muted">
+                <tr><td colSpan={(canManage ? 4 : 3) + (isOrgWide ? 1 : 0)} className="muted">
                   {technicians.length === 0 ? `No technicians yet${canManage ? ' - add one above.' : '.'}` : 'No technicians match this search/filter.'}
                 </td></tr>
               )}
@@ -266,10 +288,19 @@ export function TechnicianEmployeesPage() {
                   autoFocus
                 />
               </div>
+              {isOrgWide && (
+                <div className="field" style={{ marginBottom: 0 }}>
+                  <label>Dealer</label>
+                  <select value={form.dealerId} disabled={!!form.id} onChange={(e) => setForm({ ...form, dealerId: e.target.value, locationCode: '' })}>
+                    <option value="">--Select dealer--</option>
+                    {dealers.filter((d) => !!d.baplDmsDealerCode || d.id === form.dealerId).map((d) => <option key={d.id} value={d.id}>{d.name}{d.baplDmsDealerCode ? ` (${d.baplDmsDealerCode})` : ''}</option>)}
+                  </select>
+                </div>
+              )}
               <div className="field" style={{ marginBottom: 0 }}>
                 <label>Location</label>
                 <select value={form.locationCode} onChange={(e) => setForm({ ...form, locationCode: e.target.value })}>
-                  <option value="">{workshops.length ? 'Select workshop…' : 'No workshops found for this dealer yet'}</option>
+                  <option value="">{isOrgWide && !form.dealerId ? 'Pick a dealer first' : workshops.length ? 'Select workshop…' : 'No workshops found for this dealer yet'}</option>
                   {workshops.map((w) => <option key={w.locCode} value={w.locCode}>{w.locName} ({w.locCode})</option>)}
                 </select>
               </div>

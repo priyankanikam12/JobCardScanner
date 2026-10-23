@@ -1,5 +1,7 @@
 // web\src\auth\CustomerAuthContext.tsx
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
+import { tokenStorage } from './tokenStorage'
+import { revokeToken } from '../lib/sessionRevoke'
 
 interface CustomerSession {
   accessToken: string
@@ -19,7 +21,7 @@ const CustomerAuthContext = createContext<CustomerAuthValue | undefined>(undefin
 
 function loadStored(): CustomerSession | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = tokenStorage.getItem(STORAGE_KEY)
     return raw ? (JSON.parse(raw) as CustomerSession) : null
   } catch {
     return null
@@ -33,11 +35,12 @@ export function CustomerAuthProvider({ children }: { children: ReactNode }) {
     () => ({
       session,
       signIn: (s) => {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(s))
+        tokenStorage.setItem(STORAGE_KEY, JSON.stringify(s))
         setSession(s)
       },
       signOut: () => {
-        localStorage.removeItem(STORAGE_KEY)
+        revokeToken(session?.accessToken) // DMS-16: the API stops accepting this token too
+        tokenStorage.removeItem(STORAGE_KEY)
         setSession(null)
       },
     }),

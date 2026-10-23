@@ -2,6 +2,7 @@ import axios from 'axios'
 import { InteractionRequiredAuthError } from '@azure/msal-browser'
 import { msalInstance, apiLoginRequest } from '../auth/msalConfig'
 import { getDealerToken, getDealerSession, clearDealerSession } from '../auth/dealerSession'
+import { tokenStorage } from '../auth/tokenStorage'
 
 const baseURL = import.meta.env.VITE_API_BASE_URL
 
@@ -81,7 +82,7 @@ export const portalApi = axios.create({ baseURL })
 
 portalApi.interceptors.request.use((config) => {
   try {
-    const raw = localStorage.getItem(CUSTOMER_TOKEN_KEY)
+    const raw = tokenStorage.getItem(CUSTOMER_TOKEN_KEY)
     if (raw) {
       const session = JSON.parse(raw) as { accessToken: string }
       config.headers.Authorization = `Bearer ${session.accessToken}`

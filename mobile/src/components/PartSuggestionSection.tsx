@@ -106,7 +106,7 @@ export function PartSuggestionSection({ jc, onChanged, estimatesLocked, totalLoc
         itemCode,
         availableQtyAtSuggestion: selectedPart?.availableQty ?? null,
         status,
-        quantity: Number(qty) || 1,
+        quantity: Math.min(Number(qty) || 1, 10000), // the API accepts 1 .. 10,000 (VAPT DMS-08)
         description: selectedPart?.description ?? null,
         hsnCode: selectedPart?.hsnCode ?? null,
         mrp: selectedPart?.mrp ?? null,
@@ -292,7 +292,8 @@ function partStockLines(p: JobCardsPartsCatalogRow): string {
   return parts.length === 1 ? `Stock: ${parts[0]}` : `Stock: ${parts.join(' + ')} = ${p.availableQty ?? 0}`
 }
 
-const isVideoPhoto = (ph: JobCardPhoto) => /\.(mp4|mov|webm|3gp|avi)$/i.test(ph.url)
+// 2026-10-23 (VAPT DMS-14): photo addresses now carry an expiring signature ("x.mp4?exp=...&sig=..."), so the extension is no longer at the very end
+const isVideoPhoto = (ph: JobCardPhoto) => /\.(mp4|mov|webm|3gp|avi)(\?|$)/i.test(ph.url)
 
 /** Part Suggestion row's "Picture" strip (2026-09-03 - "which partcode we added after added we
  * upload phtoos and video"), mirroring web's PartPictureCell. Shown per already-added suggestion:
