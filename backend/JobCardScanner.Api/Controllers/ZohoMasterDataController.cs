@@ -187,6 +187,8 @@ public class ZohoMasterDataController : ControllerBase
             return new
             {
                 r.Id,
+                CustomerId = r.Id,            // 2026-10-24: the unique DMS customer id, named the way Zoho asked
+                CustomerCode = r.LedgerCode,
                 r.LedgerCode,
                 r.LedgerName,
                 r.LedgerType,
@@ -246,6 +248,8 @@ public class ZohoMasterDataController : ControllerBase
     private static object CustomerView(LedgerMaster l, string? typeName, string? dealerName, string? dealerCode, string changeType) => new
     {
         l.Id,
+        CustomerId = l.Id,            // 2026-10-24: the unique DMS customer id, named the way Zoho asked
+        CustomerCode = l.LedgerCode,
         l.LedgerCode,
         l.LedgerName,
         LedgerType = typeName,

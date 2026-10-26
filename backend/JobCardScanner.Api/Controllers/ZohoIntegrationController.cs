@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using JobCardScanner.Api.Data;
 using JobCardScanner.Api.Models;
 using Microsoft.AspNetCore.Authorization;
@@ -7,69 +9,39 @@ using Microsoft.EntityFrameworkCore;
 namespace JobCardScanner.Api.Controllers;
 
 /// <summary>
-/// 2026-10-02 ("for this 3 api i want create new api for Zoho customer ... all get api wants to
-/// provide them direct all get data of all magnamite dealer excluding [3 named/coded dealers]
-/// otherwise all data they can get all magnamite so simple get api with api key"). GET-ONLY
-/// integration for Zoho, scoped to every Dealer whose Name contains "MAGNEMITE" EXCEPT the three
-/// you named/coded. Mirrors ZomatoIntegrationController's own X-API-Key pattern (CheckApiKey below
-/// is a copy of that controller's, keyed "ApiKeys:Zoho" instead of "ApiKeys:Zomato" - same shared
-/// "ApiKeys" config section, so add a "Zoho" entry alongside the existing
-/// Shadowfax/Internal/Zomato/ANVWeb/Cogzim ones).
+/// 2026-10-02 ("for this 3 api i want create new api for Zoho ... all get api wants to provide them direct all get data of all magnamite dealer excluding [3 named/coded dealers] ... simple get api with api key").
+/// GET-ONLY integration for Zoho, scoped to every Dealer whose Name contains "MAGNEMITE" EXCEPT the three you coded (CUS0347 / CUS0213 / CUS0209, matched on BaplDmsDealerCode - see ResolveAllowedDealersAsync).
+/// Authentication: header X-API-Key = ApiKeys:Zoho (not configured = 503 for every call, wrong / missing = 401).
 ///
-/// WHY A NEW CONTROLLER, NOT JobCardsController/RepairBillDocsController/MaterialTransferDocsController
-/// DIRECTLY: same reasoning as ZomatoIntegrationController's own doc comment - those three are all
-/// gated by your staff login (Azure AD/dealer session), which Zoho's system can't use, and they are
-/// all scoped to "the signed-in user's own dealer", not "a named group of dealers" - a shape this
-/// controller needed to build fresh rather than reuse.
+///   GET /api/zoho/dealers                          - the dealers this key resolves to (a sanity check of the scope).
+///   GET /api/zoho/jobcards                         - job card status view (no pricing). Carries customerId.
+///   GET /api/zoho/repair-bills                     - the invoices: full line / tax / total detail, and the CUSTOMER with OUR unique customer id (see below).
+///   GET /api/zoho/material-transfers               - material transfer documents. Carries customerId of the job card's customer.
+///   GET /api/zoho/invoice-customers                - 2026-10-24: every customer who has an invoice, ONE row per customer, keyed by OUR customer id (customerId).
+///   GET /api/zoho/invoice-customers/{customerId}   - 2026-10-24: one of them.
+/// (the Ledger Master customers - Party / Insurance / Company - are in ZohoMasterDataController: GET / POST / PUT / DELETE /api/zoho/customers.)
 ///
-/// DEALER SCOPE (INTERPRETATION, confirmed via AskUserQuestion this round): "all magnamite dealer
-/// excluding ..." means every Dealer row whose Name contains "MAGNEMITE", MINUS any whose
-/// BaplDmsDealerCode is one of the three you gave (CUS0347/CUS0213/CUS0209) - NOT the local
-/// Dealer.Code column, which elsewhere in this app is a different, numeric code space (e.g. "288" -
-/// see JobCardsController.Detail's own BaplDealerCode comment distinguishing the two). You confirmed
-/// this reading. ResolveAllowedDealersAsync() below is the ONE place this match happens - if the
-/// real codes turn out to live in a different column, this is a one-method fix, nothing else in this
-/// file needs to change. Name matching uses plain SQL Contains (no explicit ToUpper/ToLower) - same
-/// convention as this app's existing PartyName == "Zomato" checks elsewhere, which also don't
-/// normalize case; this relies on the database's default (normally case-insensitive) collation. If
-/// your SQL Server collation is case-sensitive, tell me and I'll add an explicit
-/// EF.Functions.Like or ToUpper() comparison instead.
+/// 2026-10-24 (Zoho: "create customers using their unique DMS Customer ID when the invoice is pushed ... all master and transaction ids from DMS are stored in Zoho Books as unique identifiers"):
+/// THE CUSTOMER ID OF A BILL. A repair bill has its own CustomerId column, but it is EMPTY on every bill (347 of 347 checked on 24.10.2026) - the repair bill page saves only the typed party name. The bill's customer is
+/// therefore found through its JOB CARD (RepairBillDoc.JobCardId -> JobCard.CustomerId -> Customers). The id handed to Zoho is that Customers.Id (a GUID, unique in our database, never reused) = "customerId". Order used:
+///   1. the bill's own CustomerId, when it is set and matches a Ledger Master row (source LedgerMaster: full details + customerCode = the Ledger Code LED/###) or a Customers row (source Customer);
+///   2. else the job card's customer (source JobCardCustomer: name, mobile, e-mail, address, city, state);
+///   3. else nothing (source None: a bill saved with neither a customer nor a job card - only the typed partyName is known, so there is NO id for Zoho to key it by; X-Bills-Without-Customer counts them).
+/// Zoho should create the customer from the "customer" block of the invoice and store customerId as its unique key; later invoices and edits of the same customer carry the same customerId.
 ///
-/// SCOPE OF DATA RETURNED (confirmed via AskUserQuestion this round - "full financial detail"):
-/// Repair Bills and Material Transfers return the SAME full line-item/tax/total shape as
-/// RepairBillDocsController.ToRow/MaterialTransferDocsController.ToRow (just re-declared here as
-/// ToRepairBillRow/ToMaterialTransferRow, since those are `private` on their own controllers and
-/// not reusable directly) - real amounts, discounts, CGST/SGST/IGST, same as a dealer staff member
-/// sees. Job Cards deliberately stay a STATUS/descriptive view only (no pricing fields exist on
-/// JobCard itself to trim - the real amounts live on RepairBillDocs, already covered above) - this
-/// mirrors ZomatoIntegrationController.GetJobCardStatus's own scope, which is a proven, already-
-/// reviewed shape for an external partner, rather than inventing a new job-card projection from
-/// scratch. QcChecklistItems/Worklogs/Photos/raw PartSuggestion-LabourSuggestion (pre-billing,
-/// not-yet-invoiced guesses - see JobCardsController.AddPartSuggestion's own doc comment: "does not
-/// write anything back into DMS", JobCardScanner-internal only) are NOT included anywhere in this
-/// controller, same reasoning Zomato's own controller gives for leaving them out - tell me if Zoho
-/// specifically needs one of these.
-///
-/// ONLY SCOPING RULE: a dealer's data is returned here purely by DealerId membership in the
-/// resolved Magnamite set above - NOT by any PartyName/Customer field on individual bills (unlike
-/// Zomato's repair-bills/material-transfers endpoints, which filter by PartyName == "Zomato" because
-/// Zomato is a customer/party of many different dealers). Magnamite, per your own wording
-/// ("magnamite dealer"), is itself one or more of BGauss's own Dealer rows - so every bill/transfer/
-/// job card OWNED by one of those dealers comes back, regardless of who the customer/party on any
-/// individual document is.
+/// SCOPE OF DATA RETURNED: Repair Bills and Material Transfers return the same full line-item / tax / total shape as RepairBillDocsController.ToRow / MaterialTransferDocsController.ToRow (re-declared here because
+/// those are private), plus the dealer. Job cards stay a status view (no pricing). The ONLY scoping rule is DealerId membership in the resolved Magnemite set - not the party on a document.
 /// </summary>
 [ApiController]
 [Route("api/zoho")]
 [AllowAnonymous]
 public class ZohoIntegrationController : ControllerBase
 {
-    /// <summary>The three dealer exclusions, exactly as you gave them (name + BaplDmsDealerCode +,
-    /// where you gave one, city) - kept here, not just as a bare code array, so the exclusion list
-    /// is self-documenting if you come back to it later. Only ExcludedBaplDealerCodes is actually
-    /// used for matching (see this controller's own class-level doc comment on why Code, not Name,
-    /// is the safe way to exclude these three - MAGNEMITE MOTO LLP-PUNE/-AHMEDABAD both carry a
-    /// "-CITY" suffix on Name, but the third, MAGNEMITE MOTO LLP/CUS0209/RAJKOT, does NOT - matching
-    /// by Name suffix would have missed that inconsistency; matching by Code sidesteps it entirely).</summary>
+    private const int MaxPageSize = 1000;
+    private const int DefaultPageSize = 500;
+
+    /// <summary>The three dealer exclusions as given (name + BaplDmsDealerCode + city). Only the code is used for matching: MAGNEMITE MOTO LLP-PUNE / -AHMEDABAD carry a "-CITY" suffix on Name but the third,
+    /// MAGNEMITE MOTO LLP / CUS0209 / RAJKOT, does not - matching on the code sidesteps that inconsistency.</summary>
     private static readonly (string BaplDealerCode, string Name, string? City)[] ExcludedDealers =
     {
         ("CUS0347", "MAGNEMITE MOTO LLP-PUNE", null),
@@ -89,7 +61,7 @@ public class ZohoIntegrationController : ControllerBase
         _logger = logger;
     }
 
-    /// <summary>Same pattern as ZomatoIntegrationController.CheckApiKey, keyed "ApiKeys:Zoho".</summary>
+    /// <summary>X-API-Key = ApiKeys:Zoho. The comparison is constant-time (24.10.2026; it used to be a plain string compare).</summary>
     private IActionResult? CheckApiKey()
     {
         var configuredKey = _config["ApiKeys:Zoho"];
@@ -98,15 +70,25 @@ public class ZohoIntegrationController : ControllerBase
             _logger.LogWarning("Zoho API called but ApiKeys:Zoho is not configured - refusing every request until it is set.");
             return StatusCode(503, new { message = "This integration is not yet configured." });
         }
-        if (!Request.Headers.TryGetValue("X-API-Key", out var providedKey) || providedKey != configuredKey)
+        if (!Request.Headers.TryGetValue("X-API-Key", out var providedKey) || !SameKey(providedKey.ToString(), configuredKey))
             return Unauthorized(new { message = "Missing or invalid X-API-Key." });
         return null;
     }
 
-    /// <summary>The ONE place "all magnamite dealer excluding ..." is resolved to actual Dealer
-    /// rows - see this controller's own class-level doc comment for the reasoning. Returns the full
-    /// Dealer rows (not just Ids) so every action below can also read Name/BaplDmsDealerCode for its
-    /// response without a second round trip.</summary>
+    private static bool SameKey(string provided, string configured)
+    {
+        var a = Encoding.UTF8.GetBytes(provided);
+        var b = Encoding.UTF8.GetBytes(configured);
+        return a.Length == b.Length && CryptographicOperations.FixedTimeEquals(a, b);
+    }
+
+    private static (int skip, int take) PageWindow(int pageIndex, int pageSize)
+    {
+        var size = pageSize <= 0 ? DefaultPageSize : Math.Min(pageSize, MaxPageSize);
+        return (Math.Max(0, pageIndex) * size, size);
+    }
+
+    /// <summary>The ONE place "all magnamite dealer excluding ..." is resolved to Dealer rows (Id, Name, BaplDmsDealerCode).</summary>
     private async Task<List<(Guid Id, string Name, string? BaplDmsDealerCode)>> ResolveAllowedDealersAsync()
     {
         var dealers = await _db.Dealers.AsNoTracking()
@@ -120,11 +102,13 @@ public class ZohoIntegrationController : ControllerBase
             .ToList();
     }
 
-    /// <summary>GET /api/zoho/dealers - lists exactly which dealers this API key currently resolves
-    /// to (Name + BaplDmsDealerCode only, nothing financial) - a sanity-check endpoint so you (or
-    /// Zoho) can confirm the scope is right before pulling bulk data from the other three endpoints.
-    /// Not something you asked for by name, but cheap, low-risk (no pricing/customer data), and the
-    /// fastest way to catch a dealer-matching mistake before it silently under- or over-shares data.</summary>
+    /// <summary>The dealer ids of the scope, narrowed to one location when dealerCode is given.</summary>
+    private static List<Guid> ScopeIds(List<(Guid Id, string Name, string? BaplDmsDealerCode)> allowed, string? dealerCode) =>
+        string.IsNullOrWhiteSpace(dealerCode)
+            ? allowed.Select(d => d.Id).ToList()
+            : allowed.Where(d => d.BaplDmsDealerCode == dealerCode).Select(d => d.Id).ToList();
+
+    /// <summary>GET /api/zoho/dealers - exactly which dealers this key resolves to (Name + BaplDmsDealerCode only).</summary>
     [HttpGet("dealers")]
     public async Task<IActionResult> Dealers()
     {
@@ -137,13 +121,8 @@ public class ZohoIntegrationController : ControllerBase
             .Select(d => new { d.Id, d.Name, BaplDealerCode = d.BaplDmsDealerCode }));
     }
 
-    /// <summary>GET /api/zoho/jobcards?from=&amp;to=&amp;status=&amp;dealerCode=&amp;jobCardNumber=
-    /// - job card status/descriptive view across every in-scope Magnamite dealer. from/to filter on
-    /// CreatedAt (job-open date); dealerCode narrows to one Magnamite location's own
-    /// BaplDmsDealerCode (e.g. just Delhi) instead of every location at once; jobCardNumber is an
-    /// exact-match lookup for one specific job. Capped at 500 rows, newest first - paginate with
-    /// from/to (or ask me to add real pageIndex/pageSize paging if Zoho needs to pull more than that
-    /// in one call).</summary>
+    /// <summary>GET /api/zoho/jobcards?from=&amp;to=&amp;status=&amp;dealerCode=&amp;jobCardNumber= - job card status view across the in-scope dealers; from / to filter CreatedAt; capped at 500 rows, newest first.
+    /// customerId (24.10.2026) is the job card's customer in OUR database - the same id the invoices and /invoice-customers use.</summary>
     [HttpGet("jobcards")]
     public async Task<IActionResult> JobCards(
         [FromQuery] DateOnly? from, [FromQuery] DateOnly? to,
@@ -153,13 +132,8 @@ public class ZohoIntegrationController : ControllerBase
         if (authFail is not null) return authFail;
 
         var allowed = await ResolveAllowedDealersAsync();
-        var allowedIds = allowed.Select(d => d.Id).ToList();
+        var allowedIds = ScopeIds(allowed, dealerCode);
         if (allowedIds.Count == 0) return Ok(Array.Empty<object>());
-        if (!string.IsNullOrWhiteSpace(dealerCode))
-        {
-            allowedIds = allowed.Where(d => d.BaplDmsDealerCode == dealerCode).Select(d => d.Id).ToList();
-            if (allowedIds.Count == 0) return Ok(Array.Empty<object>());
-        }
 
         var query = _db.JobCards.AsNoTracking()
             .Include(j => j.Customer).Include(j => j.Vehicle).Include(j => j.CurrentStage)
@@ -189,6 +163,7 @@ public class ZohoIntegrationController : ControllerBase
             DealerId = j.Dealer != null ? j.Dealer.Id : (Guid?)null,
             DealerName = j.Dealer != null ? j.Dealer.Name : null,
             DealerCode = j.Dealer != null ? j.Dealer.BaplDmsDealerCode : null,
+            CustomerId = j.CustomerId,
             CustomerName = j.Customer != null ? j.Customer.Name : null,
             CustomerMobile = j.Customer != null ? j.Customer.Mobile : null,
             VehicleModel = j.Vehicle != null ? j.Vehicle.Model : null,
@@ -205,14 +180,47 @@ public class ZohoIntegrationController : ControllerBase
         }));
     }
 
-    /// <summary>GET /api/zoho/repair-bills?from=&amp;to=&amp;dealerCode= - full Repair Bill detail
-    /// (line items, discounts, CGST/SGST/IGST, totals - see this controller's own class-level doc
-    /// comment on why this is the FULL shape, not Zomato's trimmed one) for every in-scope Magnamite
-    /// dealer's own JobCardScannerDb-native bills (IsDeleted excluded). from/to filter BillDate;
-    /// dealerCode narrows to one Magnamite location. Does NOT blend in the DMSBAPLDATA-synced rows
-    /// RepairBillDocsController.Combined also shows staff - those are a different, read-only data
-    /// source this app doesn't own, and the real financial record for anything billed through this
-    /// app lives in these JobCardScannerDb rows. Capped at 1000 rows, newest first.</summary>
+    // ------------------------------------------------------------------ the customer of a bill (our unique customer id)
+
+    /// <summary>The customer of a bill, with the id of OUR database. CustomerId is what Zoho stores as the unique key. CustomerCode is the Ledger Code (LED/###) only when the customer is a Ledger Master row.
+    /// Source: LedgerMaster | Customer | JobCardCustomer | Unknown (the bill carries an id that matches no row) | None (no customer and no job card - only partyName is known).</summary>
+    private sealed record BillCustomer(Guid? CustomerId, string? CustomerCode, string Source, string? Name, string? Type, string? Mobile, string? Email, string? Gstin, string? Pan,
+        string? Address, string? Address2, string? City, string? State, string? Pin);
+
+    private static BillCustomer FromCustomer(Customer c, string source) =>
+        new(c.Id, null, source, c.Name, null, c.Mobile, c.Email, null, null, c.Address, null, c.City, c.State, null);
+
+    private static BillCustomer FromLedger(LedgerMaster l) =>
+        new(l.Id, l.LedgerCode, "LedgerMaster", l.LedgerName, l.LedgerTypeMaster?.CustomerType, l.MobileNumber, l.EMail, l.Gstno, l.Pan, l.Address, l.Address2, l.City, l.State, l.Pin);
+
+    /// <summary>Looks the ids up as Ledger Master first, then as Customers. Used for a bill's OWN CustomerId (empty on every bill today) and for /invoice-customers.</summary>
+    private async Task<Dictionary<Guid, BillCustomer>> ResolveCustomersAsync(List<Guid> ids)
+    {
+        var result = new Dictionary<Guid, BillCustomer>();
+        if (ids.Count == 0) return result;
+        foreach (var l in await _db.LedgerMasters.AsNoTracking().Include(x => x.LedgerTypeMaster).Where(x => ids.Contains(x.Id)).ToListAsync())
+            result[l.Id] = FromLedger(l);
+        var rest = ids.Where(i => !result.ContainsKey(i)).ToList();
+        if (rest.Count > 0)
+            foreach (var c in await _db.Customers.AsNoTracking().Where(x => rest.Contains(x.Id)).ToListAsync())
+                result[c.Id] = FromCustomer(c, "Customer");
+        return result;
+    }
+
+    /// <summary>The customer of one bill: its own CustomerId when that resolves, else the job card's customer, else none.</summary>
+    private static BillCustomer BillCustomerOf(RepairBillDoc b, Dictionary<Guid, BillCustomer> own)
+    {
+        if (b.CustomerId is Guid id && own.TryGetValue(id, out var found)) return found;
+        var viaJobCard = b.JobCard?.Customer;
+        if (viaJobCard is not null) return FromCustomer(viaJobCard, "JobCardCustomer");
+        return new BillCustomer(b.CustomerId, null, b.CustomerId is null ? "None" : "Unknown", b.PartyName, null, null, null, null, null, null, null, null, null, null);
+    }
+
+    // ------------------------------------------------------------------ repair bills (invoices)
+
+    /// <summary>GET /api/zoho/repair-bills?from=&amp;to=&amp;dealerCode= - full Repair Bill detail (line items, discounts, CGST / SGST / IGST, totals) for every in-scope dealer's own JobCardScannerDb bills
+    /// (IsDeleted excluded). from / to filter BillDate. Capped at 1000 rows, newest first. Every bill now carries customerId and a customer block - see this controller's doc comment. The header
+    /// X-Bills-Without-Customer says how many of the returned bills have no customer at all (source None).</summary>
     [HttpGet("repair-bills")]
     public async Task<IActionResult> RepairBills(
         [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] string? dealerCode)
@@ -222,23 +230,104 @@ public class ZohoIntegrationController : ControllerBase
 
         var allowed = await ResolveAllowedDealersAsync();
         var dealerLookup = allowed.ToDictionary(d => d.Id, d => (d.Name, d.BaplDmsDealerCode));
-        var allowedIds = allowed.Select(d => d.Id).ToList();
-        if (!string.IsNullOrWhiteSpace(dealerCode))
-            allowedIds = allowed.Where(d => d.BaplDmsDealerCode == dealerCode).Select(d => d.Id).ToList();
+        var allowedIds = ScopeIds(allowed, dealerCode);
         if (allowedIds.Count == 0) return Ok(Array.Empty<object>());
 
         var query = _db.RepairBillDocs.AsNoTracking().Where(r => !r.IsDeleted && allowedIds.Contains(r.DealerId));
         if (from is not null) query = query.Where(r => r.BillDate >= from);
         if (to is not null) query = query.Where(r => r.BillDate <= to);
 
-        var bills = await query.Include(r => r.Items).Include(r => r.JobCard)
+        var bills = await query.Include(r => r.Items).Include(r => r.JobCard).ThenInclude(j => j!.Customer)
             .OrderByDescending(r => r.BillDate).Take(1000).ToListAsync();
 
-        return Ok(bills.Select(b => ToRepairBillRow(b, dealerLookup)));
+        var ownIds = bills.Where(b => b.CustomerId != null).Select(b => b.CustomerId!.Value).Distinct().ToList();
+        var own = await ResolveCustomersAsync(ownIds);
+        var rows = bills.Select(b => (Bill: b, Customer: BillCustomerOf(b, own))).ToList();
+        Response.Headers["X-Bills-Without-Customer"] = rows.Count(r => r.Customer.CustomerId is null).ToString();
+
+        return Ok(rows.Select(r => ToRepairBillRow(r.Bill, dealerLookup, r.Customer)));
     }
 
-    /// <summary>GET /api/zoho/material-transfers?from=&amp;to=&amp;dealerCode= - same reasoning and
-    /// shape as RepairBills above, for Material Transfer documents. from/to filter TransferDate.</summary>
+    // ------------------------------------------------------------------ customers who have an invoice (keyed by our unique customer id)
+
+    private sealed record InvoiceCustomerRow(Guid CustomerId, string? CustomerCode, string Source, string? Name, string? Type, string? Mobile, string? Email, string? Gstin, string? Pan,
+        string? Address, string? Address2, string? City, string? State, string? Pin, int BillCount, DateOnly? FirstBillDate, DateOnly? LastBillDate, string? LastDealerCode, string? LastDealerName);
+
+    /// <summary>Who has an invoice: one entry per customer id (the bill's own id, else its job card's customer), with the number of bills, the first / last bill date and the dealer of the last bill.</summary>
+    private async Task<(List<(Guid Id, int Bills, DateOnly? First, DateOnly? Last, Guid LastDealerId)> Customers, int BillsWithoutCustomer)> InvoiceCustomerIndexAsync(
+        List<Guid> dealerIds, DateOnly? from, DateOnly? to)
+    {
+        var q = _db.RepairBillDocs.AsNoTracking().Where(r => !r.IsDeleted && dealerIds.Contains(r.DealerId));
+        if (from is not null) q = q.Where(r => r.BillDate >= from);
+        if (to is not null) q = q.Where(r => r.BillDate <= to);
+        var links = await q.Select(r => new { r.DealerId, r.BillDate, Key = r.CustomerId ?? (r.JobCard != null ? (Guid?)r.JobCard.CustomerId : null) }).ToListAsync();
+
+        var keyed = links.Where(l => l.Key != null).ToList();
+        var index = keyed.GroupBy(l => l.Key!.Value)
+            .Select(g => (Id: g.Key, Bills: g.Count(), First: (DateOnly?)g.Min(x => x.BillDate), Last: (DateOnly?)g.Max(x => x.BillDate), LastDealerId: g.OrderByDescending(x => x.BillDate).First().DealerId))
+            .OrderByDescending(x => x.Last).ThenBy(x => x.Id)
+            .ToList();
+        return (index, links.Count - keyed.Count);
+    }
+
+    private async Task<List<InvoiceCustomerRow>> InvoiceCustomerRowsAsync(
+        List<(Guid Id, int Bills, DateOnly? First, DateOnly? Last, Guid LastDealerId)> page, Dictionary<Guid, (string Name, string? BaplDmsDealerCode)> dealerLookup)
+    {
+        var details = await ResolveCustomersAsync(page.Select(p => p.Id).ToList());
+        return page.Select(p =>
+        {
+            details.TryGetValue(p.Id, out var d);
+            dealerLookup.TryGetValue(p.LastDealerId, out var dealer);
+            // a customer id with no row any more is still reported - Zoho keeps its own copy under that id
+            return new InvoiceCustomerRow(p.Id, d?.CustomerCode, d?.Source ?? "Unknown", d?.Name, d?.Type, d?.Mobile, d?.Email, d?.Gstin, d?.Pan, d?.Address, d?.Address2, d?.City, d?.State, d?.Pin,
+                p.Bills, p.First, p.Last, dealer.BaplDmsDealerCode, dealer.Name);
+        }).ToList();
+    }
+
+    /// <summary>GET /api/zoho/invoice-customers?from=&amp;to=&amp;dealerCode=&amp;pageIndex=&amp;pageSize= - every customer who has at least one invoice (from / to filter the BILL date), ONE row per customer, keyed by customerId =
+    /// OUR unique customer id: the same id the "customer" block of /repair-bills carries. Newest invoice first, paged (pageIndex from 0, pageSize default 500, max 1000); X-Total-Count = customers, X-Bills-Without-Customer =
+    /// invoices that have no customer at all (they cannot be keyed - only a typed party name exists).</summary>
+    [HttpGet("invoice-customers")]
+    public async Task<IActionResult> InvoiceCustomers(
+        [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] string? dealerCode,
+        [FromQuery] int pageIndex = 0, [FromQuery] int pageSize = 0)
+    {
+        var authFail = CheckApiKey();
+        if (authFail is not null) return authFail;
+
+        var allowed = await ResolveAllowedDealersAsync();
+        var dealerIds = ScopeIds(allowed, dealerCode);
+        if (dealerIds.Count == 0) { Response.Headers["X-Total-Count"] = "0"; Response.Headers["X-Bills-Without-Customer"] = "0"; return Ok(Array.Empty<object>()); }
+
+        var (index, withoutCustomer) = await InvoiceCustomerIndexAsync(dealerIds, from, to);
+        Response.Headers["X-Total-Count"] = index.Count.ToString();
+        Response.Headers["X-Bills-Without-Customer"] = withoutCustomer.ToString();
+
+        var (skip, take) = PageWindow(pageIndex, pageSize);
+        var rows = await InvoiceCustomerRowsAsync(index.Skip(skip).Take(take).ToList(), allowed.ToDictionary(d => d.Id, d => (d.Name, d.BaplDmsDealerCode)));
+        return Ok(rows);
+    }
+
+    /// <summary>GET /api/zoho/invoice-customers/{customerId} - one customer by OUR id (404 when that customer has no invoice at an in-scope dealer).</summary>
+    [HttpGet("invoice-customers/{customerId:guid}")]
+    public async Task<IActionResult> InvoiceCustomer(Guid customerId)
+    {
+        var authFail = CheckApiKey();
+        if (authFail is not null) return authFail;
+
+        var allowed = await ResolveAllowedDealersAsync();
+        var dealerIds = ScopeIds(allowed, null);
+        var (index, _) = await InvoiceCustomerIndexAsync(dealerIds, null, null);
+        var hit = index.Where(i => i.Id == customerId).ToList();
+        if (hit.Count == 0) return NotFound(new { message = "That customer has no invoice at an in-scope dealer." });
+        var rows = await InvoiceCustomerRowsAsync(hit, allowed.ToDictionary(d => d.Id, d => (d.Name, d.BaplDmsDealerCode)));
+        return Ok(rows[0]);
+    }
+
+    // ------------------------------------------------------------------ material transfers
+
+    /// <summary>GET /api/zoho/material-transfers?from=&amp;to=&amp;dealerCode= - same shape reasoning as RepairBills, for Material Transfer documents. from / to filter TransferDate. Capped at 1000 rows, newest first.
+    /// customerId (24.10.2026) is the customer of the transfer's job card, when it has one.</summary>
     [HttpGet("material-transfers")]
     public async Task<IActionResult> MaterialTransfers(
         [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] string? dealerCode)
@@ -248,9 +337,7 @@ public class ZohoIntegrationController : ControllerBase
 
         var allowed = await ResolveAllowedDealersAsync();
         var dealerLookup = allowed.ToDictionary(d => d.Id, d => (d.Name, d.BaplDmsDealerCode));
-        var allowedIds = allowed.Select(d => d.Id).ToList();
-        if (!string.IsNullOrWhiteSpace(dealerCode))
-            allowedIds = allowed.Where(d => d.BaplDmsDealerCode == dealerCode).Select(d => d.Id).ToList();
+        var allowedIds = ScopeIds(allowed, dealerCode);
         if (allowedIds.Count == 0) return Ok(Array.Empty<object>());
 
         var query = _db.MaterialTransferDocs.AsNoTracking().Where(m => allowedIds.Contains(m.DealerId));
@@ -263,12 +350,9 @@ public class ZohoIntegrationController : ControllerBase
         return Ok(docs.Select(d => ToMaterialTransferRow(d, dealerLookup)));
     }
 
-    /// <summary>Re-declared from RepairBillDocsController.ToRow (that one is `private` on its own
-    /// controller, not reusable from here) - IDENTICAL field set, plus DealerId/DealerName/
-    /// DealerCode added so a multi-dealer caller like Zoho can tell which Magnamite location each
-    /// bill belongs to (the original, single-dealer-scoped endpoint never needed that - its caller
-    /// already knows their own dealer).</summary>
-    private static object ToRepairBillRow(RepairBillDoc b, Dictionary<Guid, (string Name, string? BaplDmsDealerCode)> dealerLookup)
+    /// <summary>Re-declared from RepairBillDocsController.ToRow (private there) - IDENTICAL field set, plus the dealer (DealerId / DealerName / DealerCode) so a multi-dealer caller can tell which location each
+    /// bill belongs to, plus (24.10.2026) CustomerId and Customer: the customer with OUR unique id.</summary>
+    private static object ToRepairBillRow(RepairBillDoc b, Dictionary<Guid, (string Name, string? BaplDmsDealerCode)> dealerLookup, BillCustomer customer)
     {
         dealerLookup.TryGetValue(b.DealerId, out var dealer);
         return new
@@ -281,7 +365,9 @@ public class ZohoIntegrationController : ControllerBase
             DealerCode = dealer.BaplDmsDealerCode,
             b.JobCardId,
             JobCardNumber = b.JobCard?.JobCardNumber,
+            CustomerId = customer.CustomerId,
             b.PartyName,
+            Customer = customer,
             b.RegNo,
             b.ChassisNo,
             b.Location,
@@ -316,20 +402,7 @@ public class ZohoIntegrationController : ControllerBase
                 i.Rate,
                 i.DiscountType,
                 i.DiscountValue,
-                // 2026-10-02 ("in both discount feild not added?"): DiscountType/DiscountValue
-                // above are the raw stored inputs (e.g. DiscountType "Percentage", DiscountValue
-                // 10) - reading the actual rupee amount deducted from them means redoing
-                // RepairBillDocsController.BuildAndAttachItemsAsync's own discount arithmetic
-                // yourself. Added this computed field so Zoho doesn't have to: same formula as
-                // that method (gross = Qty * Rate; Percentage applies DiscountValue as a % of
-                // gross, otherwise DiscountValue is a flat rupee amount; capped so it can never
-                // exceed the line's own gross). This is NOT a new stored column - RepairBillDocItem
-                // itself only ever stored DiscountType/DiscountValue (see that model's own doc
-                // comment) and TaxableAmount (already net of discount AND zero-tax special-casing
-                // for IssueType "U/W"/"FSC" - so TaxableAmount minus gross would be wrong for those
-                // lines). Computed fresh here, every call, from the same two fields the database
-                // already has - nothing new persisted, nothing recomputed differently than the
-                // original save already decided.
+                // computed fresh from the two stored fields, same arithmetic as RepairBillDocsController.BuildAndAttachItemsAsync (see ComputeDiscountAmount)
                 DiscountAmount = ComputeDiscountAmount(i.Qty, i.Rate, i.DiscountType, i.DiscountValue),
                 i.CgstPct,
                 i.SgstPct,
@@ -345,12 +418,8 @@ public class ZohoIntegrationController : ControllerBase
         };
     }
 
-    /// <summary>Same discount arithmetic as RepairBillDocsController.BuildAndAttachItemsAsync's
-    /// own inline calculation (gross = Qty * Rate; "Percentage" DiscountType applies DiscountValue
-    /// as a percentage of gross, anything else treats DiscountValue as a flat rupee amount; the
-    /// result is capped at gross so a line can never show a negative post-discount amount) -
-    /// re-declared here for the same reason ToRepairBillRow/ToMaterialTransferRow are: that method
-    /// is private on RepairBillDocsController, not reusable from this controller.</summary>
+    /// <summary>Same discount arithmetic as RepairBillDocsController.BuildAndAttachItemsAsync (gross = Qty * Rate; "Percentage" applies DiscountValue as a % of gross, anything else is a flat rupee amount; capped
+    /// at gross so a line never goes negative) - re-declared because that method is private.</summary>
     private static decimal ComputeDiscountAmount(double qty, decimal rate, string? discountType, decimal discountValue)
     {
         decimal gross = (decimal)qty * rate;
@@ -360,16 +429,7 @@ public class ZohoIntegrationController : ControllerBase
         return discountAmt > gross ? gross : discountAmt;
     }
 
-    /// <summary>Re-declared from MaterialTransferDocsController.ToRow, same reasoning/addition as
-    /// ToRepairBillRow above. NOTE ("in both discount feild not added?"): unlike RepairBillDocItem,
-    /// MaterialTransferDocItem has NO DiscountType/DiscountValue columns at all - confirmed from
-    /// the real MaterialTransferDocsController.cs you pasted earlier (its own ToRow/
-    /// ApplyStockAndBuildItemsAsync never reference a discount field anywhere). Material Transfer
-    /// in this app has never supported a discount, on any line, for any caller - this is not
-    /// something missing from this endpoint specifically, there is no discount value anywhere in
-    /// JobCardScannerDb for a Material Transfer line to return. If Zoho needs discounting on
-    /// transfers, that is a new field on MaterialTransferDocItem itself (and on every page that
-    /// creates one) - tell me and I will add it as its own change, not invent one here.</summary>
+    /// <summary>Re-declared from MaterialTransferDocsController.ToRow. Material Transfer has no discount columns at all (no discount value exists anywhere for a transfer line), so none is returned.</summary>
     private static object ToMaterialTransferRow(MaterialTransferDoc m, Dictionary<Guid, (string Name, string? BaplDmsDealerCode)> dealerLookup)
     {
         dealerLookup.TryGetValue(m.DealerId, out var dealer);
@@ -383,6 +443,7 @@ public class ZohoIntegrationController : ControllerBase
             DealerCode = dealer.BaplDmsDealerCode,
             m.JobCardId,
             JobCardNumber = m.JobCard?.JobCardNumber,
+            CustomerId = m.JobCard?.CustomerId,
             m.Location,
             TransferType = m.TransferType.ToString(),
             m.IssueType,

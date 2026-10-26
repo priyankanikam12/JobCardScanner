@@ -126,7 +126,7 @@ public static class ZohoPushStore
     /// <summary>Zoho answered "Logged only - nothing created in Books" (its test mode): the event is NOT delivered. It is parked as LoggedOnly (not Sent) so it can be re-sent after Zoho goes live - see RequeueLoggedOnlyAsync.</summary>
     public static Task MarkLoggedOnlyAsync(JobCardScannerDbContext db, long id, int httpStatus, string? note, CancellationToken ct) =>
         db.Database.ExecuteSqlRawAsync(
-            "UPDATE [dbo].[ZohoPushOutbox] SET [Status] = N'LoggedOnly', [Attempts] = [Attempts] + 1, [LastHttpStatus] = @s, [LastError] = @e WHERE [Id] = @id",
+            "UPDATE [dbo].[ZohoPushOutbox] SET [Status] = N'LoggedOnly', [Attempts] = [Attempts] + 1, [LastHttpStatus] = @s, [LastError] = @e, [SentAt] = SYSUTCDATETIME() WHERE [Id] = @id",
             new object[] { new SqlParameter("@s", httpStatus), new SqlParameter("@e", SqlDbType.NVarChar, 1000) { Value = (object?)note ?? DBNull.Value }, new SqlParameter("@id", id) }, ct);
 
     /// <summary>After Zoho confirms the endpoint is live: put every LoggedOnly event back to Pending so it is sent (and created) for real.</summary>
@@ -183,6 +183,8 @@ public static class ZohoPushStore
         return new
         {
             l.Id,
+            CustomerId = l.Id,            // 2026-10-24: the unique DMS customer id, named the way Zoho asked
+            CustomerCode = l.LedgerCode,
             l.LedgerCode,
             l.LedgerName,
             LedgerType = typeName,
