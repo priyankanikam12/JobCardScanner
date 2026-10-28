@@ -1029,7 +1029,7 @@ public record ZomatoCreateMaterialTransferRequest(
 /// specifically and I'll correct its type in one pass.</summary>
 public record ZomatoMaterialTransferItemRequest(
     string ItemCode,
-    string? ItemDescription,
+    string ItemDescription,
     string? HsnCode,
     string? IssueType,
     double Qty,
@@ -1079,8 +1079,8 @@ public record ZomatoCreateRepairBillRequest(
 /// treated as a flat amount discount, same as the real controller.</summary>
 public record ZomatoRepairBillItemRequest(
     RepairBillDocItemType ItemType,
-    string? ItemCode,
-    string? ItemDescription,
+    string ItemCode,
+    string ItemDescription,
     string? HsnCode,
     string? IssueType,
     double Qty,
