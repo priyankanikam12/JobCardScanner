@@ -12,6 +12,8 @@ using JobCardScanner.Api.Services;
 using JobCardScanner.Api.Services.Integrations;
 using JobCardScanner.Api.Security;
 using QuestPDF.Infrastructure;
+using JobCardScanner.Api.Options;
+using JobCardScanner.Api.Services.Zoho;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -61,6 +63,13 @@ builder.Services.AddDbContext<CareDeskDbContext>(o =>
 // ---------------------------------------------------------------------
 builder.Services.AddAuthentication()
     .AddMicrosoftIdentityWebApi(builder.Configuration, configSectionName: "AzureAd", jwtBearerScheme: AuthSchemes.AzureAd);
+
+builder.Services.Configure<ZohoBooksOptions>(builder.Configuration.GetSection(ZohoBooksOptions.SectionName));
+builder.Services.AddHttpClient<ZohoOAuthTokenService>();
+builder.Services.AddSingleton<ZohoOAuthTokenService>();
+builder.Services.AddHttpClient<ZohoBooksApiClient>(c => c.Timeout = TimeSpan.FromSeconds(30));
+builder.Services.AddSingleton<ZohoBooksApiClient>();
+
 
 // 2026-09-03: DIAGNOSTIC - added while chasing a reported 401 on /api/auth/me from a fresh
 // public-IP deploy (https://3.88.172.79). AddMicrosoftIdentityWebApi rejects a bad/invalid token

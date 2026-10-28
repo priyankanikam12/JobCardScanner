@@ -3,6 +3,9 @@ using System.Text;
 using System.Text.Json;
 using JobCardScanner.Api.Data;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
+using JobCardScanner.Api.Services.Zoho;
+using JobCardScanner.Api.Options;
 
 namespace JobCardScanner.Api.Services;
 
@@ -30,6 +33,10 @@ namespace JobCardScanner.Api.Services;
 /// Delivery rules: 2xx = delivered. 408 / 429 / 5xx / timeout / network error = retried after 1 min, 5 min, 15 min, 1 h, 6 h, 12 h, 24 h (up to MaxAttempts).
 /// Any other 4xx = Zoho rejected the event: it is NOT retried automatically (status Failed, the reason is stored) - fix it and press "retry failed".
 /// Headers on every request: Content-Type: application/json, X-BGauss-Event (event name), X-BGauss-Event-Id (the eventId in the body - use it as the idempotency key).
+///
+/// 2026-10-28: a THIRD provider mode was added alongside the two below - ZohoPush:Provider = "ZohoBooksDirect" - which calls Zoho Books' own REST API directly via the new
+/// ZohoBooksApiClient (OAuth2, Zoho's real field names and reply shape - see ZOHO_BOOKS_INTEGRATION.md). It is additive: the two modes below are completely unchanged and
+/// still work exactly as before if ZohoPush:Provider is left unset or set to "ZohoBooks".
 /// </summary>
 public class ZohoPushDispatcher : BackgroundService
 {
@@ -42,12 +49,24 @@ public class ZohoPushDispatcher : BackgroundService
     private readonly IConfiguration _config;
     private readonly ILogger<ZohoPushDispatcher> _logger;
 
-    public ZohoPushDispatcher(IServiceScopeFactory scopes, IConfiguration config, ILogger<ZohoPushDispatcher> logger)
+    public ZohoPushDispatcher(IServiceScopeFactory scopes, IConfiguration config, ILogger<ZohoPushDispatcher> logger,
+        ZohoBooksApiClient zohoBooksClient, IOptions<ZohoBooksOptions> zohoBooksOptions)
     {
         _scopes = scopes;
         _config = config;
         _logger = logger;
         ZohoPushStore.Configure(config);
+        ConfigureZohoBooksDirect(zohoBooksClient, zohoBooksOptions);
+    }
+
+    // 2026-10-28: static handoff (same pattern as ZohoPushStore.Configure) so the static RunOnceAsync - already called directly by ZohoPushController / ZohoPushOpsController
+    // without an instance of this class - can reach the new direct-API client too. Set once, here, when the hosted service is constructed at start-up.
+    private static ZohoBooksApiClient? _zohoBooksClient;
+    private static IOptions<ZohoBooksOptions>? _zohoBooksOptions;
+    public static void ConfigureZohoBooksDirect(ZohoBooksApiClient client, IOptions<ZohoBooksOptions> options)
+    {
+        _zohoBooksClient = client;
+        _zohoBooksOptions = options;
     }
 
     /// <summary>Wakes the dispatcher loop now (called right after an event is queued) so the event goes out immediately instead of at the next timer tick.</summary>
@@ -78,11 +97,16 @@ public class ZohoPushDispatcher : BackgroundService
         }
     }
 
+    /// <summary>2026-10-28: Provider = "ZohoBooksDirect" - the new direct-API mode (ZohoBooksApiClient / OAuth2), separate from the "ZohoBooks" webhook mode below.</summary>
+    public static bool IsZohoBooksDirect(IConfiguration config) => string.Equals(config["ZohoPush:Provider"], "ZohoBooksDirect", StringComparison.OrdinalIgnoreCase);
+
     public static bool IsConfigured(IConfiguration config) =>
         config.GetValue("ZohoPush:Enabled", false)
-        && (IsZohoBooks(config)
-            ? !string.IsNullOrWhiteSpace(config["ZohoPush:ItemsUrl"]) || !string.IsNullOrWhiteSpace(config["ZohoPush:CustomersUrl"])
-            : !string.IsNullOrWhiteSpace(config["ZohoPush:BaseUrl"]));
+        && (IsZohoBooksDirect(config)
+            ? _zohoBooksClient is not null && !string.IsNullOrWhiteSpace(_zohoBooksOptions?.Value.OrganizationId)
+            : IsZohoBooks(config)
+                ? !string.IsNullOrWhiteSpace(config["ZohoPush:ItemsUrl"]) || !string.IsNullOrWhiteSpace(config["ZohoPush:CustomersUrl"])
+                : !string.IsNullOrWhiteSpace(config["ZohoPush:BaseUrl"]));
 
     private static DateTime? RetryAt(bool retryable, int attemptNo, int maxAttempts) =>
         retryable && attemptNo < maxAttempts ? DateTime.UtcNow.AddMinutes(BackoffMinutes[Math.Min(attemptNo - 1, BackoffMinutes.Length - 1)]) : null;
@@ -91,6 +115,15 @@ public class ZohoPushDispatcher : BackgroundService
     public static async Task<(int Sent, int Failed)> RunOnceAsync(JobCardScannerDbContext db, IConfiguration config, ILogger logger, CancellationToken ct)
     {
         if (!IsConfigured(config)) return (0, 0);
+        if (IsZohoBooksDirect(config))
+        {
+            if (_zohoBooksClient is null || _zohoBooksOptions is null)
+            {
+                logger.LogError("Zoho push: ZohoPush:Provider is ZohoBooksDirect but ZohoBooksApiClient was never configured (DI registration missing in Program.cs - see ZOHO_BOOKS_INTEGRATION.md section 4).");
+                return (0, 0);
+            }
+            return await ZohoBooksDirectRunner.RunAsync(db, _zohoBooksClient, _zohoBooksOptions, logger, ct);   // new direct-API path - items only for now, see ZohoBooksDirectRunner's own doc comment
+        }
         if (IsZohoBooks(config)) return await RunZohoBooksAsync(db, config, logger, ct);   // Learnall's Zoho Books webhook: its own URL / reply rules
         if (!await RunLock.WaitAsync(0, ct)) return (0, 0);   // another run is in progress
         try
