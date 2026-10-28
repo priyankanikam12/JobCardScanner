@@ -38,12 +38,12 @@ So the files below are **additive**: a third provider mode, `ZohoPush:Provider =
     "InventoryAccountId": "3898946000000000626"
   },
   "TaxIdsByGstPercent": {
-    "0":  { "IntraStateTaxId": "<fill in>", "InterStateTaxId": "<fill in>" },
-    "5":  { "IntraStateTaxId": "<fill in>", "InterStateTaxId": "<fill in>" },
-    "12": { "IntraStateTaxId": "<fill in>", "InterStateTaxId": "<fill in>" },
+    "0":  { "IntraStateTaxId": "3898946000000041127", "InterStateTaxId": "3898946000000041055" },
+    "5":  { "IntraStateTaxId": "3898946000000041131", "InterStateTaxId": "3898946000000041056" },
+    "12": { "IntraStateTaxId": "3898946000000041135", "InterStateTaxId": "3898946000000041057" },
     "18": { "IntraStateTaxId": "3898946000000041139", "InterStateTaxId": "3898946000000041059" },
-    "28": { "IntraStateTaxId": "<fill in>", "InterStateTaxId": "<fill in>" },
-    "40": { "IntraStateTaxId": "<fill in>", "InterStateTaxId": "<fill in>" }
+    "28": { "IntraStateTaxId": "3898946000000041147", "InterStateTaxId": "3898946000000041060" },
+    "40": { "IntraStateTaxId": "3898946000000041143", "InterStateTaxId": "3898946000000041058" }
   },
   "LocationIdsByDealerCode": {
     "CUS0288": "3898946000000032107"
@@ -59,7 +59,7 @@ ZohoBooksApi__ClientSecret=...
 ZohoBooksApi__RefreshToken=...
 ```
 
-**Important — only GST 18% has a confirmed tax ID.** The Payloads document only tested an 18% item. The 0/5/12/28/40% tax IDs and every location besides Delhi/CUS0288 are **not in the document** — `ZohoBooksMappers.ToCreateItemRequest` deliberately refuses to push an item whose GST % has no entry here rather than guessing, so fill these in (ask Learnall) before any non-18% item can go through. The three account IDs above are flagged **in the source document itself** as "Zoho defaults used in testing; Magnemite finance will confirm them before go-live" — treat them as provisional, not final.
+**Update, 28.10.2026 — all six GST brackets are now confirmed by Zoho (Sathwika Thangallapally's reply email).** The table above replaces the earlier "only 18% confirmed" state; the 0/5/12/28/40% values are copied verbatim from that email / section 3 of the payloads document. `LocationIdsByDealerCode` still only has Delhi/CUS0288 confirmed — the other 20 locations are in the new Purchase Bills document (section 8 below) but need BGauss's own dealer-code mapping filled in before they can go here, same reasoning as before: a guessed id would mis-route a real transaction.
 
 ## 4. Program.cs — register the new services
 
@@ -168,3 +168,34 @@ Those two models don't reconcile on their own — proactively pushing every ledg
 4. Test with `ZohoPush:Provider = "ZohoBooksDirect"` against **one or two known-18%-GST items** first (matching what Learnall actually tested), via `POST /api/zoho-push-ops/load-items?confirm=true&codes=<a couple of item codes>` — your existing Ops controller endpoint — and check the item lands correctly in Zoho Books before letting the full continuing-items backlog through.
 5. Get Vijay's and Learnall's decision on the customer-push model (section 6 above) before enabling customer events in this mode.
 6. Share the repair-bill/invoice source so the invoice side can be completed.
+
+## 8. Update, 28.10.2026 — Zoho's full reply email: what changed
+
+Sathwika Thangallapally (Zoho Developer) replied with the OAuth credentials (via a password-protected link — see the cover note for the separate password issue), confirmed the direct-API approach end to end, and attached two documents: a re-share of the Payloads document (unchanged) and a brand-new `BGauss_DMS_Zoho_Books_Purchase_Bills_and_Locations.docx`. Five things changed as a result:
+
+**8.1 — Stop using the item webhook. All items must now go through the direct API.** Zoho's own words: *"Please do not send any more items through the webhook."* The 1,496 items already pushed through `iw_bgauss_item_push` were created as **sales items** (no stock tracking); Zoho tested re-pushing one (`0301-DS1-1008`) through the direct API's update call and confirmed it converts cleanly to an **inventory item** (stock tracked) with name/SKU/HSN/rate/GST unchanged. Practical effect: **switch `ZohoPush:Provider` from `"ZohoBooks"` to `"ZohoBooksDirect"` and plan a one-time re-push of every item** — both the 1,496 webhook-created ones (now converting type) and the 1,032 previously held-back ones (now mostly unblocked by 8.2/8.3 below). Do this as a deliberate, small-batch-first operation (mirror Zoho's own single-item test before the full backlog), not a silent side-effect of flipping the config flag.
+
+**8.2 — HSN and price are no longer mandatory on an item push.** `ZohoCreateItemRequest.HsnOrSac`/`.Rate` are now nullable and omitted from the JSON when absent (was `[Required]` on both); `ZohoBooksMappers.ToCreateItemRequest` no longer holds an item back for a missing HSN or a zero/blank price — only a HSN that is *present but malformed* (not 8 digits) or a *negative* price still blocks the push, since those look like data errors rather than legitimately-unset fields. This alone should clear most of the 1,032 held-back items — re-run `load-items` after deploying this change and check the new `heldBack` count.
+
+**8.3 — All six GST brackets are confirmed** (table in section 3 above, updated from the email). The item that failed earlier at 0% GST was **`BDBG27C001`** — include that item code when you reply to Zoho, and re-push it once the 0% tax IDs are deployed.
+
+**8.4 — New inbound direction: Zoho Books → DMS purchase bills.** Unlike everything else in this integration, this one has Zoho calling DMS. New files:
+
+| File | What it is |
+|---|---|
+| `Controllers/ZohoPurchaseBillWebhookDtos.cs` | Request/reply shapes, field-for-field against the new document's sections 3-4 |
+| `Controllers/ZohoPurchaseBillWebhookController.cs` | `POST /api/zoho-purchase-bills` — `[AllowAnonymous]` + `X-API-Key` (same convention as your other Zoho controllers; **written from that documented convention, not from your actual controller source, since those files weren't shared in this conversation — check it matches before shipping**) |
+| `sql/2026-10-28_ZohoPurchaseBillInbox.sql` | Three new tables: `ZohoPurchaseBillInbox` (header), `ZohoPurchaseBillInboxLine`, `ZohoPurchaseBillWebhookEvents` (idempotency log) — run once before deploying |
+
+Handling matches the document's section 5 exactly: `bill.created`/`bill.updated` upsert the header + fully replace the lines (keyed on Zoho's own immutable `billId` — no separate match key); `bill.voided` marks it void and reverses stock once; a repeated identical event (same `billId`+`event`+content) is a no-op, replied to as `"duplicate"` rather than reprocessed.
+
+**NOT implemented: the actual stock-receiving logic.** `ApplyStockForBillAsync` in the controller is a clearly-marked stub that logs what it would do and returns — it does not touch real stock. It is blocked on two things neither source document nor this conversation provided: (1) the location→dealer mapping in section 8.5 below, still blank, and (2) which DMS table/procedure actually owns stock-on-hand per dealer. Every bill still lands in `ZohoPurchaseBillInbox` with `StockApplied = 0` so a later implementation can find all of them with `WHERE StockApplied = 0 AND VoidedOn IS NULL`.
+
+**What to give Zoho back (their "Needed from DMS" ask, section 6 of their document)** — propose this in your reply:
+- Endpoint URL: `https://<your-deployed-host>/api/zoho-purchase-bills`
+- Auth: an API key in the `X-API-Key` header (configured as `ApiKeys:ZohoPurchaseBillWebhook` — set this as a secret before go-live, same as the OAuth values)
+- Reply contract: HTTP 200 with `{ "success": true, "status": "accepted"|"duplicate", "message": "...", "billId": "..." }` on success; a non-2xx status (401 for a bad key, 400 for a malformed payload, 500 for a processing error) with `{ "success": false, "status": "error", "message": "...", "billId": "..." }` otherwise.
+
+**8.5 — The 21-location → dealer mapping still needs BGauss's own data.** The new document lists all 21 Zoho Books locations with their `location_id`, but the "DMS dealer / sub-location" column is blank — only Delhi/CUS0288 was ever confirmed. This is BGauss's own dealer-master data (which dealer code and sub-location each hub/spoke maps to), not something that can be inferred from anything shared so far — see the cover note for the full table and the request to fill it in.
+
+**8.6 — Customer-push timing is now confirmed, not just inferred.** Zoho's email restates section 6 exactly: *"Customers are created only at invoice time... DMS looks up the customer by customerId; if found, the invoice goes to that customer; if not, DMS creates the customer first."* This resolves the open question in section 6 above in favour of the invoice-time model — `ZohoBooksDirectRunner.ProcessCustomersInThisMode` should stay `false` (proactive ledger-change pushes are still not the right model), and the invoice-time path should call `ZohoBooksApiClient.FindOrCreateCustomerAsync` once the repair-bill/invoice source is shared (still the one piece from section 6 that remains unbuilt).

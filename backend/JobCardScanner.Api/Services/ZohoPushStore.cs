@@ -258,8 +258,8 @@ public static class ZohoPushStore
 
     /// <summary>Zoho Books' field rules for an item (see the Zoho document, "Field rules").</summary>
     private const string ValidItemWhere = @"
-              AND ISNULL(m.[Dlr_Price], 0) > 0
-              AND LEN(LTRIM(RTRIM(ISNULL(m.[HSNCode], '')))) = 8
+              AND ISNULL(m.[Dlr_Price], 0) >= 0
+              AND (LTRIM(RTRIM(ISNULL(m.[HSNCode], ''))) = '' OR LEN(LTRIM(RTRIM(m.[HSNCode]))) = 8)
               AND LTRIM(RTRIM(ISNULL(m.[ItemName], ''))) <> ''
               AND m.[IGST] IN (0, 5, 12, 18, 28, 40)
               AND m.[SGST] = m.[IGST] / 2 AND m.[CGST] = m.[IGST] / 2";

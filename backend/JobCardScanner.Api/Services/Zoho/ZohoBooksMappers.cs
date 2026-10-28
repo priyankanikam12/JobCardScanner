@@ -34,13 +34,23 @@ public static class ZohoBooksMappers
         if (string.IsNullOrWhiteSpace(options.Accounts.SalesAccountId) || string.IsNullOrWhiteSpace(options.Accounts.PurchaseAccountId) || string.IsNullOrWhiteSpace(options.Accounts.InventoryAccountId))
             errors.Add($"Item {item.ItemCode}: ZohoBooksApi:Accounts (SalesAccountId/PurchaseAccountId/InventoryAccountId) is not fully configured.");
 
-        var hsn = (item.HsnCode ?? "").Trim();
-        if (hsn.Length != 8 || !hsn.All(char.IsDigit))
-            errors.Add($"Item {item.ItemCode}: hsnCode '{item.HsnCode}' is not exactly 8 digits (section 8).");
+        // 2026-10-28 - per Zoho's "Held-back items: HSN and price are not mandatory" email, a bad/missing HSN or price no longer holds the item back. A HSN that IS present
+        // but not exactly 8 digits is still rejected (Zoho won't check it, so garbage would go in silently) - it is just not REQUIRED to be present at all any more. Same for
+        // price: present-and-negative is rejected (a mapping bug), missing/zero is sent through with the field left out so "Zoho creates the item with ... rate 0" (the
+        // documented behaviour), rather than held back pending a price BGauss may not have yet.
+        var rawHsn = (item.HsnCode ?? "").Trim();
+        string? hsn = null;
+        if (rawHsn.Length > 0)
+        {
+            if (rawHsn.Length != 8 || !rawHsn.All(char.IsDigit))
+                errors.Add($"Item {item.ItemCode}: hsnCode '{item.HsnCode}' is present but not exactly 8 digits (section 8) - fix it or clear it, do not send it as-is.");
+            else
+                hsn = rawHsn;
+        }
 
         var dealerPrice = item.DealerPrice ?? 0m;
-        if (dealerPrice <= 0)
-            errors.Add($"Item {item.ItemCode}: dealerPrice {dealerPrice} is not greater than 0 (section 8).");
+        if (dealerPrice < 0)
+            errors.Add($"Item {item.ItemCode}: dealerPrice {dealerPrice} is negative - that looks like a data error, not a legitimately-unpriced item.");
 
         var name = (item.DisplayName ?? item.ItemName ?? "").Trim();
         if (name.Length == 0)
@@ -48,8 +58,9 @@ public static class ZohoBooksMappers
 
         if (errors.Count > 0) return (null, false, errors);
 
-        // rate = dealerPrice / (1 + igst/100), 2 decimals (Fields List, "Item" sheet; Payloads doc section 4.2 example: 1311 / 1.18 = 1111.02)
-        var rate = Math.Round(dealerPrice / (1 + igst / 100m), 2, MidpointRounding.AwayFromZero);
+        // rate = dealerPrice / (1 + igst/100), 2 decimals (Fields List, "Item" sheet; Payloads doc section 4.2 example: 1311 / 1.18 = 1111.02) - null (omitted) when there is
+        // no price yet, rather than sending a fabricated 0 that would look like a real zero rate.
+        decimal? rate = dealerPrice > 0 ? Math.Round(dealerPrice / (1 + igst / 100m), 2, MidpointRounding.AwayFromZero) : null;
 
         var request = new ZohoCreateItemRequest
         {
@@ -65,8 +76,8 @@ public static class ZohoBooksMappers
             InventoryAccountId = options.Accounts.InventoryAccountId!,
             ItemTaxPreferences = new List<ZohoItemTaxPreference>
             {
-                new() { TaxId = taxIds.IntraStateTaxId!, TaxSpecification = "intra" },
-                new() { TaxId = taxIds.InterStateTaxId!, TaxSpecification = "inter" },
+                new() { TaxId = taxIds?.IntraStateTaxId!, TaxSpecification = "intra" },
+                new() { TaxId = taxIds?.InterStateTaxId!, TaxSpecification = "inter" },
             },
         };
         var shouldBeActive = string.Equals(item.Status?.Trim(), "Y", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(item.Status);

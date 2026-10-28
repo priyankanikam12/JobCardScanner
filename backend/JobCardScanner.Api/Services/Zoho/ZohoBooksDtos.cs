@@ -100,17 +100,21 @@ public class ZohoCreateItemRequest
     [Required]
     public string Unit { get; set; } = "";
 
-    /// <summary>Section 8 check: "hsnCode is 8 digits" - Zoho itself does NOT validate this (section 4.5's table: "HSN of wrong length | Accepted | Zoho does not check HSN; the DMS must
-    /// check it before sending") so the regex below is BGauss's own gate, not something Zoho would reject on its own.</summary>
+    /// <summary>2026-10-28 - per Zoho's "Held-back items: HSN and price are not mandatory" email: no longer [Required]. Nullable + JsonIgnore(WhenWritingNull) so a missing HSN
+    /// is left OUT of the JSON entirely ("leave those fields out and Zoho creates the item with a blank HSN"), not sent as "" or null. The regex still gates a HSN that IS
+    /// present but malformed (section 8: "hsnCode is 8 digits" - Zoho itself does not check this, so BGauss still gates a present-but-wrong value before sending).</summary>
     [JsonPropertyName("hsn_or_sac")]
-    [Required(ErrorMessage = "hsnCode is required.")]
-    [RegularExpression(@"^\d{8}$", ErrorMessage = "hsnCode must be exactly 8 digits.")]
-    public string HsnOrSac { get; set; } = "";
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [RegularExpression(@"^\d{8}$", ErrorMessage = "hsnCode, when present, must be exactly 8 digits.")]
+    public string? HsnOrSac { get; set; }
 
-    /// <summary>dealerPrice / (1 + igst/100), 2 decimals (Fields List, "Item" sheet) - computed by the caller (ZohoItemMapper), not here; this DTO only enforces "> 0" (section 8).</summary>
+    /// <summary>2026-10-28 - per the same email: price is no longer mandatory either ("leave those fields out and Zoho creates the item ... with rate 0"). Nullable +
+    /// JsonIgnore(WhenWritingNull) so a missing price is omitted rather than sent as 0. Still blocks a NEGATIVE rate if one is present (dealerPrice / (1 + igst/100) should
+    /// never be negative in practice, so this only guards against a mapping bug, not a legitimate business case).</summary>
     [JsonPropertyName("rate")]
-    [Range(0.01, double.MaxValue, ErrorMessage = "dealerPrice (after removing GST) must be greater than 0.")]
-    public decimal Rate { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [Range(0, double.MaxValue, ErrorMessage = "dealerPrice (after removing GST), when present, must not be negative.")]
+    public decimal? Rate { get; set; }
 
     [JsonPropertyName("account_id")]
     [Required]

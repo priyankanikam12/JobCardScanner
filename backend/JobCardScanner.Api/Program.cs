@@ -65,10 +65,20 @@ builder.Services.AddAuthentication()
     .AddMicrosoftIdentityWebApi(builder.Configuration, configSectionName: "AzureAd", jwtBearerScheme: AuthSchemes.AzureAd);
 
 builder.Services.Configure<ZohoBooksOptions>(builder.Configuration.GetSection(ZohoBooksOptions.SectionName));
-builder.Services.AddHttpClient<ZohoOAuthTokenService>();
-builder.Services.AddSingleton<ZohoOAuthTokenService>();
-builder.Services.AddHttpClient<ZohoBooksApiClient>(c => c.Timeout = TimeSpan.FromSeconds(30));
-builder.Services.AddSingleton<ZohoBooksApiClient>();
+
+builder.Services.AddHttpClient("ZohoOAuth");
+builder.Services.AddHttpClient("ZohoBooksApi", c => c.Timeout = TimeSpan.FromSeconds(30));
+
+builder.Services.AddSingleton<ZohoOAuthTokenService>(sp => new ZohoOAuthTokenService(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient("ZohoOAuth"),
+    sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<ZohoBooksOptions>>(),
+    sp.GetRequiredService<ILogger<ZohoOAuthTokenService>>()));
+
+builder.Services.AddSingleton<ZohoBooksApiClient>(sp => new ZohoBooksApiClient(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient("ZohoBooksApi"),
+    sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<ZohoBooksOptions>>(),
+    sp.GetRequiredService<ZohoOAuthTokenService>(),
+    sp.GetRequiredService<ILogger<ZohoBooksApiClient>>()));
 
 
 // 2026-09-03: DIAGNOSTIC - added while chasing a reported 401 on /api/auth/me from a fresh
