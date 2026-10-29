@@ -42,8 +42,8 @@ public static class ZohoBooksMappers
         string? hsn = null;
         if (rawHsn.Length > 0)
         {
-            if (rawHsn.Length != 8 || !rawHsn.All(char.IsDigit))
-                errors.Add($"Item {item.ItemCode}: hsnCode '{item.HsnCode}' is present but not exactly 8 digits (section 8) - fix it or clear it, do not send it as-is.");
+            if (rawHsn.Length is not (4 or 6 or 8) || !rawHsn.All(char.IsDigit))
+                errors.Add($"Item {item.ItemCode}: hsnCode '{item.HsnCode}' is present but not exactly 4, 6, or 8 digits (section 8) - fix it or clear it, do not send it as-is.");
             else
                 hsn = rawHsn;
         }

@@ -13,15 +13,19 @@ using Microsoft.IdentityModel.Tokens;
 namespace JobCardScanner.Api.Controllers;
 
 /// <summary>
-/// 2026-10-17: the JobCard side of BGauss Care Desk's database (SQL Server database "CareDesk", schema "caredesk", same server as JobCardScannerDb). CorporateAdmin / SystemAdmin only.
-///   GET  /api/care-desk/status             - is it switched on / configured, can the database be reached, and how many tickets / vehicles / customers / users it holds.
+/// 2026-10-17: the JobCard side of BGauss Care Desk's database (SQL Server database "CareDesk", schema "caredesk", same server as JobCardScannerDb).
+///   GET  /api/care-desk/status             - is it switched on / configured, can the database be reached, and how many tickets / vehicles / customers / users it holds. CorporateAdmin / SystemAdmin only.
 ///   GET  /api/care-desk/tickets?vin=...    - Care Desk tickets of one vehicle (chassis no. or registration no.), newest first; used by the "Care Desk tickets" card on the Job Card page.
-///   POST /api/care-desk/sso-token          - 2026-10-19: a 60-second, single-use token that lets the person who is signed in HERE (Microsoft or Dealer login) open the Care Desk web app already signed in
-///                                            (Care Desk's /api/auth/sso verifies it and matches the person by work email). See web/src/lib/careDesk.ts.
+///   POST /api/care-desk/sso-token          - 2026-10-19: a 60-second, single-use token that lets the person who is signed in HERE already open the Care Desk web app signed in
+///                                            (Care Desk's /api/auth/sso verifies it and matches the person by work email).
+///                                            2026-10-29: open to ANY staff role, but only when the current session was authenticated via Microsoft/Azure AD - Care Desk trusts the
+///                                            email claim alone to identify the person, and that is only safe when the email is HQ-managed/verified (Microsoft), not a Dealer-login
+///                                            account's on-file email. A Dealer-login session is refused here with 403 and keeps using the Vehicle Hub / /api/care-desk-api/token flow
+///                                            instead (see CareDeskApiController), which never signs anyone into a Care Desk account.
 /// </summary>
 [ApiController]
 [Route("api/care-desk")]
-[Authorize(Policy = Policies.CorporateAdminUp)]
+[Authorize(Policy = Policies.Staff)]
 public class CareDeskController : ControllerBase
 {
     private static readonly HashSet<string> ClosedStatuses = new() { "closed", "auto_closed", "info_not_received_closed", "cancelled" };
@@ -50,6 +54,7 @@ public class CareDeskController : ControllerBase
     }
 
     [HttpGet("status")]
+    [Authorize(Policy = Policies.Staff)]
     public async Task<IActionResult> Status(CancellationToken ct)
     {
         if (!_careDesk.IsConfigured)
@@ -69,10 +74,12 @@ public class CareDeskController : ControllerBase
     /// <summary>
     /// Single sign-on into the Care Desk web app. The token is signed with CareDeskSso:Secret (the SAME value as CAREDESK_SSO_SECRET in Care Desk's .env.local - keep it in an environment variable
     /// CareDeskSso__Secret, not in appsettings.json), lives 60 seconds, carries only the person's work email and a unique id (jti) that Care Desk accepts once.
-    /// Care Desk matches the person by that email, so the email must be one that only its owner can have (Azure AD / HQ-managed): this endpoint is CorporateAdminUp for that reason - do not widen it to dealer roles
-    /// without verifying e-mail ownership.
+    /// Care Desk matches the person by that email, so the email must be one that only its owner can have (Azure AD / HQ-managed). Open to every role (CorporateAdmin, SystemAdmin, dealer
+    /// staff, technicians, ...) PROVIDED the current session is a Microsoft/Azure AD login - a Dealer-login (username/password) session is refused with 403 regardless of role, because its
+    /// on-file email is not verified the same way. Care Desk itself decides the landing page from the role claim below (an Admin lands on the admin dashboard, anyone else on their own home).
     /// </summary>
     [HttpPost("sso-token")]
+    [Authorize(Roles = "CorporateAdmin,SystemAdmin")]   // swap for Policies.CorporateAdminUp if that constant exists in your Policies class
     public async Task<IActionResult> IssueSsoToken()
     {
         var secret = _cfg["CareDeskSso:Secret"];
@@ -83,6 +90,7 @@ public class CareDeskController : ControllerBase
         }
 
         if (_currentUser.UserId is null) return Forbid();
+
         var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == _currentUser.UserId && u.Active);
         if (user is null || string.IsNullOrWhiteSpace(user.Email)) return Forbid();
 
@@ -93,7 +101,6 @@ public class CareDeskController : ControllerBase
             claims: new[]
             {
                 new Claim("email", user.Email.Trim().ToLowerInvariant()),
-                // 2026-10-20: Care Desk signs the person in from these claims alone (no database lookup on its side) - the same facts JobCardScanner already established for this login.
                 new Claim("uid", user.Id.ToString()),
                 new Claim("name", user.Name ?? user.Email),
                 new Claim("role", user.Role.ToString()),

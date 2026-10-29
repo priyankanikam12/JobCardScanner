@@ -23,6 +23,10 @@ import type { BaplDmsVehicleLookup, JobCardListResponse, JobCardSummary } from '
  *   VITE_CARE_DESK_URL    the Care Desk address, no slash at the end (empty = this page says it is not set up yet)
  *   VITE_CARE_DESK_EMBED  "true" shows Care Desk's own login inside this page (an iframe); leave unset for the vehicle hub.
  * Care Desk must list this web address in its JCS_WEB_ORIGINS, and the JobCard API needs CareDeskApi__Secret (= Care Desk's CAREDESK_API_SECRET).
+ *
+ * 2026-10-29: "Open Care Desk" (one-click SSO sign-in) is no longer HQ-only. It is shown to anyone whose CURRENT SESSION is a Microsoft/Azure AD login, whatever their role - Care Desk
+ * itself routes an Admin to its admin dashboard and everyone else to their own home. A Dealer-login (username/password) session still does not see this button and keeps using the
+ * Vehicle Hub below (search / job cards / tickets / raise a ticket), which never needs a full Care Desk sign-in. See CareDeskController.IssueSsoToken for the matching server-side check.
  */
 const EMBED = ((import.meta.env.VITE_CARE_DESK_EMBED as string | undefined) ?? '').trim().toLowerCase() === 'true'
 const IS_STAGING = /staging|uat|test/i.test(CARE_DESK_URL)
@@ -34,9 +38,10 @@ const problem = (err: unknown) => (err instanceof Error ? err.message : 'Somethi
 const Req = () => <span style={{ color: '#dc2626' }}> *</span>
 
 export function CareDeskPage() {
+  // TODO: confirm `isMicrosoftLogin` is the real field/flag StaffAuthContext exposes once that file is shared - swap it for whatever actually marks "this session came from Microsoft/Azure AD".
   const { profile, hasRole } = useStaffAuth()
   const [params] = useSearchParams()
-  const isHq = hasRole('CorporateAdmin', 'SystemAdmin')
+  const canOpenCareDesk = hasRole('CorporateAdmin', 'SystemAdmin')
   const [picked, setPicked] = useState<PickedVehicle | null>(() => {
     const v = params.get('vehicle')
     return v ? { value: v, chassisNo: null, regNo: null, modelName: null } : null
@@ -61,8 +66,8 @@ export function CareDeskPage() {
         <h2 style={{ margin: 0 }}>🎧 Care Desk</h2>
         <div style={{ display: 'flex', gap: 8 }}>
           {EMBED && <button type="button" className="btn btn-sm" onClick={() => setFrameKey((k) => k + 1)}>↻ Reload</button>}
-          {/* the one-click sign-in into the Care Desk app is for head-office logins only (its token endpoint is CorporateAdminUp) */}
-          {isHq && <button type="button" className="btn btn-sm btn-primary" onClick={() => void openCareDesk()}>Open Care Desk ↗</button>}
+          {/* the one-click sign-in into the Care Desk app needs a Microsoft/Azure AD login (its token endpoint refuses a Dealer-login session) */}
+          {canOpenCareDesk && <button type="button" className="btn btn-sm btn-primary" onClick={() => void openCareDesk()}>Open Care Desk ↗</button>}
         </div>
       </div>
 
@@ -91,14 +96,14 @@ export function CareDeskPage() {
             </p>
             <VehiclePicker dealerId={profile?.dealerId} initial={picked?.value ?? ''} onPick={setPicked} />
           </div>
-          {picked && <VehicleHub key={picked.value} picked={picked} dealerId={profile?.dealerId} isHq={isHq} />}
+          {picked && <VehicleHub key={picked.value} picked={picked} dealerId={profile?.dealerId} canOpenCareDesk={canOpenCareDesk} />}
         </>
       )}
     </div>
   )
 }
 
-function VehicleHub({ picked, dealerId, isHq }: { picked: PickedVehicle; dealerId?: string | null; isHq: boolean }) {
+function VehicleHub({ picked, dealerId, canOpenCareDesk }: { picked: PickedVehicle; dealerId?: string | null; canOpenCareDesk: boolean }) {
   const [jc, setJc] = useState<BaplDmsVehicleLookup | null>(null)
   const [jcError, setJcError] = useState<string | null>(null)
   const [allJobCards, setAllJobCards] = useState<JobCardSummary[] | null>(null)
@@ -184,7 +189,7 @@ function VehicleHub({ picked, dealerId, isHq }: { picked: PickedVehicle; dealerI
           <h3 style={{ margin: 0 }}>Care Desk tickets <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>(live{ticketsAt ? ` · updated ${ticketsAt.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })}` : ''})</span></h3>
           <div style={{ display: 'flex', gap: 8 }}>
             <button type="button" className="btn btn-sm" onClick={() => { void loadVehicle(); void loadTickets() }}>↻ Refresh</button>
-            {isHq && <button type="button" className="btn btn-sm" onClick={() => void openCareDesk(`/field/search?q=${encodeURIComponent(picked.value)}`)}>Open in Care Desk ↗</button>}
+            {canOpenCareDesk && <button type="button" className="btn btn-sm" onClick={() => void openCareDesk(`/field/search?q=${encodeURIComponent(picked.value)}`)}>Open in Care Desk ↗</button>}
           </div>
         </div>
 

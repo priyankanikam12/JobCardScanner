@@ -105,7 +105,7 @@ public class ZohoCreateItemRequest
     /// present but malformed (section 8: "hsnCode is 8 digits" - Zoho itself does not check this, so BGauss still gates a present-but-wrong value before sending).</summary>
     [JsonPropertyName("hsn_or_sac")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    [RegularExpression(@"^\d{8}$", ErrorMessage = "hsnCode, when present, must be exactly 8 digits.")]
+    [RegularExpression(@"^\d{4}$|^\d{6}$|^\d{8}$", ErrorMessage = "hsnCode, when present, must be exactly 4, 6, or 8 digits.")]
     public string? HsnOrSac { get; set; }
 
     /// <summary>2026-10-28 - per the same email: price is no longer mandatory either ("leave those fields out and Zoho creates the item ... with rate 0"). Nullable +
@@ -145,16 +145,35 @@ public class ZohoUpdateItemRequest
     [JsonPropertyName("name")]
     public string? Name { get; set; }
 
+    /// <summary>2026-10-29 - Zoho confirmed: an item that already existed in Zoho before full inventory data was sent only converts to a stock-tracked inventory item
+    /// when item_type "inventory" is explicitly restated on the UPDATE call too - "fields not sent stay as they are" (section 4.3) means an item created as a sales
+    /// item silently stays one otherwise. Always sent (never omitted); harmless to resend on an item that is already "inventory".</summary>
+    [JsonPropertyName("item_type")]
+    public string ItemType { get; set; } = "inventory";
+
+    /// <summary>Same reasoning - always resent so a pre-existing item picks up the correct unit instead of staying blank.</summary>
+    [JsonPropertyName("unit")]
+    public string? Unit { get; set; }
+
     [JsonPropertyName("hsn_or_sac")]
-    [RegularExpression(@"^\d{8}$", ErrorMessage = "hsnCode must be exactly 8 digits.")]
+    [RegularExpression(@"^\d{4}$|^\d{6}$|^\d{8}$", ErrorMessage = "hsnCode, when present, must be exactly 4, 6, or 8 digits.")]
     public string? HsnOrSac { get; set; }
 
     [JsonPropertyName("rate")]
     [Range(0.01, double.MaxValue, ErrorMessage = "dealerPrice (after removing GST) must be greater than 0.")]
     public decimal? Rate { get; set; }
 
+    [JsonPropertyName("account_id")]
+    public string? AccountId { get; set; }
+
     [JsonPropertyName("purchase_rate")]
     public decimal? PurchaseRate { get; set; }
+
+    [JsonPropertyName("purchase_account_id")]
+    public string? PurchaseAccountId { get; set; }
+
+    [JsonPropertyName("inventory_account_id")]
+    public string? InventoryAccountId { get; set; }
 
     [JsonPropertyName("item_tax_preferences")]
     public List<ZohoItemTaxPreference>? ItemTaxPreferences { get; set; }

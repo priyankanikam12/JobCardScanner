@@ -39,7 +39,7 @@ const problem = (err: unknown) => (err instanceof Error ? err.message : 'Somethi
 
 export function CareDeskScreen({ route, navigation }: Props) {
   const { profile, hasRole } = useStaffAuth()
-  const isHq = hasRole('CorporateAdmin', 'SystemAdmin')
+  const canOpenCareDesk = hasRole('CorporateAdmin', 'SystemAdmin') 
   const startValue = route.params?.vehicle
   const [picked, setPicked] = useState<PickedVehicle | null>(startValue ? { value: startValue, chassisNo: null, regNo: null, modelName: null } : null)
 
@@ -60,7 +60,7 @@ export function CareDeskScreen({ route, navigation }: Props) {
     <ScrollView style={styles.screen} contentContainerStyle={{ padding: 12, paddingBottom: 40 }} keyboardShouldPersistTaps="handled">
       <View style={styles.titleRow}>
         <Text style={styles.h2}>🎧 Care Desk</Text>
-        {isHq && (
+       {canOpenCareDesk && (
           <TouchableOpacity style={styles.primaryBtnSm} onPress={() => void openCareDesk()}>
             <Text style={styles.primaryBtnText}>Open Care Desk ↗</Text>
           </TouchableOpacity>
@@ -78,12 +78,12 @@ export function CareDeskScreen({ route, navigation }: Props) {
         </View>
       </View>
 
-      {picked && <VehicleHub key={picked.value} picked={picked} dealerId={profile?.dealerId} isHq={isHq} onOpenJobCard={(id) => navigation.navigate('JobCardDetail', { id })} />}
+      {picked && <VehicleHub key={picked.value} picked={picked} dealerId={profile?.dealerId} canOpenCareDesk={canOpenCareDesk} onOpenJobCard={(id) => navigation.navigate('JobCardDetail', { id })} />}
     </ScrollView>
   )
 }
 
-function VehicleHub({ picked, dealerId, isHq, onOpenJobCard }: { picked: PickedVehicle; dealerId?: string | null; isHq: boolean; onOpenJobCard: (id: string) => void }) {
+function VehicleHub({ picked, dealerId, canOpenCareDesk, onOpenJobCard }: { picked: PickedVehicle; dealerId?: string | null; canOpenCareDesk: boolean; onOpenJobCard: (id: string) => void }) {
   const focused = useIsFocused()
   const [jc, setJc] = useState<BaplDmsVehicleLookup | null>(null)
   const [jcError, setJcError] = useState<string | null>(null)
@@ -169,7 +169,7 @@ function VehicleHub({ picked, dealerId, isHq, onOpenJobCard }: { picked: PickedV
         </View>
         <View style={{ flexDirection: 'row', gap: 8, marginBottom: 6 }}>
           <TouchableOpacity style={styles.btnSm} onPress={() => { void loadVehicle(); void loadTickets() }}><Text style={styles.btnSmText}>↻ Refresh</Text></TouchableOpacity>
-          {isHq && <TouchableOpacity style={styles.btnSm} onPress={() => void openCareDesk(`/field/search?q=${encodeURIComponent(picked.value)}`)}><Text style={styles.btnSmText}>Open in Care Desk ↗</Text></TouchableOpacity>}
+          {canOpenCareDesk && <TouchableOpacity style={styles.btnSm} onPress={() => void openCareDesk(`/field/search?q=${encodeURIComponent(picked.value)}`)}><Text style={styles.btnSmText}>Open in Care Desk ↗</Text></TouchableOpacity>}
         </View>
 
         {cdError && <Text style={styles.errorText}>{cdError}</Text>}

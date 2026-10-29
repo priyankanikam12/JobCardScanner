@@ -110,7 +110,19 @@ public sealed class ZohoBooksApiClient
         }
 
         var itemId = found.Data!.ItemId;
-        var update = new ZohoUpdateItemRequest { Name = createRequest.Name, HsnOrSac = createRequest.HsnOrSac, Rate = createRequest.Rate, PurchaseRate = createRequest.PurchaseRate, ItemTaxPreferences = createRequest.ItemTaxPreferences };
+        var update = new ZohoUpdateItemRequest
+        {
+            Name = createRequest.Name,
+            ItemType = createRequest.ItemType,
+            Unit = createRequest.Unit,
+            HsnOrSac = createRequest.HsnOrSac,
+            Rate = createRequest.Rate,
+            AccountId = createRequest.AccountId,
+            PurchaseRate = createRequest.PurchaseRate,
+            PurchaseAccountId = createRequest.PurchaseAccountId,
+            InventoryAccountId = createRequest.InventoryAccountId,
+            ItemTaxPreferences = createRequest.ItemTaxPreferences,
+        };
         var updated = await UpdateItemAsync(itemId, update, ct);
         if (!updated.Success) return updated;
 
