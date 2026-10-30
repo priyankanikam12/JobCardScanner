@@ -52,7 +52,7 @@ public static class ZohoBooksMappers
         if (dealerPrice < 0)
             errors.Add($"Item {item.ItemCode}: dealerPrice {dealerPrice} is negative - that looks like a data error, not a legitimately-unpriced item.");
 
-        var name = (item.DisplayName ?? item.ItemName ?? "").Trim();
+        var name = (string.IsNullOrWhiteSpace(item.DisplayName) ? item.ItemName : item.DisplayName)?.Trim() ?? "";
         if (name.Length == 0)
             errors.Add($"Item {item.ItemCode}: itemName is blank.");
 

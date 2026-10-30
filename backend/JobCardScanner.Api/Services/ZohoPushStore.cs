@@ -38,9 +38,11 @@ public static class ZohoPushStore
     /// <summary>Zoho Books would reject items that break its field rules (price not above 0, HSN not 8 digits, GST not an allowed rate or CGST / SGST not half of IGST, blank name). With ZohoPush:Provider = ZohoBooks they are held
     /// back by default (ZohoPush:SkipInvalidItems, default true there); switch it to false to send everything.</summary>
     private static bool SkipInvalidItems =>
-        _config is not null && (string.Equals(_config["ZohoPush:Provider"], "ZohoBooks", StringComparison.OrdinalIgnoreCase)
+        _config is not null && (IsZohoBooksProvider(_config["ZohoPush:Provider"])
             ? _config.GetValue("ZohoPush:SkipInvalidItems", true) : _config.GetValue("ZohoPush:SkipInvalidItems", false));
 
+    private static bool IsZohoBooksProvider(string? p) =>
+        string.Equals(p, "ZohoBooks", StringComparison.OrdinalIgnoreCase) || string.Equals(p, "ZohoBooksDirect", StringComparison.OrdinalIgnoreCase);
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
