@@ -106,7 +106,10 @@ public sealed class ZohoBooksApiClient
             // code 1001 racing with another create (section 4.5): look it up again and fall through to update instead of failing
             found = await FindItemBySkuAsync(createRequest.Sku, ct);
             if (!found.Success || found.Data is null)
-                return ZohoBooksResult<ZohoItem>.Fail(created.HttpStatus, created.ZohoCode, created.Message, retryable: false);
+                // 2026-10-30: 1001 with NO item under this SKU means the NAME is already used by a DIFFERENT SKU (two item codes sharing one ItemName in C_ItemMaster) - not a
+                // create/create race. Say so in the message, so the outbox LastError tells ops to rename the item in the DMS instead of looking like a retryable glitch.
+                return ZohoBooksResult<ZohoItem>.Fail(created.HttpStatus, created.ZohoCode,
+                    $"{created.Message} [SKU {createRequest.Sku} is not in Zoho, so this name is held by a different SKU - make ItemName unique in the DMS item master]", retryable: false);
         }
 
         var itemId = found.Data!.ItemId;
@@ -125,6 +128,13 @@ public sealed class ZohoBooksApiClient
         };
         var updated = await UpdateItemAsync(itemId, update, ct);
         if (!updated.Success) return updated;
+
+        // 2026-10-30: Zoho answers code 0 even if a field was ignored, so confirm the sales->inventory conversion really happened (Zoho's open point: items first loaded via the
+        // webhook stayed "sales", track_inventory false). Warn-only: the update itself succeeded, and a reply that omits these fields must not be flagged as a failure.
+        var u = updated.Data;
+        if (u is not null && ((u.ItemType is not null && !string.Equals(u.ItemType, "inventory", StringComparison.OrdinalIgnoreCase)) || u.TrackInventory == false))
+            _logger.LogWarning("Zoho Books: item {Sku} (id {ItemId}) was updated but Zoho still reports item_type={ItemType}, track_inventory={Track} - it did not convert to a stock-tracked inventory item.",
+                createRequest.Sku, itemId, u.ItemType, u.TrackInventory);
 
         var currentlyActive = !string.Equals(found.Data.Status, "inactive", StringComparison.OrdinalIgnoreCase);
         if (currentlyActive != shouldBeActive)

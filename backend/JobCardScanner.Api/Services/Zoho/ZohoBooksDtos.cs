@@ -159,8 +159,10 @@ public class ZohoUpdateItemRequest
     [RegularExpression(@"^\d{4}$|^\d{6}$|^\d{8}$", ErrorMessage = "hsnCode, when present, must be exactly 4, 6, or 8 digits.")]
     public string? HsnOrSac { get; set; }
 
+    /// <summary>2026-10-30 - was Range(0.01, ...), which contradicted the relaxed create rule (price is no longer mandatory, a 0/blank price is allowed): an existing
+    /// zero-priced item being converted to inventory would fail this check on UPDATE even though the same item passes on CREATE. Now matches ZohoCreateItemRequest.Rate.</summary>
     [JsonPropertyName("rate")]
-    [Range(0.01, double.MaxValue, ErrorMessage = "dealerPrice (after removing GST) must be greater than 0.")]
+    [Range(0, double.MaxValue, ErrorMessage = "dealerPrice (after removing GST), when present, must not be negative.")]
     public decimal? Rate { get; set; }
 
     [JsonPropertyName("account_id")]
