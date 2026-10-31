@@ -17,6 +17,8 @@
  *                    The registered one really receives an OTP (SMS, or the dev code on screen) - use a test customer, never a real one; the unregistered one must really be unregistered.
  *   --test-jobcard   an open job card of the Captain's dealer made for testing (needs a Technician assigned and, for the photo check, at least one photo)
  *   --other-jobcard  a job card of ANOTHER dealer (only read, and edited only when the scope is proven to be enforced)
+ *   --workarea-jobcard (DMS-07, 31.10.2026) a job card of the SAME dealer at a location OUTSIDE the Captain login's Work Area: hidden from the list and the card page, so it must not be writable either
+ *   --other-chassis  (DMS-03, 2026-10-31) the chassis number of a vehicle sold by ANOTHER dealer: the wizard's chassis lookup must not return that dealer's customer to the Captain
  *   --keep-session   do not sign the Captain token out at the end (DMS-16 is skipped)
  * Exit code 0 = no FAIL, 1 = at least one FAIL.
  */
@@ -86,7 +88,20 @@ async function denied(id, text, method, path, token, body, allowed, whyNot) {
     const r = await call('GET', `/api/jobcards/${args['other-jobcard']}`, { token: T.captain })
     scopeEnforced = r.status === 403 ? true : (r.status === 200 ? false : null)
     ok('DMS-07', "Captain cannot READ another dealer's job card (GET)", r.status === 403, `got ${r.status}${scopeEnforced === false ? ' - the dealer scope is NOT enforcing (LogOnly or not deployed)' : ''}`)
+    // 2026-10-31 (retest DMS-07): the same job card with its id written without hyphens (the route accepts that form too) and in capitals - both are reads, so they also run with --readonly
+    const plain = String(args['other-jobcard']).replace(/-/g, '')
+    const r2 = await call('GET', `/api/jobcards/${plain}`, { token: T.captain })
+    ok('DMS-07', "the same job card with its id written WITHOUT hyphens is refused too (GET)", r2.status === 403 || (scopeEnforced === null && isDenied(r2.status)), `got ${r2.status}${r2.status === 200 ? ' - the filter does not recognise this form of the id' : ''}`)
+    const r3 = await call('GET', `/api/jobcards/${String(args['other-jobcard']).toUpperCase()}`, { token: T.captain })
+    ok('DMS-07', "... and in capital letters (GET)", r3.status === 403 || (scopeEnforced === null && isDenied(r3.status)), `got ${r3.status}`)
   } else skp('DMS-07', 'dealer scope canary', 'needs --other-jobcard and the Captain token')
+  // 2026-10-31 (retest DMS-07, evidence of 30.10.2026): a card of the SAME dealer outside the login's Work Area is hidden from lists and search - and must not be editable by its id either
+  let workAreaEnforced = null
+  if (T.captain && args['workarea-jobcard']) {
+    const r = await call('GET', `/api/jobcards/${args['workarea-jobcard']}`, { token: T.captain })
+    workAreaEnforced = r.status === 403 ? true : false
+    ok('DMS-07', "a job card of the same dealer OUTSIDE the login's Work Area is refused by the ownership rule (GET)", r.status === 403, `got ${r.status}${r.status === 404 ? ' - only the card page hides it; the Work Area rule is not applied to the API rules yet' : r.status === 200 ? ' - readable' : ''}`)
+  } else skp('DMS-07', "job card outside the login's Work Area", 'needs --workarea-jobcard (a card of the same dealer at another location) and the Captain token')
   const scopeWhy = readonly ? '--readonly' : 'DealerScopeMode is not Enforce on this server (or not proven) - write tests skipped to protect production data'
   const scopeWrites = !readonly && scopeEnforced === true
 
@@ -99,10 +114,22 @@ async function denied(id, text, method, path, token, body, allowed, whyNot) {
   await denied('DMS-04', 'Captain writes the role modes', 'PUT', '/api/menu-access/role-modes', T.captain, [], guardWrites, guardWhy)
   if (T.captain && args['other-jobcard']) {
     await denied('DMS-07', "Captain edits ANOTHER dealer's job card (PUT)", 'PUT', `/api/jobcards/${args['other-jobcard']}`, T.captain, { assignedTechnicianName: 'vapt' }, scopeWrites, scopeWhy)
+    await denied('DMS-07', "Captain edits ANOTHER dealer's job card with its id written without hyphens (PUT)", 'PUT', `/api/jobcards/${String(args['other-jobcard']).replace(/-/g, '')}`, T.captain, { assignedTechnicianName: 'vapt' }, scopeWrites, scopeWhy)
     await denied('DMS-07', "Captain adds an inspection to ANOTHER dealer's job card", 'POST', `/api/jobcards/${args['other-jobcard']}/inspections`, T.captain, { component: 'General', condition: 'NeedsAttention', notes: 'vapt' }, scopeWrites, scopeWhy)
   } else skp('DMS-07', "cross-dealer job card write", 'needs --other-jobcard and the Captain token')
+  if (T.captain && args['workarea-jobcard']) await denied('DMS-07', "Captain edits a job card of the same dealer OUTSIDE its Work Area by its id (PUT)", 'PUT', `/api/jobcards/${args['workarea-jobcard']}`, T.captain, { assignedTechnicianName: 'vapt', expectedDeliveryAt: '2026-10-20T10:00:00' }, !readonly && workAreaEnforced === true, readonly ? '--readonly' : 'the Work Area rule is not proven for this card (the GET above was not refused with 403) - write test skipped to protect production data')
   if (T.captain && args['other-dealer']) await denied('DMS-03', 'Captain creates a customer under another dealerId', 'POST', '/api/customers', T.captain, { dealerId: args['other-dealer'], name: 'vapt test', mobile: '9000000000' }, scopeWrites, scopeWhy)
   else skp('DMS-03', 'customer under another dealerId', 'needs --other-dealer and the Captain token')
+  // 2026-10-31 (retest DMS-03): searching another dealer's customer by chassis number (reads only, so it also runs with --readonly)
+  if (T.captain && args['other-chassis']) {
+    const chassis = String(args['other-chassis'])
+    const lk = await call('GET', `/api/jobcards/vehicle-lookup?value=${encodeURIComponent(chassis)}`, { token: T.captain })
+    const leaked = lk.status === 200 && lk.json && (lk.json.customerName || lk.json.customerMobile || lk.json.customerAddress)
+    ok('DMS-03', "the chassis lookup does not return ANOTHER dealer's customer (GET /api/jobcards/vehicle-lookup)", lk.status === 404 || (lk.status === 200 && !leaked) || isDenied(lk.status), `got ${lk.status}${leaked ? ' - customer details of another dealer are returned' : ''}`)
+    const sg = await call('GET', `/api/jobcards/vehicle-suggestions?q=${encodeURIComponent(chassis)}`, { token: T.captain })
+    const listed = Array.isArray(sg.json) && sg.json.some((v) => String(v.chassisNo || '').trim().toLowerCase() === chassis.trim().toLowerCase())
+    ok('DMS-03', "the chassis suggestions do not list another dealer's vehicle (GET /api/jobcards/vehicle-suggestions)", !listed, listed ? 'the vehicle of another dealer is listed' : '')
+  } else skp('DMS-03', "chassis lookup of another dealer's vehicle", 'needs --other-chassis (a chassis sold by another dealer) and the Captain token')
 
   // ---- DMS-06 / DMS-08 on the TEST job card only --------------------------------------------------------------------------------------------------------------------
   const tj = args['test-jobcard']
@@ -112,7 +139,8 @@ async function denied(id, text, method, path, token, body, allowed, whyNot) {
     form.append('Stage', 'CheckIn')
     const r = await call('POST', `/api/jobcards/${tj}/photos/upload`, { token: T.captain, form })
     if (r.status >= 200 && r.status < 300) cleanup.push(`DMS-06: the HTML "photo" was ACCEPTED on test job card ${tj} - delete that photo and the file poc.png.html under wwwroot\\uploads`)
-    ok('DMS-06', 'an HTML file declared as image/png is refused at upload', r.status >= 400 && r.status < 500, `got ${r.status} - UploadPhoto still accepts it`)
+    if (r.status === 403 || r.status === 404) skp('DMS-06', 'an HTML file declared as image/png is refused at upload', `inconclusive: HTTP ${r.status} - the dealer scope / the card, not the upload check, refused it. Use an OPEN job card of the Captain login's OWN dealer`)
+    else ok('DMS-06', 'an HTML file declared as image/png is refused at upload', r.status === 400 || r.status === 415 || r.status === 422, `got ${r.status} - UploadPhoto still accepts it`)
 
     for (const [label, rate, qty] of [['negative rate (-100)', -100, 1], ['quantity 999999999', 100, 999999999]]) {
       const r8 = await call('POST', `/api/jobcards/${tj}/labour-suggestions`, { token: T.captain, body: { labourCode: 'VAPT', labourDescription: 'vapt test', quantity: qty, rateAtSuggestion: rate, sgst: 0, cgst: 0, igst: 0 } })
@@ -163,9 +191,14 @@ async function denied(id, text, method, path, token, body, allowed, whyNot) {
   // ---- Low ---------------------------------------------------------------------------------------------------------------------------------------------------------
   if (T.captain) {
     const d = await call('GET', '/api/dealers', { token: T.captain })
-    let leaks = -1
-    if (Array.isArray(d.json)) leaks = d.json.filter((row) => Object.keys(row).some((k) => /mail|phone|mobile|contact/i.test(k) && row[k])).length
-    ok('DMS-15', "GET /api/dealers shows contact details for at most the caller's own dealer", leaks >= 0 && leaks <= 1, `rows with contact fields: ${leaks}`)
+    // 2026-10-31 (retest DMS-15, evidence of 30.10.2026: the answer listed every dealer with address, GSTIN and rep code): a dealer login now gets only its own dealer
+    const rows = Array.isArray(d.json) ? d.json.length : -1
+    ok('DMS-15', "GET /api/dealers returns only the caller's own dealer (not every dealer)", rows >= 0 && rows <= 1, `rows returned: ${rows}`)
+    // 2026-10-31 (retest DMS-15): the dealer picker of the job card wizard lists EVERY dealer with mobile / e-mail / contact person
+    const bd = await call('GET', '/api/bapl-dms/dealers', { token: T.captain })
+    if (bd.status === 200 && Array.isArray(bd.json)) {
+      ok('DMS-15', 'GET /api/bapl-dms/dealers lists only the caller\'s own dealer (no other dealer\'s mobile / e-mail / contact person)', bd.json.length <= 1, `rows returned: ${bd.json.length}`)
+    } else skp('DMS-15', '/api/bapl-dms/dealers contact fields', `the route answered ${bd.status} for this login`)
   } else skp('DMS-15', '/api/dealers contact fields', 'Captain token not set')
   if (T.captain) {
     const matrix = await call('GET', '/api/menu-access', { token: T.captain })
@@ -177,7 +210,8 @@ async function denied(id, text, method, path, token, body, allowed, whyNot) {
   if (T.captain && tj) {
     const det = await call('GET', `/api/jobcards/${tj}`, { token: T.captain })
     const url = det.json && Array.isArray(det.json.photos) && det.json.photos[0] && det.json.photos[0].url
-    if (!url) skp('DMS-14', 'photo addresses are signed', 'the test job card has no photo - upload one in the app first')
+    if (det.status !== 200) skp('DMS-14', 'photo addresses are signed', `GET /api/jobcards/${tj} answered HTTP ${det.status} - this Captain login cannot read that card (it belongs to another dealer, or the id is wrong). Use a job card of the Captain login's OWN dealer`)
+    else if (!url) skp('DMS-14', 'photo addresses are signed', 'the test job card has no photo - upload one in the app first')
     else {
       ok('DMS-14', 'the API returns the photo address with an expiring signature (?exp=&sig=)', /[?&]sig=/.test(url) && /[?&]exp=/.test(url), url.split('?')[0])
       const plain = await call('GET', url.split('?')[0])

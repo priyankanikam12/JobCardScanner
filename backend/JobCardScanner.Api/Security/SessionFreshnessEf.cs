@@ -25,9 +25,14 @@ public sealed class EfSessionUserLookup : ISessionUserLookup
     {
         var user = await _db.Users.AsNoTracking()
             .Where(u => u.Id == userId)
-            .Select(u => new { u.Role, u.Active, u.DealerId })
+            .Select(u => new { u.Role, u.Active, u.DealerId, u.Designation })
             .FirstOrDefaultAsync(ct);
-        return user is null ? null : new SessionUserState(user.Role.ToString(), user.Active, user.DealerId);
+        if (user is null) return null;
+        // the dealer's BAPL dealer code (CUS0288 ...): lets the response filters recognise the caller's OWN dealer in lists that carry a code but no id
+        string? baplCode = null;
+        if (user.DealerId is Guid dealerId)
+            baplCode = await _db.Dealers.AsNoTracking().Where(d => d.Id == dealerId).Select(d => d.BaplDmsDealerCode).FirstOrDefaultAsync(ct);
+        return new SessionUserState(user.Role.ToString(), user.Active, user.DealerId, Convert.ToString(user.Designation), baplCode);
     }
 }
 

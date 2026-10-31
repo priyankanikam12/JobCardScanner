@@ -1,43 +1,55 @@
-# BGauss DMS - VAPT backend security layer (23.10.2026, final)
+# BGauss DMS - VAPT retest fixes (31.10.2026): DMS-03, DMS-07, DMS-15
 
-All 16 findings of the Securepoint report (17 Oct 2026) are now fixed in code, including the three that were "partly fixed": DMS-12, DMS-15 and DMS-16. Nothing here changes the database.
-"Fixed in code" is not "verified closed": that needs the deploy on dms.bgauss.com and the retest (tests\vapt-retest.js). Read PRODUCTION-ROLLOUT.md first.
+Securepoint's final retest (evidence of 30.10.2026): 13 fixed, DMS-03 and DMS-07 partially fixed, DMS-15 not fixed. This package fixes the three. "Fixed in code" is not "verified closed": deploy, then run the retest (section 4).
 
-## 1. Copy (API project folder = backend\JobCardScanner.Api)
-| From this package | To your project |
-|---|---|
-| Security\*.cs (17 files) | Security\ - add / replace ALL 17 (the new ones: DealerTokenRenewer, OtpEnumerationMiddleware, SessionFreshness, SessionFreshnessEf, SessionRenewal). Delete a leftover RevokedTokenStore.cs |
-| Controllers\SessionController.cs | replaces / adds (logout + the new renew) |
-| Controllers\JobCardsController.cs, RepairBillDocsController.cs | replace (keep backups) |
-| Program.cs | replace your Program.cs (keep a backup): adds builder.AddAppSecurityEf() and the EF interceptor |
-| appsettings.Production.template.json | a template - copy the "Security" values you want into your real settings / environment variables |
+## What the screenshots showed
+* DMS-15: GET /api/dealers answered 200 with EVERY dealer (name, state, city, address, GSTIN, rep code). The earlier fix removed only e-mail / phone fields. Now a dealer login gets only its own dealer.
+* DMS-07: GET /api/jobcards?q=JC/288/26-27/0273 found nothing, but PUT /api/jobcards/fb931c93-7c01-46f3-b1cf-950e3f211fa6 returned 200 (technician and delivery date were changed). The number carries dealer code 288 = the
+  test login's own dealer (Ankit Gond, Delhi, Work Area CUS0288W4 only). Lists, search and the card page follow the Work Area; the write routes checked the dealer only. The Work Area rule now applies to every request that names a job card.
+* DMS-03: the screenshot shows POST /api/customers with another dealerId refused (403) - the part that was already fixed. The remaining point (search by chassis) is the unscoped fallback described below.
 
-## 2. Settings (environment variables on the server - NOT in appsettings.json or web.config)
-    CustomerPortalJwt__Secret, DealerAuthJwt__Secret   32+ characters (the API refuses to start in production without them)
-    DealerAuthJwt__ExpiryMinutes = 60, CustomerPortalJwt__ExpiryMinutes = 60     token lifetime (the report asks for 1 hour or less)
-    Security__MediaSigningKey         32+ random characters (photo links)
-    Security__RouteGuardMode = LogOnly, Security__DealerScopeMode = LogOnly, Security__SessionFreshnessMode = LogOnly   first working day, then Enforce
-    Security__CspMode = ReportOnly
-Optional: Security__MaxTokenMinutes (60), RenewedTokenMinutes (60), SessionCheckSeconds (30), OtpMinResponseMs (700), AllowDevTokens (false).
+## 0. Check first (SSMS, JobCardScannerDb)
+    SELECT j.Id, j.JobCardNumber, j.DealerId, d.Name AS Dealer, j.BaplServiceLocationCode, j.AssignedTechnicianName, j.ExpectedDeliveryAt
+    FROM JobCards j JOIN Dealers d ON d.Id = j.DealerId
+    WHERE j.Id = 'fb931c93-7c01-46f3-b1cf-950e3f211fa6' OR j.JobCardNumber = 'JC/288/26-27/0273';
+    SELECT Id, Name, DealerId, WorkLocationCodes FROM Users WHERE Email = 'ankit.gond1@bgauss.com';
+* If the card of the PUT has DealerId 38CBC463-A9A5-482F-9D63-C13CB44307CE (the test login's dealer) and a location other than CUS0288W4, the cause is the Work Area gap, as described.
+* If it belongs to ANOTHER dealer, the dealer rule did not apply to that request - tell me before sending anything to Securepoint (check Security__DealerScopeMode is Enforce, the environment variables, and the logs\stdout lines "Tenant isolation:").
+* The tester's PUT changed that card: technician "Anand Kumar Gupta", expected delivery 2026-10-20T10:00. Check the card and restore its values if needed.
 
-## 3. What the three last findings do now
-DMS-12  POST /api/portal/otp/request answers the SAME HTTP 200 { otpRequestId, message: "If this number is registered, an OTP has been sent to it." } for every number (an unregistered number gets a random id that can never verify),
-        after at least OtpMinResponseMs; POST /api/portal/otp/verify answers one HTTP 400 "Invalid or expired OTP." for a wrong code, an expired or an unknown request. devOtpCode / devResetToken never leave the API outside
-        Development. The portal login page no longer prints "No account found" (web: PortalLoginPage.tsx).
-        !! The site has no SMS provider (MockNotificationClient), so with devOtpCode removed a customer can no longer get an OTP on screen. Customers with a password still sign in; for OTP either wire a real SMS client
-        or, temporarily, set Security__AllowDevTokens=true (the dev code is shown again; an unregistered number then gets a random 6-digit dev code too, so the two still look the same).
-DMS-15  GET /api/menu-access and /api/menu-access/role-modes return, to a non-corporate login, only what its own role can use (its role, plus the Captain / ViceCaptain designation entries): a page it may see lists only its role,
-        a page it may not see lists "-", a page open to everyone stays "everyone" - the sidebar shows exactly the same, but the full role-to-screen map can no longer be read. CorporateAdmin / SystemAdmin (the Menu Access page)
-        get the full lists. GET /api/dealers hides other dealers' contact fields (as before).
-DMS-16  * no token older than MaxTokenMinutes (60) is accepted (a Dealer / Workshop or customer-portal token); the web and Android apps renew it silently in its last 15 minutes (POST /api/session/renew);
-        * the session of a user ends - within seconds, or at the latest SessionCheckSeconds - when the user's role, active flag, dealer or password changes or the user is deleted (EF interceptor + a database check),
-          without any controller having to call anything; * sign-out revokes the token (as before); * web: sessionStorage; Android: SecureStore, allowBackup false, no cleartext (see the web + Android package).
-        A request that fails answers HTTP 401, which both apps already treat as "sign in again". A database outage lets requests through. SessionFreshnessMode = LogOnly only logs ("Session freshness: ...").
+## 1. Copy (API project)
+Security\*.cs (7 files, replace / add in the Security folder):
+  TenantIsolationFilter.cs (DMS-07)  JobCardRoutes.cs NEW (DMS-07)  WorkArea.cs NEW (DMS-07)  DealerScope.cs NEW (DMS-03)  ResponseSanitizerMiddleware.cs (DMS-15)  SessionFreshness.cs + SessionFreshnessEf.cs (DMS-15)
+Then patch two files of YOUR project (backups <file>.before-retest; nothing changes if an anchor is not found):
+    node deploy\patch-retest-dms03.js ".\Controllers\JobCardsController.cs" ".\Services\DmsBaplDataService.cs"
+Build, deploy, iisreset.
 
-## 4. Build and test
-    dotnet build        (the first build may need a small fix in TenantIsolationFilter.cs: it assumes JobCardScannerDbContext and JobCards.DealerId)
-Then follow PRODUCTION-ROLLOUT.md; run tests\vapt-retest.js after Enforce.
+## 2. What each fix does
+DMS-03  The chassis lookup fell back to DMS_VehicleSales by chassis alone (no dealer filter) and returned another dealer's customer. The fallback now ignores a row of another dealer; a dealer login whose
+        dealer has no BAPL dealer code is shown nothing instead of an unscoped search.
+DMS-07  Dealer AND Work Area rules (claim app_work_locations; empty = every location; a card with no location is outside any restricted Work Area - exactly the controller's own rule) apply to every request that names a job card:
+        any GUID format, worklogs/{id}/end, photos / part / labour suggestions by their own id, and any jobCardId in the query string or body -> HTTP 403.
+DMS-15  GET /api/dealers and /api/bapl-dms/dealers return only the caller's own dealer; /api/dealers/{id} of another dealer is 403; /api/bapl-dms/workshops loses contact fields; /api/menu-access and /role-modes name only the
+        caller's own role and designation. If the sanitizer itself fails, the answer is an error, never the unfiltered data.
 
-## Verified here
-The Security folder (except the two Entity Framework classes) + SessionController logic compile on .NET 8 and 83 in-process checks pass; the two EF classes, SessionController, JobCardsController and Program.cs were only syntax-checked
-(they need your project). NOT verified: the full project build and everything on the live server.
+## 3. Assumptions to check before you deploy
+* dbo.JobCardWorklogs (Id, JobCardId) exists:  SELECT name FROM sys.tables WHERE name LIKE '%Worklog%'   (else change the SQL in TenantIsolationFilter.JobCardOfChildAsync; until then only that one route answers HTTP 500).
+* dbo.JobCards has BaplServiceLocationCode (it does - seen in your own SELECT).
+* DMS_VehicleSales.DealerCode (or LocCode prefix) is in the same format as the dealer's BAPL dealer code:  SELECT TOP 5 DealerCode, LocCode FROM dbo.DMS_VehicleSales   (DMS_IOT_DATA). If not, the fallback never matches - it fails CLOSED.
+* Effect to expect: a dealer login with a Work Area now gets HTTP 403 where it used to be able to write to a card of another location. Any screen that did that on purpose will now fail - tell me which one.
+  /api/dealers now returns one dealer to a dealer login: a screen that listed all dealers for a dealer role (the Job Card Wizard or Stock Report dealer picker) shows only its own dealer.
+
+## 4. Verify on live (tests\vapt-retest.js, Node 18+). New: --workarea-jobcard, --other-chassis, id-format checks, own-dealer-only checks.
+    -- a card of the SAME dealer at another location (for --workarea-jobcard):
+    SELECT TOP 5 Id, JobCardNumber, BaplServiceLocationCode FROM JobCards WHERE DealerId = '38CBC463-A9A5-482F-9D63-C13CB44307CE' AND ISNULL(BaplServiceLocationCode,'') <> 'CUS0288W4' ORDER BY CreatedAt DESC;
+    -- a chassis sold by ANOTHER dealer (BaplConnection):
+    SELECT TOP 5 chassis_no, dealer_code FROM DMS_SaleBill WHERE dealer_code <> 'CUS0288' AND (IsDelete IS NULL OR IsDelete = 0) ORDER BY CreatedOn DESC;
+  node vapt-retest.js --base https://dms.bgauss.com --readonly --other-jobcard <card of another dealer> --workarea-jobcard <card of the same dealer, other location> --other-chassis <that chassis>
+  then the full run (without --readonly): the PUT on the Work Area card only runs once its GET is refused with 403 (to protect production data).
+
+## 5. Verified here / not verified
+Verified: the Security folder without the Entity Framework classes - 111 in-process checks pass (new: job card id in 9 forms, worklog route, body jobCardId, Work Area rule, own-dealer-only lists, single-dealer 403, dealer picker,
+workshops, designation in the matrix, fail-closed sanitizer); the patch script on both indentation styles; the retest script against a mock server in all four situations.
+NOT verified: the full project build; TenantIsolationFilter, the EF lookup, JobCardsController and DmsBaplDataService were only syntax-checked; nothing has been run on the live site.
+
+docs\Retest_Results_BGauss_Response_31.10.2026.xlsx is Securepoint's sheet with BGauss's response, fix and verification steps. Fill in the deployment date and time before sending.

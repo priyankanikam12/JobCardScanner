@@ -7,7 +7,7 @@ using Microsoft.Extensions.Options;
 namespace JobCardScanner.Api.Security;
 
 /// <summary>What the database says about a user right now (read through ISessionUserLookup; EfSessionUserLookup is the real one).</summary>
-public sealed record SessionUserState(string Role, bool Active, Guid? DealerId);
+public sealed record SessionUserState(string Role, bool Active, Guid? DealerId, string? Designation = null, string? DealerBaplCode = null);   // Designation (2026-10-31): Captain / ViceCaptain ... - used to reduce the menu matrix to what the caller's own identity can use
 
 public interface ISessionUserLookup
 {

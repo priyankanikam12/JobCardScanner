@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 
 namespace JobCardScanner.Api.Security;
@@ -20,7 +21,16 @@ namespace JobCardScanner.Api.Security;
 /// </summary>
 public sealed class ResponseSanitizerMiddleware
 {
-    private static readonly Regex ContactField = new("(e-?mail|phone|mobile|contact)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    /// <summary>2026-10-31 (retest DMS-15): also whatsapp / spoc / owner / person / telephone / fax - anything that names or reaches a person at another dealer.</summary>
+    private static readonly Regex ContactField = new("(e-?mail|phone|mobile|contact|whats?app|spoc|owner|person|telephone|fax)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>2026-10-31 (retest DMS-15): every route that lists or shows dealers - /api/dealers (and /api/dealers/{id}), the BAPL dealer picker /api/bapl-dms/dealers (mobile, e-mail, contactPerson of EVERY dealer)
+    /// and the workshop picker /api/bapl-dms/workshops. For a non-corporate login the contact fields of every row except its own dealer are removed.</summary>
+    /// <summary>2026-10-31 (retest DMS-15, evidence of 30.10.2026: GET /api/dealers answered 200 with EVERY dealer's name, address, GSTIN and rep code): on these routes a dealer login gets ONLY ITS OWN dealer -
+    /// a list is cut down to the caller's dealer, and a single other dealer is refused with HTTP 403. CorporateAdmin / SystemAdmin are not touched. (/api/bapl-dms/workshops stays a picker of locations: contact fields only.)</summary>
+    private static readonly Regex OwnOnlyRoutes = new(@"^/api/(dealers|bapl-dms/dealers)(/.*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    private static readonly Regex DealerRoutes = new(@"^/api/(dealers|bapl-dms/dealers|bapl-dms/workshops)(/.*)?$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly string[] Corporate = { "CorporateAdmin", "SystemAdmin" };
 
     /// <summary>The only routes whose JSON carries stored photo addresses: the job-card list and search, one job card, and the two photo POSTs. An explicit list, so file downloads (the invoice PDF ...) are never buffered.</summary>
@@ -55,7 +65,7 @@ public sealed class ResponseSanitizerMiddleware
                            || ctx.Request.Path.StartsWithSegments("/api/portal", StringComparison.OrdinalIgnoreCase));
         var role = ctx.User.FindFirst("app_role")?.Value;
         var isDealersList = HttpMethods.IsGet(ctx.Request.Method)
-                            && ctx.Request.Path.StartsWithSegments("/api/dealers", StringComparison.OrdinalIgnoreCase)
+                            && DealerRoutes.IsMatch(path)
                             && ctx.User.Identity?.IsAuthenticated == true
                             && role is not null
                             && !Corporate.Contains(role, StringComparer.OrdinalIgnoreCase);
@@ -110,13 +120,30 @@ public sealed class ResponseSanitizerMiddleware
             var node = JsonNode.Parse(text);
             if (signMedia) SignPhotoAddresses(node);
             if (stripOtp) { RemoveProperty(node, "devOtpCode"); RemoveProperty(node, "devResetToken"); }
-            if (isDealersList) HideOtherDealerContacts(node, ctx.User.FindFirst("app_dealer_id")?.Value);
-            if (isMenuMatrix) TrimMenuMatrix(node, path, MenuIdentities(ctx, role!));
-            output = Encoding.UTF8.GetBytes(node?.ToJsonString() ?? "null");
+            var forbidden = false;
+            if (isDealersList)
+            {
+                var ownId = ctx.User.FindFirst("app_dealer_id")?.Value;
+                if (OwnOnlyRoutes.IsMatch(path)) forbidden = !KeepOwnDealerOnly(node, ownId, (await GetStateAsync(ctx))?.DealerBaplCode);
+                HideOtherDealerContacts(node, ownId);
+            }
+            if (isMenuMatrix) TrimMenuMatrix(node, path, await MenuIdentitiesAsync(ctx, role!));
+            if (forbidden)
+            {
+                ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+                output = Encoding.UTF8.GetBytes("{\"message\":\"You are not allowed to access another dealer's data.\"}");
+            }
+            else output = Encoding.UTF8.GetBytes(node?.ToJsonString() ?? "null");
         }
         catch (Exception)
         {
-            output = buffer.ToArray();
+            // 2026-10-31: fail CLOSED for the two answers that exist to hide data - if the rewrite itself fails, the unfiltered answer must not go out. (A failed photo-address signing may still send the original.)
+            if (isDealersList || isMenuMatrix)
+            {
+                ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
+                output = Encoding.UTF8.GetBytes("{\"message\":\"The response could not be processed.\"}");
+            }
+            else output = buffer.ToArray();
         }
         ctx.Response.ContentLength = output.Length;
         await original.WriteAsync(output);
@@ -161,13 +188,67 @@ public sealed class ResponseSanitizerMiddleware
         }
     }
 
-    /// <summary>The role names the caller's own sidebar logic looks for: its role, its Designation, and - when the login carries no designation claim - the two designations Captain / ViceCaptain.</summary>
-    private static HashSet<string> MenuIdentities(HttpContext ctx, string role)
+    /// <summary>The role names the caller's own sidebar logic looks for: its role and its own Designation - nothing else. The designation comes from the token's "designation" claim or, when the token has none,
+    /// from the user's row (the same cached look-up as the session checks). Only when the designation cannot be read at all (no look-up available, database error) the two designations Captain / ViceCaptain are
+    /// kept, as before, so the sidebar of a Captain never loses a page. 2026-10-31 (retest DMS-15): until now those two names were shown to every login.</summary>
+    /// <summary>The caller's row (role, dealer, designation, dealer BAPL code) through the same cached look-up the session checks use; null when it cannot be read.</summary>
+    private async Task<SessionUserState?> GetStateAsync(HttpContext ctx)
+    {
+        if (!Guid.TryParse(ctx.User.FindFirst("app_user_id")?.Value, out var userId)) return null;
+        var lookup = ctx.RequestServices.GetService<ISessionUserLookup>();
+        var cache = ctx.RequestServices.GetService<IMemoryCache>();
+        if (lookup is null || cache is null) return null;
+        try
+        {
+            return await cache.GetOrCreateAsync($"sf:{userId}", async entry =>
+            {
+                entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(Math.Max(5, _opt.SessionCheckSeconds));
+                return await lookup.FindAsync(userId, ctx.RequestAborted);
+            });
+        }
+        catch (Exception) { return null; }
+    }
+
+    /// <summary>Is this dealer row the caller's own? By its id, or by a code (code / baplDmsDealerCode / dealerCode) equal to the caller's dealer BAPL code.</summary>
+    private static bool IsOwnDealer(JsonObject obj, string? ownId, string? ownCode)
+    {
+        string? Get(string name) => obj.FirstOrDefault(kv => string.Equals(kv.Key, name, StringComparison.OrdinalIgnoreCase)).Value?.ToString()?.Trim();
+        var id = Get("id");
+        if (id is not null && ownId is not null && string.Equals(id, ownId, StringComparison.OrdinalIgnoreCase)) return true;
+        if (!string.IsNullOrWhiteSpace(ownCode))
+            foreach (var key in new[] { "code", "baplDmsDealerCode", "dealerCode" })
+                if (string.Equals(Get(key), ownCode.Trim(), StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
+    /// <summary>A list is cut down to the caller's own dealer (a row that cannot be recognised as its own is removed - fail closed); a single dealer object that is not its own returns false (HTTP 403).</summary>
+    private static bool KeepOwnDealerOnly(JsonNode? node, string? ownId, string? ownCode)
+    {
+        switch (node)
+        {
+            case JsonArray arr:
+                for (var i = arr.Count - 1; i >= 0; i--)
+                    if (arr[i] is JsonObject row && !IsOwnDealer(row, ownId, ownCode)) arr.RemoveAt(i);
+                return true;
+            case JsonObject single:
+                return IsOwnDealer(single, ownId, ownCode);
+            default:
+                return true;
+        }
+    }
+
+    private async Task<HashSet<string>> MenuIdentitiesAsync(HttpContext ctx, string role)
     {
         var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { role };
         var designation = ctx.User.FindFirst("designation")?.Value;
+        var known = !string.IsNullOrWhiteSpace(designation);
+        if (!known)
+        {
+            var state = await GetStateAsync(ctx);
+            if (state is not null) { designation = state.Designation; known = true; }
+        }
         if (!string.IsNullOrWhiteSpace(designation)) keep.Add(designation);
-        else { keep.Add("Captain"); keep.Add("ViceCaptain"); }
+        else if (!known) { keep.Add("Captain"); keep.Add("ViceCaptain"); }
         return keep;
     }
 
@@ -197,13 +278,18 @@ public sealed class ResponseSanitizerMiddleware
 
     private static void HideOtherDealerContacts(JsonNode? node, string? ownDealerId)
     {
-        if (node is not JsonArray arr) return;
-        foreach (var item in arr)
+        switch (node)
         {
-            if (item is not JsonObject obj) continue;
-            var id = obj.FirstOrDefault(kv => string.Equals(kv.Key, "id", StringComparison.OrdinalIgnoreCase)).Value?.ToString();
-            if (id is not null && ownDealerId is not null && string.Equals(id, ownDealerId, StringComparison.OrdinalIgnoreCase)) continue;
-            foreach (var key in obj.Select(kv => kv.Key).Where(k => ContactField.IsMatch(k)).ToList()) obj.Remove(key);
+            case JsonArray arr:
+                foreach (var item in arr) HideOtherDealerContacts(item, ownDealerId);
+                break;
+            case JsonObject obj:
+                var id = obj.FirstOrDefault(kv => string.Equals(kv.Key, "id", StringComparison.OrdinalIgnoreCase)).Value?.ToString();
+                var isOwn = id is not null && ownDealerId is not null && string.Equals(id, ownDealerId, StringComparison.OrdinalIgnoreCase);
+                if (!isOwn) foreach (var key in obj.Select(kv => kv.Key).Where(k => ContactField.IsMatch(k)).ToList()) obj.Remove(key);
+                // a wrapper such as { items: [ ... ] } or { dealer: { ... } }: look inside it too
+                foreach (var child in obj.Select(kv => kv.Value).Where(v => v is JsonArray or JsonObject).ToList()) HideOtherDealerContacts(child, ownDealerId);
+                break;
         }
     }
 }
