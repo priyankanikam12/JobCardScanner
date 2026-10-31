@@ -75,15 +75,8 @@ public sealed class TenantIsolationFilter : IAsyncActionFilter
             if (await OutsideScopeAsync(carried, myDealer, workArea, http.RequestAborted) is { } carriedWhy && Refuse(context, $"the request names job card {carried}, which {carriedWhy}")) return;
 
         // 2. dealer ids sent by the browser
-        foreach (var p in context.ActionDescriptor.Parameters)
-        {
-            if (!string.Equals(p.Name, "dealerId", StringComparison.OrdinalIgnoreCase)) continue;
-            if (!context.ActionArguments.TryGetValue(p.Name, out var value)) continue;
-            if (p.ParameterType != typeof(Guid) && p.ParameterType != typeof(Guid?)) continue;
-            var given = value is Guid g ? g : Guid.Empty;
-            if (given == Guid.Empty) context.ActionArguments[p.Name] = p.ParameterType == typeof(Guid?) ? (Guid?)myDealer : myDealer;
-            else if (given != myDealer && Refuse(context, $"dealerId {given} is not this login's dealer")) return;
-        }
+        // 2026-10-31 (retest DMS-03): an OMITTED dealerId is not in ActionArguments, so it used to be skipped and the chassis lookup ran unscoped. DealerScope.EnforceDealerIdParameters handles empty, omitted and foreign ids.
+        if (DealerScope.EnforceDealerIdParameters(context.ActionDescriptor.Parameters, context.ActionArguments, myDealer) is { } foreignDealer && Refuse(context, foreignDealer)) return;
         foreach (var arg in context.ActionArguments.Values)
         {
             if (arg is null || arg is string || arg.GetType().IsPrimitive || arg.GetType().IsValueType) continue;

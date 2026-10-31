@@ -193,9 +193,9 @@ async function denied(id, text, method, path, token, body, allowed, whyNot) {
     const d = await call('GET', '/api/dealers', { token: T.captain })
     // 2026-10-31 (retest DMS-15, evidence of 30.10.2026: the answer listed every dealer with address, GSTIN and rep code): a dealer login now gets only its own dealer
     const rows = Array.isArray(d.json) ? d.json.length : -1
-    ok('DMS-15', "GET /api/dealers returns only the caller's own dealer (not every dealer)", rows >= 0 && rows <= 1, `rows returned: ${rows}`)
+    ok('DMS-15', "GET /api/dealers returns exactly the caller's own dealer (not every dealer, and not nothing)", rows === 1, `rows returned: ${rows}${rows === 0 ? " - the caller's own dealer is missing from the answer" : ''}`)
     // 2026-10-31 (retest DMS-15): the dealer picker of the job card wizard lists EVERY dealer with mobile / e-mail / contact person
-    const bd = await call('GET', '/api/bapl-dms/dealers', { token: T.captain })
+    const bd = await call('GET', '/api/bapl-dms/dealers?q=CUS', { token: T.captain })
     if (bd.status === 200 && Array.isArray(bd.json)) {
       ok('DMS-15', 'GET /api/bapl-dms/dealers lists only the caller\'s own dealer (no other dealer\'s mobile / e-mail / contact person)', bd.json.length <= 1, `rows returned: ${bd.json.length}`)
     } else skp('DMS-15', '/api/bapl-dms/dealers contact fields', `the route answered ${bd.status} for this login`)

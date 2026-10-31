@@ -25,8 +25,10 @@ Then patch two files of YOUR project (backups <file>.before-retest; nothing chan
 Build, deploy, iisreset.
 
 ## 2. What each fix does
-DMS-03  The chassis lookup fell back to DMS_VehicleSales by chassis alone (no dealer filter) and returned another dealer's customer. The fallback now ignores a row of another dealer; a dealer login whose
-        dealer has no BAPL dealer code is shown nothing instead of an unscoped search.
+DMS-03  TWO causes. (1) A dealerId that was LEFT OUT of the request was never forced to the caller's dealer - an omitted query parameter is not in the action arguments at all, so GET /api/jobcards/vehicle-lookup
+        ran with no dealer filter. DealerScope.EnforceDealerIdParameters now fills an omitted / empty dealerId with the caller's dealer and refuses another dealer's id (found on the live site on 31.10.2026).
+        (2) The lookup fell back to DMS_VehicleSales by chassis alone (no dealer filter): the fallback now ignores a row of another dealer, and a dealer login whose dealer has no BAPL dealer code is shown nothing.
+        Cause (1) is in the Security folder (no patch needed); cause (2) needs patch-retest-dms03.js.
 DMS-07  Dealer AND Work Area rules (claim app_work_locations; empty = every location; a card with no location is outside any restricted Work Area - exactly the controller's own rule) apply to every request that names a job card:
         any GUID format, worklogs/{id}/end, photos / part / labour suggestions by their own id, and any jobCardId in the query string or body -> HTTP 403.
 DMS-15  GET /api/dealers and /api/bapl-dms/dealers return only the caller's own dealer; /api/dealers/{id} of another dealer is 403; /api/bapl-dms/workshops loses contact fields; /api/menu-access and /role-modes name only the
@@ -39,7 +41,8 @@ DMS-15  GET /api/dealers and /api/bapl-dms/dealers return only the caller's own 
 * Effect to expect: a dealer login with a Work Area now gets HTTP 403 where it used to be able to write to a card of another location. Any screen that did that on purpose will now fail - tell me which one.
   /api/dealers now returns one dealer to a dealer login: a screen that listed all dealers for a dealer role (the Job Card Wizard or Stock Report dealer picker) shows only its own dealer.
 
-## 4. Verify on live (tests\vapt-retest.js, Node 18+). New: --workarea-jobcard, --other-chassis, id-format checks, own-dealer-only checks.
+## 4. Verify on live (the chassis lookup must now answer 404 for a chassis sold by another dealer, even when the request carries no dealerId; GET /api/dealers must show exactly 1 row)
+## (details) (tests\vapt-retest.js, Node 18+). New: --workarea-jobcard, --other-chassis, id-format checks, own-dealer-only checks.
     -- a card of the SAME dealer at another location (for --workarea-jobcard):
     SELECT TOP 5 Id, JobCardNumber, BaplServiceLocationCode FROM JobCards WHERE DealerId = '38CBC463-A9A5-482F-9D63-C13CB44307CE' AND ISNULL(BaplServiceLocationCode,'') <> 'CUS0288W4' ORDER BY CreatedAt DESC;
     -- a chassis sold by ANOTHER dealer (BaplConnection):
@@ -48,7 +51,7 @@ DMS-15  GET /api/dealers and /api/bapl-dms/dealers return only the caller's own 
   then the full run (without --readonly): the PUT on the Work Area card only runs once its GET is refused with 403 (to protect production data).
 
 ## 5. Verified here / not verified
-Verified: the Security folder without the Entity Framework classes - 111 in-process checks pass (new: job card id in 9 forms, worklog route, body jobCardId, Work Area rule, own-dealer-only lists, single-dealer 403, dealer picker,
+Verified: the Security folder without the Entity Framework classes - 117 in-process checks pass (new: an omitted / empty / foreign dealerId, job card id in 9 forms, worklog route, body jobCardId, Work Area rule, own-dealer-only lists, single-dealer 403, dealer picker,
 workshops, designation in the matrix, fail-closed sanitizer); the patch script on both indentation styles; the retest script against a mock server in all four situations.
 NOT verified: the full project build; TenantIsolationFilter, the EF lookup, JobCardsController and DmsBaplDataService were only syntax-checked; nothing has been run on the live site.
 
