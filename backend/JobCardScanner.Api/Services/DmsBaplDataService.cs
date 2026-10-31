@@ -1356,6 +1356,14 @@ public class DmsBaplDataService : IDmsBaplDataService
         return result;
     }
 
+    /// <summary>2026-10-31 (VAPT retest DMS-03): does this sale row belong to the dealer? By dealer code, or by a location code that starts with it (CUS0288W4 belongs to CUS0288).</summary>
+    private static bool IsSameDealer(DmsBaplDataVehicleSaleRow row, string dealerCode)
+    {
+        var code = dealerCode.Trim();
+        return string.Equals(row.DealerCode?.Trim(), code, StringComparison.OrdinalIgnoreCase)
+            || (row.LocCode?.Trim().StartsWith(code, StringComparison.OrdinalIgnoreCase) ?? false);
+    }
+
     public async Task<DmsBaplDataVehicleSaleRow?> LookupVehicleForWizardAsync(string value, string? dealerCode, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(value)) return null;
@@ -1500,6 +1508,9 @@ public class DmsBaplDataService : IDmsBaplDataService
         if (!string.IsNullOrWhiteSpace(chassisForIotLookup))
         {
             var iotRow = await GetLatestVehicleSaleFromDmsIotDataAsync(chassisForIotLookup, ct);
+            // 2026-10-31 (VAPT retest DMS-03): DMS_VehicleSales is searched by chassis no. alone, so for a vehicle sold by ANOTHER dealer it returned that dealer's customer. When the lookup is scoped to a dealer
+            // (dealerCode given), a row of another dealer is ignored - exactly as the DMS_SaleBill search above already ignores it.
+            if (iotRow is not null && !string.IsNullOrWhiteSpace(dealerCode) && !IsSameDealer(iotRow, dealerCode)) iotRow = null;
             if (iotRow is not null)
             {
                 if (hit is null)

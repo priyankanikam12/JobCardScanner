@@ -1670,6 +1670,9 @@ public class JobCardsController : ControllerBase
                 .FirstOrDefaultAsync();
         }
 
+        // 2026-10-31 (VAPT retest DMS-03): a dealer login is only ever shown ITS OWN dealer's sales. A dealer with no BAPL dealer code used to be searched with no dealer filter at all - it now finds nothing.
+        if (string.IsNullOrWhiteSpace(dealerCode) && !DealerScope.IsCorporate(User)) return NotFound(new { message = $"\"{value}\" wasn't found in Vehicle Sale." });
+
         DmsBaplDataVehicleSaleRow? hit;
         try
         {
@@ -1864,6 +1867,9 @@ public class JobCardsController : ControllerBase
                 .Select(d => d.BaplDmsDealerCode)
                 .FirstOrDefaultAsync();
         }
+
+        // 2026-10-31 (VAPT retest DMS-03): same rule as vehicle-lookup - no BAPL dealer code, no unscoped search for a dealer login.
+        if (string.IsNullOrWhiteSpace(dealerCode) && !DealerScope.IsCorporate(User)) return Ok(Array.Empty<object>());
 
         try
         {
