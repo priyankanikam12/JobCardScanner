@@ -3,6 +3,7 @@ using System.Text;
 using JobCardScanner.Api.Data;
 using JobCardScanner.Api.Models;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 
 namespace JobCardScanner.Api.Controllers;
@@ -19,6 +20,9 @@ namespace JobCardScanner.Api.Controllers;
 /// Scoping is TWO rules, both must hold (2026-10-08, "for Shadowfax only Shadowfax and ANVWeb only ANV data, like Zomato"): (1) the document belongs to one of the partner's dealers (IsDealerInScope), and
 /// (2) the document is the partner's OWN - its customer / party name contains CustomerNameKeyword (case-insensitive). So Shadowfax never sees ANV's records or any other customer's, and vice versa.
 /// A job card matches on its customer's name; a Repair Bill or Material Transfer matches on its party name OR the customer of the job card it is linked to.
+/// 2026-11-01 (Shadowfax e-mail, "Reading only what has changed" / "Cancelled and deleted records"): all three list endpoints take an optional updatedSince (ISO 8601, for example 2026-11-01T06:30:00Z) and then return everything
+/// created or changed since that moment - and a deleted repair bill is returned too, with status "Deleted" and isDeleted true (without updatedSince deleted bills stay hidden, as before). Job cards also carry updatedAt,
+/// estimateVersion (see ShadowfaxEstimatesDecisionsController) and chassisMissing. Job cards read with updatedSince come oldest change first, so the last updatedAt received can be used as the next updatedSince.
 /// Not included, same as Zoho and for the same reasons: QC items, work logs, photos, raw part / labour suggestions (pre-billing, internal), and the DMSBAPLDATA-synced bill feed.
 /// </summary>
 public abstract class MagnemitePartnerDataControllerBase : ControllerBase
@@ -121,7 +125,7 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
     [HttpGet("jobcards")]
     public async Task<IActionResult> JobCards(
         [FromQuery] DateOnly? from, [FromQuery] DateOnly? to,
-        [FromQuery] JobCardStatus? status, [FromQuery] string? dealerCode, [FromQuery] string? jobCardNumber,
+        [FromQuery] JobCardStatus? status, [FromQuery] string? dealerCode, [FromQuery] string? jobCardNumber, [FromQuery] DateTimeOffset? updatedSince,
         [FromQuery] int pageIndex = 0, [FromQuery] int pageSize = 0)
     {
         var authFail = CheckApiKey();
@@ -138,16 +142,18 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
         if (to is not null) { var t = to.Value.ToDateTime(TimeOnly.MaxValue); query = query.Where(j => j.CreatedAt <= t); }
         if (status.HasValue) query = query.Where(j => j.Status == status);
         if (!string.IsNullOrWhiteSpace(jobCardNumber)) query = query.Where(j => j.JobCardNumber == jobCardNumber);
+        if (updatedSince is not null) { var since = updatedSince.Value.UtcDateTime; query = query.Where(j => j.UpdatedAt >= since || j.CreatedAt >= since); }
 
         Response.Headers["X-Total-Count"] = (await query.CountAsync()).ToString();
         var (skip, take) = PageWindow(pageIndex, pageSize, 500);
 
-        var rows = await query
+        var ordered = updatedSince is null ? query.OrderByDescending(j => j.CreatedAt).ThenBy(j => j.Id) : query.OrderBy(j => j.UpdatedAt).ThenBy(j => j.Id);
+        var rows = await ordered
             .Include(j => j.Customer).Include(j => j.Vehicle).Include(j => j.CurrentStage)
             .Include(j => j.Dealer).Include(j => j.Complaints)
-            .OrderByDescending(j => j.CreatedAt).ThenBy(j => j.Id)
             .Skip(skip).Take(take)
             .ToListAsync();
+        var versions = await EstimateVersionsAsync(rows.Select(r => r.Id).ToList());
 
         return Ok(rows.Select(j => new
         {
@@ -157,6 +163,7 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
             ServiceType = j.ServiceType.ToString(),
             Priority = j.Priority.ToString(),
             j.CreatedAt,
+            j.UpdatedAt,
             j.ExpectedDeliveryAt,
             j.ActualDeliveryAt,
             j.ClosedAt,
@@ -170,6 +177,8 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
             VehicleModel = j.Vehicle != null ? j.Vehicle.Model : null,
             RegNo = j.Vehicle != null ? j.Vehicle.RegNo : null,
             ChassisNo = j.Vehicle != null ? j.Vehicle.Vin : null,
+            ChassisMissing = j.Vehicle == null || string.IsNullOrWhiteSpace(j.Vehicle.Vin),
+            EstimateVersion = versions.GetValueOrDefault(j.Id),
             StageLabel = j.CurrentStage != null ? j.CurrentStage.Label : null,
             j.BaplJobType,
             j.BaplServiceHeadName,
@@ -185,7 +194,7 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
     /// excluded. from / to filter the bill date. Newest first; default page size 1000, maximum 1000.</summary>
     [HttpGet("repair-bills")]
     public async Task<IActionResult> RepairBills(
-        [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] string? dealerCode,
+        [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] string? dealerCode, [FromQuery] DateTimeOffset? updatedSince,
         [FromQuery] int pageIndex = 0, [FromQuery] int pageSize = 0)
     {
         var authFail = CheckApiKey();
@@ -198,11 +207,12 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
 
         var kw = CustomerNameKeyword.ToUpperInvariant();
         var query = Db.RepairBillDocs.AsNoTracking()
-            .Where(r => !r.IsDeleted && allowedIds.Contains(r.DealerId)
+            .Where(r => (updatedSince != null || !r.IsDeleted) && allowedIds.Contains(r.DealerId)
                 && (r.PartyName.ToUpper().Contains(kw)
                     || (r.JobCard != null && r.JobCard.Customer != null && r.JobCard.Customer.Name.ToUpper().Contains(kw))));
         if (from is not null) query = query.Where(r => r.BillDate >= from);
         if (to is not null) query = query.Where(r => r.BillDate <= to);
+        if (updatedSince is not null) { var since = updatedSince.Value.UtcDateTime; query = query.Where(r => r.UpdatedAt >= since || r.CreatedAt >= since); }
 
         Response.Headers["X-Total-Count"] = (await query.CountAsync()).ToString();
         var (skip, take) = PageWindow(pageIndex, pageSize, 1000);
@@ -218,7 +228,7 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
     /// <summary>GET material-transfers?from=&amp;to=&amp;dealerCode=&amp;pageIndex=&amp;pageSize= - same shape and rules as repair-bills, for Material Transfer documents. from / to filter the transfer date.</summary>
     [HttpGet("material-transfers")]
     public async Task<IActionResult> MaterialTransfers(
-        [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] string? dealerCode,
+        [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] string? dealerCode, [FromQuery] DateTimeOffset? updatedSince,
         [FromQuery] int pageIndex = 0, [FromQuery] int pageSize = 0)
     {
         var authFail = CheckApiKey();
@@ -236,6 +246,13 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
                     || (m.JobCard != null && m.JobCard.Customer != null && m.JobCard.Customer.Name.ToUpper().Contains(kw))));
         if (from is not null) query = query.Where(m => m.TransferDate >= from);
         if (to is not null) query = query.Where(m => m.TransferDate <= to);
+        if (updatedSince is not null)
+        {
+            // a material transfer has no UpdatedAt in the model: the column and its triggers live in sql/2026-11-01_materialtransfer_updatedat.sql and are read here with raw SQL
+            var since = updatedSince.Value.UtcDateTime;
+            var changedIds = await MaterialTransferIdsChangedSinceAsync(since);
+            query = query.Where(m => m.CreatedAt >= since || changedIds.Contains(m.Id));
+        }
 
         Response.Headers["X-Total-Count"] = (await query.CountAsync()).ToString();
         var (skip, take) = PageWindow(pageIndex, pageSize, 1000);
@@ -245,7 +262,49 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
             .Skip(skip).Take(take)
             .ToListAsync();
 
-        return Ok(docs.Select(d => ToMaterialTransferRow(d, dealerLookup)));
+        var updatedMap = await MaterialTransferUpdatedAtAsync(docs.Select(d => d.Id).ToList());
+        return Ok(docs.Select(d => ToMaterialTransferRow(d, dealerLookup, updatedMap)));
+    }
+
+    public sealed class EstimateVersionRow { public Guid JobCardId { get; set; } public int Version { get; set; } }
+
+    /// <summary>The estimate version of each job card in the page (dbo.JobCardEstimateVersions, kept by triggers). 0 = no estimate. If that table does not exist yet (the SQL script was not run) the list still works, without versions.</summary>
+    private async Task<Dictionary<Guid, int>> EstimateVersionsAsync(List<Guid> ids)
+    {
+        var result = new Dictionary<Guid, int>();
+        if (ids.Count == 0) return result;
+        try
+        {
+            var sql = "SELECT [JobCardId] AS JobCardId, [Version] AS Version FROM [dbo].[JobCardEstimateVersions] WHERE [JobCardId] IN (" + string.Join(",", ids.Select((_, i) => "@j" + i)) + ")";
+            var rows = await Db.Database.SqlQueryRaw<EstimateVersionRow>(sql, ids.Select((g, i) => (object)new SqlParameter("@j" + i, g)).ToArray()).ToListAsync();
+            foreach (var r in rows) result[r.JobCardId] = r.Version;
+        }
+        catch (Exception ex) { _logger.LogWarning(ex, "{Partner}: the estimate versions could not be read (is sql/2026-11-01_shadowfax_decisions_estimates.sql installed?).", PartnerName); }
+        return result;
+    }
+
+    public sealed class GuidRow { public Guid Id { get; set; } }
+    public sealed class ChangedAtRow { public Guid Id { get; set; } public DateTime UpdatedAt { get; set; } }
+
+    /// <summary>Ids of the material transfers created or changed since a moment (dbo.MaterialTransferDocs.UpdatedAt, kept by triggers). If the column does not exist yet (the SQL script was not run) this returns nothing, so only newly created transfers are found.</summary>
+    private async Task<List<Guid>> MaterialTransferIdsChangedSinceAsync(DateTime sinceUtc)
+    {
+        try { return (await Db.Database.SqlQueryRaw<GuidRow>("SELECT [Id] AS Id FROM [dbo].[MaterialTransferDocs] WHERE [UpdatedAt] >= {0}", sinceUtc).ToListAsync()).Select(r => r.Id).ToList(); }
+        catch (Exception ex) { _logger.LogWarning(ex, "{Partner}: MaterialTransferDocs.UpdatedAt could not be read (is sql/2026-11-01_materialtransfer_updatedat.sql installed?).", PartnerName); return new List<Guid>(); }
+    }
+
+    private async Task<Dictionary<Guid, DateTime>> MaterialTransferUpdatedAtAsync(List<Guid> ids)
+    {
+        var result = new Dictionary<Guid, DateTime>();
+        if (ids.Count == 0) return result;
+        try
+        {
+            var sql = "SELECT [Id] AS Id, [UpdatedAt] AS UpdatedAt FROM [dbo].[MaterialTransferDocs] WHERE [UpdatedAt] IS NOT NULL AND [Id] IN (" + string.Join(",", ids.Select((_, i) => "@t" + i)) + ")";
+            var rows = await Db.Database.SqlQueryRaw<ChangedAtRow>(sql, ids.Select((g, i) => (object)new SqlParameter("@t" + i, g)).ToArray()).ToListAsync();
+            foreach (var r in rows) result[r.Id] = r.UpdatedAt;
+        }
+        catch (Exception ex) { _logger.LogWarning(ex, "{Partner}: MaterialTransferDocs.UpdatedAt could not be read.", PartnerName); }
+        return result;
     }
 
     // ------------------------------------------------------------------ response shapes (identical to ZohoIntegrationController)
@@ -269,7 +328,9 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
             b.Location,
             b.BillType,
             b.IssueType,
-            Status = b.Status.ToString(),
+            Status = b.IsDeleted ? "Deleted" : b.Status.ToString(),
+            b.IsDeleted,
+            b.UpdatedAt,
             b.Remarks,
             b.InsuranceCompanyName,
             b.InsuranceDescription,
@@ -324,7 +385,7 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
         return discountAmt > gross ? gross : discountAmt;
     }
 
-    private static object ToMaterialTransferRow(MaterialTransferDoc m, Dictionary<Guid, (string Name, string? BaplDmsDealerCode)> dealerLookup)
+    private static object ToMaterialTransferRow(MaterialTransferDoc m, Dictionary<Guid, (string Name, string? BaplDmsDealerCode)> dealerLookup, Dictionary<Guid, DateTime>? updatedMap = null)
     {
         dealerLookup.TryGetValue(m.DealerId, out var dealer);
         return new
@@ -344,6 +405,7 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
             m.TechnicianId,
             m.Remarks,
             Status = m.Status.ToString(),
+            UpdatedAt = updatedMap != null && updatedMap.TryGetValue(m.Id, out var changedAt) ? DateTime.SpecifyKind(changedAt, DateTimeKind.Utc) : (DateTime?)null,
             m.TotalAmount,
             ItemCount = m.Items.Count,
             Items = m.Items.Select(i => new
