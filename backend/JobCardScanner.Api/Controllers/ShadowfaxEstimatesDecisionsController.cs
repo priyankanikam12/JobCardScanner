@@ -170,18 +170,9 @@ public class ShadowfaxEstimatesDecisionsController : ControllerBase
 
         try
         {
-            await using var tx = await _db.Database.BeginTransactionAsync(ct);
-            // (an INSERT ... OUTPUT read through SqlQueryRaw is wrapped by EF in a SELECT, which SQL Server refuses: insert first, then read the new row back with a plain SELECT)
-            await _db.Database.ExecuteSqlRawAsync(
-                "INSERT INTO [dbo].[ShadowfaxDecisions] ([DecisionId],[JobCardId],[EstimateVersion],[CurrentEstimateVersion],[Decision],[DecidedAt],[DecidedBy],[Reason],[PayloadHash]) " +
-                "VALUES ({0},{1},{2},{3},{4},{5},{6},{7},{8})",
-                new object[] { decisionId, id, body.EstimateVersion!.Value, estimate.Version, body.Decision!.Trim().ToUpperInvariant(), body.DecidedAt!.Value.UtcDateTime,
-                    (object?)body.DecidedBy?.Trim() ?? DBNull.Value, (object?)body.Reason?.Trim() ?? DBNull.Value, hash }, ct);
-            var headerId = (await FindDecisionAsync(decisionId, ct))!.Id;
-            foreach (var line in body.Lines!)
-                await _db.Database.ExecuteSqlRawAsync("INSERT INTO [dbo].[ShadowfaxDecisionLines] ([DecisionRowId],[LineId],[ItemCode],[Result]) VALUES ({0},{1},{2},{3})",
-                    new object[] { headerId, line.LineId!.Value, line.ItemCode!.Trim(), line.Result!.Trim().ToUpperInvariant() }, ct);
-            await tx.CommitAsync(ct);
+            // header and lines in ONE batch (atomic): the app's retrying execution strategy does not allow a transaction started by hand - see DecisionSql
+            var (sql, parameters) = DecisionSql.BuildInsert(decisionId, id, body, estimate.Version, hash);
+            await _db.Database.ExecuteSqlRawAsync(sql, parameters.Select(x => (object)new SqlParameter(x.Name, x.Value ?? DBNull.Value)).ToList(), ct);
         }
         catch (Exception ex) when (!IsUniqueViolation(ex))
         {

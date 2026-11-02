@@ -144,3 +144,30 @@ public static class DecisionRules
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
     }
 }
+
+/// <summary>
+/// 2026-11-01: the SQL that stores one decision (header + lines) as ONE batch. The app uses SqlServerRetryingExecutionStrategy, which refuses a transaction started by hand (BeginTransactionAsync), so atomicity comes from the
+/// batch itself: SET XACT_ABORT ON means any failing statement rolls back the whole batch. Parameters are returned by name and value so the controller can turn them into SqlParameter.
+/// </summary>
+public static class DecisionSql
+{
+    public static (string Sql, List<(string Name, object? Value)> Params) BuildInsert(string decisionId, Guid jobCardId, DecisionIn d, int currentEstimateVersion, string payloadHash)
+    {
+        var ps = new List<(string, object?)>
+        {
+            ("@h0", decisionId), ("@h1", jobCardId), ("@h2", d.EstimateVersion!.Value), ("@h3", currentEstimateVersion), ("@h4", d.Decision!.Trim().ToUpperInvariant()),
+            ("@h5", d.DecidedAt!.Value.UtcDateTime), ("@h6", string.IsNullOrWhiteSpace(d.DecidedBy) ? null : d.DecidedBy.Trim()), ("@h7", string.IsNullOrWhiteSpace(d.Reason) ? null : d.Reason.Trim()), ("@h8", payloadHash),
+        };
+        var sb = new StringBuilder();
+        sb.Append("SET XACT_ABORT ON; DECLARE @id BIGINT; ");
+        sb.Append("INSERT INTO [dbo].[ShadowfaxDecisions] ([DecisionId],[JobCardId],[EstimateVersion],[CurrentEstimateVersion],[Decision],[DecidedAt],[DecidedBy],[Reason],[PayloadHash]) VALUES (@h0,@h1,@h2,@h3,@h4,@h5,@h6,@h7,@h8); ");
+        sb.Append("SET @id = SCOPE_IDENTITY(); ");
+        var lines = d.Lines ?? new List<DecisionLineIn>();
+        for (var i = 0; i < lines.Count; i++)
+        {
+            sb.Append($"INSERT INTO [dbo].[ShadowfaxDecisionLines] ([DecisionRowId],[LineId],[ItemCode],[Result]) VALUES (@id, @l{i}, @c{i}, @r{i}); ");
+            ps.Add(($"@l{i}", lines[i].LineId!.Value)); ps.Add(($"@c{i}", lines[i].ItemCode!.Trim())); ps.Add(($"@r{i}", lines[i].Result!.Trim().ToUpperInvariant()));
+        }
+        return (sb.ToString(), ps);
+    }
+}
