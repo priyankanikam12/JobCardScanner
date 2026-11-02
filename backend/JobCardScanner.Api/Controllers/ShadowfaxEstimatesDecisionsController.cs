@@ -171,15 +171,22 @@ public class ShadowfaxEstimatesDecisionsController : ControllerBase
         try
         {
             await using var tx = await _db.Database.BeginTransactionAsync(ct);
-            var headerId = (await _db.Database.SqlQueryRaw<long>(
+            // (an INSERT ... OUTPUT read through SqlQueryRaw is wrapped by EF in a SELECT, which SQL Server refuses: insert first, then read the new row back with a plain SELECT)
+            await _db.Database.ExecuteSqlRawAsync(
                 "INSERT INTO [dbo].[ShadowfaxDecisions] ([DecisionId],[JobCardId],[EstimateVersion],[CurrentEstimateVersion],[Decision],[DecidedAt],[DecidedBy],[Reason],[PayloadHash]) " +
-                "OUTPUT INSERTED.[Id] AS [Value] VALUES ({0},{1},{2},{3},{4},{5},{6},{7},{8})",
-                decisionId, id, body.EstimateVersion!.Value, estimate.Version, body.Decision!.Trim().ToUpperInvariant(), body.DecidedAt!.Value.UtcDateTime,
-                (object?)body.DecidedBy?.Trim() ?? DBNull.Value, (object?)body.Reason?.Trim() ?? DBNull.Value, hash).ToListAsync(ct)).Single();
+                "VALUES ({0},{1},{2},{3},{4},{5},{6},{7},{8})",
+                new object[] { decisionId, id, body.EstimateVersion!.Value, estimate.Version, body.Decision!.Trim().ToUpperInvariant(), body.DecidedAt!.Value.UtcDateTime,
+                    (object?)body.DecidedBy?.Trim() ?? DBNull.Value, (object?)body.Reason?.Trim() ?? DBNull.Value, hash }, ct);
+            var headerId = (await FindDecisionAsync(decisionId, ct))!.Id;
             foreach (var line in body.Lines!)
                 await _db.Database.ExecuteSqlRawAsync("INSERT INTO [dbo].[ShadowfaxDecisionLines] ([DecisionRowId],[LineId],[ItemCode],[Result]) VALUES ({0},{1},{2},{3})",
                     new object[] { headerId, line.LineId!.Value, line.ItemCode!.Trim(), line.Result!.Trim().ToUpperInvariant() }, ct);
             await tx.CommitAsync(ct);
+        }
+        catch (Exception ex) when (!IsUniqueViolation(ex))
+        {
+            _logger.LogError(ex, "Shadowfax decision {DecisionId} for job card {JobCard} could not be saved.", decisionId, jc.JobCardNumber);
+            return StatusCode(500, new { message = "The decision could not be saved. Please send it again; if this repeats, contact BGauss.", decisionId });
         }
         catch (Exception ex) when (IsUniqueViolation(ex))
         {

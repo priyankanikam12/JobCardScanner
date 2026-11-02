@@ -162,11 +162,11 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
             Status = j.Status.ToString(),
             ServiceType = j.ServiceType.ToString(),
             Priority = j.Priority.ToString(),
-            j.CreatedAt,
-            j.UpdatedAt,
-            j.ExpectedDeliveryAt,
-            j.ActualDeliveryAt,
-            j.ClosedAt,
+            CreatedAt = AsUtc(j.CreatedAt),
+            UpdatedAt = AsUtc(j.UpdatedAt),
+            ExpectedDeliveryAt = AsUtc(j.ExpectedDeliveryAt),
+            ActualDeliveryAt = AsUtc(j.ActualDeliveryAt),
+            ClosedAt = AsUtc(j.ClosedAt),
             j.OdometerAtCheckIn,
             j.BatteryLevelAtCheckIn,
             DealerId = j.Dealer != null ? j.Dealer.Id : (Guid?)null,
@@ -266,6 +266,9 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
         return Ok(docs.Select(d => ToMaterialTransferRow(d, dealerLookup, updatedMap)));
     }
 
+    /// <summary>The database returns date-times without a zone; they are UTC (the app writes DateTime.UtcNow), so mark them: 2026-10-29T11:03:51Z, as the API document promises.</summary>
+    private static DateTime? AsUtc(object? v) => v is DateTime d ? DateTime.SpecifyKind(d, DateTimeKind.Utc) : null;
+
     public sealed class EstimateVersionRow { public Guid JobCardId { get; set; } public int Version { get; set; } }
 
     /// <summary>The estimate version of each job card in the page (dbo.JobCardEstimateVersions, kept by triggers). 0 = no estimate. If that table does not exist yet (the SQL script was not run) the list still works, without versions.</summary>
@@ -330,7 +333,7 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
             b.IssueType,
             Status = b.IsDeleted ? "Deleted" : b.Status.ToString(),
             b.IsDeleted,
-            b.UpdatedAt,
+            UpdatedAt = AsUtc(b.UpdatedAt),
             b.Remarks,
             b.InsuranceCompanyName,
             b.InsuranceDescription,
