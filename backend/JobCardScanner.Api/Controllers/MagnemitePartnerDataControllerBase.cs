@@ -345,7 +345,7 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
             b.IssueType,
             Status = b.IsDeleted ? "Deleted" : b.Status.ToString(),
             b.IsDeleted,
-            UpdatedAt = AsUtc(b.UpdatedAt),
+            UpdatedAt = AsUtc(b.UpdatedAt ?? b.CreatedAt),   // a bill never edited has no UpdatedAt: its change time is its creation (sql/2026-11-02_repairbill_updatedat.sql keeps it current)
             b.Remarks,
             b.InsuranceCompanyName,
             b.InsuranceDescription,
