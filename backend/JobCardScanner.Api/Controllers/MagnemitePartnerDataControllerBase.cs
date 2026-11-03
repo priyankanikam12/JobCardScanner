@@ -23,6 +23,8 @@ namespace JobCardScanner.Api.Controllers;
 /// 2026-11-01 (Shadowfax e-mail, "Reading only what has changed" / "Cancelled and deleted records"): all three list endpoints take an optional updatedSince (ISO 8601, for example 2026-11-01T06:30:00Z) and then return everything
 /// created or changed since that moment - and a deleted repair bill is returned too, with status "Deleted" and isDeleted true (without updatedSince deleted bills stay hidden, as before). Job cards also carry updatedAt,
 /// estimateVersion (see ShadowfaxEstimatesDecisionsController) and chassisMissing. Job cards read with updatedSince come oldest change first, so the last updatedAt received can be used as the next updatedSince.
+/// 2026-11-02 (ANV Web / Ride EV e-mail, "we look vehicles up individually" / "Material transfers carry no regNo / chassisNo"): the three list endpoints also take registrationNumber and chassisNo (compared ignoring case, spaces and
+/// hyphens, so "dl 1c ab-1234" finds "DL1CAB1234"), and a material transfer now carries regNo and chassisNo of the vehicle of its job card (null when the transfer has no job card).
 /// Not included, same as Zoho and for the same reasons: QC items, work logs, photos, raw part / labour suggestions (pre-billing, internal), and the DMSBAPLDATA-synced bill feed.
 /// </summary>
 public abstract class MagnemitePartnerDataControllerBase : ControllerBase
@@ -125,7 +127,7 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
     [HttpGet("jobcards")]
     public async Task<IActionResult> JobCards(
         [FromQuery] DateOnly? from, [FromQuery] DateOnly? to,
-        [FromQuery] JobCardStatus? status, [FromQuery] string? dealerCode, [FromQuery] string? jobCardNumber, [FromQuery] DateTimeOffset? updatedSince,
+        [FromQuery] JobCardStatus? status, [FromQuery] string? dealerCode, [FromQuery] string? jobCardNumber, [FromQuery] DateTimeOffset? updatedSince, [FromQuery] string? registrationNumber, [FromQuery] string? chassisNo,
         [FromQuery] int pageIndex = 0, [FromQuery] int pageSize = 0)
     {
         var authFail = CheckApiKey();
@@ -143,6 +145,8 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
         if (status.HasValue) query = query.Where(j => j.Status == status);
         if (!string.IsNullOrWhiteSpace(jobCardNumber)) query = query.Where(j => j.JobCardNumber == jobCardNumber);
         if (updatedSince is not null) { var since = updatedSince.Value.UtcDateTime; query = query.Where(j => j.UpdatedAt >= since || j.CreatedAt >= since); }
+        if (!string.IsNullOrWhiteSpace(registrationNumber)) { var reg = NormId(registrationNumber); query = query.Where(j => j.Vehicle != null && (j.Vehicle.RegNo ?? "").Replace(" ", "").Replace("-", "").ToUpper() == reg); }
+        if (!string.IsNullOrWhiteSpace(chassisNo)) { var vin = NormId(chassisNo); query = query.Where(j => j.Vehicle != null && (j.Vehicle.Vin ?? "").Replace(" ", "").Replace("-", "").ToUpper() == vin); }
 
         Response.Headers["X-Total-Count"] = (await query.CountAsync()).ToString();
         var (skip, take) = PageWindow(pageIndex, pageSize, 500);
@@ -194,7 +198,7 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
     /// excluded. from / to filter the bill date. Newest first; default page size 1000, maximum 1000.</summary>
     [HttpGet("repair-bills")]
     public async Task<IActionResult> RepairBills(
-        [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] string? dealerCode, [FromQuery] DateTimeOffset? updatedSince,
+        [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] string? dealerCode, [FromQuery] DateTimeOffset? updatedSince, [FromQuery] string? registrationNumber, [FromQuery] string? chassisNo,
         [FromQuery] int pageIndex = 0, [FromQuery] int pageSize = 0)
     {
         var authFail = CheckApiKey();
@@ -213,6 +217,8 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
         if (from is not null) query = query.Where(r => r.BillDate >= from);
         if (to is not null) query = query.Where(r => r.BillDate <= to);
         if (updatedSince is not null) { var since = updatedSince.Value.UtcDateTime; query = query.Where(r => r.UpdatedAt >= since || r.CreatedAt >= since); }
+        if (!string.IsNullOrWhiteSpace(registrationNumber)) { var reg = NormId(registrationNumber); query = query.Where(r => (r.RegNo ?? "").Replace(" ", "").Replace("-", "").ToUpper() == reg); }
+        if (!string.IsNullOrWhiteSpace(chassisNo)) { var vin = NormId(chassisNo); query = query.Where(r => (r.ChassisNo ?? "").Replace(" ", "").Replace("-", "").ToUpper() == vin); }
 
         Response.Headers["X-Total-Count"] = (await query.CountAsync()).ToString();
         var (skip, take) = PageWindow(pageIndex, pageSize, 1000);
@@ -228,7 +234,7 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
     /// <summary>GET material-transfers?from=&amp;to=&amp;dealerCode=&amp;pageIndex=&amp;pageSize= - same shape and rules as repair-bills, for Material Transfer documents. from / to filter the transfer date.</summary>
     [HttpGet("material-transfers")]
     public async Task<IActionResult> MaterialTransfers(
-        [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] string? dealerCode, [FromQuery] DateTimeOffset? updatedSince,
+        [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] string? dealerCode, [FromQuery] DateTimeOffset? updatedSince, [FromQuery] string? registrationNumber, [FromQuery] string? chassisNo,
         [FromQuery] int pageIndex = 0, [FromQuery] int pageSize = 0)
     {
         var authFail = CheckApiKey();
@@ -253,11 +259,14 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
             var changedIds = await MaterialTransferIdsChangedSinceAsync(since);
             query = query.Where(m => m.CreatedAt >= since || changedIds.Contains(m.Id));
         }
+        // a transfer has no vehicle of its own: the vehicle is the one of its job card (transfers without a job card never match these filters)
+        if (!string.IsNullOrWhiteSpace(registrationNumber)) { var reg = NormId(registrationNumber); query = query.Where(m => m.JobCard != null && m.JobCard.Vehicle != null && (m.JobCard.Vehicle.RegNo ?? "").Replace(" ", "").Replace("-", "").ToUpper() == reg); }
+        if (!string.IsNullOrWhiteSpace(chassisNo)) { var vin = NormId(chassisNo); query = query.Where(m => m.JobCard != null && m.JobCard.Vehicle != null && (m.JobCard.Vehicle.Vin ?? "").Replace(" ", "").Replace("-", "").ToUpper() == vin); }
 
         Response.Headers["X-Total-Count"] = (await query.CountAsync()).ToString();
         var (skip, take) = PageWindow(pageIndex, pageSize, 1000);
 
-        var docs = await query.Include(m => m.Items).Include(m => m.JobCard)
+        var docs = await query.Include(m => m.Items).Include(m => m.JobCard).ThenInclude(j => j!.Vehicle)
             .OrderByDescending(m => m.TransferDate).ThenBy(m => m.Id)
             .Skip(skip).Take(take)
             .ToListAsync();
@@ -265,6 +274,9 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
         var updatedMap = await MaterialTransferUpdatedAtAsync(docs.Select(d => d.Id).ToList());
         return Ok(docs.Select(d => ToMaterialTransferRow(d, dealerLookup, updatedMap)));
     }
+
+    /// <summary>A registration or chassis number for comparison: no spaces, no hyphens, upper case. The same is applied to the stored value inside the query.</summary>
+    private static string NormId(string? s) => (s ?? "").Replace(" ", "").Replace("-", "").ToUpperInvariant();
 
     /// <summary>The database returns date-times without a zone; they are UTC (the app writes DateTime.UtcNow), so mark them: 2026-10-29T11:03:51Z, as the API document promises.</summary>
     private static DateTime? AsUtc(object? v) => v is DateTime d ? DateTime.SpecifyKind(d, DateTimeKind.Utc) : null;
@@ -401,6 +413,8 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
             DealerCode = dealer.BaplDmsDealerCode,
             m.JobCardId,
             JobCardNumber = m.JobCard?.JobCardNumber,
+            RegNo = m.JobCard?.Vehicle?.RegNo,
+            ChassisNo = m.JobCard?.Vehicle?.Vin,
             m.Location,
             TransferType = m.TransferType.ToString(),
             m.IssueType,
