@@ -362,6 +362,29 @@ builder.Services.AddCors(options =>
 });
 
 var app = builder.Build();
+
+// 2026-11-04 ("after deploy hard reload web application and clear previous cache"): browser caching rules for the web app.
+// Registered FIRST on purpose: a header callback registered earlier runs LAST, so this one has the final say over any Cache-Control set further down the pipeline.
+//  - an HTML answer (index.html, also when served by the SPA fallback for a client-side route) = "no-cache": the browser must ask the server before reusing it, so a new deploy is picked up at once;
+//  - Vite's content-hashed files under /assets/ = cached for a year (a new build has new file names, so they can never be stale).
+// Errors (404 ...) are never marked as cacheable, and /api answers are left to the existing rules (no-store).
+app.Use(async (ctx, next) =>
+{
+    ctx.Response.OnStarting(() =>
+    {
+        var r = ctx.Response;
+        var path = ctx.Request.Path;
+        if (HttpMethods.IsGet(ctx.Request.Method) && !path.StartsWithSegments("/api") && r.StatusCode is 200 or 304)
+        {
+            if (r.ContentType is not null && r.ContentType.StartsWith("text/html", StringComparison.OrdinalIgnoreCase))
+                r.Headers.CacheControl = "no-cache, must-revalidate";
+            else if (path.StartsWithSegments("/assets"))
+                r.Headers.CacheControl = "public, max-age=31536000, immutable";
+        }
+        return Task.CompletedTask;
+    });
+    await next();
+});
 app.UseAppSecurityEarly();   // 2026-10-17 (VAPT): forwarded headers + security headers (DMS-13)
 
 if (app.Environment.IsDevelopment())
@@ -415,6 +438,15 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.UseAppGuards();   // 2026-10-17 (VAPT): route guard + response sanitizer (DMS-01, 02, 04, 05, 09, 10, 12, 15)
 app.MapControllers();
+
+// 2026-11-04: build stamp of the deployed web app, read by web\src\components\AppUpdateBanner.tsx to offer a reload after a new deploy. Anonymous on purpose (the login page may use it too); it returns only a number
+// that changes when index.html is replaced by a deploy. If the route guard (Security__RouteGuardMode) works from an allow-list of routes, add GET /api/app-version to it.
+app.MapGet("/api/app-version", (HttpContext ctx, IWebHostEnvironment env) =>
+{
+    ctx.Response.Headers.CacheControl = "no-store";
+    var file = env.WebRootFileProvider.GetFileInfo("index.html");
+    return Results.Json(new { version = file.Exists ? file.LastModified.UtcTicks.ToString() : "0" });
+}).AllowAnonymous();
 
 // Lets this same app also host the built React SPA straight out of wwwroot (see
 // deploy/DEPLOYMENT_GUIDE_PUBLIC_IP.md's "single site, no domain" deployment: `npm run build`'s

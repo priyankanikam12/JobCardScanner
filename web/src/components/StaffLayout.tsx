@@ -6,6 +6,7 @@ import { useStaffAuth } from '../auth/StaffAuthContext'
 import { dealerLogout } from '../services/dealerAuthService'
 import { checkOutBeforeLogout } from '../services/attendanceCheckin'
 import { revokeStaffSession } from '../lib/sessionRevoke'
+import { AppUpdateBanner } from './AppUpdateBanner'
 import { staffApi } from '../api/client'
 import type { StaffRole } from '../types'
 // 2026-09-18 "in place of JobCardScanner i want add web\src\assets\BGauss_Logo.png": this file lives
@@ -466,6 +467,8 @@ export function StaffLayout() {
 
   return (
     <div className="app-shell">
+      {/* 2026-11-04 ("after deploy hard reload web application and clear previous cache"): offers a reload when a new build has been deployed - see AppUpdateBanner.tsx */}
+      <AppUpdateBanner />
       <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`} onClick={handleSidebarClick} title={sidebarOpen ? 'Click to collapse' : 'Click to expand'}>
         {/* Collapsed-rail-only monogram (see .sidebar-brand-mark in global.css) - hidden once
             expanded, when the full wordmark below takes over. */}
