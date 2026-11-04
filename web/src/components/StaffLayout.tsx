@@ -380,8 +380,17 @@ function initialsOf(name?: string | null): string {
  * the response). If your build reports `designation` does not exist on `profile`, it needs
  * adding there first - tell me the real field name (or paste StaffAuthContext.tsx) and this is a
  * one-line fix. */
+/** 2026-11-04 ("if designation is Captain, Vice Captain, Supervisor, Technician then dont show in
+ * navbar there role, shown Designation"): the pill now shows the Designation (instead of the real
+ * backend Role) for FOUR designations, not two - Captain, ViceCaptain, Supervisor and Technician.
+ * Matching ignores case and spaces, so "Vice Captain", "ViceCaptain" and "vice captain" all count;
+ * the text shown is the Designation exactly as saved on the user. Every other user's pill is
+ * unchanged (still profile?.role). Display only - the Menu Access / allow-list matching above still
+ * uses its own rules (Captain / ViceCaptain by Designation, everyone else by real Role). */
+const DESIGNATIONS_SHOWN_IN_BADGE = new Set(['captain', 'vicecaptain', 'supervisor', 'technician'])
 function badgeLabel(profile?: { role?: StaffRole; designation?: string | null } | null): string | undefined {
-  if (profile?.designation === 'Captain' || profile?.designation === 'ViceCaptain') return profile.designation
+  const designation = profile?.designation?.trim()
+  if (designation && DESIGNATIONS_SHOWN_IN_BADGE.has(designation.replace(/\s+/g, '').toLowerCase())) return designation
   return profile?.role
 }
 
