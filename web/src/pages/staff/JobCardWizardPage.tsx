@@ -296,9 +296,8 @@ export function JobCardWizardPage() {
             setSuggestionsAreGlobal(false)
             return
           }
-          // Dealer-scoped search came back empty and there IS a dealer to fall back from -
-          // re-run unscoped (every dealer), same as the Search-button flow's global offer.
-          staffApi.get<BaplDmsVehicleSuggestion[]>('/api/jobcards/vehicle-suggestions', { params: { q } })
+          // Nothing for this dealer: ask for every dealer's sales (explicit global=true - the server no longer treats a missing dealerId as "search everyone").
+          staffApi.get<BaplDmsVehicleSuggestion[]>('/api/jobcards/vehicle-suggestions', { params: { q, dealerId: effectiveDealerId, global: true } })
             .then(({ data: globalData }) => { setVehicleSuggestions(globalData); setSuggestionsAreGlobal(globalData.length > 0) })
             .catch(() => { setVehicleSuggestions([]); setSuggestionsAreGlobal(false) })
         })
@@ -533,10 +532,18 @@ export function JobCardWizardPage() {
     setGlobalSearchNotFound(false)
     setGlobalHit(null)
     try {
-      const { data } = await staffApi.get<BaplDmsVehicleLookup>('/api/jobcards/vehicle-lookup', { params: { value } })
+      const { data } = await staffApi.get<BaplDmsVehicleLookup>('/api/jobcards/vehicle-lookup', {
+        params: { value, dealerId: effectiveDealerId || undefined, global: true },
+      })
       setGlobalHit(data)
-    } catch {
-      setGlobalSearchNotFound(true)
+    } catch (err: unknown) {
+      const res = (err as { response?: { status?: number; data?: { message?: string } } })?.response
+      if (res?.status === 404) {
+        setGlobalSearchNotFound(true)                       // really not in Vehicle Sale
+      } else {
+        // 403 (not allowed for this login), 502 (Vehicle Sale source down), 500, network ... - say so instead of "not found anywhere"
+        setVehicleLookupError(`Search across all dealers failed${res?.status ? ` (HTTP ${res.status})` : ''}: ${res?.data?.message ?? 'the server did not answer.'}`)
+      }
     } finally {
       setGlobalSearchLoading(false)
     }
@@ -562,7 +569,7 @@ export function JobCardWizardPage() {
 
   /** Picking a global (cross-dealer) suggestion from the typeahead dropdown: same as picking a
    * normal dealer-scoped one (fills the box and runs the full lookup), except the lookup itself
-   * must also go unscoped (no dealerId), or a suggestion found by the global fallback above would
+   * must also be sent as an explicit global=true search, or a suggestion found by the global fallback above would
    * immediately 404 again against lookupByChassisOrReg's own dealer-scoped call. Reuses the same
    * open-job-card / not-sold guards as lookupByChassisOrReg/applyGlobalHit rather than duplicating
    * them differently. */
@@ -572,7 +579,7 @@ export function JobCardWizardPage() {
     setVehicleSuggestions([])
     setVehicleLookupError(null)
     setVehicleLookupLoading(true)
-    staffApi.get<BaplDmsVehicleLookup>('/api/jobcards/vehicle-lookup', { params: { value: chassisNo } })
+    staffApi.get<BaplDmsVehicleLookup>('/api/jobcards/vehicle-lookup', { params: { value: chassisNo, dealerId: effectiveDealerId || undefined, global: true } })
       .then(({ data }) => {
         if (data.openJobCardNumber) {
           const status = data.openJobCardStatus ? ` (status: ${data.openJobCardStatus})` : ''
@@ -582,7 +589,12 @@ export function JobCardWizardPage() {
         if (!data.saleDate) { setVehicleNotSoldNotice('This Vehicle not sold'); return }
         applyVehicleHit(data)
       })
-      .catch(() => setVehicleLookupError(`"${chassisNo}" wasn't found in Vehicle Sale.`))
+      .catch((err: unknown) => {
+        const res = (err as { response?: { status?: number; data?: { message?: string } } })?.response
+        setVehicleLookupError(res?.status === 404
+          ? `"${chassisNo}" wasn't found in Vehicle Sale.`
+          : `Search failed${res?.status ? ` (HTTP ${res.status})` : ''}: ${res?.data?.message ?? 'the server did not answer.'}`)
+      })
       .finally(() => setVehicleLookupLoading(false))
   }
 

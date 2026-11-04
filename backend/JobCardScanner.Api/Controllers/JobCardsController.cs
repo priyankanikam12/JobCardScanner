@@ -1635,63 +1635,85 @@ public class JobCardsController : ControllerBase
     }
 
     // ---------------- Wizard vehicle lookup (2026-09-25, off BAPLDMSvad, onto Vehicle Sale) ----------------
-    /// <summary>GET /api/jobcards/vehicle-lookup?value=&dealerId= - replaces the wizard's previous
-    /// GET /api/bapl-dms/vehicle-lookup (BAPLDMSvad, the live job-card DMS this controller stopped
-    /// writing to on 2026-09-24 - see Create's own doc comment). Looks the entered chassis no. or
-    /// reg. no. up in BaplConnection's DMS_SaleBill/DMS_SaleBillCustomer instead (the same source
-    /// backing the "Vehicle Sale" sidebar page - see DmsBaplDataService.GetVehicleSalesAsync's
-    /// SECTION 95 migration notes), via IDmsBaplDataService.LookupVehicleForWizardAsync.
-    ///
-    /// dealerId is optional and, when given, is translated to that Dealer's BaplDmsDealerCode and
-    /// used to scope the match to sales billed under that dealer - same dealer-code convention
-    /// GetVehicleSalesAsync/Create already use elsewhere in this file (see e.g. dealerBaplCode
-    /// above). Without a match, the wizard falls back to manual entry - this endpoint returning 404
-    /// is an expected, non-error outcome for a vehicle this dealer never sold (or hasn't been billed
-    /// yet).
-    ///
-    /// "already has an open job card" is now a LOCAL-ONLY check against this app's own JobCardScannerDb
-    /// (matching by VIN, i.e. chassis no., against this dealer's own not-yet-closed job cards) -
-    /// there is no live DMS signal for this any more since DMS write-back was removed; a job card
-    /// opened in a DIFFERENT dealer's DMS for the same chassis (if any) cannot be detected here.
-    /// openJobCardSource is always "local" (never a DMS-sourced value) when present, kept as an
-    /// explicit field so the frontend doesn't need to guess.</summary>
+
+    /// <summary>true = dealer logins may use "Search all dealers" (?global=true); false = only CorporateAdmin / SystemAdmin.</summary>
+    private const bool AllowCrossDealerVehicleSearchForDealerLogins = true;
+
+    /// <summary>CorporateAdmin / SystemAdmin (same rule List() uses), or whatever DealerScope.IsCorporate says.</summary>
+    private bool IsOrgWideCaller => (_currentUser.Role is StaffRole.CorporateAdmin or StaffRole.SystemAdmin) || DealerScope.IsCorporate(User);
+
+    /// <summary>The dealer the wizard is working for. An org-wide caller may pick one (dealerId); everybody else is always their own dealer,
+    /// whatever dealerId the request says - so a dealer login cannot read another dealer's job-card customers through this endpoint.</summary>
+    private Guid? ResolveWizardDealerId(Guid? requested) => IsOrgWideCaller ? requested : _currentUser.DealerId;
+
+    /// <summary>GET /api/jobcards/vehicle-lookup?value=&amp;dealerId=&amp;global=
+    /// Looks a chassis / reg. no. up in Vehicle Sale. Default = scoped to the working dealer (unchanged, incl. the 2026-10-31 DMS-03 rule).
+    /// global=true = search the sales of EVERY dealer (the wizard's "Search all dealers"); dealerId is still sent so the local checks
+    /// (open job card here, last customer saved here) keep working. 404 = not found; 403 = cross-dealer search switched off for this login.</summary>
     [HttpGet("vehicle-lookup")]
     [Authorize(Policy = Policies.ServiceAdvisorUp)]
-    public async Task<IActionResult> VehicleLookupForWizard([FromQuery] string? value, [FromQuery] Guid? dealerId)
+    public async Task<IActionResult> VehicleLookupForWizard([FromQuery] string? value, [FromQuery] Guid? dealerId, [FromQuery] bool global = false)
     {
         if (string.IsNullOrWhiteSpace(value)) return BadRequest(new { message = "value is required." });
 
-        string? dealerCode = null;
-        if (dealerId.HasValue)
+        var workingDealerId = ResolveWizardDealerId(dealerId);
+        string? ownDealerCode = null;
+        if (workingDealerId.HasValue)
         {
-            dealerCode = await _db.Dealers.AsNoTracking()
-                .Where(d => d.Id == dealerId)
+            ownDealerCode = await _db.Dealers.AsNoTracking()
+                .Where(d => d.Id == workingDealerId)
                 .Select(d => d.BaplDmsDealerCode)
                 .FirstOrDefaultAsync();
         }
 
-        // 2026-10-31 (VAPT retest DMS-03): a dealer login is only ever shown ITS OWN dealer's sales. A dealer with no BAPL dealer code used to be searched with no dealer filter at all - it now finds nothing.
-        if (string.IsNullOrWhiteSpace(dealerCode) && !DealerScope.IsCorporate(User)) return NotFound(new { message = $"\"{value}\" wasn't found in Vehicle Sale." });
+        string? scopeDealerCode = ownDealerCode;
+        var searchingAllDealers = false;
+        if (global)
+        {
+            if (!IsOrgWideCaller && !AllowCrossDealerVehicleSearchForDealerLogins)
+                return StatusCode(403, new { message = "Searching the vehicle sales of other dealers is not allowed for this login." });
+            scopeDealerCode = null;
+            searchingAllDealers = true;
+        }
+        else if (string.IsNullOrWhiteSpace(scopeDealerCode) && !IsOrgWideCaller)
+        {
+            // 2026-10-31 (VAPT retest DMS-03) - kept: a dealer login is only ever shown ITS OWN dealer's sales. No BAPL dealer code = nothing found.
+            return NotFound(new { message = $"\"{value}\" wasn't found in Vehicle Sale." });
+        }
 
         DmsBaplDataVehicleSaleRow? hit;
         try
         {
-            hit = await _dmsBaplData.LookupVehicleForWizardAsync(value.Trim(), dealerCode, HttpContext.RequestAborted);
+            hit = await _dmsBaplData.LookupVehicleForWizardAsync(value.Trim(), scopeDealerCode, HttpContext.RequestAborted);
         }
         catch (InvalidOperationException ex)
         {
-            _logger.LogWarning(ex, "Vehicle lookup for wizard failed for value {Value}, dealerId {DealerId}", value, dealerId);
+            _logger.LogWarning(ex, "Vehicle lookup for wizard failed for value {Value}, dealerId {DealerId}, global {Global}", value, workingDealerId, global);
             return StatusCode(502, new { message = ex.Message });
         }
 
         if (hit is null) return NotFound(new { message = $"\"{value}\" wasn't found in Vehicle Sale." });
 
+        // Audit every cross-dealer hit that belongs to ANOTHER dealer (best-effort: an audit problem never blocks the lookup).
+        if (searchingAllDealers && !string.Equals(hit.DealerCode ?? "", ownDealerCode ?? "", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                await _audit.LogAsync("VehicleSale.CrossDealerLookup", "Vehicle", hit.ChassisNo ?? value.Trim(),
+                    new { searched = value.Trim(), byDealerId = workingDealerId, byDealerCode = ownDealerCode, soldByDealerCode = hit.DealerCode });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not write the audit entry for a cross-dealer vehicle lookup of {Value}.", value);
+            }
+        }
+
         string? openJobCardNumber = null;
         string? openJobCardStatus = null;
-        if (dealerId.HasValue && !string.IsNullOrWhiteSpace(hit.ChassisNo))
+        if (workingDealerId.HasValue && !string.IsNullOrWhiteSpace(hit.ChassisNo))
         {
             var openJc = await _db.JobCards.AsNoTracking()
-                .Where(j => j.DealerId == dealerId && j.Status != JobCardStatus.Closed)
+                .Where(j => j.DealerId == workingDealerId && j.Status != JobCardStatus.Closed)
                 .Where(j => j.Vehicle != null && j.Vehicle.Vin == hit.ChassisNo)
                 .Select(j => new { j.JobCardNumber, j.Status })
                 .FirstOrDefaultAsync();
@@ -1702,23 +1724,7 @@ public class JobCardsController : ControllerBase
             }
         }
 
-        // 2026-10-01 ("why not shown already closeed previously") - vehiclePrevKms was never set
-        // by this endpoint at all (confirmed by reading this method - there was no such field
-        // anywhere above). hit (DmsBaplDataVehicleSaleRow) is sourced from DMS_SaleBill - an
-        // invoice row, not a service-history row - so DMS itself has no "previous odometer" concept
-        // to offer here; that's a real gap in the Vehicle Sale data source, not something this
-        // endpoint was dropping. CONFIRMED via your own screenshot: chassis P6DSVFMSPBB003855 / reg
-        // DL3EV9375 already has a CLOSED job card in JobCardScanner's own DB (JC/288/26-27/0023)
-        // that recorded Odometer: 16429 km at check-in. Vehicle.Odometer is kept at the running max
-        // of every job card's OdometerAtCheckIn for that vehicle (see
-        // `vehicle.Odometer = Math.Max(vehicle.Odometer, req.OdometerAtCheckIn)` in Create above),
-        // so it's already this vehicle's correct last-known KM regardless of whether DMS tracks one
-        // - falling back to it here needs no DMS-side change. Matched by VIN only (not scoped to
-        // dealerId/open-vs-closed the way the openJobCardNumber check above is), since a vehicle's
-        // own odometer history belongs to the vehicle, not to any one job card's status or dealer.
-        // No frontend change needed either - web's JobCardWizardPage.tsx and mobile's
-        // JobCardWizardScreen.tsx both already read `baplVehicleHit?.vehiclePrevKms ?? null` and
-        // render "(Previous: X km)"/"Previous Km: X" the moment this field is non-null.
+        // Previous KM: the local Vehicle row keeps the running max of every job card's check-in odometer (see Create); matched by VIN only.
         int? vehiclePrevKms = null;
         if (!string.IsNullOrWhiteSpace(hit.ChassisNo))
         {
@@ -1729,27 +1735,8 @@ public class JobCardsController : ControllerBase
             if (localVehicle is not null) vehiclePrevKms = (int)localVehicle.Odometer;
         }
 
-        // 2026-10-03 ("when i create Jobcard 1st time then his last km take from this seravice
-        // history and after this Job date which i create job cards in my jobcard db then this show
-        // previous km in job card creation") - the block above is only non-null once a local Vehicle
-        // row already exists for this chassis, i.e. from the SECOND job card onward (the first job
-        // card's own creation is what inserts that row via POST /api/customers/vehicles - see
-        // createVehicle in the wizard). For the very first job card on a chassis, localVehicle is
-        // always null here even when DMSBAPLDATA's own DMS_ServiceHistory already has real past
-        // service visits (and therefore a real last-known KMS) on file from before this app existed.
-        // This fills that one gap - local JobCardScanner data stays authoritative and is never
-        // overridden once it exists, matching "after this Job date... show previous km" (the
-        // `vehiclePrevKms is null` guard below only ever lets this branch run on that first-time
-        // case). DMS_ServiceHistory.KMS is a free-text column, not numeric (see
-        // DmsBaplDataServiceHistoryRow's own doc comment) - only a row whose KMS actually parses as a
-        // number is usable, and GetServiceHistoryAsync already orders its matches JobDate DESC, Id
-        // DESC, so the first parseable row for this exact chassis is its most recent recorded KMS.
-        // (GetServiceHistoryAsync itself matches by LIKE '%value%' on ChassisNo OR RegNo - the exact
-        // ChassisNo equality check below guards against a false-positive substring match pulling in
-        // a different vehicle's KMS.) Best-effort: if DMSBAPLDATA can't be reached right now, this
-        // leaves vehiclePrevKms as it was (no previous-KM hint) rather than failing the whole
-        // lookup - the wizard's Odometer field stays editable either way, it just loses the
-        // auto-filled hint for this one chassis this one time.
+        // 2026-10-03: first job card on a chassis has no local Vehicle row yet - fall back to the most recent numeric KMS in DMS_ServiceHistory.
+        // Best-effort: if that source cannot be read, the lookup continues without the previous-KM hint.
         if (vehiclePrevKms is null && !string.IsNullOrWhiteSpace(hit.ChassisNo))
         {
             try
@@ -1770,17 +1757,7 @@ public class JobCardsController : ControllerBase
             }
         }
 
-        // 2026-10-01 ("When we change reg no, against this chassis no. then for jobcard search
-        // chassiswise give priority 1st for VehicleSaleOverride") - a hand-corrected Reg No saved
-        // via the Vehicle Sale page's inline edit (VehicleSaleOverridesController.Save, keyed by
-        // ChassisNo - see VehicleSaleOverride.cs) was only ever being read back on the Vehicle Sale
-        // page itself (DmsBaplDataService.GetVehicleSalesAsync's own override layer) - this wizard
-        // lookup is a SEPARATE code path (LookupVehicleForWizardAsync, not GetVehicleSalesAsync)
-        // and was still returning hit.RegNo (DMS's own, uncorrected value) here with no override
-        // applied at all. Mirrors that same "override wins, DMS is the fallback" priority here, so
-        // a corrected Reg No is what gets shown/pre-filled/saved onto the new job card's vehicle,
-        // not DMS's stale value - consistent with the Vehicle Sale page. Same table this endpoint
-        // already queries for vehiclePrevKms just above, so no new dependency.
+        // 2026-10-01: a hand-corrected Reg No (Vehicle Sale page inline edit, VehicleSaleOverrides keyed by chassis) wins over DMS's own value.
         string? registerNo = hit.RegNo;
         if (!string.IsNullOrWhiteSpace(hit.ChassisNo))
         {
@@ -1791,13 +1768,12 @@ public class JobCardsController : ControllerBase
             if (!string.IsNullOrWhiteSpace(overrideRegNo)) registerNo = overrideRegNo;
         }
 
-        // 2026-10-07 ("which last Registered Customer details we save in db for this chassis that fetch with this chassis and reg no like last Odometer"): the customer saved on
-        // this chassis's most recent job card (any status, this dealer's own) wins over Vehicle Sale's customer - so a customer picked from Ledger Master on an earlier job card
-        // comes back the next time. Vehicle Sale's own customer is still returned in vehicleSaleCustomer so the wizard can offer "Use Vehicle Sale details".
+        // 2026-10-07: the customer saved on this chassis's most recent job card AT THIS DEALER wins over Vehicle Sale's customer;
+        // Vehicle Sale's own customer is still returned in vehicleSaleCustomer so the wizard can offer "Use Vehicle Sale details".
         var saleAddress = string.Join(", ", new[] { hit.Address1, hit.Address2 }.Where(s => !string.IsNullOrWhiteSpace(s)));
-        var lastCustomer = dealerId.HasValue && !string.IsNullOrWhiteSpace(hit.ChassisNo)
+        var lastCustomer = workingDealerId.HasValue && !string.IsNullOrWhiteSpace(hit.ChassisNo)
             ? await _db.JobCards.AsNoTracking()
-                .Where(j => j.DealerId == dealerId && j.Customer != null && j.Vehicle != null && j.Vehicle.Vin == hit.ChassisNo)
+                .Where(j => j.DealerId == workingDealerId && j.Customer != null && j.Vehicle != null && j.Vehicle.Vin == hit.ChassisNo)
                 .OrderByDescending(j => j.CreatedAt)
                 .Select(j => new
                 {
@@ -1844,41 +1820,42 @@ public class JobCardsController : ControllerBase
         });
     }
 
-    /// <summary>GET /api/jobcards/vehicle-suggestions?q=&dealerId= - replaces the wizard's previous
-    /// GET /api/bapl-dms/vehicle-suggestions (BAPLDMSvad) typeahead. Sourced from the same
-    /// BaplConnection/DMS_SaleBill data as VehicleLookupForWizard above, via
-    /// IDmsBaplDataService.SearchVehiclesForWizardAsync (2-char minimum, capped at 100 results -
-    /// raised from 20 on 2026-09-28, "too less shown shown all chassisno. for this location" -
-    /// the service's own clamp was silently resetting any value above 50 back down to 20 regardless
-    /// of what was passed here, which was the confirmed root cause; see that method's own doc
-    /// comment for the exact matching rule against chassis_no/reg_number and for a flagged, still-
-    /// unconfirmed possibility that a specific dealer login could ALSO be affected by a separate
-    /// dealerId -> BaplDmsDealerCode scoping issue below, not just this cap).
-    /// dealerId is optional, translated to BaplDmsDealerCode the same way as VehicleLookupForWizard.</summary>
+    /// <summary>GET /api/jobcards/vehicle-suggestions?q=&amp;dealerId=&amp;global= - the typeahead. Same rules as VehicleLookupForWizard:
+    /// default = the working dealer's own sales (2026-10-31 DMS-03 rule kept); global=true = every dealer (audit-logged, switchable).</summary>
     [HttpGet("vehicle-suggestions")]
     [Authorize(Policy = Policies.ServiceAdvisorUp)]
-    public async Task<IActionResult> VehicleSuggestionsForWizard([FromQuery] string? q, [FromQuery] Guid? dealerId)
+    public async Task<IActionResult> VehicleSuggestionsForWizard([FromQuery] string? q, [FromQuery] Guid? dealerId, [FromQuery] bool global = false)
     {
-        string? dealerCode = null;
-        if (dealerId.HasValue)
+        var workingDealerId = ResolveWizardDealerId(dealerId);
+        string? ownDealerCode = null;
+        if (workingDealerId.HasValue)
         {
-            dealerCode = await _db.Dealers.AsNoTracking()
-                .Where(d => d.Id == dealerId)
+            ownDealerCode = await _db.Dealers.AsNoTracking()
+                .Where(d => d.Id == workingDealerId)
                 .Select(d => d.BaplDmsDealerCode)
                 .FirstOrDefaultAsync();
         }
 
-        // 2026-10-31 (VAPT retest DMS-03): same rule as vehicle-lookup - no BAPL dealer code, no unscoped search for a dealer login.
-        if (string.IsNullOrWhiteSpace(dealerCode) && !DealerScope.IsCorporate(User)) return Ok(Array.Empty<object>());
+        string? scopeDealerCode = ownDealerCode;
+        if (global)
+        {
+            if (!IsOrgWideCaller && !AllowCrossDealerVehicleSearchForDealerLogins)
+                return StatusCode(403, new { message = "Searching the vehicle sales of other dealers is not allowed for this login." });
+            scopeDealerCode = null;
+        }
+        else if (string.IsNullOrWhiteSpace(scopeDealerCode) && !IsOrgWideCaller)
+        {
+            return Ok(Array.Empty<object>());   // 2026-10-31 (VAPT retest DMS-03) - kept
+        }
 
         try
         {
-            var hits = await _dmsBaplData.SearchVehiclesForWizardAsync(q, dealerCode, 100, HttpContext.RequestAborted);
+            var hits = await _dmsBaplData.SearchVehiclesForWizardAsync(q, scopeDealerCode, 100, HttpContext.RequestAborted);
             return Ok(hits.Select(h => new { chassisNo = h.ChassisNo, regNo = h.RegNo, modelName = h.ModelName, saleDate = h.SaleDate }));
         }
         catch (InvalidOperationException ex)
         {
-            _logger.LogWarning(ex, "Vehicle suggestions for wizard failed for q {Q}, dealerId {DealerId}", q, dealerId);
+            _logger.LogWarning(ex, "Vehicle suggestions for wizard failed for q {Q}, dealerId {DealerId}, global {Global}", q, workingDealerId, global);
             return StatusCode(502, new { message = ex.Message });
         }
     }
