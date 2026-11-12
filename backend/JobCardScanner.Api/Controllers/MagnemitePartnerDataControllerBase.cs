@@ -122,6 +122,43 @@ public abstract class MagnemitePartnerDataControllerBase : ControllerBase
             .Select(d => new { d.Id, d.Name, BaplDealerCode = d.BaplDmsDealerCode }));
     }
 
+    /// <summary>GET scope - what this key can see and how recent it is: the dealers in scope and, for job cards, repair bills and material transfers, how many there are and the newest created / updated time (UTC).
+    /// 2026-11-12 (Shadowfax, "our newest job card change is dated 29 Oct ... updatedSince returned 0 job cards"): lets the partner tell "nothing was created or changed since" from "the key lost access", without asking BGauss.</summary>
+    [HttpGet("scope")]
+    public async Task<IActionResult> Scope(CancellationToken ct)
+    {
+        var authFail = CheckApiKey();
+        if (authFail is not null) return authFail;
+
+        var allowed = await ResolveAllowedDealersAsync();
+        var ids = allowed.Select(d => d.Id).ToList();
+        var kw = CustomerNameKeyword.ToUpperInvariant();
+
+        var jobCards = Db.JobCards.AsNoTracking().Where(j => ids.Contains(j.DealerId) && j.Customer != null && j.Customer.Name.ToUpper().Contains(kw));
+        var perDealer = await jobCards.GroupBy(j => j.DealerId)
+            .Select(g => new { DealerId = g.Key, Count = g.Count(), NewestCreated = g.Max(x => x.CreatedAt), NewestUpdated = g.Max(x => x.UpdatedAt) }).ToListAsync(ct);
+
+        var bills = Db.RepairBillDocs.AsNoTracking().Where(r => !r.IsDeleted && ids.Contains(r.DealerId)
+            && (r.PartyName.ToUpper().Contains(kw) || (r.JobCard != null && r.JobCard.Customer != null && r.JobCard.Customer.Name.ToUpper().Contains(kw))));
+        var transfers = Db.MaterialTransferDocs.AsNoTracking().Where(m => ids.Contains(m.DealerId)
+            && ((m.PartyName != null && m.PartyName.ToUpper().Contains(kw)) || (m.JobCard != null && m.JobCard.Customer != null && m.JobCard.Customer.Name.ToUpper().Contains(kw))));
+
+        return Ok(new
+        {
+            partner = PartnerName,
+            serverTimeUtc = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc),
+            rule = $"records of the MAGNEMITE dealers in scope whose customer / party name contains \"{kw}\"; all statuses are returned",
+            dealers = allowed.OrderBy(d => d.Name).Select(d =>
+            {
+                var s = perDealer.FirstOrDefault(x => x.DealerId == d.Id);
+                return new { name = d.Name, dealerCode = d.BaplDmsDealerCode, jobCards = s?.Count ?? 0, newestJobCardCreatedAt = AsUtc(s?.NewestCreated), newestJobCardUpdatedAt = AsUtc(s?.NewestUpdated) };
+            }),
+            jobCards = new { total = perDealer.Sum(x => x.Count), newestCreatedAt = AsUtc(perDealer.Count == 0 ? null : perDealer.Max(x => x.NewestCreated)), newestUpdatedAt = AsUtc(perDealer.Count == 0 ? null : perDealer.Max(x => x.NewestUpdated)) },
+            repairBills = new { total = await bills.CountAsync(ct), newestCreatedAt = AsUtc(await bills.MaxAsync(r => (DateTime?)r.CreatedAt, ct)), newestUpdatedAt = AsUtc(await bills.MaxAsync(r => r.UpdatedAt, ct)) },
+            materialTransfers = new { total = await transfers.CountAsync(ct), newestCreatedAt = AsUtc(await transfers.MaxAsync(m => (DateTime?)m.CreatedAt, ct)) },
+        });
+    }
+
     /// <summary>GET jobcards?from=&amp;to=&amp;status=&amp;dealerCode=&amp;jobCardNumber=&amp;pageIndex=&amp;pageSize= - job card status / descriptive view (no pricing: real amounts are on the Repair Bills).
     /// from / to filter the job created date. Newest first; default page size 500, maximum 1000.</summary>
     [HttpGet("jobcards")]

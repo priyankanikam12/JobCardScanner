@@ -17,6 +17,7 @@ namespace JobCardScanner.Api.Controllers;
 ///                                                        same content (nothing is stored twice), 409 for the same decisionId with different content or for a decision about an older estimate version
 ///   GET  /api/shadowfax-data/jobcards/{id}/decisions     the decisions received for one job card
 ///   GET  /api/shadowfax-data/decisions?since=            every decision received (paged), so both sides can check what was sent
+///   GET  /api/shadowfax-data/estimates/pending           2026-11-12: the job cards whose CURRENT estimate version has no decision from Shadowfax yet ("estimates waiting for approval"), paged
 /// Same key (X-API-Key = ApiKeys:Shadowfax) and same scope as ShadowfaxDataController: a job card of a MAGNEMITE dealer whose customer name contains SHADOWFAX; anything else is "not found".
 /// The estimate version comes from dbo.JobCardEstimateVersions, kept by triggers (sql/2026-11-01_shadowfax_decisions_estimates.sql): +1 on every change of a part or labour suggestion; a suggestion keeps its id while it stays.
 /// </summary>
@@ -65,6 +66,12 @@ public class ShadowfaxEstimatesDecisionsController : ControllerBase
                 && j.Customer != null && j.Customer.Name.ToUpper().Contains(PartnerKeyword), ct);
 
     // rows read with raw SQL (the tables are new and have no EF entity)
+    public sealed class PendingEstimateRow
+    {
+        public Guid JobCardId { get; set; } public string JobCardNumber { get; set; } = ""; public string Status { get; set; } = ""; public string? StageLabel { get; set; }
+        public string? DealerName { get; set; } public string? DealerCode { get; set; } public string? ChassisNo { get; set; } public string? RegNo { get; set; }
+        public int EstimateVersion { get; set; } public DateTime EstimateUpdatedAt { get; set; } public DateTime CreatedAt { get; set; } public int Total { get; set; }
+    }
     public sealed class ItemTaxRow { public string ItemCode { get; set; } = ""; public decimal? Sgst { get; set; } public decimal? Cgst { get; set; } public decimal? Igst { get; set; } }
     public sealed class VersionRow { public int Version { get; set; } public DateTime UpdatedAt { get; set; } }
     public sealed class DecisionRow
@@ -215,6 +222,39 @@ public class ShadowfaxEstimatesDecisionsController : ControllerBase
         if (jc is null) return NotFound(new { message = "Job card not found." });
         var rows = await _db.Database.SqlQueryRaw<DecisionRow>(DecisionSelect + " WHERE [JobCardId] = {0} ORDER BY [Id]", id).ToListAsync(ct);
         return Ok(await WithLinesAsync(rows, ct));
+    }
+
+    /// <summary>GET estimates/pending?pageIndex=&amp;pageSize= - the estimates waiting for a decision: job cards in scope that are not Closed or Cancelled, have an estimate (estimateVersion above 0) and for whose CURRENT
+    /// version Shadowfax has sent no decision yet. A new estimate version brings a job card back into the list; a decision for the current version takes it out. Oldest estimate first; X-Total-Count = all rows.</summary>
+    [HttpGet("estimates/pending")]
+    public async Task<IActionResult> PendingEstimates([FromQuery] int pageIndex = 0, [FromQuery] int pageSize = 0, CancellationToken ct = default)
+    {
+        var authFail = CheckApiKey(); if (authFail is not null) return authFail;
+        var size = pageSize <= 0 ? 500 : Math.Min(pageSize, MaxPageSize); var skip = Math.Max(0, pageIndex) * size;
+        List<PendingEstimateRow> rows;
+        try
+        {
+            rows = await _db.Database.SqlQueryRaw<PendingEstimateRow>(
+                "SELECT j.[Id] AS JobCardId, j.[JobCardNumber] AS JobCardNumber, j.[Status] AS Status, st.[Label] AS StageLabel, dl.[Name] AS DealerName, dl.[BaplDmsDealerCode] AS DealerCode, " +
+                "v.[Vin] AS ChassisNo, v.[RegNo] AS RegNo, e.[Version] AS EstimateVersion, e.[UpdatedAt] AS EstimateUpdatedAt, j.[CreatedAt] AS CreatedAt, COUNT(*) OVER() AS Total " +
+                "FROM [dbo].[JobCardEstimateVersions] e JOIN [dbo].[JobCards] j ON j.[Id] = e.[JobCardId] JOIN [dbo].[Dealers] dl ON dl.[Id] = j.[DealerId] JOIN [dbo].[Customers] c ON c.[Id] = j.[CustomerId] " +
+                "LEFT JOIN [dbo].[Vehicles] v ON v.[Id] = j.[VehicleId] LEFT JOIN [dbo].[WorkflowStages] st ON st.[Id] = j.[CurrentStageId] " +
+                "WHERE e.[Version] > 0 AND UPPER(dl.[Name]) LIKE N'%MAGNEMITE%' AND UPPER(c.[Name]) LIKE N'%' + {0} + N'%' AND j.[Status] NOT IN (N'Closed', N'Cancelled') " +
+                "AND NOT EXISTS (SELECT 1 FROM [dbo].[ShadowfaxDecisions] d WHERE d.[JobCardId] = j.[Id] AND d.[EstimateVersion] = e.[Version]) " +
+                "ORDER BY e.[UpdatedAt] ASC, j.[Id] OFFSET {1} ROWS FETCH NEXT {2} ROWS ONLY", PartnerKeyword, skip, size).ToListAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Shadowfax: the estimates waiting for a decision could not be read.");
+            return StatusCode(500, new { message = "The estimates waiting for a decision could not be read. Please try again." });
+        }
+        Response.Headers["X-Total-Count"] = (rows.Count == 0 ? 0 : rows[0].Total).ToString();
+        return Ok(rows.Select(r => new
+        {
+            jobCardId = r.JobCardId, jobCardNumber = r.JobCardNumber, status = r.Status, stageLabel = r.StageLabel, dealerName = r.DealerName, dealerCode = r.DealerCode, chassisNo = r.ChassisNo, regNo = r.RegNo,
+            estimateVersion = r.EstimateVersion, estimateUpdatedAt = Utc(r.EstimateUpdatedAt), createdAt = Utc(r.CreatedAt),
+            estimateUrl = $"/api/shadowfax-data/jobcards/{r.JobCardId}/estimate",
+        }));
     }
 
     /// <summary>Every decision received for Shadowfax's job cards, oldest first, optionally since a moment (ISO 8601, UTC) - so both sides can compare what was sent. Paged: pageIndex from 0, pageSize up to 1000; X-Total-Count.</summary>
