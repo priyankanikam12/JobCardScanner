@@ -16,6 +16,7 @@ import { DateTimePickerAndroid, type DateTimePickerEvent } from '@react-native-c
 import { apiClient } from '../api/client'
 import { useStaffAuth } from '../auth/StaffAuthContext'
 import { PickerField, type PickerOption } from '../components/PickerField'
+import { ChassisScanButton } from '../components/ChassisScanButton'
 import { VEHICLE_MODELS, variantsForModel } from '../data/vehicleCatalog'
 import { buildJobCardPrintHtml } from '../utils/printJobCard'
 import type {
@@ -1143,6 +1144,10 @@ export function JobCardWizardScreen({ navigation }: Props) {
               autoCapitalize="characters"
               autoCorrect={false}
               onSubmitEditing={() => lookupByChassisOrReg()}
+            />
+            <ChassisScanButton
+              disabled={vehicleLookupLoading}
+              onResult={(v) => { setChassisOrRegQ(v); lookupByChassisOrReg(v) }}
             />
             <TouchableOpacity style={[styles.btn, (vehicleLookupLoading || !chassisOrRegQ.trim()) && styles.btnDisabled]} disabled={vehicleLookupLoading || !chassisOrRegQ.trim()} onPress={() => lookupByChassisOrReg()}>
               <Text style={styles.btnText}>{vehicleLookupLoading ? 'Searching…' : 'Search'}</Text>
