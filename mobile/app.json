@@ -65,10 +65,10 @@
       "expo-sharing",
       "expo-web-browser"
     ],
-    "owner": "priyankanikam101ss-team",
+    "owner": "priyankanikams-team",
     "extra": {
       "eas": {
-        "projectId": "222321e0-98ff-4f60-bbf4-35737f0d296a"
+        "projectId": "1b9a4a92-bada-4acc-b3a7-35fbb49a8122"
       }
     }
   }

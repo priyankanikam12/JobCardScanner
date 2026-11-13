@@ -222,6 +222,9 @@ export function JobCardWizardScreen({ navigation }: Props) {
   // does the touch equivalent below (onFocus opens it, onBlur closes it after a short delay so a
   // tap on a suggestion row still registers first).
   const [showVehicleSuggestions, setShowVehicleSuggestions] = useState(false)
+  // 2026-11-13 ("global search ... when I type p6 / a reg no. the suggestions must also come from every dealer"): mirrors web's suggestionsAreGlobal (JobCardWizardPage.tsx, 2026-10-01). True when the
+  // rows in the dropdown came from the cross-dealer fallback below, so the list can say these are not this workshop's own stock.
+  const [suggestionsAreGlobal, setSuggestionsAreGlobal] = useState(false)
   // Global (cross-dealer) chassis/reg-no search - offered as a fallback right on the "not found"
   // flag when a dealer-scoped lookup 404s, mirroring DMS's own Angular "Search Chassis Across
   // All Dealers" popup (ebw-invoice component). GET /api/bapl-dms/vehicle-lookup already supports
@@ -249,14 +252,25 @@ export function JobCardWizardScreen({ navigation }: Props) {
   // dealer X, not this workshop" hint below), exactly mirroring web's own comment on this.
   const vehicleSearchDealerCode = dealers.find((d) => d.id === effectiveDealerId)?.baplDmsDealerCode ?? profile?.dealerBaplDmsCode ?? undefined
 
+  // 2026-11-13: the typeahead now falls back to EVERY dealer, exactly like web's (see suggestionsAreGlobal above): if this dealer's own stock has no match and a dealer is selected (an empty
+  // effectiveDealerId already means "unscoped"), the same GET /api/jobcards/vehicle-suggestions is asked again without dealerId and those rows are shown under a note. No backend change - the endpoint
+  // already treats an omitted dealerId as unscoped. `cancelled` drops an answer that arrives after the text changed (typing fast, or the scanner filling the box).
   useEffect(() => {
-    if (!showVehicleSuggestions || chassisOrRegQ.trim().length < 2) { setVehicleSuggestions([]); return }
+    if (!showVehicleSuggestions || chassisOrRegQ.trim().length < 2) { setVehicleSuggestions([]); setSuggestionsAreGlobal(false); return }
+    const q = chassisOrRegQ.trim()
+    let cancelled = false
     const handle = setTimeout(() => {
-      apiClient.get<BaplDmsVehicleSuggestion[]>('/api/jobcards/vehicle-suggestions', { params: { q: chassisOrRegQ.trim(), dealerId: effectiveDealerId || undefined } })
-        .then(({ data }) => setVehicleSuggestions(data))
-        .catch(() => setVehicleSuggestions([]))
+      apiClient.get<BaplDmsVehicleSuggestion[]>('/api/jobcards/vehicle-suggestions', { params: { q, dealerId: effectiveDealerId || undefined } })
+        .then(({ data }) => {
+          if (cancelled) return
+          if (data.length > 0 || !effectiveDealerId) { setVehicleSuggestions(data); setSuggestionsAreGlobal(false); return }
+          apiClient.get<BaplDmsVehicleSuggestion[]>('/api/jobcards/vehicle-suggestions', { params: { q } })
+            .then(({ data: globalData }) => { if (cancelled) return; setVehicleSuggestions(globalData); setSuggestionsAreGlobal(globalData.length > 0) })
+            .catch(() => { if (cancelled) return; setVehicleSuggestions([]); setSuggestionsAreGlobal(false) })
+        })
+        .catch(() => { if (cancelled) return; setVehicleSuggestions([]); setSuggestionsAreGlobal(false) })
     }, 300)
-    return () => clearTimeout(handle)
+    return () => { cancelled = true; clearTimeout(handle) }
   }, [chassisOrRegQ, showVehicleSuggestions, effectiveDealerId])
 
   // 2026-10-07 (web JobCardWizardPage, "Edit anyway ... party ledger for that dealer"): the Registered Customer section has no manual-typing escape hatch any more. Customer fields stay locked for as
@@ -476,6 +490,43 @@ export function JobCardWizardScreen({ navigation }: Props) {
     setVehicleLookupError(null)
     setShowGlobalSearchOffer(false)
     setGlobalHit(null)
+  }
+
+  /** 2026-11-13: picking a cross-dealer suggestion from the dropdown - mirrors web's selectGlobalSuggestion. It fills the box and runs the lookup WITHOUT dealerId: a dealer-scoped lookup would 404 again for a
+   * vehicle that only another dealer has. Same open-job-card / not-sold guards and the same reset of the customer state as lookupByChassisOrReg above. */
+  const selectGlobalSuggestion = async (chassisNo: string) => {
+    setChassisOrRegQ(chassisNo)
+    setShowVehicleSuggestions(false)
+    setVehicleSuggestions([])
+    setSuggestionsAreGlobal(false)
+    setVehicleLookupLoading(true)
+    setVehicleLookupError(null)
+    setVehicleNotSoldNotice(null)
+    setOpenJobCardNotice(null)
+    setBaplVehicleHit(null)
+    setSelectedLedger(null)
+    setShowLedgerPicker(false)
+    setUseVehicleSaleCustomer(false)
+    setUnlockVehicleFields(false)
+    setShowGlobalSearchOffer(false)
+    setGlobalHit(null)
+    setGlobalSearchNotFound(false)
+    try {
+      const { data } = await apiClient.get<BaplDmsVehicleLookup>('/api/jobcards/vehicle-lookup', { params: { value: chassisNo } })
+      if (data.openJobCardNumber) {
+        const status = data.openJobCardStatus ? ` (status: ${data.openJobCardStatus})` : ''
+        const message = `This chassis already has an open job card here: ${data.openJobCardNumber}${status}. It must be closed before this chassis can be used for a new job card.`
+        setOpenJobCardNotice(message)
+        Alert.alert('Chassis already checked in', message)
+        return
+      }
+      if (!data.saleDate) { setVehicleNotSoldNotice('This Vehicle not sold'); return }
+      applyVehicleHit(data)
+    } catch {
+      setVehicleLookupError(`"${chassisNo}" wasn't found in Vehicle Sale.`)
+    } finally {
+      setVehicleLookupLoading(false)
+    }
   }
 
   // ---- Step 1: vehicle ----
@@ -1147,7 +1198,8 @@ export function JobCardWizardScreen({ navigation }: Props) {
             />
             <ChassisScanButton
               disabled={vehicleLookupLoading}
-              onResult={(v) => { setChassisOrRegQ(v); lookupByChassisOrReg(v) }}
+              // the scanned number goes into the field and opens the same suggestion dropdown as typing (this dealer's stock first, then every dealer); tapping a row, or Search, runs the lookup
+              onResult={(v) => { setChassisOrRegQ(v); setShowVehicleSuggestions(true) }}
             />
             <TouchableOpacity style={[styles.btn, (vehicleLookupLoading || !chassisOrRegQ.trim()) && styles.btnDisabled]} disabled={vehicleLookupLoading || !chassisOrRegQ.trim()} onPress={() => lookupByChassisOrReg()}>
               <Text style={styles.btnText}>{vehicleLookupLoading ? 'Searching…' : 'Search'}</Text>
@@ -1158,8 +1210,18 @@ export function JobCardWizardScreen({ navigation }: Props) {
             // overflow instead of scrolling it. nestedScrollEnabled is required on Android for a
             // ScrollView inside another ScrollView (this whole screen is one) to scroll at all.
             <ScrollView style={styles.pickerBox} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+              {/* 2026-11-13: shown only when the rows came from the cross-dealer fallback (see the typeahead effect), so it is clear these are not this workshop's own stock. */}
+              {suggestionsAreGlobal && (
+                <View style={styles.globalNote}>
+                  <Text style={styles.globalNoteText}>🔎 No matches for this dealer — showing results from every dealer.</Text>
+                </View>
+              )}
               {vehicleSuggestions.map((s) => (
-                <TouchableOpacity key={s.chassisNo} style={styles.pickerRow} onPress={() => { setChassisOrRegQ(s.chassisNo); lookupByChassisOrReg(s.chassisNo) }}>
+                <TouchableOpacity
+                  key={s.chassisNo}
+                  style={styles.pickerRow}
+                  onPress={() => { if (suggestionsAreGlobal) { selectGlobalSuggestion(s.chassisNo) } else { setChassisOrRegQ(s.chassisNo); lookupByChassisOrReg(s.chassisNo) } }}
+                >
                   <Text style={styles.pickerRowText}>
                     <Text style={{ fontWeight: '700' }}>{s.chassisNo}</Text>
                     {s.regNo ? ` · ${s.regNo}` : ''}{s.modelName ? ` — ${s.modelName}` : ''}
@@ -1706,6 +1768,8 @@ const styles = StyleSheet.create({
   pickerRow: { paddingHorizontal: 10, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: '#f1f3f6' },
   pickerRowText: { color: '#374151' },
   pickerRowSubText: { color: '#9ca3af', fontSize: 12, marginTop: 2 },
+  globalNote: { backgroundColor: '#eef6ff', paddingHorizontal: 10, paddingVertical: 7 },
+  globalNoteText: { fontSize: 12, color: '#1e3a5f' },
   dmsBox: { backgroundColor: '#eef6ff', borderWidth: 1, borderColor: '#bfdcff', borderRadius: 8, padding: 12, marginBottom: 16 },
   dmsBadge: { backgroundColor: '#1c64f2', color: '#fff', fontSize: 12, fontWeight: '600', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999, overflow: 'hidden' },
   chipRow: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#f4f6f8', borderWidth: 1, borderColor: '#e2e6ec', borderRadius: 8, padding: 10, marginBottom: 6 },

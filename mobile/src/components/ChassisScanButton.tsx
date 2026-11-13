@@ -2,19 +2,20 @@
 // 2026-11-13 (OCR scanner for the "Chassis no. / RegNo." search field of JobCardWizardScreen): a camera button that
 // sits beside the existing field. Tap -> camera -> the photo is read ON THE PHONE by Google ML Kit text recognition
 // (the model is inside the app, so reading works with no internet) -> the likely chassis / registration number is
-// shown in an editable box -> "Search" hands the value back to the wizard, which runs ITS OWN existing search
-// (lookupByChassisOrReg, the same function the Search button and the suggestion list use). This component knows
-// nothing about dealers, vehicles or the API; it only returns a string.
+// shown in an editable box -> "Find vehicle" hands the value back to the wizard, which puts it in its own Chassis no. / RegNo.
+// field and opens the same suggestion dropdown as typing (this dealer's stock, then every dealer); the technician taps the
+// right row or presses the wizard's Search. This component knows nothing about dealers, vehicles or the API; it only returns a string.
 import { useState } from 'react'
 import {
   ActivityIndicator, Alert, Image, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text,
   TextInput, TouchableOpacity, View,
 } from 'react-native'
 import * as ImagePicker from 'expo-image-picker'
-import { extractVehicleIds, kindLabel, type OcrLike, type VehicleIdCandidate } from '../utils/vehicleIdOcr'
+import { recognizeImage } from '../utils/ocrEngine'
+import { extractVehicleIds, kindLabel, type VehicleIdCandidate } from '../utils/vehicleIdOcr'
 
 interface Props {
-  /** called with the confirmed (and possibly hand-corrected) number; the wizard then searches for it */
+  /** called with the confirmed (and possibly hand-corrected) number; the wizard shows the matching vehicles for it */
   onResult: (value: string) => void
   disabled?: boolean
 }
@@ -70,10 +71,8 @@ export function ChassisScanButton({ onResult, disabled }: Props) {
       setPhase('reading')
       setVisible(true)
       try {
-        // loaded only now, so a build without the native scanner shows a clear message instead of failing at startup
-        const mod = await import('@react-native-ml-kit/text-recognition')
-        const ocr: OcrLike = await mod.default.recognize(uri)
-        const found = extractVehicleIds(ocr)
+        // the native OCR library is touched only inside ocrEngine.ts (and only now), so a build without it shows a clear message
+        const found = extractVehicleIds(await recognizeImage(uri))
         setCandidates(found)
         if (found.length > 0 && found[0]) setValue(found[0].value)
         else setMessage('No chassis or registration number could be read from this photo. Retake it closer, in good light, with the number filling the frame - or type it below.')
@@ -166,7 +165,7 @@ export function ChassisScanButton({ onResult, disabled }: Props) {
                 disabled={phase === 'reading' || value.trim().length < 2}
                 onPress={confirm}
               >
-                <Text style={styles.btnPrimaryText}>Search</Text>
+                <Text style={styles.btnPrimaryText}>Find vehicle</Text>
               </TouchableOpacity>
             </View>
           </View>
