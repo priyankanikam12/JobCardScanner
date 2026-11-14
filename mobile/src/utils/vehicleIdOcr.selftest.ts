@@ -1,6 +1,6 @@
 // mobile\src\utils\vehicleIdOcr.selftest.ts
 // Run:  npx tsx src/utils/vehicleIdOcr.selftest.ts      (from the mobile folder; nothing imports this file, the app never bundles it)
-import { extractVehicleIds, type OcrLike } from './vehicleIdOcr'
+import { createStabilityTracker, extractVehicleIds, type OcrLike } from './vehicleIdOcr'
 
 const lines = (...l: string[]): OcrLike => ({ text: l.join('\n'), blocks: [{ text: l.join('\n'), lines: l.map((text) => ({ text })) }] })
 let failed = 0
@@ -44,5 +44,20 @@ check('registration with a single series letter', c?.value === 'KA01A1234', c)
 c = top(lines('IND', 'MH 05 AB 1234'))
 check('registration next to the IND mark', c?.value === 'MH05AB1234', c)
 check('plain words with many O and I are not a chassis', extractVehicleIds(lines('CONTROLLER MODULE INDIA ORIGIN')).length === 0, extractVehicleIds(lines('CONTROLLER MODULE INDIA ORIGIN')))
+const frameA = extractVehicleIds(lines('P6DEC12CPDG015344'))
+const frameB = extractVehicleIds(lines('P6DEC13BPEK004846'))
+const frameNone = extractVehicleIds(lines('BGAUSS ELECTRIC'))
+const frameWeak = extractVehicleIds(lines('P6DEC12CPDG01534'))
+let tr = createStabilityTracker(2)
+check('live: first reading is not accepted yet', tr.push(frameA) === null, null)
+check('live: the same reading twice in a row is accepted', tr.push(frameA)?.value === 'P6DEC12CPDG015344', null)
+tr = createStabilityTracker(2); tr.push(frameA)
+check('live: a different reading restarts the count', tr.push(frameB) === null && tr.push(frameB)?.value === 'P6DEC13BPEK004846', null)
+tr = createStabilityTracker(2); tr.push(frameA); tr.push(frameNone)
+check('live: a frame with nothing readable restarts the count', tr.push(frameA) === null, null)
+tr = createStabilityTracker(2); tr.push(frameWeak)
+check('live: weak (loose) guesses are never accepted', tr.push(frameWeak) === null, null)
+tr = createStabilityTracker(3); tr.push(frameA); tr.push(frameA)
+check('live: required = 3 needs three in a row', tr.push(frameA)?.value === 'P6DEC12CPDG015344', null)
 if (failed > 0) throw new Error(failed + ' self-test(s) failed')
 console.log('All self-tests passed.')

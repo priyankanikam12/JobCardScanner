@@ -200,3 +200,25 @@ function longestCommonRun(a: string, b: string): number {
 }
 
 export const kindLabel = (k: VehicleIdKind) => (k === 'chassis' ? 'Chassis no.' : 'Registration no.')
+
+/** Live scanning (viewfinder): one frame can be misread, so a number is accepted only when the SAME strict (not loose) value is read in `required`
+ *  frames in a row. A frame with no strict reading, or a different one, starts the count again. */
+export interface StabilityTracker {
+  push(found: VehicleIdCandidate[]): VehicleIdCandidate | null
+  reset(): void
+}
+
+export function createStabilityTracker(required = 2): StabilityTracker {
+  let lastValue: string | null = null
+  let hits = 0
+  return {
+    push(found) {
+      const strict = found.find((c) => !c.loose)
+      if (!strict) { lastValue = null; hits = 0; return null }
+      if (strict.value === lastValue) hits += 1
+      else { lastValue = strict.value; hits = 1 }
+      return hits >= required ? strict : null
+    },
+    reset() { lastValue = null; hits = 0 },
+  }
+}

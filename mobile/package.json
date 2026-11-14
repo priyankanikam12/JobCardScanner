@@ -11,6 +11,7 @@
     "expo": "~57.0.33",
     "expo-auth-session": "~57.0.17",
     "expo-build-properties": "~57.0.23",
+    "expo-camera": "~57.0.6",
     "expo-crypto": "~57.0.4",
     "expo-document-picker": "~57.0.3",
     "expo-file-system": "~57.0.7",
@@ -42,7 +43,9 @@
   "expo": {
     "doctor": {
       "reactNativeDirectoryCheck": {
-        "exclude": ["@react-native-ml-kit/text-recognition"],
+        "exclude": [
+          "@react-native-ml-kit/text-recognition"
+        ],
         "listUnknownPackages": false
       }
     }

@@ -254,7 +254,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
 
   // 2026-11-13: the typeahead now falls back to EVERY dealer, exactly like web's (see suggestionsAreGlobal above): if this dealer's own stock has no match and a dealer is selected (an empty
   // effectiveDealerId already means "unscoped"), the same GET /api/jobcards/vehicle-suggestions is asked again without dealerId and those rows are shown under a note. No backend change - the endpoint
-  // already treats an omitted dealerId as unscoped. `cancelled` drops an answer that arrives after the text changed (typing fast, or the scanner filling the box).
+  // already has a global=true switch (the call without it returns [] - see the IIS log of 13.11.2026). `cancelled` drops an answer that arrives after the text changed (typing fast, or the scanner filling the box).
   useEffect(() => {
     if (!showVehicleSuggestions || chassisOrRegQ.trim().length < 2) { setVehicleSuggestions([]); setSuggestionsAreGlobal(false); return }
     const q = chassisOrRegQ.trim()
@@ -264,7 +264,8 @@ export function JobCardWizardScreen({ navigation }: Props) {
         .then(({ data }) => {
           if (cancelled) return
           if (data.length > 0 || !effectiveDealerId) { setVehicleSuggestions(data); setSuggestionsAreGlobal(false); return }
-          apiClient.get<BaplDmsVehicleSuggestion[]>('/api/jobcards/vehicle-suggestions', { params: { q } })
+          // the live web sends dealerId AND global=true here (IIS log 13.11.2026: q=p6&dealerId=...&global=true -> 13 KB); without global=true the server answers [] for the same text
+          apiClient.get<BaplDmsVehicleSuggestion[]>('/api/jobcards/vehicle-suggestions', { params: { q, dealerId: effectiveDealerId || undefined, global: true } })
             .then(({ data: globalData }) => { if (cancelled) return; setVehicleSuggestions(globalData); setSuggestionsAreGlobal(globalData.length > 0) })
             .catch(() => { if (cancelled) return; setVehicleSuggestions([]); setSuggestionsAreGlobal(false) })
         })
@@ -464,7 +465,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
     setGlobalSearchNotFound(false)
     setGlobalHit(null)
     try {
-      const { data } = await apiClient.get<BaplDmsVehicleLookup>('/api/jobcards/vehicle-lookup', { params: { value } })
+      const { data } = await apiClient.get<BaplDmsVehicleLookup>('/api/jobcards/vehicle-lookup', { params: { value, global: true } })
       setGlobalHit(data)
     } catch {
       setGlobalSearchNotFound(true)
@@ -512,7 +513,7 @@ export function JobCardWizardScreen({ navigation }: Props) {
     setGlobalHit(null)
     setGlobalSearchNotFound(false)
     try {
-      const { data } = await apiClient.get<BaplDmsVehicleLookup>('/api/jobcards/vehicle-lookup', { params: { value: chassisNo } })
+      const { data } = await apiClient.get<BaplDmsVehicleLookup>('/api/jobcards/vehicle-lookup', { params: { value: chassisNo, global: true } })
       if (data.openJobCardNumber) {
         const status = data.openJobCardStatus ? ` (status: ${data.openJobCardStatus})` : ''
         const message = `This chassis already has an open job card here: ${data.openJobCardNumber}${status}. It must be closed before this chassis can be used for a new job card.`
