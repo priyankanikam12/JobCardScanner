@@ -4,6 +4,7 @@ using JobCardScanner.Api.Data;
 using JobCardScanner.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 namespace JobCardScanner.Api.Controllers;
 
@@ -125,5 +126,83 @@ public class ZohoPushOpsController : ControllerBase
         if (wanted is null && !confirm) return BadRequest(new { message = "This queues every continuing item for Zoho. Call again with ?confirm=true, or give ?codes=ITEM1,ITEM2 to queue only those items." });
         var queued = await ZohoPushStore.EnqueueItemsAsync(_db, null, ct, wanted);
         return Ok(new { queued, heldBack = await ZohoPushStore.CountHeldBackItemsAsync(_db, ct), note = "heldBack = continuing items Zoho Books would reject (price 0, bad HSN, GST ...) - not queued while ZohoPush:SkipInvalidItems is on." });
+    }
+
+    /// <summary>
+    /// 2026-11-20 invoice push. DRY RUN is the default: builds and checks the invoice of each waiting Billed bill (reads items / customers in Zoho, sends nothing).
+    /// Live send needs ZohoInvoicePush:Enabled = true AND dryRun=false AND confirm=true. Use ?billNumber=... for one bill; ?max= limits the batch (default 1).
+    /// </summary>
+    [HttpPost("invoice-push")]
+    public async Task<IActionResult> InvoicePush([FromQuery] string? billNumber = null, [FromQuery] bool dryRun = true, [FromQuery] bool confirm = false, [FromQuery] int max = 1, CancellationToken ct = default)
+    {
+        var denied = CheckKey();
+        if (denied is not null) return denied;
+        if (!dryRun)
+        {
+            if (!ZohoInvoicePushService.Enabled(_config)) return BadRequest(new { message = "ZohoInvoicePush:Enabled is false, so no invoice is sent. A dry run is still allowed (dryRun=true)." });
+            if (!confirm) return BadRequest(new { message = "A live send needs confirm=true as well." });
+        }
+        try
+        {
+            var svc = new ZohoInvoicePushService(_db, _config, HttpContext.RequestServices.GetRequiredService<JobCardScanner.Api.Services.Zoho.ZohoBooksApiClient>());
+            var results = await svc.RunAsync(billNumber, dryRun, Math.Clamp(max, 1, 500), ct);
+            return Ok(new { dryRun, count = results.Count, results = results.Select(r => new { r.BillNumber, r.Result, r.Detail, r.DmsTotal, r.ZohoTotal, r.ZohoInvoiceId, payload = dryRun ? r.Payload : null }) });
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, new { message = $"Invoice push failed (has sql/2026-11-20_zoho_invoice_push.sql been run?): {ex.GetBaseException().Message}" });
+        }
+    }
+
+    /// <summary>
+    /// 2026-11-20 inventory adjustment push (source dbo.PartUploads, one location per call). DRY RUN is the default. Live needs ZohoAdjustmentPush:Enabled = true AND dryRun=false AND confirm=true.
+    /// </summary>
+    [HttpPost("adjustment-push")]
+    public async Task<IActionResult> AdjustmentPush([FromQuery] string locationCode = "", [FromQuery] bool dryRun = true, [FromQuery] bool confirm = false, CancellationToken ct = default)
+    {
+        var denied = CheckKey();
+        if (denied is not null) return denied;
+        if (!dryRun)
+        {
+            if (!ZohoAdjustmentPushService.Enabled(_config)) return BadRequest(new { message = "ZohoAdjustmentPush:Enabled is false, so no adjustment is sent. A dry run is still allowed (dryRun=true)." });
+            if (!confirm) return BadRequest(new { message = "A live send needs confirm=true as well." });
+        }
+        try
+        {
+            var svc = new ZohoAdjustmentPushService(_db, _config, HttpContext.RequestServices.GetRequiredService<JobCardScanner.Api.Services.Zoho.ZohoBooksApiClient>());
+            var r = await svc.RunAsync(locationCode, dryRun, ct);
+            return Ok(new { dryRun, r.Result, r.Detail, r.Reference, r.Lines, r.NetQty, r.ZohoAdjustmentId, skipped = r.Skipped, payload = dryRun ? r.Payload : null });
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, new { message = $"Adjustment push failed (has sql/2026-11-20_zoho_adjustment_push.sql been run?): {ex.GetBaseException().Message}" });
+        }
+    }
+
+    [HttpGet("adjustment-status")]
+    public async Task<IActionResult> AdjustmentStatus(CancellationToken ct)
+    {
+        var denied = CheckKey();
+        if (denied is not null) return denied;
+        try
+        {
+            var rows = await _db.Database.SqlQueryRaw<ZohoInvoicePushService.StrRow>("SELECT Status + N': ' + CAST(COUNT(*) AS NVARCHAR(10)) AS Value FROM dbo.ZohoAdjustmentPush GROUP BY Status").ToListAsync(ct);
+            return Ok(new { enabled = ZohoAdjustmentPushService.Enabled(_config), stored = rows.Select(x => x.Value) });
+        }
+        catch (Exception ex) { return StatusCode(500, new { message = ex.GetBaseException().Message }); }
+    }
+
+    [HttpGet("invoice-status")]
+    public async Task<IActionResult> InvoiceStatus(CancellationToken ct)
+    {
+        var denied = CheckKey();
+        if (denied is not null) return denied;
+        try
+        {
+            var waiting = (await new ZohoInvoicePushService(_db, _config, HttpContext.RequestServices.GetRequiredService<JobCardScanner.Api.Services.Zoho.ZohoBooksApiClient>()).LoadBillsAsync(null, ct)).Count;
+            var sent = await _db.Database.SqlQueryRaw<ZohoInvoicePushService.StrRow>("SELECT Status + N': ' + CAST(COUNT(*) AS NVARCHAR(10)) AS Value FROM dbo.ZohoInvoicePush GROUP BY Status").ToListAsync(ct);
+            return Ok(new { enabled = ZohoInvoicePushService.Enabled(_config), waitingBilledBills = waiting, stored = sent.Select(x => x.Value) });
+        }
+        catch (Exception ex) { return StatusCode(500, new { message = ex.GetBaseException().Message }); }
     }
 }
