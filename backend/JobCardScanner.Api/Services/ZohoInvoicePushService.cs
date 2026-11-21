@@ -155,7 +155,7 @@ FROM dbo.RepairBillDocItems WHERE RepairBillDocId = @b", new Microsoft.Data.SqlC
 
             // an earlier half-finished send: the invoice may already exist (draft)
             string? invId; decimal? zTotal = null; string note;
-            var existing = await client.FindInvoiceByNumberAsync(b.BillNumber, ct);
+            var existing = await client.FindInvoiceByNumberAsync(ZohoInvoiceBuilder.ZohoInvoiceNumber(b.BillNumber) ?? b.BillNumber, ct);
             if (!existing.Success) { results.Add(new(b.BillNumber, "Stopped", existing.Message ?? "invoice lookup failed", b.TotalAmount)); return results; }
             if (existing.Data is not null)
             {

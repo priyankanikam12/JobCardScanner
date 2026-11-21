@@ -87,12 +87,14 @@ public static class ZohoInvoiceBuilder
             if (taxId is not null) line["tax_id"] = taxId;
             lines.Add(line);
         }
+        var zohoNumber = ZohoInvoiceNumber(bill.BillNumber);
+        if (zohoNumber is null) errors.Add($"bill number {bill.BillNumber} cannot be shortened to Zoho's 16-character invoice number (expected RB-CUS<code>-<year>-<seq>).");
         if (errors.Count > 0) return (null, errors);
 
         var body = new JsonObject
         {
             ["customer_id"] = customerContactId,
-            ["invoice_number"] = bill.BillNumber.Trim(),
+            ["invoice_number"] = zohoNumber,
             ["reference_number"] = bill.JobCardNumber,
             ["date"] = bill.BillDate.ToString("yyyy-MM-dd"),
             ["location_id"] = locationId,
@@ -101,8 +103,19 @@ public static class ZohoInvoiceBuilder
             ["custom_fields"] = new JsonArray(new JsonObject { ["api_name"] = "cf_bgauss_dms_invoice_id", ["value"] = bill.Id.ToString() }),
             ["line_items"] = lines,
         };
-        if (!string.IsNullOrWhiteSpace(bill.Remarks)) body["notes"] = bill.Remarks.Trim();
+        // the full DMS bill number does not fit in Zoho's invoice number, so it is kept in the notes
+        body["notes"] = "DMS bill: " + bill.BillNumber.Trim() + (string.IsNullOrWhiteSpace(bill.Remarks) ? "" : " | " + bill.Remarks.Trim());
         return (body, errors);
+    }
+
+    /// <summary>2026-11-21: Zoho allows 16 characters (letters, digits, - and /) in an invoice number (error 71530), so RB-CUS0288-2026-000010 (22) becomes RB0288-26-000010 (16).
+    /// Dealer code, year and serial stay in it, so it is still unique. Null when the DMS number does not follow RB-CUS&lt;digits&gt;-&lt;yyyy&gt;-&lt;digits&gt; or the result is over 16 characters.</summary>
+    public static string? ZohoInvoiceNumber(string billNumber)
+    {
+        var m = Regex.Match((billNumber ?? "").Trim(), @"^RB-CUS(\d+)-(\d{4})-(\d+)$", RegexOptions.IgnoreCase);
+        if (!m.Success) return null;
+        var n = $"RB{m.Groups[1].Value}-{m.Groups[2].Value.Substring(2)}-{m.Groups[3].Value}";
+        return n.Length <= 16 ? n : null;
     }
 
     /// <summary>Zoho's total against the DMS total: a difference over Rs 1 is reported (section 8.3 of the field list).</summary>

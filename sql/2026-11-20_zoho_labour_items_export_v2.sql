@@ -5,7 +5,7 @@
    If the table names differ, find them with:  SELECT name FROM sys.tables WHERE name LIKE '%Labour%'
    Reads only. Changes nothing. */
 SET NOCOUNT ON;
-DECLARE @DefaultSac VARCHAR(8) = NULL;          -- SAC for a labour code that was never billed (e.g. '998714'); leave NULL until Magnemite finance confirms it
+DECLARE @DefaultSac VARCHAR(8) = '998729';      -- SAC 998729 for every labour code (confirmed by Finance: Kshitij Shekhar / Kundan Vijayvargia); used when a code was never billed
 DECLARE @AccountName NVARCHAR(100) = N'Sales'; -- the sales account NAME in Zoho Books (the sample file uses Sales)
 DECLARE @Unit NVARCHAR(20) = N'pcs';            -- usage unit (the sample file uses pcs)
 
