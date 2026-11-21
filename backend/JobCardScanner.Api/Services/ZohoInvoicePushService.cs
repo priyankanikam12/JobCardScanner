@@ -21,7 +21,7 @@ public sealed class ZohoInvoicePushService
 {
     public sealed class BillRow { public Guid Id { get; set; } public string BillNumber { get; set; } = ""; public DateTime BillDate { get; set; } public string? JobCardNumber { get; set; } public string Status { get; set; } = ""; public string? Remarks { get; set; } public decimal TotalAmount { get; set; } public string? DealerCode { get; set; } public string? SubLocation { get; set; } public DateTime CreatedAt { get; set; } public Guid? CanonicalCustomerId { get; set; } }
     public sealed class LineRow { public Guid BillId { get; set; } public Guid Id { get; set; } public string ItemType { get; set; } = ""; public string ItemCode { get; set; } = ""; public string? ItemDescription { get; set; } public string? IssueType { get; set; } public double Qty { get; set; } public decimal Rate { get; set; } public string? DiscountType { get; set; } public decimal DiscountValue { get; set; } public decimal CgstPct { get; set; } public decimal SgstPct { get; set; } public decimal IgstPct { get; set; } }
-    public sealed class CustRow { public Guid CustomerId { get; set; } public string Name { get; set; } = ""; public string? Mobile { get; set; } public string? State { get; set; } public string? Address { get; set; } public string? City { get; set; } }
+    public sealed class CustRow { public Guid CustomerId { get; set; } public string Name { get; set; } = ""; public string? Mobile { get; set; } public string? State { get; set; } public string? Address { get; set; } public string? City { get; set; } public string? Gstin { get; set; } }
     public sealed class LocRow { public string ZohoLocationId { get; set; } = ""; public string? DealerCode { get; set; } public string? SubLocation { get; set; } }
     public sealed class StrRow { public string Value { get; set; } = ""; }
 
@@ -56,7 +56,12 @@ FROM dbo.RepairBillDocItems WHERE RepairBillDocId = @b", new Microsoft.Data.SqlC
     private async Task<CustRow?> LoadCustomerAsync(Guid id, CancellationToken ct) =>
         (await _db.Database.SqlQueryRaw<CustRow>(@"SELECT cu.Id AS CustomerId, cu.Name, cu.Mobile,
  (SELECT MAX(NULLIF(LTRIM(RTRIM(c2.State)), N'')) FROM dbo.Customers c2 WHERE UPPER(LTRIM(RTRIM(c2.Name))) = UPPER(LTRIM(RTRIM(cu.Name))) AND LTRIM(RTRIM(ISNULL(c2.Mobile, N''))) = LTRIM(RTRIM(ISNULL(cu.Mobile, N'')))) AS State,
- cu.Address, cu.City FROM dbo.Customers cu WHERE cu.Id = @c", new Microsoft.Data.SqlClient.SqlParameter("@c", id)).ToListAsync(ct)).FirstOrDefault();
+ cu.Address, cu.City,
+ (SELECT TOP 1 UPPER(LTRIM(RTRIM(g.Gstin))) FROM dbo.ZohoCustomerGstin g   /* 2026-11-21: the customer's GSTIN, supplied by Finance (the job-card customer has no GSTIN column); a row with a state applies only to that state */
+   WHERE g.IsActive = 1 AND g.CustomerKey = UPPER(LTRIM(RTRIM(cu.Name))) + N'|' + LTRIM(RTRIM(ISNULL(cu.Mobile, N'')))
+     AND (g.StateName IS NULL OR UPPER(LTRIM(RTRIM(g.StateName))) = (SELECT UPPER(MAX(NULLIF(LTRIM(RTRIM(c3.State)), N''))) FROM dbo.Customers c3 WHERE UPPER(LTRIM(RTRIM(c3.Name))) = UPPER(LTRIM(RTRIM(cu.Name))) AND LTRIM(RTRIM(ISNULL(c3.Mobile, N''))) = LTRIM(RTRIM(ISNULL(cu.Mobile, N'')))))
+   ORDER BY CASE WHEN g.StateName IS NULL THEN 1 ELSE 0 END) AS Gstin
+ FROM dbo.Customers cu WHERE cu.Id = @c", new Microsoft.Data.SqlClient.SqlParameter("@c", id)).ToListAsync(ct)).FirstOrDefault();
 
     private async Task<Dictionary<string, string>> LoadLocationMapAsync(CancellationToken ct)
     {
@@ -108,7 +113,7 @@ FROM dbo.RepairBillDocItems WHERE RepairBillDocId = @b", new Microsoft.Data.SqlC
                     if (cust is null) errors.Add("customer record not found.");
                     else
                     {
-                        var (cBody, cErr) = ZohoInvoiceBuilder.BuildCustomer(new ZohoCustomerData(cust.CustomerId, cust.Name, cust.Mobile, null, null, cust.State, cust.Address, cust.City, null));
+                        var (cBody, cErr) = ZohoInvoiceBuilder.BuildCustomer(new ZohoCustomerData(cust.CustomerId, cust.Name, cust.Mobile, null, cust.Gstin, cust.State, cust.Address, cust.City, null));
                         if (cBody is null) errors.AddRange(cErr.Select(x => "customer: " + x));
                         else if (dryRun) contactId = "DRYRUN-CONTACT";
                         else if (!createCust) errors.Add("customer is not in Zoho Books and ZohoInvoicePush:CreateCustomers is off (link the customer in Zoho first, or switch it on).");
