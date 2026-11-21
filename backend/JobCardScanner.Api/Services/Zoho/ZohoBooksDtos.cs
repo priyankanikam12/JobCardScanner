@@ -268,6 +268,11 @@ public class ZohoCreateInventoryAdjustmentRequest
     [JsonPropertyName("line_items")]
     [Required, MinLength(1)]
     public List<ZohoInventoryAdjustmentLineItem> LineItems { get; set; } = new();
+
+    /// <summary>2026-11-21 (Zoho developer, Sathwika): cf_bgauss_dms_adjustment_id = the DMS adjustment id on every adjustment, so Zoho Books rejects a repeated one (code 120303).</summary>
+    [JsonPropertyName("custom_fields")]
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public List<ZohoCustomField>? CustomFields { get; set; }
 }
 
 public class ZohoInventoryAdjustment

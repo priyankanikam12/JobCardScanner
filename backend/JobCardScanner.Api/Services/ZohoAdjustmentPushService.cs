@@ -91,6 +91,7 @@ WHERE p.LocationCode = @loc AND p.BalQty IS NOT NULL ORDER BY p.PartNo", new Sql
         {
             Date = date, Reason = string.IsNullOrEmpty(reason) ? "(ZohoAdjustmentPush:Reason not set)" : reason!, ReferenceNumber = reference, AdjustmentType = "quantity", LocationId = locationId,
             Description = $"DMS stock upload sync, location {locationCode}",
+            CustomFields = new List<ZohoCustomField> { new() { ApiName = "cf_bgauss_dms_adjustment_id", Value = reference } },   // unique DMS adjustment id (= the reference); Zoho rejects a repeat with code 120303
             LineItems = lines.Select(x => new ZohoInventoryAdjustmentLineItem { ItemId = x.ItemId, QuantityAdjusted = x.Delta, LocationId = locationId }).ToList()
         };
         var payload = JsonSerializer.SerializeToNode(req)!.AsObject();

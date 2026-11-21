@@ -147,51 +147,66 @@ public class AdminDealerImportController : ControllerBase
                 continue;
             }
 
-            await using var tx = await _db.Database.BeginTransactionAsync();
+            // 2026-11-21: the DbContext uses SqlServerRetryingExecutionStrategy (EnableRetryOnFailure), which refuses a user-started transaction ("does not support user-initiated
+            // transactions" - that was the 558 errors). The whole dealer+login unit therefore runs inside the execution strategy, so it is retried as ONE unit on a transient error.
+            var strategy = _db.Database.CreateExecutionStrategy();
+            Dealer? dealer = null;
+            User? login = null;
+            var email = "";
             try
             {
-                var dealer = new Dealer
+                await strategy.ExecuteAsync(async () =>
                 {
-                    Name = row.CustomerName,
-                    Code = row.CustomerCode,
-                    City = string.IsNullOrWhiteSpace(row.City) ? null : row.City,
-                    State = string.IsNullOrWhiteSpace(row.State) ? null : row.State,
-                    Phone = string.IsNullOrWhiteSpace(row.Mobile) ? null : row.Mobile,
-                    Email = !string.IsNullOrWhiteSpace(row.ContactEmail) && row.ContactEmail.Contains('@')
-                        ? row.ContactEmail.Trim() : null,
-                    AssignedRepCode = string.IsNullOrWhiteSpace(row.AssignedRepCode) ? null : row.AssignedRepCode,
-                    Source = DealerSource.BaplImport,
-                };
-                _db.Dealers.Add(dealer);
-                await _db.SaveChangesAsync(); // need dealer.Id before we can create its login
+                    // a retry starts clean: forget whatever the failed attempt left tracked (only these two rows - not the tracked existing dealers)
+                    if (dealer is not null) _db.Entry(dealer).State = EntityState.Detached;
+                    if (login is not null) _db.Entry(login).State = EntityState.Detached;
 
-                var email = BuildDealerEmail(row);
-                if (await _db.Users.AnyAsync(u => u.Email.ToLower() == email.ToLower()))
-                    email = $"{row.CustomerCode.Trim().ToLower()}@dealer.bgauss.local";
+                    await using var tx = await _db.Database.BeginTransactionAsync();
+                    dealer = new Dealer
+                    {
+                        Name = row.CustomerName,
+                        Code = row.CustomerCode,
+                        City = string.IsNullOrWhiteSpace(row.City) ? null : row.City,
+                        State = string.IsNullOrWhiteSpace(row.State) ? null : row.State,
+                        Phone = string.IsNullOrWhiteSpace(row.Mobile) ? null : row.Mobile,
+                        Email = !string.IsNullOrWhiteSpace(row.ContactEmail) && row.ContactEmail.Contains('@')
+                            ? row.ContactEmail.Trim() : null,
+                        AssignedRepCode = string.IsNullOrWhiteSpace(row.AssignedRepCode) ? null : row.AssignedRepCode,
+                        Source = DealerSource.BaplImport,
+                    };
+                    _db.Dealers.Add(dealer);
+                    await _db.SaveChangesAsync(); // need dealer.Id before we can create its login
 
-                var login = new User
-                {
-                    Name = string.IsNullOrWhiteSpace(row.ContactPerson) ? row.CustomerName : row.ContactPerson,
-                    Email = email,
-                    Mobile = string.IsNullOrWhiteSpace(row.Mobile) ? null : row.Mobile,
-                    Role = StaffRole.DealerAdmin,
-                    DealerId = dealer.Id,
-                    AuthType = UserAuthType.Local,
-                    PasswordHash = passwordHash,
-                    MustChangePassword = true,
-                };
-                _db.Users.Add(login);
-                await _db.SaveChangesAsync();
+                    email = BuildDealerEmail(row);
+                    if (await _db.Users.AnyAsync(u => u.Email.ToLower() == email.ToLower()))
+                        email = $"{row.CustomerCode.Trim().ToLower()}@dealer.bgauss.local";
 
-                await tx.CommitAsync();
-                existingDealers[row.CustomerCode] = dealer;
+                    login = new User
+                    {
+                        Name = string.IsNullOrWhiteSpace(row.ContactPerson) ? row.CustomerName : row.ContactPerson,
+                        Email = email,
+                        Mobile = string.IsNullOrWhiteSpace(row.Mobile) ? null : row.Mobile,
+                        Role = StaffRole.DealerAdmin,
+                        DealerId = dealer.Id,
+                        AuthType = UserAuthType.Local,
+                        PasswordHash = passwordHash,
+                        MustChangePassword = true,
+                    };
+                    _db.Users.Add(login);
+                    await _db.SaveChangesAsync();
+
+                    await tx.CommitAsync();   // an exception before this point disposes tx = rollback
+                });
+
+                existingDealers[row.CustomerCode] = dealer!;
                 created++;
                 createdList.Add(new { row.CustomerCode, row.CustomerName, row.City, row.State, email });
             }
             catch (Exception ex)
             {
-                await tx.RollbackAsync();
-                _db.ChangeTracker.Clear(); // drop anything left tracked from the failed attempt
+                // detach only this attempt's rows (keeps the tracked existing dealers, whose rep-code updates are saved above)
+                if (dealer is not null) _db.Entry(dealer).State = EntityState.Detached;
+                if (login is not null) _db.Entry(login).State = EntityState.Detached;
                 failed++;
                 errors.Add($"{row.CustomerCode} ({row.CustomerName}): {ex.Message}");
                 _logger.LogWarning(ex, "BAPL dealer import failed for {Code}", row.CustomerCode);
