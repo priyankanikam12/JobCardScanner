@@ -284,12 +284,14 @@ public static class ZohoPushStore
 
     /// <summary>Queues the continuing items created or modified since sinceUtc (item.created when createdOn is on/after it, else item.updated); sinceUtc null = every continuing item as item.created (the initial load).
     /// Returns how many were queued.</summary>
-    public static async Task<int> EnqueueItemsAsync(JobCardScannerDbContext db, DateTime? sinceUtc, CancellationToken ct, string[]? codes = null)
+    public static async Task<int> EnqueueItemsAsync(JobCardScannerDbContext db, DateTime? sinceUtc, CancellationToken ct, string[]? codes = null, bool force = false)
     {
         // codes = only these item codes (a small, controlled test or the "3 agreed items" step); the same continuing / valid rules still apply, so a code that is not continuing or that Zoho would reject is simply not queued
+        // 2026-11-21 force = true (only together with codes): the "continuing" rule (product group 2, status Y, item name not A2% / B8%) is skipped for exactly these codes, so a discontinued or B8 part that still has stock can be created in Zoho.
+        // The Zoho field rules (ValidItemWhere: price, HSN length, GST rates) STILL apply. The payload carries the item's own Status (N = discontinued).
         var wanted = (codes ?? Array.Empty<string>()).Select(c => c.Trim()).Where(c => c.Length > 0 && c.Length <= 30).Distinct(StringComparer.OrdinalIgnoreCase).Take(200).ToArray();
         var ps = new List<object>();
-        var sql = ItemSelect + ContinuingWhere + (SkipInvalidItems ? ValidItemWhere : "");
+        var sql = ItemSelect + (force && wanted.Length > 0 ? " WHERE 1 = 1" : ContinuingWhere) + (SkipInvalidItems ? ValidItemWhere : "");
         if (sinceUtc.HasValue) { sql += " AND (m.[CreatedOn] >= @since OR m.[ModifiedOn] >= @since)"; ps.Add(new SqlParameter("@since", SqlDbType.DateTime) { Value = sinceUtc.Value }); }
         if (wanted.Length > 0)
         {

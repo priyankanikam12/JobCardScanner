@@ -117,14 +117,16 @@ public class ZohoPushOpsController : ControllerBase
     }
 
     [HttpPost("load-items")]
-    public async Task<IActionResult> LoadItems([FromQuery] bool confirm = false, [FromQuery] string? codes = null, CancellationToken ct = default)
+    public async Task<IActionResult> LoadItems([FromQuery] bool confirm = false, [FromQuery] string? codes = null, [FromQuery] bool force = false, CancellationToken ct = default)
     {
         var denied = CheckKey();
         if (denied is not null) return denied;
         var wanted = string.IsNullOrWhiteSpace(codes) ? null : codes.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         // ?codes=A,B,C queues just those items (no confirm needed); without codes it queues EVERY continuing item and needs ?confirm=true
         if (wanted is null && !confirm) return BadRequest(new { message = "This queues every continuing item for Zoho. Call again with ?confirm=true, or give ?codes=ITEM1,ITEM2 to queue only those items." });
-        var queued = await ZohoPushStore.EnqueueItemsAsync(_db, null, ct, wanted);
+        // 2026-11-21 ?force=true (needs ?codes=): also queues listed items that are discontinued (status N) or whose name starts with A2 / B8 - the Zoho field rules still apply
+        if (force && wanted is null) return BadRequest(new { message = "force=true only works together with ?codes=ITEM1,ITEM2 (it never queues the whole item master)." });
+        var queued = await ZohoPushStore.EnqueueItemsAsync(_db, null, ct, wanted, force);
         return Ok(new { queued, heldBack = await ZohoPushStore.CountHeldBackItemsAsync(_db, ct), note = "heldBack = continuing items Zoho Books would reject (price 0, bad HSN, GST ...) - not queued while ZohoPush:SkipInvalidItems is on." });
     }
 

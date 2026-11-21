@@ -1,8 +1,8 @@
 // mobile\src\screens\LoginScreen.tsx
 import { useState, type ReactNode } from 'react'
 import {
-  ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView,
-  StyleSheet, Text, TextInput, TouchableOpacity, View,
+  ActivityIndicator, KeyboardAvoidingView, Platform,
+  ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View,
 } from 'react-native'
 import { useAuth } from '../auth/AuthContext'
 import { useStaffAuth } from '../auth/StaffAuthContext'
