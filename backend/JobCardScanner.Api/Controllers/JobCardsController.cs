@@ -772,11 +772,24 @@ public class JobCardsController : ControllerBase
             .Where(s => (s.DealerId == null || s.DealerId == req.DealerId) && s.Active)
             .OrderBy(s => s.Seq).FirstOrDefaultAsync();
 
+        // 2026-11-25 ("Failed to create job card." with no reason): the job card number was generated INSIDE the object initializer below, i.e. outside the try/catch that reports the real cause - if the
+        // numbering service failed (Counters table, FY, dealer code ...) the request ended as a bare HTTP 500 with no message. Generated here first, with its own readable error.
+        string jobCardNumber;
+        try
+        {
+            jobCardNumber = await _numbering.NextJobCardNumberAsync(req.DealerId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Could not generate a job card number for dealer {DealerId}", req.DealerId);
+            return StatusCode(500, new { message = $"Could not generate the job card number: {ex.GetBaseException().Message}" });
+        }
+
         var jobCard = new JobCard
         {
             // Local numbering again (JC/{dealer code}/{FY}/{seq}) - see this method's doc comment
             // above for why the DMS-derived number is no longer used for new rows.
-            JobCardNumber = await _numbering.NextJobCardNumberAsync(req.DealerId),
+            JobCardNumber = jobCardNumber,
             DealerId = req.DealerId,
             CustomerId = req.CustomerId,
             VehicleId = req.VehicleId,

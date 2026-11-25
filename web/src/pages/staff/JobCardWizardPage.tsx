@@ -1128,7 +1128,12 @@ export function JobCardWizardPage() {
       setPendingPhotos([])
       setCreatedJobCard({ id: data.id, jobCardNumber: data.jobCardNumber })
     } catch (err: unknown) {
-      setError((err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Failed to create job card.')
+      // 2026-11-25 ("Failed to create job card." with no reason): only data.message was read, so a refusal WITHOUT that field (a 403 from the role policy, a 400 model-validation answer with "errors" / "title",
+      // a bare 500) all showed the same bare text. Now the first available reason is shown, and always the HTTP status.
+      const r = (err as { response?: { status?: number; data?: { message?: string; title?: string; errors?: Record<string, string[]> } } })?.response
+      const validation = r?.data?.errors ? Object.entries(r.data.errors).slice(0, 3).map(([k, v]) => `${k}: ${(v ?? []).join(' ')}`).join(' | ') : ''
+      const status = r?.status ? ` (HTTP ${r.status}${r.status === 403 ? ' - your role is not allowed to create a job card' : ''})` : ' (no response from the server)'
+      setError(r?.data?.message ?? (validation ? `Please check: ${validation}` : null) ?? (r?.data?.title ? `${r.data.title}${status}` : null) ?? `Failed to create job card${status}.`)
     } finally {
       setSubmitting(false)
     }

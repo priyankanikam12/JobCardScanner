@@ -370,7 +370,7 @@ public class LedgerMasterController : ControllerBase
     // ------------------------------------------------------------------ create / update / deactivate
 
     [HttpPost]
-    [Authorize(Policy = Policies.WorkshopManagerUp)]
+    [Authorize(Policy = Policies.Staff)]   // 2026-11-25: was WorkshopManagerUp - that contradicted the 2026-10-07 rule above (EVERY staff role may create / edit) and gave a bare HTTP 403 with no message to e.g. a Service Advisor. Scope is still enforced inside (own dealer only; org-level types org-wide only).
     public async Task<IActionResult> Create([FromBody] CreateLedgerRequest req, CancellationToken ct)
     {
         await EnsureSeedTypesAsync(ct);
@@ -452,7 +452,7 @@ public class LedgerMasterController : ControllerBase
 
     /// <summary>The type, ledger code and dealer are fixed after creation. ERP-sourced ledgers (Dealer, Company) are read-only.</summary>
     [HttpPut("{id:guid}")]
-    [Authorize(Policy = Policies.WorkshopManagerUp)]
+    [Authorize(Policy = Policies.Staff)]   // 2026-11-25: was WorkshopManagerUp - see Create(). Delete / reactivate is still refused inside for anyone below CorporateAdmin.
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateLedgerRequest req, CancellationToken ct)
     {
         var entity = await _db.LedgerMasters.FirstOrDefaultAsync(x => x.Id == id, ct);
