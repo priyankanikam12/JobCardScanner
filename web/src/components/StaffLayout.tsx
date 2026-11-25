@@ -382,14 +382,23 @@ function initialsOf(name?: string | null): string {
  * adding there first - tell me the real field name (or paste StaffAuthContext.tsx) and this is a
  * one-line fix. */
 /** 2026-11-04 ("if designation is Captain, Vice Captain, Supervisor, Technician then dont show in
- * navbar there role, shown Designation"): the pill now shows the Designation (instead of the real
- * backend Role) for FOUR designations, not two - Captain, ViceCaptain, Supervisor and Technician.
- * Matching ignores case and spaces, so "Vice Captain", "ViceCaptain" and "vice captain" all count;
- * the text shown is the Designation exactly as saved on the user. Every other user's pill is
- * unchanged (still profile?.role). Display only - the Menu Access / allow-list matching above still
- * uses its own rules (Captain / ViceCaptain by Designation, everyone else by real Role). */
-const DESIGNATIONS_SHOWN_IN_BADGE = new Set(['captain', 'vicecaptain', 'supervisor', 'technician'])
+ * navbar there role, shown Designation"): the pill shows the Designation instead of the real backend Role.
+ *
+ * 2026-11-25 ("Captain / ViceCaptain / Technician of that DESIGNATION show in navbar ... but when my Role
+ * DealerAdmin then show DealerAdmin ... for other superadmin and corporateadmin navigation mapping dont
+ * change"): narrowed to exactly those three designations - Supervisor is no longer swapped in (a Dealer Admin
+ * whose Designation is "Supervisor" was shown as SUPERVISOR) - and the three admin roles (DealerAdmin,
+ * CorporateAdmin, SystemAdmin) ALWAYS show their Role, whatever Designation is saved on them. So:
+ *   - Role DealerAdmin / CorporateAdmin / SystemAdmin -> the Role (unchanged for HQ admins);
+ *   - any other Role whose Designation is Captain / ViceCaptain / Technician -> that Designation;
+ *   - everyone else -> the Role, as before.
+ * Designation matching ignores case and spaces ("Vice Captain", "ViceCaptain", "vice captain" all count); the
+ * text shown is the Designation exactly as saved. Display only - the Menu Access / allow-list matching above
+ * and the navigation mapping are untouched. */
+const DESIGNATIONS_SHOWN_IN_BADGE = new Set(['captain', 'vicecaptain', 'technician'])
+const ROLES_ALWAYS_SHOWN_IN_BADGE = new Set<string>(['DealerAdmin', 'CorporateAdmin', 'SystemAdmin'])
 function badgeLabel(profile?: { role?: StaffRole; designation?: string | null } | null): string | undefined {
+  if (profile?.role && ROLES_ALWAYS_SHOWN_IN_BADGE.has(profile.role)) return profile.role
   const designation = profile?.designation?.trim()
   if (designation && DESIGNATIONS_SHOWN_IN_BADGE.has(designation.replace(/\s+/g, '').toLowerCase())) return designation
   return profile?.role

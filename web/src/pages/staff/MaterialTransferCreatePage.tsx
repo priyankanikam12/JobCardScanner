@@ -344,6 +344,26 @@ const lineTax = (it: DraftItem, isSameState: boolean) => {
   return { cgstPct: calc.cgstPct, sgstPct: calc.sgstPct, igstPct: 0, cgstAmt, sgstAmt, igstAmt: 0 }
 }
 
+/** 2026-11-25 ("why not create material transfer" - the page only said "Could not save the material transfer."): the server's own { message } is still used first, but a reply WITHOUT one (an ASP.NET
+ * validation reply carries title / detail / errors, a crashed request carries nothing but the status) used to fall straight through to that bare sentence. This now adds the HTTP status and whatever
+ * reason the reply does carry, so the real cause is visible on screen instead of only in the browser's Network tab. */
+const saveErrorText = (err: unknown, fallback: string): string => {
+  const e = err as { response?: { status?: number; data?: unknown }; message?: string }
+  const data = e?.response?.data as { message?: string; detail?: string; title?: string; errors?: Record<string, string[]> } | string | undefined
+  if (data && typeof data === 'object' && data.message) return data.message
+  const parts: string[] = []
+  if (data && typeof data === 'object') {
+    if (data.errors) Object.entries(data.errors).forEach(([field, msgs]) => parts.push(`${field}: ${(msgs ?? []).join(' ')}`))
+    if (data.detail) parts.push(data.detail)
+    else if (data.title && !data.errors) parts.push(data.title)
+  } else if (typeof data === 'string' && data.trim()) {
+    parts.push(data.trim().slice(0, 300))
+  }
+  const status = e?.response?.status
+  if (!status) return `${fallback} (no answer from the API - ${e?.message ?? 'network error'}).`
+  return `${fallback} (HTTP ${status}${parts.length ? ` - ${parts.join(' | ')}` : ' - the API sent no reason; see its console/log'}).`
+}
+
 export function MaterialTransferCreatePage() {
   const { profile } = useStaffAuth()
   const navigate = useNavigate()
@@ -956,7 +976,7 @@ export function MaterialTransferCreatePage() {
         }
         // 2026-09-23 - loadCombined() removed: see note on finalizeEditingTransferAsConfirmed above.
       })
-      .catch((err) => setSaveError(err?.response?.data?.message ?? `Could not ${editingTransferId ? 'update' : 'save'} the material transfer.`))
+      .catch((err) => setSaveError(saveErrorText(err, `Could not ${editingTransferId ? 'update' : 'save'} the material transfer.`)))
       .finally(() => setSaving(false))
   }
 
