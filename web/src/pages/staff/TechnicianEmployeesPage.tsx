@@ -103,10 +103,25 @@ export function TechnicianEmployeesPage() {
   const [workshops, setWorkshops] = useState<BaplDmsWorkshop[]>([])
   const workshopsDealerId = isOrgWide ? (showModal ? form.dealerId : dealerFilter) : (profile?.dealerId ?? '')
   useEffect(() => {
-    if (!workshopsDealerId) { setWorkshops([]); return }
-    staffApi.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: workshopsDealerId } })
-      .then((r) => setWorkshops(r.data))
-      .catch(() => setWorkshops([]))
+    if (!workshopsDealerId) { setWorkshops([]); return undefined }
+    // 2026-11-25 ("in that page not shown all location which we bind"): the list came only from GET /api/bapl-dms/workshops (the DMS list - e.g. just W1-W3 for Hyderabad). It now comes first from
+    // GET /api/dealer-locations - the dealer's W-series locations synced from the ERP into JobCardScannerDb, the same source as the Employees page's Work Area - and only if that is empty or not
+    // deployed yet does it fall back to the DMS list exactly as before, so nothing disappears while this is rolled out.
+    let cancelled = false
+    const loadList = async (): Promise<BaplDmsWorkshop[]> => {
+      try {
+        const synced = await staffApi.get<BaplDmsWorkshop[]>('/api/dealer-locations', { params: { dealerId: workshopsDealerId } })
+        if (Array.isArray(synced.data) && synced.data.length > 0) return synced.data
+      } catch {
+        // endpoint / table not available yet - fall back to the DMS list below
+      }
+      const dms = await staffApi.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: workshopsDealerId } })
+      return dms.data
+    }
+    loadList()
+      .then((list) => { if (!cancelled) setWorkshops(list) })
+      .catch(() => { if (!cancelled) setWorkshops([]) })
+    return () => { cancelled = true }
   }, [workshopsDealerId])
 
   const openAddModal = () => { setForm({ ...emptyTechnicianForm, dealerId: isOrgWide ? dealerFilter : '' }); setError(null); setShowModal(true) }
