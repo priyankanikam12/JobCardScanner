@@ -772,12 +772,13 @@ function UpdateWorkflowStageCard({
   jc: JobCardDetail
   stages: WorkflowStage[]
   busy: boolean
-  run: (fn: () => Promise<unknown>, successMsg?: string) => void
+  run: (fn: () => Promise<unknown>, successMsg?: string) => Promise<string | null>
   canAssignTechnician: boolean
 }) {
   const [technicianName, setTechnicianName] = useState(jc.assignedTechnicianName ?? '')
   const [expectedDeliveryAt, setExpectedDeliveryAt] = useState(jc.expectedDeliveryAt ? jc.expectedDeliveryAt.slice(0, 16) : '')
   const [notes, setNotes] = useState('')
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [technicianOptions, setTechnicianOptions] = useState<Technician[]>([])
 
   // 2026-10-07 ("after Estimate Created ... Mark Repair Completed / Mark Invoice Generated / Mark Ready for Delivery - do MT and RB first, before that can't click"): those three buttons
@@ -809,10 +810,17 @@ function UpdateWorkflowStageCard({
   // page keeps saying "No Technician assigned yet" (and the Start Timer is refused by the server) until then, so an unsaved pick is now flagged and Save is highlighted.
   const unsavedChange = technicianName !== (jc.assignedTechnicianName ?? '') || expectedDeliveryAt !== (jc.expectedDeliveryAt ? jc.expectedDeliveryAt.slice(0, 16) : '')
 
+  // 2026-11-25 (Save on Assign Technician gave HTTP 500): the date-time box gives "2026-11-25T06:03" (no seconds) - sent now as "...T06:03:00" so the server's date parser never trips on it. The error
+  // text is shown right under the Save button (before it only appeared in the line at the top of the page, so a failed Save looked like "nothing happened").
   const saveDetails = () => staffApi.put(`/api/jobcards/${jc.id}`, {
     assignedTechnicianName: technicianName || null,
-    expectedDeliveryAt: expectedDeliveryAt || null,
+    expectedDeliveryAt: expectedDeliveryAt ? (expectedDeliveryAt.length === 16 ? `${expectedDeliveryAt}:00` : expectedDeliveryAt) : null,
   })
+  const onSave = async () => {
+    setSaveError(null)
+    const err = await run(saveDetails, 'Technician & completion date updated.')
+    setSaveError(err)
+  }
 
   const currentSeq = jc.currentStage?.seq ?? -1
   const repairCompletedStage = stages.find((s) => s.stageKey === 'repair_completed')
@@ -833,7 +841,7 @@ function UpdateWorkflowStageCard({
         </p>
       )}
       {canAssignTechnician && (
-        <div className="form-row" style={{ alignItems: 'flex-end' }}>
+        <div className="form-row" style={{ alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <div className="field">
             <label>Assign Technician</label>
             <select disabled={busy} value={technicianName} onChange={(e) => setTechnicianName(e.target.value)}>
@@ -848,10 +856,16 @@ function UpdateWorkflowStageCard({
             <label>Expected Completion</label>
             <input type="datetime-local" disabled={busy} value={expectedDeliveryAt} onChange={(e) => setExpectedDeliveryAt(e.target.value)} />
           </div>
-          <div className="field">
-            <button className={unsavedChange ? 'btn btn-sm btn-primary' : 'btn btn-sm'} disabled={busy} onClick={() => run(saveDetails, 'Technician & completion date updated.')}>Save</button>
-            {unsavedChange && <p className="error-text" style={{ margin: '6px 0 0' }}>⚠ Not saved yet - click Save to assign {technicianName || 'the technician'}.</p>}
+          <div className="field" style={{ flex: '0 0 auto' }}>
+            <button className={unsavedChange ? 'btn btn-primary' : 'btn'} style={{ minHeight: 44, padding: '0 26px', fontWeight: 700 }} disabled={busy} onClick={onSave}>{busy ? 'Saving…' : 'Save'}</button>
           </div>
+          {(unsavedChange || saveError) && (
+            <div style={{ flexBasis: '100%', marginTop: 2 }}>
+              {saveError
+                ? <p className="error-text" style={{ margin: 0 }}>⚠ Save failed: {saveError}</p>
+                : <p className="error-text" style={{ margin: 0 }}>⚠ Not saved yet - click Save to assign {technicianName || 'the technician'}.</p>}
+            </div>
+          )}
         </div>
       )}
       <div className="field">

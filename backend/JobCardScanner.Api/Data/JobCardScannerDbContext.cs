@@ -549,5 +549,19 @@ public class JobCardScannerDbContext : DbContext
             e.HasIndex(x => new { x.DealerId, x.IsActive });            // matches IX_DealerLocations_DealerId_IsActive
             e.HasOne(x => x.Dealer).WithMany().HasForeignKey(x => x.DealerId);
         });
+
+        // ----- 2026-11-25: tables that have AFTER UPDATE/INSERT triggers (created 12.11.2026 so JobCards / Repair Bill / Material Transfer UpdatedAt and the estimate version always move).
+        // EF must be told about them: otherwise its UPDATE ... OUTPUT fails with SQL error 334 ("The target table ... cannot have any enabled triggers if the statement contains an OUTPUT clause
+        // without INTO clause") - this is what made Assign Technician -> Save return HTTP 500. HasTrigger only changes how EF writes the SQL; the triggers themselves stay and keep working
+        // (Shadowfax updatedSince depends on them). Needs EF Core 7 or later.
+        b.Entity<JobCard>().ToTable("JobCards", t => t.HasTrigger("TR_JobCards_UpdatedAt"));
+        b.Entity<JobCardComplaint>().ToTable("JobCardComplaints", t => t.HasTrigger("TR_JobCardComplaints_Touch"));
+        b.Entity<JobCardStageHistory>().ToTable("JobCardStageHistories", t => t.HasTrigger("TR_JobCardStageHistories_Touch"));
+        b.Entity<JobCardPartSuggestion>().ToTable("JobCardPartSuggestions", t => t.HasTrigger("TR_JobCardPartSuggestions_EstimateVersion"));
+        b.Entity<JobCardLabourSuggestion>().ToTable("JobCardLabourSuggestions", t => t.HasTrigger("TR_JobCardLabourSuggestions_EstimateVersion"));
+        b.Entity<MaterialTransferDoc>().ToTable("MaterialTransferDocs", t => t.HasTrigger("TR_MaterialTransferDocs_UpdatedAt"));
+        b.Entity<MaterialTransferDocItem>().ToTable("MaterialTransferDocItems", t => t.HasTrigger("TR_MaterialTransferDocItems_UpdatedAt"));
+        b.Entity<RepairBillDoc>().ToTable("RepairBillDocs", t => t.HasTrigger("TR_RepairBillDocs_UpdatedAt"));
+        b.Entity<RepairBillDocItem>().ToTable("RepairBillDocItems", t => t.HasTrigger("TR_RepairBillDocItems_UpdatedAt"));
     }
 }

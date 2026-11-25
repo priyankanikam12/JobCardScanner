@@ -925,8 +925,29 @@ public class JobCardsController : ControllerBase
         if (req.ExpectedDeliveryAt.HasValue) jc.ExpectedDeliveryAt = req.ExpectedDeliveryAt;
         jc.UpdatedAt = DateTime.UtcNow;
 
-        await _db.SaveChangesAsync();
-        await _audit.LogAsync("JobCard.Update", "JobCard", jc.Id.ToString(), req);
+        // 2026-11-25 ("Assign Technician -> Save gives HTTP 500, technician not saved"): this action had no try/catch, so any failure here reached the browser as a bare 500 with no text ("Action failed.")
+        // and the real cause was invisible. Now (1) a failure of the SAVE returns the real SQL / EF cause, the same way Create() does, and is written to the server log; (2) the audit-log write is a
+        // side effect of an already-committed save, so if IT fails (audit table / column problem) the assignment is still kept and Save reports success - the failure is only logged.
+        try
+        {
+            await _db.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Could not save Assign Technician / Expected Completion for job card {JobCardId}", id);
+            var root = ex;
+            while (root.InnerException is not null) root = root.InnerException;
+            return StatusCode(500, new { message = $"Could not save the technician / expected completion: {root.Message}" });
+        }
+
+        try
+        {
+            await _audit.LogAsync("JobCard.Update", "JobCard", jc.Id.ToString(), req);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Job card {JobCardId} was saved, but writing the JobCard.Update audit-log entry failed - the save itself is unaffected.", id);
+        }
         return Ok(new { jc.Id });
     }
 
