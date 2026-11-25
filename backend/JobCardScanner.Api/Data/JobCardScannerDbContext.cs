@@ -88,6 +88,10 @@ public class JobCardScannerDbContext : DbContext
     public DbSet<LedgerMaster> LedgerMasters => Set<LedgerMaster>();
     public DbSet<LedgerTypeMaster> LedgerTypeMasters => Set<LedgerTypeMaster>();
 
+    // 2026-11-25 - dealer workshop (W-series) locations synced from the ERP (baplfinal.C_DMS_DealerConsigneeDetail) - see Models/DealerLocation.cs and
+    // Services/DealerLocationSyncService.cs. Table created by sql/2026-11-25_DealerLocations.sql.
+    public DbSet<DealerLocation> DealerLocations => Set<DealerLocation>();
+
     protected override void OnModelCreating(ModelBuilder b)
     {
         base.OnModelCreating(b);
@@ -536,6 +540,14 @@ public class JobCardScannerDbContext : DbContext
         b.Entity<LedgerTypeMaster>(e =>
         {
             e.HasIndex(x => x.CustomerType).IsUnique();   // matches UX_LedgerTypeMasters_CustomerType in the SQL script
+        });
+
+        // ----- DealerLocation (2026-11-25, see Models/DealerLocation.cs / sql/2026-11-25_DealerLocations.sql) -----
+        b.Entity<DealerLocation>(e =>
+        {
+            e.HasIndex(x => x.LocationCode).IsUnique();                 // matches UX_DealerLocations_LocationCode in the SQL script
+            e.HasIndex(x => new { x.DealerId, x.IsActive });            // matches IX_DealerLocations_DealerId_IsActive
+            e.HasOne(x => x.Dealer).WithMany().HasForeignKey(x => x.DealerId);
         });
     }
 }

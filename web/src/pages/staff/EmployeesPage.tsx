@@ -3,7 +3,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
 import { SortTh, StatusBadge, TablePager, TableSearch, useTableView, type Column } from '../../components/TableControls'
-import type { BaplDmsWorkshop, StaffRole } from '../../types'
+import type { StaffRole } from '../../types'
 
 /**
  * "Employees" page (2026-09-17, split out of Admin: Users into its own sidebar entry after
@@ -33,6 +33,9 @@ import type { BaplDmsWorkshop, StaffRole } from '../../types'
  * TechnicianEmployeesPage.tsx's pattern - Add/Edit in a styled modal, a Search box (name/email,
  * client-side) and a Location dropdown (client-side, against each row's workLocationCodes), and
  * 'Mechanic' removed from DESIGNATIONS (an employee already saved with it keeps it in the database).
+ *
+ * 2026-11-25 ("W series location wants to fetch ... synced in JobCardScannerDb with their particular dealer"): the Work Area list is now read from GET /api/dealer-locations (the ERP's W-series
+ * locations, synced into JobCardScannerDb hourly - see Services/DealerLocationSyncService.cs), with the old DMS list as a fallback; Corporate / System Admin also get a "Sync locations from ERP" button.
  *
  * 2026-10-13 ("for edit and create in that also Work Area ... No DMS workshop locations on file yet ...
  * not showing which location have that dealer, shown in tick"): for CorporateAdmin / SystemAdmin the
@@ -66,6 +69,12 @@ interface StaffUser {
   dateOfJoining?: string | null
   designation?: string | null
   workLocationCodes: string[]
+}
+
+/** One workshop location in the Work Area list - answered by GET /api/dealer-locations (synced from the ERP) or, as a fallback, GET /api/bapl-dms/workshops. */
+interface WorkshopOption {
+  locCode: string
+  locName: string
 }
 
 /** A dealer offered in the Work Area dealer picker (GET /api/dealers) - only those with a DMS dealer code have workshops. */
@@ -132,7 +141,7 @@ export function EmployeesPage() {
   const isCorporateOrSystem = hasRole('CorporateAdmin', 'SystemAdmin')
 
   const [employeeForm, setEmployeeForm] = useState(emptyEmployeeForm)
-  const [employeeWorkshops, setEmployeeWorkshops] = useState<BaplDmsWorkshop[]>([])
+  const [employeeWorkshops, setEmployeeWorkshops] = useState<WorkshopOption[]>([])
   const [employeeWorkshopsLoading, setEmployeeWorkshopsLoading] = useState(false)
   const [locSearch, setLocSearch] = useState('')
   const [employeeError, setEmployeeError] = useState<string | null>(null)
@@ -161,16 +170,33 @@ export function EmployeesPage() {
   // Work Area checkbox list - the SAME call the Job Card page and Parts / Material Transfer use: GET /api/bapl-dms/workshops?dealerId=...
   // A dealer login gets its own dealer's locations; Corporate / System Admin get the dealer picked above (nothing until one is picked).
   const workshopsDealerId = isCorporateOrSystem ? workDealerId : (profile?.dealerId ?? '')
+  // 2026-11-25 ("W series location ... synced from the ERP in JobCardScannerDb with their particular dealer"): the list now comes first from GET /api/dealer-locations - the dealer's W-series locations
+  // copied from the ERP (C_DMS_DealerConsigneeDetail) into JobCardScannerDb, so a location added in the ERP shows up here by itself. If that answers nothing (the sync has not run yet, or the
+  // endpoint is not deployed yet) the old DMS list (GET /api/bapl-dms/workshops) is used exactly as before, so nothing disappears while this is rolled out.
+  // workshopsReload is bumped by the "Sync locations from ERP" button to load the list again.
+  const [workshopsReload, setWorkshopsReload] = useState(0)
+  const [syncBusy, setSyncBusy] = useState(false)
+  const [syncMessage, setSyncMessage] = useState<string | null>(null)
   useEffect(() => {
     setWorkshopsError(null)
     if (!workshopsDealerId) { setEmployeeWorkshops([]); return }
     setEmployeeWorkshopsLoading(true)
-    staffApi.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: workshopsDealerId } })
-      .then((r) => {
-        setEmployeeWorkshops(r.data)
+    const loadList = async (): Promise<WorkshopOption[]> => {
+      try {
+        const synced = await staffApi.get<WorkshopOption[]>('/api/dealer-locations', { params: { dealerId: workshopsDealerId } })
+        if (synced.data.length > 0) return synced.data
+      } catch {
+        // table / endpoint not available yet - fall back to the DMS list below
+      }
+      const dms = await staffApi.get<WorkshopOption[]>('/api/bapl-dms/workshops', { params: { dealerId: workshopsDealerId } })
+      return dms.data
+    }
+    loadList()
+      .then((list) => {
+        setEmployeeWorkshops(list)
         setKnownWorkshops((prev) => {
           const next = { ...prev }
-          r.data.forEach((w) => { next[w.locCode] = w.locName })
+          list.forEach((w) => { next[w.locCode] = w.locName })
           return next
         })
       })
@@ -179,7 +205,24 @@ export function EmployeesPage() {
         setWorkshopsError(apiErrorMessage(err, 'Could not load the workshop locations.'))
       })
       .finally(() => setEmployeeWorkshopsLoading(false))
-  }, [workshopsDealerId])
+  }, [workshopsDealerId, workshopsReload])
+
+  // Corporate / System Admin: pull the latest W-series locations from the ERP right now (the server also does this by itself every hour).
+  const syncLocationsFromErp = async () => {
+    setSyncBusy(true)
+    setSyncMessage(null)
+    try {
+      const { data } = await staffApi.post<{ sourceRows: number; added: number; updated: number; deactivated: number; unmatchedLocations: number; dealerAdminsUpdated: number }>('/api/dealer-locations/sync')
+      setSyncMessage(`Synced ${data.sourceRows} ERP locations: ${data.added} new, ${data.updated} updated, ${data.deactivated} switched off`
+        + `${data.unmatchedLocations ? `, ${data.unmatchedLocations} with no matching dealer here` : ''}`
+        + `${data.dealerAdminsUpdated ? `, ${data.dealerAdminsUpdated} Dealer Admin Work Area(s) extended (takes effect at their next sign-in)` : ''}.`)
+      setWorkshopsReload((n) => n + 1)
+    } catch (err: unknown) {
+      setSyncMessage(apiErrorMessage(err, 'Could not sync the locations from the ERP.'))
+    } finally {
+      setSyncBusy(false)
+    }
+  }
 
   const filteredWorkshops = employeeWorkshops.filter((w) =>
     !locSearch || w.locName.toLowerCase().includes(locSearch.toLowerCase()) || w.locCode.toLowerCase().includes(locSearch.toLowerCase()))
@@ -568,6 +611,10 @@ export function EmployeesPage() {
                         <option key={d.id} value={d.id}>{d.name}{d.baplDmsDealerCode ? ` (${d.baplDmsDealerCode})` : ''}</option>
                       ))}
                     </select>
+                    <button type="button" className="btn btn-sm" style={{ marginLeft: 8 }} onClick={syncLocationsFromErp} disabled={syncBusy}>
+                      {syncBusy ? 'Syncing…' : 'Sync locations from ERP'}
+                    </button>
+                    {syncMessage && <p className="muted" style={{ margin: '4px 0 0' }}>{syncMessage}</p>}
                     {workDealers.length === 0 && <p className="muted" style={{ margin: '4px 0 0' }}>No dealers with a DMS dealer code were found.</p>}
                   </div>
                 )}

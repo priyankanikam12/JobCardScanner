@@ -324,6 +324,11 @@ builder.Services.AddScoped<ICareDeskService, CareDeskService>();
 // nothing in this file registers either, so none is assumed to exist).
 builder.Services.AddHostedService<AttendanceAutoCheckoutService>();
 builder.Services.AddHostedService<ZohoPushDispatcher>();
+// 2026-11-25 ("W series location ... new location added in ERP that direct synced in JobCardScannerDb with their particular dealer"): reads the dealers' W-series workshop locations from the ERP
+// (baplfinal C_DMS_DealerConsigneeDetail, via BaplConnection) into JobCardScannerDb.DealerLocations - hourly by this hosted service, and on demand (POST /api/dealer-locations/sync).
+// Needs sql/2026-11-25_DealerLocations.sql run once first. Options (all optional): DealerLocationSync:Enabled (true), :IntervalMinutes (60), :AddNewLocationsToDealerAdmins (true).
+builder.Services.AddScoped<IDealerLocationSyncService, DealerLocationSyncService>();
+builder.Services.AddHostedService<DealerLocationSyncHostedService>();
 
 
 builder.Services.AddControllers().AddJsonOptions(o =>
