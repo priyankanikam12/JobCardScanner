@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { staffApi } from '../../api/client'
 import { SortTh, StatusBadge, TablePager, TableSearch, useTableView, type Column } from '../../components/TableControls'
+import './BillPages.css'
 
 /**
  * SECTION 163 (2026-09-30) + SECTION 166 (2026-09-30) "for this 3 master create edit delete
@@ -181,7 +182,7 @@ export function ServiceMenuMasterPage() {
   useEffect(() => { view.setPage(1) }, [showInactive, jobTypeFilter])
 
   return (
-    <div>
+    <div className="jcx">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
         <div>
           <h2 style={PAGE_TITLE_STYLE}>Service Menu Master</h2>

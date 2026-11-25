@@ -5,6 +5,7 @@ import { useStaffAuth } from '../../auth/StaffAuthContext'
 import { Pagination } from '../../components/Pagination'
 import { SortTh, TableSearch, useTableView, type Column } from '../../components/TableControls'
 import type { StaffRole } from '../../types'
+import './BillPages.css'
 
 interface StaffUser {
   id: string
@@ -376,7 +377,7 @@ export function AdminUsersPage() {
       : <span className="badge badge-muted">Not added</span>
 
   return (
-    <div>
+    <div className="jcx">
       <h2>Admin: Users</h2>
 
       <div className="au-tabs" role="tablist">

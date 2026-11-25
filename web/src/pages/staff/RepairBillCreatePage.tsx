@@ -9,6 +9,7 @@ import { LabourSearchInput } from '../../components/LabourSearchInput'
 // 2026-10-07 (Insurance): the "Insurance" section - pick an Insurance ledger (Ledger Master, type Insurance) and fill the policy details; saved with the bill and printed on its
 // invoice (see lib/repairBillInsuranceHtml.ts). A bill without insurance saves and prints in the normal format.
 import { InsuranceSection } from '../../components/InsuranceSection'
+import './BillPages.css'
 
 // 2026-10-12 ("in repair bill Labour Code wise why not fetch?"): one row of the Labour Master (GET /api/labour-master/without-partwise | /partwise) - the tables the Labour Master page uploads into.
 // Its GST columns are plain fractions (0.18 = 18%).
@@ -605,8 +606,8 @@ export function RepairBillCreatePage() {
 
   const [convertingId, setConvertingId] = useState<string | null>(null)
 
-  return (
-    <div>
+    return (
+    <div className="jcx">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
         <h2 style={{ margin: 0 }}>Repair Bill</h2>
         <button type="button" className="btn btn-secondary btn-sm" onClick={() => navigate('/repair-bill-list')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>

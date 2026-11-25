@@ -1,123 +1,283 @@
 /* BGauss JobCardScanner - Staff / Dealer login screen.
    Two panels: a branded hero (left, hidden on narrow screens) and the sign-in card (right).
-   Palette: navy (#0b1220 / #101828) + BGauss volt-green (#8ef542) accents, matching the rest
-   of the staff app's sidebar (see styles/global.css .sidebar). */
+
+   2026-11-25 ("like better than this very good" - reference: the DMS login screen): restyled to the DMS look - teal-navy hero with a glowing neon-green perspective grid floor,
+   orbit rings and floating lightning badges, the BGauss line-up standing on the grid, and a rounded "Welcome back" card with icon-prefixed inputs, "Forgot password?" on the
+   password row, "Remember me" and a navy "Sign In ->" button. The 3D behaviour of the earlier version is kept: LoginPage.tsx writes --tilt-x / --tilt-y (-0.5 .. 0.5) on
+   .jcs-login-hero and .jcs-login-panel; the stage and the card turn a few degrees with the pointer. All motion is switched off for reduced-motion users and touch screens. */
 
 .jcs-login-screen {
+  --jcs-green: #1dd78a;
+  --jcs-green-soft: rgba(29, 215, 138, 0.45);
+  --jcs-navy: #0b2447;
+  --jcs-ink: #0f2742;
   min-height: 100vh;
   display: flex;
-  background: #0b1220;
+  background: #0a2447;
 }
 
 /* ---------------- Hero (branding) panel ---------------- */
 .jcs-login-hero {
-  flex: 1.1;
+  --tilt-x: 0;
+  --tilt-y: 0;
+  flex: 1.25;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  padding: 56px 64px;
+  padding: 48px 40px;
   background:
-    radial-gradient(circle at 15% 15%, rgba(142, 245, 66, 0.16), transparent 45%),
-    radial-gradient(circle at 85% 80%, rgba(37, 99, 235, 0.25), transparent 50%),
-    linear-gradient(160deg, #0b1220 0%, #101828 55%, #0b1220 100%);
-  color: #e5e7eb;
+    radial-gradient(ellipse at 50% 78%, rgba(29, 215, 138, 0.28), transparent 55%),
+    radial-gradient(circle at 20% 12%, rgba(56, 189, 248, 0.20), transparent 42%),
+    linear-gradient(165deg, #1e5282 0%, #12386a 45%, #0a2447 100%);
+  color: #e5f2ff;
   position: relative;
   overflow: hidden;
+  perspective: 1400px;
 }
 
+/* ---- orbit rings (decoration) ---- */
+.jcs-ring {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  border: 2px solid transparent;
+}
+.jcs-ring-a {
+  width: 230px; height: 230px; top: 4%; left: 6%;
+  border-color: rgba(29, 215, 138, 0.55);
+  box-shadow: 0 0 18px rgba(29, 215, 138, 0.35), inset 0 0 18px rgba(29, 215, 138, 0.18);
+  transform: rotateX(68deg) rotateZ(-18deg);
+  animation: jcs-ring-a 14s ease-in-out infinite;
+}
+.jcs-ring-b {
+  width: 150px; height: 360px; top: 12%; right: 7%;
+  border-color: rgba(96, 165, 250, 0.55);
+  box-shadow: 0 0 20px rgba(96, 165, 250, 0.35), inset 0 0 20px rgba(96, 165, 250, 0.15);
+  animation: jcs-ring-b 18s ease-in-out infinite;
+}
+.jcs-ring-c {
+  width: 200px; height: 200px; bottom: 6%; right: 8%;
+  border-color: rgba(29, 215, 138, 0.5);
+  box-shadow: 0 0 18px rgba(29, 215, 138, 0.3);
+  transform: rotateX(70deg);
+  animation: jcs-ring-c 16s ease-in-out infinite;
+}
+@keyframes jcs-ring-a { 0%, 100% { transform: rotateX(68deg) rotateZ(-18deg); } 50% { transform: rotateX(62deg) rotateZ(10deg) translateY(8px); } }
+@keyframes jcs-ring-b { 0%, 100% { transform: rotate(8deg); } 50% { transform: rotate(-6deg) translateY(10px); } }
+@keyframes jcs-ring-c { 0%, 100% { transform: rotateX(70deg) rotateZ(0deg); } 50% { transform: rotateX(64deg) rotateZ(25deg); } }
+
+/* ---- lightning badges (decoration) ---- */
+.jcs-bolt-badge {
+  position: absolute;
+  width: 52px; height: 52px;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  color: #eafff5;
+  background: radial-gradient(circle at 35% 30%, #5cf2b0, #12b872 70%);
+  box-shadow: 0 0 22px rgba(29, 215, 138, 0.7), inset 0 -4px 8px rgba(0, 80, 50, 0.35);
+  pointer-events: none;
+}
+.jcs-bolt-badge::before {
+  content: '';
+  position: absolute;
+  inset: -9px;
+  border-radius: 50%;
+  border: 1.5px dashed rgba(29, 215, 138, 0.6);
+}
+.jcs-bolt-badge svg { width: 24px; height: 24px; filter: drop-shadow(0 1px 2px rgba(0, 60, 40, 0.5)); }
+.jcs-bolt-a { top: 46%; left: 5%; animation: jcs-bob 6s ease-in-out infinite; }
+.jcs-bolt-b { top: 30%; right: 12%; width: 44px; height: 44px; animation: jcs-bob 7.5s ease-in-out infinite reverse; }
+@keyframes jcs-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-14px); } }
+
+/* ---- logo + title ---- */
+.jcs-hero-head {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
 .jcs-hero-logo {
-  height: 42px;
+  height: 46px;
   width: auto;
-  max-width: 220px;
+  max-width: 240px;
   object-fit: contain;
-  margin-bottom: 28px;
-  /* 2026-09-18 "login page in middle" - .jcs-login-hero is a column flexbox with everything
-     else (heading, scooter image) left-aligned to match your reference screenshots; the logo
-     itself is centered horizontally within that panel per your request, via align-self rather
-     than moving the whole hero to center (which would also re-center the heading text/scooter). */
-  align-self: center;
-  /* Most logo PNGs ship on a transparent or white background - this keeps a dark logo
-     legible against the navy hero panel. Remove this line if your BGauss_Logo.png is
-     already designed for a dark background (e.g. a white/light wordmark). */
-  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.35));
+  margin-bottom: 18px;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.35));
+}
+.jcs-login-hero h2 {
+  font-size: 34px;
+  line-height: 1.2;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  margin: 0;
+  max-width: 520px;
+  color: #fff;
+  text-align: center;
+  text-shadow: 0 0 22px rgba(29, 215, 138, 0.45), 0 6px 24px rgba(0, 0, 0, 0.4);
 }
 
-.jcs-login-hero h2 {
-  font-size: 30px;
-  line-height: 1.25;
-  margin: 0 0 14px;
-  max-width: 460px;
-  color: #fff;
-  /* 2026-09-19 "EV Workshop Management..wants in middle" - same two-part centering the logo
-     above already uses: align-self centers the heading's own box (capped at max-width: 460px, so
-     it wouldn't otherwise center just from the column flex's default stretch), and text-align
-     centers the wording within that box in case it ever wraps to two lines. */
+/* ---------------- 3D stage ---------------- */
+.jcs-hero-stage {
+  position: relative;
   align-self: center;
-  text-align: center;
+  width: min(820px, 100%);
+  margin-top: 34px;
+  /* room under the line-up for its reflection */
+  padding-bottom: 16%;
+  transform-style: preserve-3d;
+  transform: rotateY(calc(var(--tilt-x) * 12deg)) rotateX(calc(var(--tilt-y) * -7deg));
+  transition: transform 0.18s ease-out;
+  will-change: transform;
 }
-.jcs-login-hero p {
-  font-size: 15px;
-  line-height: 1.6;
-  color: #9ca3af;
-  max-width: 420px;
-  margin: 0;
+
+/* the floor: neon-green perspective grid laid back, glowing and fading away */
+.jcs-hero-floor {
+  position: absolute;
+  left: 50%;
+  bottom: 10%;
+  width: 150%;
+  height: 66%;
+  transform: translateX(-50%) translateZ(-70px) rotateX(72deg);
+  transform-origin: 50% 100%;
+  background:
+    repeating-linear-gradient(90deg, rgba(29, 215, 138, 0.75) 0 2px, transparent 2px 56px),
+    repeating-linear-gradient(0deg, rgba(29, 215, 138, 0.75) 0 2px, transparent 2px 56px);
+  filter: drop-shadow(0 0 6px rgba(29, 215, 138, 0.8));
+  -webkit-mask-image: radial-gradient(ellipse at 50% 100%, #000 22%, transparent 70%);
+  mask-image: radial-gradient(ellipse at 50% 100%, #000 22%, transparent 70%);
+  pointer-events: none;
+}
+
+/* green light pool under the scooters */
+.jcs-hero-pool {
+  position: absolute;
+  left: 50%;
+  bottom: 12%;
+  width: 90%;
+  height: 34%;
+  transform: translateX(-50%) translateZ(-60px);
+  background: radial-gradient(ellipse at center, rgba(29, 215, 138, 0.55), rgba(29, 215, 138, 0.15) 45%, transparent 70%);
+  filter: blur(22px);
+  pointer-events: none;
+}
+
+/* the line-up and its reflection float together, in front of the floor */
+.jcs-hero-lineup {
+  position: relative;
+  transform: translateZ(70px);
+  animation: jcs-float 5s ease-in-out infinite;
+}
+@keyframes jcs-float {
+  0%, 100% { transform: translateZ(70px) translateY(0); }
+  50% { transform: translateZ(70px) translateY(-10px); }
 }
 
 .jcs-hero-scooter {
-  margin-top: 48px;
-  width: min(360px, 80%);
+  position: relative;
+  display: block;
+  width: 100%;
   height: auto;
   object-fit: contain;
-  animation: jcs-float 4.5s ease-in-out infinite;
-  /* 2026-09-19 "this bike also in middle" - same align-self centering as the logo/heading above
-     it; an explicit width (rather than auto) means the column flex's default stretch never
-     applied here either, so it was sitting at the left edge same as they were. */
-  align-self: center;
+  filter: drop-shadow(0 22px 18px rgba(0, 0, 0, 0.45)) drop-shadow(0 50px 40px rgba(0, 0, 0, 0.25));
+  user-select: none;
+  -webkit-user-drag: none;
 }
-@keyframes jcs-float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-10px); }
+
+/* mirror image directly under the line-up, fading out ("standing on a glossy floor") */
+.jcs-hero-reflection {
+  position: absolute;
+  left: 0;
+  top: 100%;
+  width: 100%;
+  height: auto;
+  transform: scaleY(-1);
+  opacity: 0.3;
+  filter: blur(1.2px);
+  -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9), transparent 50%);
+  mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9), transparent 50%);
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 /* ---------------- Sign-in panel ---------------- */
 .jcs-login-panel {
+  --tilt-x: 0;
+  --tilt-y: 0;
   flex: 1;
-  min-width: 380px;
+  min-width: 400px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f4f6f9;
+  background:
+    radial-gradient(circle at 85% 10%, rgba(29, 215, 138, 0.14), transparent 45%),
+    linear-gradient(160deg, #f4faf8 0%, #eaf3fb 100%);
   padding: 24px;
+  perspective: 1100px;
 }
 
 .jcs-login-card {
+  position: relative;
   width: 100%;
-  max-width: 400px;
+  max-width: 430px;
   background: #fff;
-  border-radius: 16px;
-  padding: 32px 30px 26px;
-  box-shadow: 0 20px 50px -20px rgba(11, 18, 32, 0.35);
+  border-radius: 28px;
+  padding: 36px 34px 28px;
+  overflow: hidden;
+  box-shadow:
+    0 2px 4px rgba(11, 36, 71, 0.06),
+    0 20px 36px -14px rgba(11, 36, 71, 0.28),
+    0 44px 80px -32px rgba(11, 36, 71, 0.40);
+  transform-style: preserve-3d;
+  /* small on purpose - the form has to stay easy to read and type into */
+  transform: rotateY(calc(var(--tilt-x) * 5deg)) rotateX(calc(var(--tilt-y) * -4deg));
+  transition: transform 0.2s ease-out, box-shadow 0.2s ease-out;
+  will-change: transform;
+}
+/* lies flat while someone is typing */
+.jcs-login-card:focus-within { transform: none; }
+
+.jcs-card-bar {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 6px;
+  background: linear-gradient(90deg, #1dd78a, #38bdf8 55%, #0b2447);
 }
 
-.jcs-brand-mobile {
-  display: none;
+.jcs-card-head {
+  display: flex;
   align-items: center;
-  gap: 8px;
-  font-weight: 800;
-  font-size: 18px;
-  color: #101828;
-  margin-bottom: 20px;
+  gap: 16px;
+  margin-bottom: 22px;
 }
-.jcs-brand-mobile img {
-  height: 28px;
-  width: auto;
-  object-fit: contain;
+.jcs-card-icon {
+  flex: 0 0 auto;
+  width: 64px; height: 64px;
+  display: grid; place-items: center;
+  border-radius: 20px;
+  color: var(--jcs-green);
+  background: linear-gradient(145deg, #163d6e, #0b2447);
+  box-shadow: 0 10px 18px -6px rgba(11, 36, 71, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+.jcs-card-icon svg { width: 30px; height: 30px; filter: drop-shadow(0 0 6px rgba(29, 215, 138, 0.7)); }
+.jcs-card-head h1 {
+  margin: 0;
+  font-size: 28px;
+  line-height: 1.15;
+  font-weight: 800;
+  color: var(--jcs-ink);
+}
+.jcs-card-head p {
+  margin: 4px 0 0;
+  font-size: 14px;
+  color: #5b6b82;
 }
 
 .jcs-tabs {
   display: flex;
-  background: #f1f3f7;
-  border-radius: 10px;
+  background: #eaf1fb;
+  border-radius: 14px;
   padding: 4px;
   margin-bottom: 22px;
 }
@@ -128,56 +288,126 @@
   padding: 9px 8px;
   font-size: 13px;
   font-weight: 600;
-  color: #6b7280;
-  border-radius: 8px;
+  color: #5b6b82;
+  border-radius: 11px;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
 .jcs-tab.active {
-  background: #101828;
-  color: #8ef542;
+  background: #0b2447;
+  color: #1dd78a;
+  box-shadow: 0 4px 10px -4px rgba(11, 36, 71, 0.6);
 }
 
 .jcs-mode-copy {
   font-size: 13px;
-  color: #6b7280;
+  color: #5b6b82;
   margin: 0 0 18px;
   line-height: 1.5;
 }
 
+/* ---- fields ---- */
 .jcs-field {
   display: block;
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
-.jcs-field span {
+.jcs-field > span,
+.jcs-field-row > span {
   display: block;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--jcs-ink);
+  margin-bottom: 6px;
+}
+.jcs-field-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.jcs-field-row > span { margin-bottom: 6px; }
+.jcs-forgot {
+  background: none;
+  border: none;
+  padding: 0;
   font-size: 12.5px;
   font-weight: 600;
-  color: #374151;
-  margin-bottom: 5px;
+  color: #0e9f63;
+  cursor: pointer;
 }
-.jcs-field input {
+.jcs-forgot:hover { text-decoration: underline; }
+
+.jcs-input-wrap { position: relative; }
+.jcs-input-icon {
+  position: absolute;
+  left: 15px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  color: #6b7f99;
+  pointer-events: none;
+  z-index: 1;
+}
+.jcs-input-wrap:focus-within .jcs-input-icon { color: #0e9f63; }
+
+.jcs-field input,
+.jcs-input-wrap input {
   width: 100%;
-  padding: 10px 12px;
-  border-radius: 9px;
-  border: 1px solid #e2e6ec;
-  font-size: 14px;
-  background: #fbfcfe;
+  box-sizing: border-box;
+  padding: 13px 14px;
+  border-radius: 16px;
+  border: 1.5px solid transparent;
+  font-size: 14.5px;
+  color: var(--jcs-ink);
+  background: #eaf1fb;
+  box-shadow: inset 0 1px 2px rgba(11, 36, 71, 0.07);
 }
-.jcs-field input:focus {
+/* room for the leading icon - also reaches the input inside PasswordInput */
+.jcs-input-wrap input { padding-left: 46px; }
+.jcs-field input:focus,
+.jcs-input-wrap input:focus {
   outline: none;
-  border-color: #8ef542;
-  box-shadow: 0 0 0 3px rgba(142, 245, 66, 0.25);
+  background: #fff;
+  border-color: #1dd78a;
+  box-shadow: 0 0 0 4px rgba(29, 215, 138, 0.22);
 }
 
+.jcs-remember {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 2px 0 18px;
+  font-size: 13.5px;
+  color: #33475f;
+  cursor: pointer;
+  user-select: none;
+}
+.jcs-remember input { width: 17px; height: 17px; accent-color: #0e9f63; cursor: pointer; }
+
+/* ---- buttons ---- */
 .jcs-submit {
   width: 100%;
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
+  gap: 8px;
   margin-top: 4px;
-  background: #101828;
-  border-color: #101828;
+  padding: 14px 18px;
+  border-radius: 16px;
+  font-size: 15.5px;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, #1e5282, #0b2447);
+  border-color: #0b2447;
+  /* raised, button-like depth */
+  box-shadow: 0 6px 0 -2px #06162c, 0 14px 22px -8px rgba(11, 36, 71, 0.6);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.15s;
 }
-.jcs-submit:hover:not(:disabled) { background: #1e293b; border-color: #1e293b; }
+.jcs-submit svg { transition: transform 0.15s ease; }
+.jcs-submit:hover:not(:disabled) { filter: brightness(1.12); transform: translateY(-1px); }
+.jcs-submit:hover:not(:disabled) svg { transform: translateX(4px); }
+.jcs-submit:active:not(:disabled) { transform: translateY(3px); box-shadow: 0 2px 0 -2px #06162c, 0 6px 10px -6px rgba(11, 36, 71, 0.6); }
+.jcs-submit:disabled { opacity: 0.7; cursor: not-allowed; }
 
 .jcs-link-btn {
   display: block;
@@ -185,8 +415,9 @@
   text-align: center;
   background: none;
   border: none;
-  color: #2563eb;
+  color: #0e9f63;
   font-size: 13px;
+  font-weight: 600;
   margin-top: 14px;
   padding: 4px;
   cursor: pointer;
@@ -199,21 +430,24 @@
   align-items: center;
   justify-content: center;
   gap: 10px;
-  padding: 11px 16px;
-  border-radius: 9px;
-  border: 1px solid #d0d5dd;
+  padding: 13px 16px;
+  border-radius: 16px;
+  border: 1.5px solid #d3dce8;
   background: #fff;
-  color: #1a2233;
-  font-size: 14px;
+  color: #14304f;
+  font-size: 14.5px;
   font-weight: 600;
   cursor: pointer;
+  box-shadow: 0 4px 0 -2px #d3dce8, 0 10px 16px -10px rgba(11, 36, 71, 0.35);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.15s, background 0.15s;
 }
-.jcs-ms-btn:hover { border-color: #101828; background: #f9fafb; }
+.jcs-ms-btn:hover { border-color: #0b2447; background: #f7fafd; transform: translateY(-1px); }
+.jcs-ms-btn:active { transform: translateY(2px); box-shadow: 0 1px 0 -2px #d3dce8, 0 4px 8px -6px rgba(11, 36, 71, 0.35); }
 
 .jcs-info-text {
   margin-top: 14px;
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: 12px;
   background: #ecfdf3;
   color: #065f46;
   font-size: 13px;
@@ -223,28 +457,38 @@
 .jcs-dev-note {
   margin: 0 0 14px;
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: 12px;
   background: #fffbeb;
   color: #92400e;
   font-size: 12.5px;
   line-height: 1.5;
   word-break: break-all;
 }
-.jcs-dev-note code {
-  display: block;
-  margin-top: 4px;
-  font-size: 11.5px;
-}
+.jcs-dev-note code { display: block; margin-top: 4px; font-size: 11.5px; }
 
-.jcs-portal-hint {
-  margin-top: 20px;
-  text-align: center;
-  font-size: 12.5px;
-}
+.jcs-portal-hint { margin-top: 20px; text-align: center; font-size: 12.5px; }
 
 /* ---------------- Responsive ---------------- */
+/* narrow screens: no hero, so the card sits on the same teal-navy as the hero and its own header (bolt icon + "Welcome back") carries the branding */
 @media (max-width: 900px) {
   .jcs-login-hero { display: none; }
-  .jcs-login-panel { flex: 1; background: #0b1220; }
-  .jcs-brand-mobile { display: flex; }
+  .jcs-login-panel {
+    flex: 1;
+    min-width: 0;
+    background: radial-gradient(ellipse at 50% 100%, rgba(29, 215, 138, 0.25), transparent 60%), linear-gradient(165deg, #1e5282 0%, #0a2447 100%);
+  }
+  .jcs-login-card { padding: 30px 22px 24px; border-radius: 24px; }
+}
+
+/* touch screens have no pointer to follow, and people who ask for less motion get none: flat card, still stage, nothing floating or drifting */
+@media (hover: none), (prefers-reduced-motion: reduce) {
+  .jcs-hero-stage,
+  .jcs-login-card { transform: none; transition: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .jcs-hero-lineup { animation: none; transform: translateZ(70px); }
+  .jcs-ring-a { animation: none; transform: rotateX(68deg) rotateZ(-18deg); }
+  .jcs-ring-b { animation: none; }
+  .jcs-ring-c { animation: none; transform: rotateX(70deg); }
+  .jcs-bolt-badge { animation: none; }
 }

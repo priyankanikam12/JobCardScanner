@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { staffApi } from '../../api/client'
 import type { WorkflowStage } from '../../types'
+import './BillPages.css'
 
 export function AdminWorkflowPage() {
   const [stages, setStages] = useState<WorkflowStage[]>([])
@@ -16,7 +17,7 @@ export function AdminWorkflowPage() {
   }
 
   return (
-    <div>
+    <div className="jcx">
       <h2>Admin: Workflow Configuration</h2>
       <p className="muted">Stages with no dealer override come from the global default template. Adding a stage here creates (or overrides) one for your dealer.</p>
 

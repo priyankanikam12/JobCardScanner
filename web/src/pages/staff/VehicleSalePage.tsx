@@ -6,6 +6,7 @@ import { ReportDownloadButtons } from '../../components/ReportDownloadButtons'
 import { Pagination } from '../../components/Pagination'
 import { exportReportToExcel, exportReportToPdf, type ReportColumn } from '../../lib/exportReport'
 import { usePagination } from '../../lib/usePagination'
+import './BillPages.css'
 
 // 2026-09-18 "download report excel pdf download button insert in starting row" - the flat column
 // set both the Excel and PDF export use, a superset of what the on-screen table shows (a report
@@ -336,7 +337,7 @@ export function VehicleSalePage() {
   }
 
   return (
-    <div>
+    <div className="jcx">
       <h2>Vehicle Sale</h2>
 
       <div className="card">

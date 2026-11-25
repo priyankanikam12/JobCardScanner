@@ -3,7 +3,7 @@ import { staffApi } from '../../api/client'
 import type { CreateExtendedBatteryWarrantySchemeRequest, ExtendedBatteryWarrantyScheme, OemModel } from '../../types'
 import { Pagination } from '../../components/Pagination'
 import { usePagination } from '../../lib/usePagination'
-
+import './BillPages.css'
 /**
  * "Extended Battery Warranty Schemes" admin page (2026-09-22: "needs to create warenty table in
  * jobcardscanner db for this functionality and add this in our function"). Manages the
@@ -140,7 +140,7 @@ export function ExtendedBatteryWarrantySchemesPage() {
   const fmtAmt = (n: number) => `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
   return (
-    <div>
+    <div className="jcx">
       <h2>Extended Battery Warranty Schemes</h2>
       <p className="muted">
         Dealer-configured Extended Battery Warranty pricing/coverage by vehicle model. A Repair Bill's Part

@@ -7,6 +7,7 @@ import type { BaplDmsWorkshop, CombinedMaterialTransferRow } from '../../types'
 import { Pagination } from '../../components/Pagination'
 import { usePagination } from '../../lib/usePagination'
 import { RecordDetailModal } from '../../components/RecordDetailModal'
+import './BillPages.css'
 
 /**
  * "Material Transfer List" page (2026-09-23, "in repairbill which we added button like this add
@@ -143,7 +144,7 @@ export function MaterialTransferListPage() {
   ])
 
   return (
-    <div>
+    <div className="jcx">
       <h2>Material Transfer List</h2>
 
       <div className="card">

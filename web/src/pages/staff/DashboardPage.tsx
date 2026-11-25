@@ -1,5 +1,7 @@
 // web\src\pages\staff\DashboardPage.tsx
-import { useEffect, useState } from 'react'
+// 2026-11-25 ("dashboard ui also change more attractive"): UI only - new hero header, coloured KPI tiles, "All Pages" tiles, rounded chart panels and pill filters. Styling lives in ./DashboardPage.css
+// (every class is dsh-*, so global.css and other pages are untouched). NO data logic was changed: same endpoints, same TILES/params, same Work Area-scoped counts, same links, same role branching.
+import { useEffect, useState, type CSSProperties, type ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { staffApi } from '../../api/client'
@@ -8,28 +10,120 @@ import { NAV_ITEMS, useMenuAccess } from '../../components/StaffLayout'
 import type { CorporateDashboardData, CorporateDashboardFilters, DashboardKpis } from '../../types'
 // import { isReportDealer } from '../../lib/reportDealers'
 import type { DealerStageSummary } from '../../lib/dealerRoleReportExport'
+import './DashboardPage.css'
 
-// 2026-09-18 "in dashboardpage add this all page landing page linking" - every sidebar destination,
-// as its own clickable card, so the dashboard works as a landing page to the whole app and not just
-// the 4 hand-picked shortcuts in ACTION_CARDS/CORPORATE_ACTION_CARDS below. Reuses StaffLayout's own
-// NAV_ITEMS (now exported) rather than a second hand-maintained list, so a page's role-gating can't
-// drift between the sidebar and this grid - Dashboard itself is excluded since you're already on it.
-//
-// SECTION 171 (2026-09-30) "i checkbox select from DealerAdmin only 3 page but all option shown in
-// sidebar as well on dashboard": this grid used to filter ALL_PAGES with a plain
-// `!n.roles || hasRole(...n.roles)` check - each item's hardcoded default `roles` only, completely
-// bypassing both the Menu Access per-item overrides and the SECTION 170 per-role allow-list mode.
-// So turning on "Only show checked items" for DealerAdmin and checking exactly 3 items correctly
-// hid everything else from the SIDEBAR, but this grid kept showing every page regardless. Fixed
-// below by filtering with the same useMenuAccess().isVisibleForCurrentRole (StaffLayout.tsx) the
-// sidebar itself now uses, instead of a second, drifted copy of the same check.
+// Every sidebar destination as its own card (landing page to the whole app). Reuses StaffLayout's own NAV_ITEMS so role-gating cannot drift from the sidebar; Dashboard itself is excluded.
+// SECTION 171: filtered with useMenuAccess().isVisibleForCurrentRole (Menu Access overrides + per-role allow-list), the same check the sidebar uses.
 const ALL_PAGES = NAV_ITEMS.filter((n) => n.to !== '/dashboard')
 
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+/** e.g. "Wednesday, 25.11.2026" (DD.MM.YYYY, BGauss standard) */
+function todayLabel(): string {
+  const d = new Date()
+  return `${WEEKDAYS[d.getDay()]}, ${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}`
+}
+
+/** Signed-in person's name for the hero greeting. ASSUMPTION: the profile exposes it as name / fullName / displayName / userName (the navbar shows it from the same profile) - if the greeting does not appear, tell me the real field name. */
+function personName(profile: unknown): string {
+  const p = (profile ?? {}) as Record<string, unknown>
+  for (const k of ['name', 'fullName', 'displayName', 'userName']) {
+    const v = p[k]
+    if (typeof v === 'string' && v.trim()) return v.trim()
+  }
+  return ''
+}
+const initialsOf = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join('')
+
+const tone = (i: number) => `dsh-t${(i % 6) + 1}`
+const rise = (i: number): CSSProperties => ({ ['--i' as string]: i }) as CSSProperties
+
+const chartTooltip = {
+  contentStyle: { borderRadius: 12, border: '1px solid #e3ebf5', boxShadow: '0 12px 26px -14px rgba(11,36,71,0.45)', fontSize: 13 },
+  cursor: { fill: 'rgba(37, 99, 235, 0.06)' },
+}
+
+// ---------------- small presentational pieces ----------------
+
+function BoltIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M13.4 2 5 13.2h5.6L9.6 22 19 10.2h-5.7L13.4 2Z" />
+    </svg>
+  )
+}
+
+function Hero({ title, subtitle, chips, userName, children }: { title: string; subtitle: string; chips: ReactNode; userName?: string; children?: ReactNode }) {
+  return (
+    <div className="dsh-hero">
+      <div>
+        {userName && (
+          <div className="dsh-hello">
+            <span className="dsh-avatar" aria-hidden="true">{initialsOf(userName)}</span>
+            <span>Welcome back, <b>{userName}</b></span>
+          </div>
+        )}
+        <div className="dsh-hero-title">
+          <span className="dsh-hero-bolt" aria-hidden="true"><BoltIcon /></span>
+          <div>
+            <h2>{title}</h2>
+            <p>{subtitle}</p>
+          </div>
+        </div>
+        <div className="dsh-chips">{chips}</div>
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function SectionHead({ title, sub }: { title: string; sub?: string }) {
+  return (
+    <div className="dsh-sec-head">
+      <div>
+        <h3>{title}</h3>
+        {sub && <p>{sub}</p>}
+      </div>
+    </div>
+  )
+}
+
+function KpiTile({ to, icon, value, label, toneIndex, index, action }: { to?: string; icon: string; value: ReactNode; label: string; toneIndex: number; index: number; action?: boolean }) {
+  const body = (
+    <>
+      <div className="dsh-kpi-top">
+        <span className="dsh-icon" aria-hidden="true">{icon}</span>
+        {action && <span className="dsh-pill-action">Action Needed</span>}
+      </div>
+      <div className="dsh-kpi-value">{value}</div>
+      <div className="dsh-kpi-label">{label}</div>
+      {to && <div className="dsh-kpi-go">View list →</div>}
+    </>
+  )
+  const cls = `dsh-kpi ${tone(toneIndex)}`
+  // `to` omitted = a plain (non-clickable) tile, e.g. Revenue / Warranty Cost / CSAT on the Corporate Dashboard (they were never links)
+  return to ? <Link to={to} className={cls} style={rise(index)}>{body}</Link> : <div className={cls} style={rise(index)}>{body}</div>
+}
+
+function PageTiles({ pages }: { pages: typeof ALL_PAGES }) {
+  return (
+    <div className="dsh-pages">
+      {pages.map((n, i) => (
+        <Link key={n.to} to={n.to} className={`dsh-page ${tone(i)}`} style={rise(i)}>
+          <span className="dsh-icon" aria-hidden="true">{n.icon}</span>
+          <div className="dsh-page-text">
+            <div className="dsh-page-title">{n.label}</div>
+            <div className="dsh-page-sub">{n.subtitle ?? n.label}</div>
+          </div>
+          <span className="dsh-page-arrow" aria-hidden="true">›</span>
+        </Link>
+      ))}
+    </div>
+  )
+}
+
 /**
- * The dashboard branches by role, same as the two screens this was modelled on: everyone
- * dealer-side (Service Advisor up to Dealer Admin, plus Technician/Parts/Cashier) gets the
- * single-dealer "Dealer Dashboard" - today's ops board; Corporate/System Admin get the
- * "Corporate Dashboard" - filterable roll-up across every dealer.
+ * The dashboard branches by role: everyone dealer-side (Service Advisor up to Dealer Admin, plus Technician/Parts/Cashier) gets the single-dealer "Dealer Dashboard";
+ * Corporate/System Admin get the "Corporate Dashboard" - a filterable roll-up across every dealer.
  */
 export function DashboardPage() {
   const { hasRole } = useStaffAuth()
@@ -38,30 +132,9 @@ export function DashboardPage() {
 
 // ==================== Dealer Dashboard ====================
 
-// Each tile's `to` is the exact /jobcards filter that reproduces the number on the card - these
-// param names match JobCardsController.List's new dashboard-filter params 1:1 (excludeClosed/
-// overdue/createdToday/deliveredToday/closedThisMonth/warrantyOnly/pendingBucket), each mirroring
-// the same WHERE clause DashboardController.Kpis used to compute that same number, so a click
-// always lands on the set of job cards that make up the count just shown.
-// 2026-09-18: `actionNeeded` matches the BTL reference screenshot's orange "ACTION NEEDED" pill
-// (see .kpi-badge-action in global.css) - set on the three tiles that represent something waiting
-// on THIS dealer to act (parts to arrange, a customer approval to chase, a job stuck pending),
-// as opposed to the others which are just informational counts.
-//
-// 2026-09-28 ("WARRANTY JOBS this after 1 card add Stock cards in that total stock shown and when
-// click on that redirect on /part-upload page"): the Stock card itself is NOT in this array - it
-// isn't driven by DashboardKpis/GET /api/dashboard/kpis like every tile below (I don't have
-// DashboardController.cs in this session to add a server-computed field to that response), so it's
-// rendered as its own hand-coded tile right after this array maps out, using a client-side total
-// (GET /api/part-uploads, summed) instead - see DealerDashboard's stockQty state and the kpi-grid
-// render below for the full reasoning.
-//
-// 2026-09-29 (SECTION 157, "fix login wise jobcard open close for supervisor dont have any
-// jobcard then still shown main dealer count fix this"): `params` added to each tile - the exact
-// same filter object GET /api/jobcards (JobCardsController.List) already accepts for this. See
-// DealerDashboard's own scopedCounts doc comment below for why this is now needed for the tile's
-// NUMBER, not just its click-through `to` link (which already used the same filters, just encoded
-// as a URL query string instead of an object).
+// Each tile's `to` is the exact /jobcards filter that reproduces its number (param names match JobCardsController.List's dashboard filters 1:1).
+// `actionNeeded` = something waiting on THIS dealer to act (orange pill). `params` = the same filter as an object (SECTION 157: the NUMBER on each tile is counted through the already
+// Work Area-scoped GET /api/jobcards, not the dealer-wide /api/dashboard/kpis).
 const TILES: { key: keyof DashboardKpis; label: string; icon: string; to: string; params: Record<string, string | boolean>; actionNeeded?: boolean }[] = [
   { key: 'vehiclesReceivedToday', label: 'Vehicles Received Today', icon: '🚗', to: '/jobcards?createdToday=true', params: { createdToday: true } },
   { key: 'totalOpen', label: 'Open Job Cards', icon: '📋', to: '/jobcards?excludeClosed=true', params: { excludeClosed: true } },
@@ -76,7 +149,7 @@ const TILES: { key: keyof DashboardKpis; label: string; icon: string; to: string
 
 function DealerDashboard() {
   const { profile } = useStaffAuth()
-  const { isVisibleForCurrentRole } = useMenuAccess() // SECTION 171 - see ALL_PAGES' own doc comment above
+  const { isVisibleForCurrentRole } = useMenuAccess() // SECTION 171
   const navigate = useNavigate()
   const [kpis, setKpis] = useState<DashboardKpis | null>(null)
   const [loading, setLoading] = useState(true)
@@ -88,42 +161,9 @@ function DealerDashboard() {
       .finally(() => setLoading(false))
   }, [])
 
-  // 2026-09-29 (SECTION 157, "fix login wise jobcard open close for supervisor dont have any
-  // jobcard then still shown main dealer count fix this") - CONFIRMED root cause, re-reading
-  // backend/JobCardScanner.Api/Controllers/JobCardsController.cs's actual source this round: its
-  // List() action (GET /api/jobcards, used above by every "All Pages"/tile `to` link) already
-  // applies BOTH the signed-in user's own dealer AND their Work Area (`_currentUser.WorkLocationCodes`)
-  // scoping - "a user assigned to specific DMS workshop locations only sees job cards opened at one
-  // of THEIR locations" (that controller's own doc comment, confirmed word-for-word). GET
-  // /api/dashboard/kpis (DashboardController) - which is what kpis above actually comes from - is a
-  // DIFFERENT endpoint, and I don't have DashboardController.cs in this session to confirm it, but
-  // your report ("supervisor dont have any jobcard then still shown main dealer count") is exactly
-  // what you'd see if it computes every count across the WHOLE dealer without that same
-  // WorkLocationCodes filter - it very likely never got that scoping added when Work Area/
-  // WorkLocationCodes was built (2026-09-17, well after kpis' own dashboard existed).
-  //
-  // FIX APPLIED HERE (frontend-only - the durable fix is really adding the same WorkLocationCodes
-  // filter to DashboardController.Kpis itself, but I don't have that file this session): each of
-  // the 9 TILES above is now counted by calling the ALREADY-correctly-scoped GET /api/jobcards with
-  // that tile's own `params` (added to TILES above - the exact filters JobCardsController.List's
-  // own doc comment says reproduce each dashboard number), instead of trusting kpis[t.key] from the
-  // unscoped endpoint. Exactly the same idea already used for the Stock Qty tile below (a
-  // client-side count from an endpoint that's actually scoped correctly) - just applied to the
-  // other 9 tiles too, now that JobCardsController.cs's exact filter vocabulary is confirmed.
-  //
-  // KNOWN LIMIT (please read before relying on this for a very busy dealer): GET /api/jobcards caps
-  // results at 200 rows (`.Take(200)`, confirmed in its own source) and returns no separate
-  // total-count field, so a tile whose TRUE count exceeds 200 will under-report rather than show
-  // the real number. For a single Work Area's currently-open job cards this is very unlikely, but
-  // I'm flagging it rather than silently hiding the limitation.
-  //
-  // NOT FIXED by this change (still dealer-wide/unscoped, still come straight from kpis): Revenue
-  // (Paid Invoices), Avg. Service Time, Customer Satisfaction, and the "Job Cards by Status" chart
-  // further down this page - none of those are a simple job-card-count filter the way the 9 tiles
-  // are (revenue/turnaround/CSAT need real aggregation across Invoices/ratings, not a row count), so
-  // they can't be reproduced from GET /api/jobcards the same way. If a Supervisor seeing the whole
-  // dealer's Revenue/TAT/CSAT numbers is also a problem for you, say so and I'll flag exactly what's
-  // needed from DashboardController.cs to fix those at the real source too.
+  // SECTION 157 (unchanged): GET /api/dashboard/kpis counts the whole dealer, but GET /api/jobcards is scoped to the user's dealer AND Work Area (WorkLocationCodes), so each tile is
+  // counted from /api/jobcards with that tile's own `params`. KNOWN LIMIT: that endpoint caps at 200 rows (.Take(200)) with no total field, so a count above 200 under-reports.
+  // Still dealer-wide (straight from kpis): "Job Cards by Status" chart below (and the Revenue / Avg. Service Time / CSAT numbers, currently not displayed).
   const [scopedCounts, setScopedCounts] = useState<Partial<Record<keyof DashboardKpis, number>> | null>(null)
   useEffect(() => {
     Promise.all(
@@ -140,20 +180,8 @@ function DealerDashboard() {
     })
   }, [])
 
-// 2026-09-28 ("add Stock cards in that total stock shown"): FACT, confirmed from your earlier
-  // answer - total stock = sum of Bal Qty. Computed client-side from GET /api/part-uploads (the
-  // exact same endpoint web/src/pages/staff/PartUploadPage.tsx and mobile's PartUploadScreen.tsx
-  // already use - see that screen's own doc comment for the endpoint list), called with no
-  // search/locationCode filter so it returns every PartUploads row across every location for this
-  // dealer, then summed here (balQty ?? 0 per row, so a null Bal Qty counts as 0 rather than
-  // breaking the total). NOT a DashboardController.cs field - I still don't have that controller
-  // in this session, so this is the client-side fallback SECTION 144 flagged as the alternative to
-  // a server-computed field, used now rather than continuing to block the whole card on a file
-  // request. stockError (not stockQty === null) distinguishes "still loading" from "the call
-  // failed" (e.g. a role without access to Part Upload data) - the tile shows "—" either way rather
-  // than a wrong number, but only the error case is worth telling apart in code for future
-  // debugging.
-const [stockQty, setStockQty] = useState<number | null>(null)
+  // Stock Qty tile (unchanged): total stock = sum of Bal Qty across GET /api/part-uploads (client-side; "-" if the call fails, e.g. a role without Part Upload access).
+  const [stockQty, setStockQty] = useState<number | null>(null)
   const [stockError, setStockError] = useState(false)
   useEffect(() => {
     staffApi
@@ -162,113 +190,95 @@ const [stockQty, setStockQty] = useState<number | null>(null)
       .catch(() => setStockError(true))
   }, [])
 
-  if (loading) return <p className="muted">Loading dashboard...</p>
+  if (loading) return <p className="dsh-loading">Loading dashboard...</p>
   if (!kpis) return <p className="muted">Could not load dashboard.</p>
 
+  // number shown for a tile: scoped count; falls back to the dealer-wide kpis value only if that one tile's own fetch failed; "…" while loading
+  const countFor = (key: keyof DashboardKpis): ReactNode =>
+    scopedCounts === null ? <span className="dsh-loading-value">…</span> : (scopedCounts[key] ?? (kpis[key] as number))
+
   return (
-    <div>
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ margin: 0 }}>Dealer Dashboard</h2>
-        <p className="muted" style={{ margin: '4px 0 0' }}>Live workshop operations overview</p>
-      </div>
-
-      {/* 2026-09-28 ("1st shown in web card VEHICLES RECEIVED TODAY to WARRANTY JOBS this cards
-          1st then shown below kpi cards of All Pages"): the KPI tile row (Vehicles Received Today
-          through Warranty Jobs) now renders FIRST, with "All Pages" moved below it - reordered
-          from the previous layout (All Pages first, KPI tiles second). Nothing inside either
-          section changed, only which one comes first on the page. */}
-      <div className="kpi-grid">
-        {TILES.map((t, i) => (
-          // Every tile is a Link to the /jobcards filter that reproduces its own number - see
-          // TILES' doc comment above for how each `to` matches DashboardController.Kpis' own
-          // computation. The NUMBER shown (SECTION 157) comes from scopedCounts (an already Work
-          // Area-scoped count via GET /api/jobcards), falling back to the old dealer-wide kpis
-          // value only if that one tile's own scoped fetch failed - see scopedCounts' own doc
-          // comment above for the full reasoning. Shows "…" while the scoped counts are still
-          // loading, rather than flashing the (possibly wrong, dealer-wide) kpis number first.
-          <Link key={t.key} to={t.to} className={`kpi kpi-a${(i % 6) + 1}`} style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
-            {t.actionNeeded && <span className="kpi-badge-action">Action Needed</span>}
-            <div className="kpi-icon">{t.icon}</div>
-            <div className="value">{scopedCounts === null ? '…' : scopedCounts[t.key] ?? (kpis[t.key] as number)}</div>
-            <div className="label">{t.label}</div>
+    <div className="dsh">
+      <Hero
+        userName={personName(profile)}
+        title="Dealer Dashboard"
+        subtitle="Live workshop operations overview"
+        chips={
+          <>
+            <span className="dsh-chip"><span className="dsh-live" /> Live</span>
+            <span className="dsh-chip">📅 {todayLabel()}</span>
+            {profile?.dealerName && <span className="dsh-chip">🏢 {profile.dealerName}</span>}
+          </>
+        }
+      >
+        <div className="dsh-hero-stats">
+          <Link to="/jobcards?excludeClosed=true" className="dsh-hero-stat">
+            <b>{scopedCounts === null ? '…' : (scopedCounts.totalOpen ?? kpis.totalOpen)}</b>
+            <span>Open job cards</span>
           </Link>
-        ))}
-        {/* 2026-09-28 ("WARRANTY JOBS this after 1 card add Stock cards ... redirect on
-           /part-upload page"): right after Warranty Jobs (TILES' own last entry), per your
-           confirmed route. See stockQty's own doc comment above for why this is a hand-coded tile
-           rather than another TILES entry. */}
-        <Link
-          to="/part-upload"
-          className={`kpi kpi-a${(TILES.length % 6) + 1}`}
-          style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}
-        >
-          <div className="kpi-icon">📦</div>
-          <div className="value">{stockError ? '—' : stockQty === null ? '…' : stockQty.toLocaleString('en-IN')}</div>
-          <div className="label">Stock Qty</div>
-        </Link>
-      </div>
-
-      <div style={{ marginBottom: 8, marginTop: 24 }}>
-        <h3 style={{ marginBottom: 2 }}>All Pages</h3>
-        <p className="muted" style={{ marginTop: 0 }}>Every page you have access to, in one place.</p>
-      </div>
-      <div className="action-card-grid">
-        {ALL_PAGES.filter(isVisibleForCurrentRole).map((n, i) => (
-          <Link key={n.to} to={n.to} className={`action-card aa-a${(i % 6) + 1}`}>
-            <div className="action-card-icon">{n.icon}</div>
-            <div>
-              <div className="action-card-title">{n.label}</div>
-              <div className="action-card-subtitle">{n.subtitle ?? n.label}</div>
-            </div>
+          <Link to="/jobcards?stageKey=ready_for_delivery" className="dsh-hero-stat">
+            <b>{scopedCounts === null ? '…' : (scopedCounts.vehiclesReady ?? kpis.vehiclesReady)}</b>
+            <span>Ready for delivery</span>
           </Link>
-        ))}
-      </div>
-
-      {/* <div className="kpi-grid">
-        <Link to="/jobcards?status=Closed" className="kpi kpi-a2" style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
-          <div className="kpi-icon">₹</div>
-          <div className="value">₹{kpis.revenuePaidInvoices.toLocaleString()}</div>
-          <div className="label">Revenue (Paid Invoices)</div>
-        </Link>
-        <Link to="/jobcards?status=Closed" className="kpi kpi-a1" style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
-          <div className="kpi-icon">⏱️</div>
-          <div className="value">{kpis.avgTurnaroundHours} hrs</div>
-          <div className="label">Avg. Service Time</div>
-        </Link>
-        <div className="kpi kpi-a5">
-          <div className="kpi-icon">⭐</div>
-          <div className="value">{kpis.csat.average != null ? `${kpis.csat.average.toFixed(1)} / 5` : '—'}</div>
-          <div className="label">
-            Customer Satisfaction{kpis.csat.ratingsCount > 0 ? ` (${kpis.csat.ratingsCount} ratings)` : ' (no ratings yet)'}
-          </div>
         </div>
-      </div> */}
+      </Hero>
 
-      <div className="card">
+      {/* KPI tiles first, "All Pages" below (2026-09-28 order kept). Each tile links to the /jobcards filter that reproduces its own number. */}
+      <section>
+        <SectionHead title="Workshop Today" sub="Tap a tile to open the job cards behind the number." />
+        <div className="dsh-kpis">
+          {TILES.map((t, i) => (
+            <KpiTile key={t.key} to={t.to} icon={t.icon} label={t.label} value={countFor(t.key)} action={t.actionNeeded} toneIndex={i} index={i} />
+          ))}
+          {/* Stock Qty - right after Warranty Jobs, opens /part-upload */}
+          <KpiTile
+            to="/part-upload"
+            icon="📦"
+            label="Stock Qty"
+            value={stockError ? '—' : stockQty === null ? <span className="dsh-loading-value">…</span> : stockQty.toLocaleString('en-IN')}
+            toneIndex={TILES.length}
+            index={TILES.length}
+          />
+        </div>
+      </section>
+
+      <section>
+        <SectionHead title="All Pages" sub="Every page you have access to, in one place." />
+        <PageTiles pages={ALL_PAGES.filter(isVisibleForCurrentRole)} />
+      </section>
+
+      {/* Revenue (Paid Invoices) / Avg. Service Time / Customer Satisfaction tiles stay switched off, as before (kpis.revenuePaidInvoices, kpis.avgTurnaroundHours, kpis.csat are still on the response). */}
+
+      <section className="dsh-panel">
         <h3>Job Cards by Status</h3>
-        <p className="muted" style={{ marginTop: -6, marginBottom: 10 }}>Click a bar to see those job cards.</p>
-        <div style={{ width: '100%', height: 260 }}>
+        <p className="dsh-panel-sub">Click a bar to see those job cards.</p>
+        <div className="dsh-chart">
           <ResponsiveContainer>
             <BarChart data={kpis.byStatus}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="status" fontSize={12} />
-              <YAxis allowDecimals={false} />
-              <Tooltip />
+              <defs>
+                <linearGradient id="dshStatusBar" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#38bdf8" />
+                  <stop offset="100%" stopColor="#2563eb" />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e3ebf5" />
+              <XAxis dataKey="status" fontSize={12} tickLine={false} axisLine={{ stroke: '#e3ebf5' }} />
+              <YAxis allowDecimals={false} tickLine={false} axisLine={false} />
+              <Tooltip {...chartTooltip} />
               <Bar
                 dataKey="count"
-                fill="#2563eb"
-                radius={[4, 4, 0, 0]}
+                fill="url(#dshStatusBar)"
+                radius={[8, 8, 0, 0]}
+                maxBarSize={56}
                 cursor="pointer"
                 onClick={(entry) => navigate(`/jobcards?status=${encodeURIComponent(entry.status)}`)}
               />
             </BarChart>
           </ResponsiveContainer>
         </div>
-      </div>
+      </section>
 
-      <p className="muted" style={{ marginTop: 4 }}>
-        {profile?.dealerName ? `Showing data for ${profile.dealerName}.` : ''}
-      </p>
+      <p className="dsh-foot">{profile?.dealerName ? `Showing data for ${profile.dealerName}.` : ''}</p>
     </div>
   )
 }
@@ -286,8 +296,7 @@ interface CorporateFilterState {
 
 const EMPTY_FILTERS: CorporateFilterState = { region: '', state: '', city: '', dealerId: '', model: '', warranty: '' }
 
-// Same top action-card treatment as the Dealer Dashboard (see ACTION_CARDS above) - no role
-// filtering needed here since only Corporate/System Admin ever render this component at all.
+// Quick links (Corporate/System Admin only). `featured` = the dark highlighted tile.
 const CORPORATE_ACTION_CARDS: { label: string; subtitle: string; icon: string; to: string; featured?: boolean }[] = [
   { label: 'Job Cards', subtitle: 'Browse job cards across every dealer', icon: '📋', to: '/jobcards' },
   { label: 'Reports & Search', subtitle: 'Excel & PDF, by period, state, dealer', icon: '📊', to: '/reports', featured: true },
@@ -295,26 +304,24 @@ const CORPORATE_ACTION_CARDS: { label: string; subtitle: string; icon: string; t
   { label: 'Admin: Workflow', subtitle: 'Configure job card stages', icon: '⚙️', to: '/admin/workflow' },
 ]
 
-// 2026-10-05 ("Today" and "Overall" rows): the five cards shown in BOTH rows, in this order. `key` is the
-// field read from the stage-report summary's totals (backend DealerStageReportController.Summary) and is
-// also the `status` the Dealer Role Report opens on when the card is clicked.
+// The five cards shown in BOTH the Today and Overall rows. `key` = field read from the stage-report summary totals (DealerStageReportController.Summary) and the `status` the Dealer Role Report opens on.
 const DASH_CARDS = [
-  { key: 'created', label: 'Job cards created', icon: '📋', accent: 'kpi-a1' },
-  { key: 'inProgress', label: 'In Progress', icon: '🔧', accent: 'kpi-a3' },
-  { key: 'materialTransfers', label: 'Material Transfer', icon: '🔄', accent: 'kpi-a4' },
-  { key: 'repairBills', label: 'Repair Bill', icon: '🧾', accent: 'kpi-a6' },
-  { key: 'readyForDelivery', label: 'Ready For Delivery', icon: '🏁', accent: 'kpi-a5' },
+  { key: 'created', label: 'Job cards created', icon: '📋', tone: 0 },
+  { key: 'inProgress', label: 'In Progress', icon: '🔧', tone: 2 },
+  { key: 'materialTransfers', label: 'Material Transfer', icon: '🔄', tone: 3 },
+  { key: 'repairBills', label: 'Repair Bill', icon: '🧾', tone: 5 },
+  { key: 'readyForDelivery', label: 'Ready For Delivery', icon: '🏁', tone: 4 },
 ] as const
 
 function CorporateDashboard() {
-  const { isVisibleForCurrentRole } = useMenuAccess() // SECTION 171 - used by the "All Pages" grid's filter below
+  const { profile } = useStaffAuth()
+  const { isVisibleForCurrentRole } = useMenuAccess() // SECTION 171
   const [filterOptions, setFilterOptions] = useState<CorporateDashboardFilters | null>(null)
   const [filters, setFilters] = useState<CorporateFilterState>(EMPTY_FILTERS)
   const [data, setData] = useState<CorporateDashboardData | null>(null)
   const [loading, setLoading] = useState(true)
 
-  // Today row = documents / job cards dated today; Overall row = every date (In Progress and Ready For
-  // Delivery there are what is in that stage right now). Both across ALL dealers.
+  // Today row = documents / job cards dated today; Overall row = every date (In Progress and Ready For Delivery = what is in that stage right now). Both across ALL dealers.
   const [todaySummary, setTodaySummary] = useState<DealerStageSummary | null>(null)
   const [overallSummary, setOverallSummary] = useState<DealerStageSummary | null>(null)
   const [todayError, setTodayError] = useState(false)
@@ -347,11 +354,8 @@ function CorporateDashboard() {
       .finally(() => setLoading(false))
   }, [filters])
 
-  // 2026-10-02 ("in dashboard of systemadmin ... kpi cards app like other dashboard ... other
-  // role ... Parts stocks") - confirmed via AskUserQuestion: "other role" = total staff across
-  // every role, combined into one number. ASSUMPTION FLAGGED: GET /api/employees with no params is a
-  // best guess at the endpoint, not confirmed - same "try it, degrade to a dash on failure" pattern as
-  // the Dealer Dashboard's Stock Qty tile. If this shows "—", tell me the real endpoint/shape.
+  // Overview-tile data (Staff count / Parts Stock) - fetched as before, for the overview tiles that are currently switched off (see the comment block further down).
+  // ASSUMPTION FLAGGED (unchanged): GET /api/employees with no params is a best guess at the endpoint.
   interface EmployeeRow {
     id?: string
     name?: string
@@ -369,10 +373,6 @@ function CorporateDashboard() {
   }, [])
   const staffCount = employees?.length ?? null
 
-  // 2026-10-02 - confirmed via AskUserQuestion: Parts Stock = quantity summed across every dealer.
-  // Same GET /api/part-uploads + sum(balQty) approach as the Dealer Dashboard's own Stock Qty tile.
-  // ASSUMPTION FLAGGED: if the number looks like a single dealer's stock rather than the org total,
-  // the part-uploads controller needs a look.
   const [orgStockQty, setOrgStockQty] = useState<number | null>(null)
   const [orgStockError, setOrgStockError] = useState(false)
   useEffect(() => {
@@ -382,122 +382,116 @@ function CorporateDashboard() {
       .catch(() => setOrgStockError(true))
   }, [])
 
-  return (
-    <div>
-      <h2 style={{ marginBottom: 4 }}>Dashboard</h2>
-      <p className="muted" style={{ marginTop: 0 }}></p>
+  const rows = [
+    { title: 'Today', src: todaySummary, query: `&from=${todayStr}&to=${todayStr}` },
+    { title: 'Overall', src: overallSummary, query: '&from=&to=' },
+  ] as const
 
-      {/* 2026-10-05 ("row wise show Today and Overall ... horizontal like this, not vertical"): each of
-         Today and Overall is its OWN full-width row - a heading, a thin divider, then the five cards side by
-         side in ONE line (auto-fit columns: five across on a normal screen, wrapping only if the window is
-         too narrow for five). Today sits above Overall. These two rows deliberately do NOT use the shared
-         .kpi-grid class and are NOT nested inside another grid - an earlier version wrapped both blocks in
-         one .kpi-grid, which is what laid Today and Overall out as two columns beside each other. */}
-      {([
-        { title: 'Today', note: '', src: todaySummary, query: `&from=${todayStr}&to=${todayStr}` },
-        { title: 'Overall', note: '', src: overallSummary, query: '&from=&to=' },
-      ] as const).map((row) => (
-        <div key={row.title} style={{ marginBottom: 20 }}>
-          <h3 style={{ margin: '16px 0 2px' }}>{row.title}</h3>
-          <p className="muted" style={{ margin: 0 }}>{row.note}</p>
-          <hr style={{ border: 'none', borderTop: '1px solid var(--border, #e5e7eb)', margin: '10px 0 12px' }} />
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16 }}>
-            {DASH_CARDS.map((c) => (
-              <Link
-                key={c.key}
-                to={`/dealer-role-report?status=${c.key}&scope=all${row.query}`}
-                className={`kpi ${c.accent}`}
-                style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}
-              >
-                <div className="kpi-icon">{c.icon}</div>
-                <div className="value">{todayError ? '—' : row.src ? row.src.totals[c.key] : '…'}</div>
-                <div className="label">{c.label}</div>
-              </Link>
-            ))}
+  return (
+    <div className="dsh">
+      <Hero
+        userName={personName(profile)}
+        title="Corporate Dashboard"
+        subtitle="Roll-up across every dealer"
+        chips={
+          <>
+            <span className="dsh-chip"><span className="dsh-live" /> Live</span>
+            <span className="dsh-chip">📅 {todayLabel()}</span>
+            <span className="dsh-chip">🏢 {filterOptions ? `${filterOptions.dealers.length} dealers` : 'All dealers'}</span>
+          </>
+        }
+      >
+        <div className="dsh-hero-stats">
+          <Link to="/dealer-role-report?status=notClosed&scope=all&from=&to=" className="dsh-hero-stat">
+            <b>{loading || !data ? '…' : data.pendingVehicles}</b>
+            <span>Open job cards</span>
+          </Link>
+          <div className="dsh-hero-stat">
+            <b>{todayError ? '—' : todaySummary ? todaySummary.totals.created : '…'}</b>
+            <span>Created today</span>
           </div>
         </div>
-      ))}
+      </Hero>
 
-      {/* 2026-10-02 ("in dashboard of systemadmin ... Open Job Cards Count / Dealer / other role / Parts
-         stocks"): the overview tiles below. "Open Job Cards Count" is data.pendingVehicles - every job card
-         that is not Closed/Cancelled, across all dealers - and opens the Dealer Role Report on "Not Closed"
-         for ALL dealers and ALL dates, so the report shows the same number (2026-10-05). */}
-      {/* <div className="kpi-grid" style={{ margin: '16px 0' }}>
-        <Link to="/dealer-role-report?status=notClosed&scope=all&from=&to=" className="kpi kpi-a4" style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
-          <span className="kpi-badge-action">Action Needed</span>
-          <div className="kpi-icon">📋</div>
-          <div className="value">{loading || !data ? '…' : data.pendingVehicles}</div>
-          <div className="label">Open Job Cards Count</div>
-        </Link>
-        <Link to="/dealer-role-report" className="kpi kpi-a2" style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
-          <div className="kpi-icon">🏢</div>
-          <div className="value">{filterOptions ? filterOptions.dealers.length : '…'}</div>
-          <div className="label">Dealers</div>
-          <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>Open dealer role report →</div>
-        </Link>
-        <div className="kpi kpi-a3">
-          <div className="kpi-icon">👥</div>
-          <div className="value">{staffError ? '—' : staffCount === null ? '…' : staffCount}</div>
-          <div className="label">Staff (All Roles)</div>
-        </div>
-        <Link to="/part-upload" className="kpi kpi-a5" style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
-          <div className="kpi-icon">📦</div>
-          <div className="value">{orgStockError ? '—' : orgStockQty === null ? '…' : orgStockQty.toLocaleString('en-IN')}</div>
-          <div className="label">Parts Stock</div>
-        </Link>
-      </div> */}
+      {/* Today and Overall: each its OWN full-width row, five cards side by side (auto-fit: five across on a normal screen, wrapping only if narrow). Today sits above Overall. */}
+      <section style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {rows.map((row, r) => (
+          <div key={row.title} className="dsh-row">
+            <div className="dsh-row-head">
+              <span className={`dsh-row-badge${row.title === 'Overall' ? ' overall' : ''}`}>{row.title}</span>
+              <span className="dsh-row-line" />
+            </div>
+            <div className="dsh-row-cards">
+              {DASH_CARDS.map((c, i) => (
+                <KpiTile
+                  key={c.key}
+                  to={`/dealer-role-report?status=${c.key}&scope=all${row.query}`}
+                  icon={c.icon}
+                  label={c.label}
+                  toneIndex={c.tone}
+                  index={r * DASH_CARDS.length + i}
+                  value={todayError ? '—' : row.src ? row.src.totals[c.key] : <span className="dsh-loading-value">…</span>}
+                />
+              ))}
+            </div>
+          </div>
+        ))}
+      </section>
 
-      <div className="card" style={{ marginBottom: 20 }}>
+      {/* Overview tiles (Open Job Cards Count / Dealers / Staff (All Roles) / Parts Stock) stay switched off as before. To bring them back, render KpiTile for:
+          data.pendingVehicles -> /dealer-role-report?status=notClosed&scope=all&from=&to= ; filterOptions.dealers.length -> /dealer-role-report ;
+          staffError/staffCount ; orgStockError/orgStockQty -> /part-upload. */}
+
+      <section className="dsh-panel">
         <h3>Job Card Volume by Dealer</h3>
-        <p className="muted" style={{ marginTop: -6, marginBottom: 10 }}>Dealer-wise count of job cards.</p>
+        <p className="dsh-panel-sub">Dealer-wise count of job cards.</p>
         {loading || !data ? (
-          <p className="muted">Loading...</p>
+          <p className="dsh-loading">Loading...</p>
         ) : (
-          <div style={{ width: '100%', height: 260 }}>
+          <div className="dsh-chart">
             <ResponsiveContainer>
               <BarChart data={data.jobCardVolumeByDealer}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="dealerName" fontSize={11} />
-                <YAxis allowDecimals={false} />
-                <Tooltip />
-                <Bar dataKey="count" fill="#16a34a" radius={[4, 4, 0, 0]} />
+                <defs>
+                  <linearGradient id="dshVolBar" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#34e8a0" />
+                    <stop offset="100%" stopColor="#0e9f63" />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e3ebf5" />
+                <XAxis dataKey="dealerName" fontSize={11} tickLine={false} axisLine={{ stroke: '#e3ebf5' }} />
+                <YAxis allowDecimals={false} tickLine={false} axisLine={false} />
+                <Tooltip {...chartTooltip} />
+                <Bar dataKey="count" fill="url(#dshVolBar)" radius={[8, 8, 0, 0]} maxBarSize={56} />
               </BarChart>
             </ResponsiveContainer>
           </div>
         )}
-      </div>
+      </section>
 
-      <div className="action-card-grid">
-        {CORPORATE_ACTION_CARDS.map((a, i) => (
-          <Link key={a.label} to={a.to} className={`action-card ${a.featured ? 'action-card-featured' : `aa-a${(i % 6) + 1}`}`}>
-            <div className="action-card-icon">{a.icon}</div>
-            <div>
-              <div className="action-card-title">{a.label}</div>
-              <div className="action-card-subtitle">{a.subtitle}</div>
-            </div>
-          </Link>
-        ))}
-      </div>
+      <section>
+        <SectionHead title="Quick Links" />
+        <div className="dsh-pages">
+          {CORPORATE_ACTION_CARDS.map((a, i) => (
+            <Link key={a.label} to={a.to} className={`dsh-page ${a.featured ? 'dsh-page-featured' : tone(i)}`} style={rise(i)}>
+              <span className="dsh-icon" aria-hidden="true">{a.icon}</span>
+              <div className="dsh-page-text">
+                <div className="dsh-page-title">{a.label}</div>
+                <div className="dsh-page-sub">{a.subtitle}</div>
+              </div>
+              <span className="dsh-page-arrow" aria-hidden="true">›</span>
+            </Link>
+          ))}
+        </div>
+      </section>
 
-      <div style={{ marginBottom: 8 }}>
-        <h3 style={{ marginBottom: 2 }}>All Pages</h3>
-        <p className="muted" style={{ marginTop: 0 }}>Every page you have access to, in one place.</p>
-      </div>
-      <div className="action-card-grid">
-        {/* SECTION 171: goes through the same isVisibleForCurrentRole check the sidebar and the Dealer
-           Dashboard's own grid use (see ALL_PAGES' doc comment above), so the three can't drift apart. */}
-        {ALL_PAGES.filter(isVisibleForCurrentRole).map((n, i) => (
-          <Link key={n.to} to={n.to} className={`action-card aa-a${(i % 6) + 1}`}>
-            <div className="action-card-icon">{n.icon}</div>
-            <div>
-              <div className="action-card-title">{n.label}</div>
-              <div className="action-card-subtitle">{n.subtitle ?? n.label}</div>
-            </div>
-          </Link>
-        ))}
-      </div>
+      <section>
+        <SectionHead title="All Pages" sub="Every page you have access to, in one place." />
+        {/* SECTION 171: same isVisibleForCurrentRole check as the sidebar and the Dealer Dashboard grid */}
+        <PageTiles pages={ALL_PAGES.filter(isVisibleForCurrentRole)} />
+      </section>
 
-      <div className="card" style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+      <section className="dsh-panel dsh-filters">
+        <span className="dsh-filters-label">Filters</span>
         <select value={filters.region} onChange={(e) => setFilters({ ...filters, region: e.target.value })}>
           <option value="">All Regions</option>
           {filterOptions?.regions.map((r) => <option key={r} value={r}>{r}</option>)}
@@ -523,91 +517,107 @@ function CorporateDashboard() {
           <option value="warranty">Warranty Only</option>
           <option value="nonwarranty">Non-Warranty Only</option>
         </select>
-      </div>
+      </section>
 
       {loading || !data ? (
-        <p className="muted">Loading...</p>
+        <p className="dsh-loading">Loading...</p>
       ) : (
         <>
-          <div className="kpi-grid" style={{ margin: '20px 0' }}>
-            <div className="kpi kpi-a2">
-              <div className="kpi-icon">₹</div>
-              <div className="value">₹{data.revenue.toLocaleString()}</div>
-              <div className="label">Revenue</div>
-            </div>
-            <div className="kpi kpi-a3">
-              <div className="kpi-icon">🛡️</div>
-              <div className="value">₹{data.warrantyCost.toLocaleString()}</div>
-              <div className="label">Warranty Cost</div>
-            </div>
-            <div className="kpi kpi-a5">
-              <div className="kpi-icon">⭐</div>
-              <div className="value">{data.csat.average != null ? `${data.csat.average.toFixed(1)} / 5` : '—'}</div>
-              <div className="label">CSAT{data.csat.average == null ? ' (no ratings yet)' : ''}</div>
-            </div>
-          </div>
+          <section className="dsh-kpis">
+            <KpiTile icon="₹" label="Revenue" toneIndex={1} index={0} value={`₹${data.revenue.toLocaleString()}`} />
+            <KpiTile icon="🛡️" label="Warranty Cost" toneIndex={2} index={1} value={`₹${data.warrantyCost.toLocaleString()}`} />
+            <KpiTile
+              icon="⭐"
+              label={`CSAT${data.csat.average == null ? ' (no ratings yet)' : ''}`}
+              toneIndex={4}
+              index={2}
+              value={data.csat.average != null ? `${data.csat.average.toFixed(1)} / 5` : '—'}
+            />
+          </section>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: 16 }}>
-            <div className="card">
+          <section className="dsh-charts">
+            <div className="dsh-panel">
               <h3>Job Card Volume Trend</h3>
-              <div style={{ width: '100%', height: 260 }}>
+              <p className="dsh-panel-sub">Trend for the selection above.</p>
+              <div className="dsh-chart">
                 <ResponsiveContainer>
                   <LineChart data={data.jobCardVolumeTrend}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="date" fontSize={11} />
-                    <YAxis allowDecimals={false} />
-                    <Tooltip />
-                    <Line type="monotone" dataKey="count" stroke="#16a34a" strokeWidth={2} dot={{ r: 3 }} />
+                    <defs>
+                      <linearGradient id="dshTrendLine" x1="0" y1="0" x2="1" y2="0">
+                        <stop offset="0%" stopColor="#0e9f63" />
+                        <stop offset="100%" stopColor="#38bdf8" />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e3ebf5" />
+                    <XAxis dataKey="date" fontSize={11} tickLine={false} axisLine={{ stroke: '#e3ebf5' }} />
+                    <YAxis allowDecimals={false} tickLine={false} axisLine={false} />
+                    <Tooltip {...chartTooltip} cursor={{ stroke: '#b9cbe0' }} />
+                    <Line type="monotone" dataKey="count" stroke="url(#dshTrendLine)" strokeWidth={3} dot={{ r: 3.5, fill: '#fff', stroke: '#0e9f63', strokeWidth: 2 }} activeDot={{ r: 6 }} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
             </div>
 
-            <div className="card">
+            <div className="dsh-panel">
               <h3>Average TAT by Dealer (hours)</h3>
-              <div style={{ width: '100%', height: 260 }}>
+              <p className="dsh-panel-sub">Lower is better.</p>
+              <div className="dsh-chart">
                 <ResponsiveContainer>
                   <BarChart data={data.avgTatByDealer}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="dealerName" fontSize={11} />
-                    <YAxis allowDecimals={false} />
-                    <Tooltip />
-                    <Bar dataKey="avgHours" fill="#0ea5e9" radius={[4, 4, 0, 0]} />
+                    <defs>
+                      <linearGradient id="dshTatBar" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#67e8f9" />
+                        <stop offset="100%" stopColor="#0891b2" />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e3ebf5" />
+                    <XAxis dataKey="dealerName" fontSize={11} tickLine={false} axisLine={{ stroke: '#e3ebf5' }} />
+                    <YAxis allowDecimals={false} tickLine={false} axisLine={false} />
+                    <Tooltip {...chartTooltip} />
+                    <Bar dataKey="avgHours" fill="url(#dshTatBar)" radius={[8, 8, 0, 0]} maxBarSize={56} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
             </div>
 
-            <div className="card">
+            <div className="dsh-panel">
               <h3>Top Parts Consumption</h3>
-              <div style={{ width: '100%', height: 260 }}>
+              <p className="dsh-panel-sub">Quantity consumed.</p>
+              <div className="dsh-chart">
                 <ResponsiveContainer>
                   <BarChart data={data.topPartsConsumption} layout="vertical" margin={{ left: 24 }}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis type="number" allowDecimals={false} />
-                    <YAxis type="category" dataKey="partName" fontSize={11} width={140} />
-                    <Tooltip />
-                    <Bar dataKey="qty" fill="#8b5cf6" radius={[0, 4, 4, 0]} />
+                    <defs>
+                      <linearGradient id="dshPartsBar" x1="0" y1="0" x2="1" y2="0">
+                        <stop offset="0%" stopColor="#7c3aed" />
+                        <stop offset="100%" stopColor="#c4b5fd" />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e3ebf5" />
+                    <XAxis type="number" allowDecimals={false} tickLine={false} axisLine={false} />
+                    <YAxis type="category" dataKey="partName" fontSize={11} width={140} tickLine={false} axisLine={false} />
+                    <Tooltip {...chartTooltip} />
+                    <Bar dataKey="qty" fill="url(#dshPartsBar)" radius={[0, 8, 8, 0]} maxBarSize={26} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
             </div>
-          </div>
+          </section>
 
-          <div className="card">
+          <section className="dsh-panel">
             <h3>Repeat Complaints (vehicles with &gt;1 visit)</h3>
-            <table>
+            <p className="dsh-panel-sub">Vehicles that came back more than once in this selection.</p>
+            <table className="dsh-table">
               <thead><tr><th>Reg No</th><th>Visits</th></tr></thead>
               <tbody>
                 {data.repeatComplaints.map((r, i) => (
                   <tr key={i}><td>{r.regNo ?? '-'}</td><td>{r.visits}</td></tr>
                 ))}
                 {data.repeatComplaints.length === 0 && (
-                  <tr><td colSpan={2} className="muted" style={{ textAlign: 'center', padding: 16 }}>No repeat visits in this selection.</td></tr>
+                  <tr><td colSpan={2} className="dsh-empty">No repeat visits in this selection.</td></tr>
                 )}
               </tbody>
             </table>
-          </div>
+          </section>
         </>
       )}
     </div>

@@ -9,7 +9,7 @@ import {
   fmtDateOnly, fmtDateTime, periodLabel,
   type DealerDocList, type DealerStageReport, type DealerStageSummary, type DocCounts, type StageCounts,
 } from '../../lib/dealerRoleReportExport'
-
+import './BillPages.css'
 /**
  * Dealer Role Report - stage-wise, drill-down version (2026-10-05).
  *
@@ -299,7 +299,7 @@ export function DealerRoleReportPage() {
   const countOf = (c: StageCounts, k: StageKey) => c[k]
 
   return (
-    <div>
+    <div className="jcx">
       <p style={{ margin: '0 0 6px' }}>
         {dealerId
           ? <a href="#all-dealers" onClick={(e) => { e.preventDefault(); autoDrillRef.current = null; setDealerId('') }}>&larr; All dealers</a>

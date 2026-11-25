@@ -5,6 +5,7 @@ import { useStaffAuth } from '../../auth/StaffAuthContext'
 import type { BaplItemMaster } from '../../types'
 import { Pagination } from '../../components/Pagination'
 import { usePagination } from '../../lib/usePagination'
+import './BillPages.css'
 
 /**
  * "Item Master" sidebar page (2026-09-21: "add in sidebar option in Item master page fetch data
@@ -140,7 +141,7 @@ export function ItemMasterPage() {
   const neverSynced = status !== null && (!status.tableExists || status.rows === 0)
 
   return (
-    <div>
+    <div className="jcx">
       <h2>Item Master</h2>
       {/* <p className="muted">
         BAPL's item catalog (C_ItemMaster, baplfinal) - Dealer Price and per-item GST% (SGST/CGST/

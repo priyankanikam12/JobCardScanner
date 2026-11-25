@@ -1,6 +1,7 @@
 // web\src\pages\staff\ReportsPage.tsx
 import { useEffect, useState } from 'react'
 import { staffApi } from '../../api/client'
+import './BillPages.css'
 
 interface SearchResults {
   jobCards: { id: string; jobCardNumber: string; status: string; customerName: string; vehicleRegNo?: string }[]
@@ -43,7 +44,7 @@ export function ReportsPage() {
   }
 
   return (
-    <div>
+    <div className="jcx">
       <h2>Reports & Global Search</h2>
 
       <div className="card">

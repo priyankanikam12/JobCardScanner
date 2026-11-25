@@ -1,11 +1,12 @@
 // web\src\pages\staff\MaterialTransferCreatePage.tsx
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
 import type { BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaster, JobSearchResult, LabourMasterPartwise, MaterialTransferDoc, MaterialTransferDocItemType, MaterialTransferDocStatus, MaterialTransferDocType, PartUpload } from '../../types'
 import { JobSearchModal } from '../../components/JobSearchModal'
 import { PartSearchInput, isConfirmedOutOfStock } from '../../components/PartSearchInput'
+import './BillPages.css'
 
 /**
  * "Material Transfer Bill" sidebar page (2026-09-19: "now i want Create Repair Bill and Material
@@ -480,7 +481,22 @@ export function MaterialTransferCreatePage() {
   //    moment of adding) and is still governed/cascaded by updatePartIssueType if the Part row's
   //    Issue Type changes later - unchanged from before.
   const [labourAddMessage, setLabourAddMessage] = useState<string | null>(null)
+  // 2026-11-25 ("part quantity 2 and the labour 16 which is incorrect"): "+ Add" fetches the Labour Master rows asynchronously and then checks which codes are already staged. That check read `items` as
+  // it was when the button was CLICKED, so a second click (or a double-click) before the first fetch finished saw nothing staged yet and added every labour again - doubling the labour lines, which
+  // then reach the Repair Bill. Two guards: one fetch at a time per Part row (labourAddBusyRef), and the already-staged check reads the LATEST items (itemsRef), not the clicked-time copy.
+  const itemsRef = useRef<DraftItem[]>([])
+  itemsRef.current = items
+  const labourAddBusyRef = useRef<Set<number>>(new Set())
   const autoAddLabourForPart = async (it: DraftItem) => {
+    if (labourAddBusyRef.current.has(it.key)) return
+    labourAddBusyRef.current.add(it.key)
+    try {
+      await autoAddLabourForPartOnce(it)
+    } finally {
+      labourAddBusyRef.current.delete(it.key)
+    }
+  }
+  const autoAddLabourForPartOnce = async (it: DraftItem) => {
     setLabourAddMessage(null)
     let rows: LabourMasterPartwise[] = []
     try {
@@ -490,8 +506,14 @@ export function MaterialTransferCreatePage() {
       setLabourAddMessage(`Could not load Labour Master Partwise rates for ${it.itemCode}.`)
       return
     }
-    const alreadyStaged = new Set(items.filter((i) => i.sourcePartKey === it.key).map((i) => i.itemCode))
-    const toAdd = rows.filter((p) => p.labourCode && !alreadyStaged.has(p.labourCode))
+    const alreadyStaged = new Set(itemsRef.current.filter((i) => i.sourcePartKey === it.key).map((i) => i.itemCode))
+    // the Labour Master can hold the SAME Labour Code on more than one row for a Part Code (e.g. one per model) - each code is staged once, the first row winning
+    const seenCodes = new Set<string>()
+    const toAdd = rows.filter((p) => {
+      if (!p.labourCode || alreadyStaged.has(p.labourCode) || seenCodes.has(p.labourCode)) return false
+      seenCodes.add(p.labourCode)
+      return true
+    })
     if (toAdd.length === 0) {
       setLabourAddMessage(rows.length === 0
         ? `No Labour Master Partwise rows found for ${it.itemCode}.`
@@ -962,22 +984,48 @@ export function MaterialTransferCreatePage() {
     // new one - mirroring RepairBillCreatePage.tsx's own save()'s editingBillId branch. The form
     // is deliberately NOT reset to blank on a successful update (unlike a fresh create, below) -
     // staying on this same transfer is what lets "Confirm Transfer" immediately follow.
-    const request = editingTransferId
-      ? staffApi.put(`/api/material-transfer-docs/${editingTransferId}`, body)
-      : staffApi.post('/api/material-transfer-docs', body)
+    const send = () => {
+      const request = editingTransferId
+        ? staffApi.put(`/api/material-transfer-docs/${editingTransferId}`, body)
+        : staffApi.post('/api/material-transfer-docs', body)
 
-    request
-      .then((r) => {
-        if (editingTransferId) {
-          setSaveOk(`Updated ${r.data.transferNumber}.`)
-        } else {
-          setSaveOk(`Saved as ${r.data.transferNumber}.`)
-          resetFormToNew()
-        }
-        // 2026-09-23 - loadCombined() removed: see note on finalizeEditingTransferAsConfirmed above.
-      })
-      .catch((err) => setSaveError(saveErrorText(err, `Could not ${editingTransferId ? 'update' : 'save'} the material transfer.`)))
-      .finally(() => setSaving(false))
+      request
+        .then((r) => {
+          if (editingTransferId) {
+            setSaveOk(`Updated ${r.data.transferNumber}.`)
+          } else {
+            setSaveOk(`Saved as ${r.data.transferNumber}.`)
+            resetFormToNew()
+          }
+          // 2026-09-23 - loadCombined() removed: see note on finalizeEditingTransferAsConfirmed above.
+        })
+        .catch((err) => setSaveError(saveErrorText(err, `Could not ${editingTransferId ? 'update' : 'save'} the material transfer.`)))
+        .finally(() => setSaving(false))
+    }
+
+    // 2026-11-25 ("part quantity 2 and labour 16"): job JC/288/26-27/0465 had TWO Draft transfers (MT-...000359 and MT-...000361, saved 90 seconds apart) with the SAME 1 Part + 8 Labour lines, so the
+    // Repair Bill - which pulls every transfer of the job - showed everything twice. Before a NEW transfer is created, the job's existing transfers are read (GET .../for-job, the same call the Repair
+    // Bill uses); if one already holds exactly these lines (same type, code and qty) the save is stopped with a message pointing at it. Editing an existing transfer (Update Draft) is not affected, and
+    // if the check itself cannot be read the save simply goes ahead as before.
+    if (!editingTransferId && jobCardId && validItems.length > 0) {
+      const lineKey = (type: string, code: string, qty: number) => `${type}|${code.trim().toUpperCase()}|${qty}`
+      const wanted = validItems.map((i) => lineKey(i.itemType, i.itemCode || i.itemDescription.slice(0, 30), Number(i.qty) || 0)).sort().join(';')
+      staffApi.get<{ transferNumber: string; itemCode: string; itemType: string; qty: number }[]>(`/api/material-transfer-docs/for-job/${jobCardId}`)
+        .then(({ data }) => {
+          const byTransfer = new Map<string, string[]>()
+          data.forEach((r) => { byTransfer.set(r.transferNumber, [...(byTransfer.get(r.transferNumber) ?? []), lineKey(r.itemType, r.itemCode, Number(r.qty))]) })
+          const same = Array.from(byTransfer.entries()).find(([, keys]) => keys.sort().join(';') === wanted)
+          if (same) {
+            setSaveError(`Not saved - transfer ${same[0]} already holds exactly these lines for this job. Open it from the Material Transfer list and use Update Draft to change it; saving again would double every part and labour on the Repair Bill.`)
+            setSaving(false)
+            return
+          }
+          send()
+        })
+        .catch(() => send())
+    } else {
+      send()
+    }
   }
 
   // 2026-09-23 ("in repairbill which we added button like this add in material transfer for
@@ -990,7 +1038,7 @@ export function MaterialTransferCreatePage() {
   // "Confirm Transfer" button while editing) still needs it - it's unrelated to the list.
 
   return (
-    <div>
+    <div className="jcx">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
         <h2 style={{ margin: 0 }}>Material Transfer Bill</h2>
         <button type="button" className="btn btn-secondary btn-sm" onClick={() => navigate('/material-transfer-list')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>

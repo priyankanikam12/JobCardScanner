@@ -8,6 +8,7 @@ import { ImportExcelButton } from '../../components/ImportExcelButton'
 import { Pagination } from '../../components/Pagination'
 import { exportReportToExcel, exportReportToPdf, type ReportColumn } from '../../lib/exportReport'
 import { usePagination } from '../../lib/usePagination'
+import './BillPages.css'
 
 // 2026-10-02 ("for 1 record this full details download in excel pdf only showing currently item
 // count shown not shown which item so all need to show in repair bill shown which labour are"): the
@@ -192,7 +193,7 @@ export function MaterialTransferPage() {
   const exportRows = useMemo(() => buildMaterialTransferExportRows(filteredTransfers), [filteredTransfers])
 
   return (
-    <div>
+    <div className="jcx">
       <h2>Material Transfer</h2>
       {/* <p className="muted">
         Synced material transfer documents from DMSBAPLDATA, scoped to your own workshop location.

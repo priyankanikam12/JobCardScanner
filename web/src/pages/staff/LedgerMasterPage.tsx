@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import type { CSSProperties } from 'react'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
+import './BillPages.css'
 
 /**
  * Ledger Master - laid out like DMS's "Customer Ledger" page (2026-10-06, "same UI: first select the existing dealer, then the ledger type, then the
@@ -938,8 +939,8 @@ export function LedgerMasterPage() {
     )
   }
 
-  return (
-    <div>
+    return (
+    <div className="jcx">
       <style>{LEDGER_STYLES}</style>
 
       <h2 style={PAGE_TITLE_STYLE}>Ledger Master</h2>

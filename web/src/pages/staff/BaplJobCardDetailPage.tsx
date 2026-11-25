@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { staffApi } from '../../api/client'
 import type { BaplDmsInvoiceLineItemsResult, BaplDmsJobCardDetail } from '../../types'
+import './BillPages.css'
 
 /**
  * Read-only view of one DMS job card (GET /api/bapl-dms/job-cards/{id}) - what a DMS row
@@ -74,7 +75,7 @@ export function BaplJobCardDetailPage() {
   const fmt = (d?: string | null) => (d ? new Date(d).toLocaleDateString() : '-')
 
   return (
-    <div>
+    <div className="jcx">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ background: '#1c64f2', color: '#fff', fontSize: 13, fontWeight: 600, padding: '2px 10px', borderRadius: 999 }}>

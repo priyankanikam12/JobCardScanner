@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react'
 import * as XLSX from 'xlsx'
 import { staffApi } from '../../api/client'
 import { SortTh, StatusBadge, TablePager, TableSearch, useTableView, type Column } from '../../components/TableControls'
+import './BillPages.css'
 
 /**
  * SECTION 163 (2026-09-30) + SECTION 166 (2026-09-30) "for this 3 master create edit delete
@@ -226,7 +227,7 @@ export function ComplaintMasterPage() {
   useEffect(() => { view.setPage(1) }, [statusFilter])
 
   return (
-    <div>
+    <div className="jcx">
       <div style={{ marginBottom: 16 }}>
         <h2 style={PAGE_TITLE_STYLE}>Complaint Master</h2>
         {/* <p style={PAGE_SUBTITLE_STYLE}>The shared global complaint list the Job Card Wizard picks from.</p> */}

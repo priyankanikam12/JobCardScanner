@@ -8,6 +8,7 @@ import { Pagination } from '../../components/Pagination'
 import { RecordDetailModal } from '../../components/RecordDetailModal'
 import { exportReportToExcel, exportReportToPdf, type ReportColumn } from '../../lib/exportReport'
 import { usePagination } from '../../lib/usePagination'
+import './BillPages.css'
 
 /**
  * "Part Upload" sidebar tab (2026-09-21: "new tab add Part Upload using this excel create table
@@ -261,7 +262,7 @@ export function PartUploadPage() {
   ]
 
   return (
-    <div>
+    <div className="jcx">
       {/* 2026-10-03 ("This 2 button shift here") - Download Excel/Download PDF moved up next to
           the page heading (top-right), out of the filter row below, per the user's annotated
           screenshot. */}

@@ -4,6 +4,7 @@ import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
 import { SortTh, StatusBadge, TablePager, TableSearch, useTableView, type Column } from '../../components/TableControls'
 import type { StaffRole } from '../../types'
+import './BillPages.css'
 
 /**
  * "Employees" page (2026-09-17, split out of Admin: Users into its own sidebar entry after
@@ -402,7 +403,7 @@ export function EmployeesPage() {
   useEffect(() => { view.setPage(1) }, [locationFilter])
 
   return (
-    <div>
+    <div className="jcx">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
         <h2 style={{ margin: 0 }}>Dealer Employees</h2>
         <button className="btn btn-primary" onClick={openAddModal}>

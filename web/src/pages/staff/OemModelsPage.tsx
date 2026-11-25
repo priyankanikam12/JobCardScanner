@@ -3,6 +3,7 @@ import { staffApi } from '../../api/client'
 import type { CreateOemModelRequest, OemModel } from '../../types'
 import { Pagination } from '../../components/Pagination'
 import { usePagination } from '../../lib/usePagination'
+import './BillPages.css'
 
 /**
  * "OEM Model Master" admin page (2026-09-22: "this wants to integrate for my
@@ -99,7 +100,7 @@ export function OemModelsPage() {
   }
 
   return (
-    <div>
+    <div className="jcx">
       <h2>OEM Model Master</h2>
       <p className="muted">
         The shared BGauss vehicle model catalog (e.g. "RUV 350 max") used across dealers - not dealer-specific.

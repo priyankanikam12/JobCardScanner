@@ -8,6 +8,7 @@ import { ImportExcelButton } from '../../components/ImportExcelButton'
 import { Pagination } from '../../components/Pagination'
 import { exportReportToExcel, exportReportToPdf, type ReportColumn } from '../../lib/exportReport'
 import { usePagination } from '../../lib/usePagination'
+import './BillPages.css'
 
 /**
  * "Repair Bill" sidebar page (2026-09-17: "add 2 sidebar option in our jobscanner Material
@@ -164,7 +165,7 @@ export function RepairBillPage() {
   const exportRows = useMemo(() => buildRepairBillExportRows(filteredBills), [filteredBills])
 
   return (
-    <div>
+      <div className="jcx">
       <h2>Repair Bill</h2>
       {/* <p className="muted">
         {isOrgWide

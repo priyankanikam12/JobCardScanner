@@ -6,6 +6,7 @@ import { ReportDownloadButtons } from '../../components/ReportDownloadButtons'
 import { Pagination } from '../../components/Pagination'
 import { exportReportToExcel, exportReportToPdf, type ReportColumn } from '../../lib/exportReport'
 import { usePagination } from '../../lib/usePagination'
+import './BillPages.css'
 
 // 2026-09-18 "download report excel pdf download button insert in starting row" - same convention
 // as Vehicle Sale/Repair Bill/Material Transfer: a flat column set for both Excel and PDF export,
@@ -129,7 +130,7 @@ export function ServiceHistoryPage() {
   const latest = rows[0]
 
   return (
-    <div>
+    <div className="jcx">
       <h2>Service History</h2>
       <p className="muted">
         Chassis No. / Registration No. 

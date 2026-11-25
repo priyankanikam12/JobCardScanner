@@ -3,6 +3,7 @@ import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
 import { SortTh, StatusBadge, TablePager, TableSearch, useTableView, type Column } from '../../components/TableControls'
 import type { BaplDmsWorkshop, Technician } from '../../types'
+import './BillPages.css'
 
 /**
  * "Technician Employee" tab (2026-09-24 - "that Supervisor login which we create from Dealer
@@ -155,7 +156,7 @@ export function TechnicianEmployeesPage() {
   }
 
   return (
-    <div>
+    <div className="jcx">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
         <h2 style={{ margin: 0 }}>Technician Employee</h2>
         {canManage && (

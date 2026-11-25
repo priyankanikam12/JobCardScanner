@@ -805,6 +805,10 @@ function UpdateWorkflowStageCard({
       .catch(() => setTechnicianOptions([]))
   }, [jc.dealer?.id, jc.baplServiceLocationCode])
 
+  // 2026-11-25 (JC/288/26-27/0465 "dropdown shows Aditya Kumar but page still says No Technician assigned yet"): picking a name in the dropdown only changes this box - nothing is saved until Save is clicked. The
+  // page keeps saying "No Technician assigned yet" (and the Start Timer is refused by the server) until then, so an unsaved pick is now flagged and Save is highlighted.
+  const unsavedChange = technicianName !== (jc.assignedTechnicianName ?? '') || expectedDeliveryAt !== (jc.expectedDeliveryAt ? jc.expectedDeliveryAt.slice(0, 16) : '')
+
   const saveDetails = () => staffApi.put(`/api/jobcards/${jc.id}`, {
     assignedTechnicianName: technicianName || null,
     expectedDeliveryAt: expectedDeliveryAt || null,
@@ -845,7 +849,8 @@ function UpdateWorkflowStageCard({
             <input type="datetime-local" disabled={busy} value={expectedDeliveryAt} onChange={(e) => setExpectedDeliveryAt(e.target.value)} />
           </div>
           <div className="field">
-            <button className="btn btn-sm" disabled={busy} onClick={() => run(saveDetails, 'Technician & completion date updated.')}>Save</button>
+            <button className={unsavedChange ? 'btn btn-sm btn-primary' : 'btn btn-sm'} disabled={busy} onClick={() => run(saveDetails, 'Technician & completion date updated.')}>Save</button>
+            {unsavedChange && <p className="error-text" style={{ margin: '6px 0 0' }}>⚠ Not saved yet - click Save to assign {technicianName || 'the technician'}.</p>}
           </div>
         </div>
       )}
@@ -972,8 +977,12 @@ function WorklogCard({ jc, run, profileId }: { jc: JobCardDetail; run: (fn: () =
         <p className="muted">Timer stopped - this job card is closed.</p>
       ) : (
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <p className="muted" style={{ margin: 0 }}>Timer isn't running. Start it before adding Part/Labour suggestions.</p>
-          <button className="btn btn-sm btn-primary" onClick={startTimer}>▶ Start Timer</button>
+          <p className="muted" style={{ margin: 0 }}>
+            {jc.assignedTechnicianName
+              ? "Timer isn't running. Start it before adding Part/Labour suggestions."
+              : 'Timer can\'t start yet - no Technician is assigned. Choose one under "Update Workflow Stage" below and click Save first.'}
+          </p>
+          <button className="btn btn-sm btn-primary" onClick={startTimer} disabled={!jc.assignedTechnicianName} title={!jc.assignedTechnicianName ? 'Assign a Technician and click Save first.' : undefined}>▶ Start Timer</button>
         </div>
       )}
       <table style={{ marginTop: 12 }}>

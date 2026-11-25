@@ -6,6 +6,7 @@ import { ReportDownloadButtons } from '../../components/ReportDownloadButtons'
 import { Pagination } from '../../components/Pagination'
 import { exportReportToExcel, exportReportToPdf, type ReportColumn } from '../../lib/exportReport'
 import { usePagination } from '../../lib/usePagination'
+import './BillPages.css'
 
 /**
  * "Labour Master" sidebar page (2026-09-19: "i want create 1 sidebar option also in that Labour
@@ -166,7 +167,7 @@ export function LabourMasterPage() {
   ]
 
   return (
-    <div>
+    <div className="jcx">
       <h2>Labour Master</h2>
       {/* <p className="muted">Import, edit and export labour rate master data - stored in DMSBAPLDATA.</p> */}
 

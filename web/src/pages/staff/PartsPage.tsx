@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
 import type { BaplDmsPartStock, BaplDmsWorkshop, BaplItemMaster, PartMaster } from '../../types'
+import './BillPages.css'
 
 interface PartsSearchResponse {
   localParts: PartMaster[]
@@ -96,7 +97,7 @@ export function PartsPage() {
   }
 
   return (
-    <div>
+    <div className="jcx">
       <h2>Parts & Inventory</h2>
       <div className="card">
         <div className="form-row">

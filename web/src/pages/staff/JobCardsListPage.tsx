@@ -6,6 +6,7 @@ import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
 import type { JobCardListResponse, JobCardSummary, JobCardStatus } from '../../types'
 import { StatusBadge } from '../../components/StatusBadge'
+import './BillPages.css'
 
 const STATUSES: JobCardStatus[] = ['Open', 'InProgress', 'PendingCustomerApproval', 'PendingQc', 'PendingClosure', 'PendingInvoice', 'Closed', 'Cancelled']
 
@@ -93,7 +94,7 @@ export function JobCardsListPage() {
   }, [jobCards, showCreatedBy])
 
   return (
-    <div>
+    <div className="jcx">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <h2 style={{ margin: 0 }}>Job Cards</h2>
         <Link className="btn btn-primary" to="/jobcards/new">+ New Job Card</Link>

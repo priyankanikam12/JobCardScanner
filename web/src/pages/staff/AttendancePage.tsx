@@ -364,8 +364,7 @@ export function AttendancePage() {
   // ---------------- Self view render (Supervisor / any other non-manager login) ----------------
   if (isManager === false) {
     return (
-      <div className="card">
-        <style>{ATTENDANCE_STYLES}</style>
+      <div className="card jcx">
         <h2>My Attendance</h2>
         {/* <p className="muted">
           Your own attendance only - if a day looks wrong, ask your dealer's Workshop Manager to correct it; you
@@ -422,8 +421,7 @@ export function AttendancePage() {
 
   // ---------------- Manager view render (unchanged flow, still loading if isManager is null) ----------------
   return (
-    <div className="card">
-      <style>{ATTENDANCE_STYLES}</style>
+    <div className="card jcx">
       <h2>Attendance</h2>
       <p className="muted">
         {selectedDealerId ? `Marking attendance for ${selectedDealerName || 'this dealer'}.` : 'Select a dealer to mark or review attendance.'}

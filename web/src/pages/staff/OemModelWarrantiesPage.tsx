@@ -3,6 +3,7 @@ import { staffApi } from '../../api/client'
 import type { CreateOemModelWarrantyRequest, OemModel, OemModelWarranty } from '../../types'
 import { Pagination } from '../../components/Pagination'
 import { usePagination } from '../../lib/usePagination'
+import './BillPages.css'
 
 /**
  * "OEM Model Warranty" admin page (2026-09-22 - see OemModelsPage.tsx's own doc comment for the
@@ -146,7 +147,7 @@ export function OemModelWarrantiesPage() {
   const fmtDate = (d: string) => new Date(d).toLocaleDateString('en-IN')
 
   return (
-    <div>
+    <div className="jcx">
       <h2>OEM Model Warranty</h2>
       <p className="muted">
         The OEM/manufacturer's own standard warranty terms per model (date/odometer cap, duration, B2B flag) -

@@ -8,6 +8,7 @@ import { Pagination } from '../../components/Pagination'
 import { usePagination } from '../../lib/usePagination'
 import { RecordDetailModal } from '../../components/RecordDetailModal'
 import { buildRepairBillTaxInvoicePrintHtml, taxInvoiceContextFromJobCard, type TaxInvoiceContext } from '../../lib/repairBillInvoicePrintHtml'
+import './BillPages.css'
 
 /**
  * "Repair Bill List" page (2026-09-23, "Source SR.No Bill No Date Party Name Reg No Chassis No
@@ -227,7 +228,7 @@ export function RepairBillListPage() {
   ])
 
   return (
-    <div>
+    <div className="jcx">
       <h2>Repair Bill List</h2>
       {/* <p className="muted">
         Every repair bill saved in JobCardScanner's own database - click a still-Performa bill (or

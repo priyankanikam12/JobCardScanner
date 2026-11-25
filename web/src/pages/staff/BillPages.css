@@ -1,0 +1,276 @@
+/* BGauss JobCardScanner - New Job Card / Material Transfer Bill / Repair Bill pages - 2026-11-25 ("add css").
+   Same look as the new login + dashboard (navy-teal, volt-green accent, soft rounded cards) applied to the three form pages WITHOUT touching their logic or markup:
+   every rule is scoped under .jcx, which each page adds to its own root <div> (so global.css and all other pages are unaffected). It restyles the classes these pages already use
+   (.card .form-row .field .btn .badge .muted .stepper .step, plain table / input / select) and the inline-styled section panels (the ones with a coloured left border). */
+
+.jcx {
+  --jcx-ink: #0f2742;
+  --jcx-muted: #5b6b82;
+  --jcx-line: #e3ebf5;
+  --jcx-field: #eef4fb;
+  --jcx-navy: #0b2447;
+  --jcx-green: #1dd78a;
+  --jcx-green-ink: #0e9f63;
+  color: var(--jcx-ink);
+}
+
+/* ---------------- Page title ---------------- */
+.jcx h2 {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 18px;
+  font-size: 24px;
+  font-weight: 800;
+  color: var(--jcx-ink);
+}
+.jcx h2::before {
+  content: '';
+  width: 6px;
+  height: 26px;
+  border-radius: 4px;
+  background: linear-gradient(180deg, var(--jcx-green), #38bdf8);
+  box-shadow: 0 0 14px rgba(29, 215, 138, 0.55);
+}
+.jcx h3 { color: var(--jcx-ink); font-weight: 800; font-size: 17px; margin-top: 0; }
+
+/* ---------------- Cards ---------------- */
+.jcx .card,
+.jcx.card {
+  position: relative;
+  background: #fff;
+  border: 1px solid var(--jcx-line);
+  border-radius: 24px;
+  box-shadow: 0 1px 2px rgba(11, 36, 71, 0.05), 0 18px 34px -26px rgba(11, 36, 71, 0.45);
+}
+.jcx .card:not([style*="padding: 0"]),
+.jcx.card { padding: 22px 24px; }
+.jcx .card::before,
+.jcx.card::before {
+  content: '';
+  position: absolute;
+  left: 24px; right: 24px; top: 0;
+  height: 4px;
+  border-radius: 0 0 6px 6px;
+  background: linear-gradient(90deg, var(--jcx-green), #38bdf8 60%, var(--jcx-navy));
+  opacity: 0.9;
+}
+
+/* the inline-styled section panels (Job & Bill Details / Labour / Part Details List / etc. - the ones with a coloured left border) */
+.jcx div[style*="border-left"] {
+  border-radius: 18px !important;
+  border-color: var(--jcx-line) !important;
+  background: linear-gradient(180deg, #fff, #f8fbfe) !important;
+  box-shadow: 0 10px 22px -18px rgba(11, 36, 71, 0.45);
+}
+.jcx div[style*="border-left"] > div:first-child[style*="font-weight"] { font-size: 15.5px; letter-spacing: 0.1px; }
+
+/* list pages: the table card has no padding (inline) - let a wide table scroll sideways inside the rounded card instead of spilling out */
+.jcx .card[style*="padding: 0"] { overflow-x: auto; }
+.jcx .card[style*="padding: 0"] table { min-width: 100%; }
+.jcx .card[style*="padding: 0"] th:first-child, .jcx .card[style*="padding: 0"] td:first-child { padding-left: 16px; }
+/* the expanded item rows inside a list (nested table on a pale background) */
+.jcx td[style*="f9fafb"] { background: #f4f9fe !important; }
+
+/* ---------------- Form layout + fields ---------------- */
+.jcx .form-row { gap: 14px 16px; }
+.jcx .field label,
+.jcx label {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--jcx-ink);
+  letter-spacing: 0.1px;
+}
+
+.jcx input:not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']),
+.jcx select,
+.jcx textarea {
+  box-sizing: border-box;
+  padding: 10px 14px;
+  border-radius: 14px;
+  border: 1.5px solid transparent;
+  background: var(--jcx-field);
+  color: var(--jcx-ink);
+  font-size: 14px;
+  box-shadow: inset 0 1px 2px rgba(11, 36, 71, 0.07);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+.jcx select { cursor: pointer; }
+.jcx input::placeholder, .jcx textarea::placeholder { color: #8da0b8; }
+.jcx input:hover:not(:disabled):not([readonly]), .jcx select:hover:not(:disabled), .jcx textarea:hover:not(:disabled) { border-color: #c9d9ea; }
+.jcx input:focus, .jcx select:focus, .jcx textarea:focus {
+  outline: none;
+  background: #fff;
+  border-color: var(--jcx-green);
+  box-shadow: 0 0 0 4px rgba(29, 215, 138, 0.22);
+}
+/* read-only / locked / disabled fields read as "filled by the system" */
+.jcx input:disabled, .jcx select:disabled, .jcx textarea:disabled,
+.jcx input[readonly], .jcx textarea[readonly] {
+  background: #f3f6fa;
+  color: #5f738c;
+  border-color: #e8eef6;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+.jcx input[type='checkbox'], .jcx input[type='radio'] { accent-color: var(--jcx-green-ink); width: 16px; height: 16px; cursor: pointer; }
+
+/* the "Selected Job Details" strip and the Labour input row */
+.jcx .form-row[style*='surface-muted'],
+.jcx .suggest-row {
+  background: linear-gradient(135deg, #eaf4ff, #eafaf3) !important;
+  border: 1px solid #d6e6f5;
+  border-radius: 16px !important;
+}
+
+/* ---------------- Buttons ---------------- */
+.jcx .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 18px;
+  border-radius: 14px;
+  border: 1.5px solid #d3dce8;
+  background: #fff;
+  color: var(--jcx-ink);
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  box-shadow: 0 3px 0 -1px #d3dce8, 0 10px 16px -12px rgba(11, 36, 71, 0.4);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.15s ease, border-color 0.15s ease;
+}
+.jcx .btn:hover:not(:disabled) { transform: translateY(-1px); border-color: var(--jcx-navy); }
+.jcx .btn:active:not(:disabled) { transform: translateY(2px); box-shadow: 0 1px 0 -1px #d3dce8; }
+.jcx .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.jcx .btn:focus-visible { outline: 3px solid rgba(29, 215, 138, 0.5); outline-offset: 2px; }
+.jcx .btn-sm { padding: 7px 13px; font-size: 12.5px; border-radius: 12px; }
+
+.jcx .btn-primary {
+  color: #fff;
+  border-color: var(--jcx-navy);
+  background: linear-gradient(135deg, #1e5282, var(--jcx-navy));
+  box-shadow: 0 5px 0 -2px #06162c, 0 14px 22px -10px rgba(11, 36, 71, 0.6);
+}
+.jcx .btn-primary:hover:not(:disabled) { filter: brightness(1.12); border-color: var(--jcx-navy); }
+.jcx .btn-primary:active:not(:disabled) { box-shadow: 0 1px 0 -2px #06162c, 0 6px 10px -6px rgba(11, 36, 71, 0.6); }
+
+.jcx .btn-secondary { background: #eaf1fb; border-color: #cfe0f3; color: var(--jcx-navy); box-shadow: 0 3px 0 -1px #cfe0f3; }
+
+.jcx .btn-icon { padding: 6px 9px; min-width: 32px; border-radius: 11px; font-size: 14px; }
+.jcx .btn-danger { color: #be123c; background: #fff1f3; border-color: #fecdd6; box-shadow: 0 3px 0 -1px #fecdd6; }
+.jcx .btn-danger:hover:not(:disabled) { background: #ffe1e7; border-color: #fb7185; }
+
+/* ---------------- Tables ---------------- */
+.jcx table { width: 100%; border-collapse: separate; border-spacing: 0; }
+.jcx th {
+  padding: 10px 12px;
+  text-align: left;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--jcx-muted);
+  background: #eef4fb;
+  border-bottom: 1px solid var(--jcx-line);
+}
+.jcx th.text-end, .jcx td.text-end { text-align: right; }
+.jcx th:first-child { border-radius: 12px 0 0 12px; }
+.jcx th:last-child { border-radius: 0 12px 12px 0; }
+.jcx td { padding: 10px 12px; font-size: 13.5px; border-bottom: 1px solid var(--jcx-line); vertical-align: middle; }
+.jcx tbody tr { transition: background 0.12s ease; }
+.jcx tbody tr:hover td { background: #f7fbff; }
+.jcx tbody tr:last-child td { border-bottom: none; }
+
+/* ---------------- Text helpers + badges ---------------- */
+.jcx .muted { color: var(--jcx-muted); }
+.jcx .error-text { color: #be123c; background: #fff1f3; border: 1px solid #fecdd6; border-radius: 12px; padding: 8px 12px; font-size: 13px; }
+.jcx p.muted[style*="b91c1c"] { background: #fff1f3; border: 1px solid #fecdd6; border-radius: 12px; padding: 8px 12px; }
+.jcx p.muted[style*="15803d"] { background: #ecfdf3; border: 1px solid #b7ecd0; border-radius: 12px; padding: 8px 12px; }
+.jcx p.muted[style*="b45309"] { background: #fffbeb; border: 1px solid #fde7b0; border-radius: 12px; padding: 8px 12px; }
+.jcx .badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 800;
+  background: #eaf1fb;
+  color: var(--jcx-navy);
+  border: 1px solid #d3e1f1;
+}
+.jcx .badge-success { background: #d6f7e8; color: #065f46; border-color: #a9e8c9; }
+.jcx .badge-muted { background: #eef2f7; color: #4b5d73; border-color: #dde5ee; }
+
+/* ---------------- Stepper (New Job Card) ---------------- */
+.jcx .stepper {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 20px;
+  padding: 10px;
+  background: #fff;
+  border: 1px solid var(--jcx-line);
+  border-radius: 20px;
+  box-shadow: 0 14px 26px -22px rgba(11, 36, 71, 0.45);
+}
+.jcx .step {
+  flex: 1 1 140px;
+  padding: 10px 14px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--jcx-muted);
+  background: #eef4fb;
+  border: 1.5px solid transparent;
+  border-radius: 14px;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+.jcx .step.done { color: #065f46; background: #d6f7e8; border-color: #a9e8c9; }
+.jcx .step.active {
+  color: var(--jcx-green);
+  background: linear-gradient(135deg, #1e5282, var(--jcx-navy));
+  box-shadow: 0 8px 16px -8px rgba(11, 36, 71, 0.7), 0 0 0 3px rgba(29, 215, 138, 0.25);
+  transform: translateY(-1px);
+}
+
+/* ---------------- Ledger Master list (LedgerMasterPage.tsx brings its own inline <style>; these rules are one step more specific so the list matches the other pages) ---------------- */
+.jcx .ledger-combo input:not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']) { padding-right: 30px; }
+.jcx .ledger-combo-list { border: 1px solid var(--jcx-line); border-radius: 16px; box-shadow: 0 18px 34px -18px rgba(11, 36, 71, 0.45); padding: 6px; }
+.jcx .ledger-combo-list li { border-radius: 10px; }
+.jcx .ledger-combo-list li:hover, .jcx .ledger-combo-list li.active { background: #e3f6ee; }
+.jcx .ledger-field > label { font-size: 12.5px; font-weight: 700; color: var(--jcx-ink); }
+.jcx .ledger-table { border: 1px solid var(--jcx-line); border-radius: 16px; overflow: hidden; }
+.jcx .ledger-table th { background: #eef4fb; color: var(--jcx-muted); border: none; border-bottom: 1px solid var(--jcx-line); font-size: 11.5px; letter-spacing: 0.5px; text-transform: uppercase; }
+.jcx .ledger-table td { border: none; border-bottom: 1px solid var(--jcx-line); }
+.jcx .ledger-table tbody tr:hover td { background: #f7fbff; }
+.jcx .ledger-pager button { border-radius: 12px; border: 1.5px solid #d3dce8; font-weight: 700; }
+.jcx .ledger-pager button.current { background: linear-gradient(135deg, #1e5282, var(--jcx-navy)); border-color: var(--jcx-navy); color: #fff; }
+.jcx .ledger-export-btn { border-radius: 12px; background: linear-gradient(135deg, #34e8a0, #0e9f63); box-shadow: 0 6px 12px -6px rgba(14, 159, 99, 0.7); }
+.jcx .ledger-tag { background: #d6f7e8; color: #065f46; }
+
+/* ---------------- Attendance page (AttendancePage.tsx: the root itself is the card, `className="card jcx"`; its own inline <style> is overridden one step more specifically) ---------------- */
+.jcx .attn-table-wrap { border: 1px solid var(--jcx-line); border-radius: 16px; }
+.jcx .attn-table th { background: #eef4fb; color: var(--jcx-muted); border-bottom: 1px solid var(--jcx-line); font-size: 11.5px; letter-spacing: 0.5px; text-transform: uppercase; }
+.jcx .attn-table td { border-bottom: 1px solid var(--jcx-line); }
+.jcx .attn-table tbody tr:hover td { background: #f7fbff; }
+.jcx .attn-status-select { border-radius: 999px; padding: 5px 12px; font-weight: 700; }
+.jcx .attn-status-select.present { background: #d6f7e8; border-color: #a9e8c9; color: #065f46; }
+.jcx .attn-status-select.absent { background: #ffe1e7; border-color: #fecdd6; color: #be123c; }
+.jcx .attn-status-select.halfday { background: #fef0c7; border-color: #fcd9a0; color: #92400e; }
+.jcx .attn-status-select.onleave { background: #eef2f7; border-color: #dde5ee; color: #4b5d73; }
+.jcx .attn-time-input { width: 108px; padding: 5px 10px; border-radius: 12px; }
+.jcx .attn-loc-chip { background: #e3f6ee; color: #0e7a4f; font-weight: 700; }
+
+/* ---------------- Small screens ---------------- */
+@media (max-width: 700px) {
+  .jcx h2 { font-size: 20px; }
+  .jcx .card:not([style*="padding: 0"]) { padding: 18px 14px; border-radius: 20px; }
+  .jcx .step { flex-basis: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .jcx .btn, .jcx .step, .jcx input, .jcx select, .jcx textarea { transition: none; }
+  .jcx .btn:hover:not(:disabled), .jcx .step.active { transform: none; }
+}

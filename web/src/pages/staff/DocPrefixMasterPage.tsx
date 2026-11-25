@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react'
 import { staffApi } from '../../api/client'
 import { SortTh, StatusBadge, TablePager, TableSearch, useTableView, type Column } from '../../components/TableControls'
 import { NAV_ITEMS } from '../../components/StaffLayout'
+import './BillPages.css'
 
 /**
  * SECTION 165/166 (2026-09-30) "for this 3 master create edit delete access ?" - document-
@@ -183,7 +184,7 @@ export function DocPrefixMasterPage() {
   const availableModuleOptions = MODULE_OPTIONS.filter((m) => !usedModuleKeys.has(m.key))
 
   return (
-    <div>
+    <div className="jcx">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: 12, marginBottom: 4 }}>
         <div>
           <h2 style={PAGE_TITLE_STYLE}>Prefix Master</h2>

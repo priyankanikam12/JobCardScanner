@@ -10,6 +10,7 @@ import type {
 import { VEHICLE_MODELS, variantsForModel } from '../../data/vehicleCatalog'
 import { JOB_SOURCES, SERVICE_TYPES } from '../../data/serviceCatalog'
 import { buildJobCardPrintHtml } from '../../lib/jobCardPrintHtml'
+import './BillPages.css'
 
 const STEPS = ['Customer', 'Vehicle', 'Service Details', 'Review & Create']
 // 2026-10-02 ("fix 16 Complaint in radio button"): cap on how many Complaint Master rows render
@@ -1179,7 +1180,7 @@ export function JobCardWizardPage() {
   }
 
   return (
-    <div>
+    <div className="jcx">
       <h2>New Job Card</h2>
       <div className="stepper">
         {STEPS.map((s, i) => (
