@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
-import type { BaplDmsWorkshop, PartUpload, PartUploadImportResult } from '../../types'
+import type { PartUpload, PartUploadImportResult } from '../../types'
 import { ReportDownloadButtons } from '../../components/ReportDownloadButtons'
 import { Pagination } from '../../components/Pagination'
 import { RecordDetailModal } from '../../components/RecordDetailModal'
@@ -72,6 +72,16 @@ import { usePagination } from '../../lib/usePagination'
  * dealer; the filter's Location list then follows the chosen dealer. The Upload card and the Edit /
  * Delete buttons are for dealer logins only (an upload belongs to a dealer, and an org-wide login
  * has none) - head office gets a note in their place and a read-only grid.
+ *
+ * 2026-11-25 ("in that page also all location bind which have location for login dealerAdmin role"):
+ * the Location dropdowns (upload form + results filter) now read the dealer's W-series locations from
+ * GET /api/dealer-locations first - the locations synced from the ERP into JobCardScannerDb (see
+ * Services/DealerLocationSyncService.cs), so a location newly added in the ERP is offered here by
+ * itself - and fall back to the old GET /api/bapl-dms/workshops list only when that answers nothing
+ * (sync not run yet / endpoint not deployed yet). The existing rule is unchanged: a login whose
+ * profile.workLocationCodes is non-empty (e.g. a Dealer Admin with a Work Area) sees only those
+ * locations; an empty list sees all of the dealer's locations. The upload-form Location is still
+ * pre-selected to the first accessible location for a dealer login.
  */
 /** Pins the header row to the top of a `maxHeight` + `overflowY: auto` table wrapper - see the
  * grid's own comment below for why. `var(--surface)` (not transparent) so scrolled-under body
@@ -80,6 +90,8 @@ const stickyTh: CSSProperties = { position: 'sticky', top: 0, background: 'var(-
 
 interface DealerOption { id: string; name: string }
 type DealerRow = { id: string; name?: string; active?: boolean; isActive?: boolean }
+/** One workshop location - answered by GET /api/dealer-locations (synced from the ERP) or, as a fallback, GET /api/bapl-dms/workshops. */
+interface WorkshopOption { locCode: string; locName: string }
 
 export function PartUploadPage() {
   const { profile } = useStaffAuth()
@@ -104,12 +116,23 @@ export function PartUploadPage() {
 
   // ---------------- Location dropdown - scoped to the signed-in user's own accessible workshops ----------------
   // (a head-office login has none of its own, so its Location filter follows the dealer chosen in the Dealer filter above)
-  const [workshops, setWorkshops] = useState<BaplDmsWorkshop[]>([])
+  const [workshops, setWorkshops] = useState<WorkshopOption[]>([])
   const workshopDealerId = profile?.dealerId || filterDealerId
   useEffect(() => {
     if (!workshopDealerId) { setWorkshops([]); return }
-    staffApi.get<BaplDmsWorkshop[]>('/api/bapl-dms/workshops', { params: { dealerId: workshopDealerId } })
-      .then(({ data }) => {
+    // 2026-11-25: ERP-synced locations first (GET /api/dealer-locations), old DMS list as the fallback - see this file's top-of-file doc comment.
+    const loadList = async (): Promise<WorkshopOption[]> => {
+      try {
+        const synced = await staffApi.get<WorkshopOption[]>('/api/dealer-locations', { params: { dealerId: workshopDealerId } })
+        if (Array.isArray(synced.data) && synced.data.length > 0) return synced.data
+      } catch {
+        // table / endpoint not available yet - fall back to the DMS list below
+      }
+      const dms = await staffApi.get<WorkshopOption[]>('/api/bapl-dms/workshops', { params: { dealerId: workshopDealerId } })
+      return dms.data
+    }
+    loadList()
+      .then((data) => {
         const scoped = profile?.workLocationCodes?.length ? data.filter((w) => profile.workLocationCodes.includes(w.locCode)) : data
         setWorkshops(scoped)
         if (profile?.dealerId && scoped.length > 0) setUploadLocation((prev) => prev || scoped[0].locCode)
