@@ -6,6 +6,7 @@ import { staffApi } from '../../api/client'
 import { useStaffAuth } from '../../auth/StaffAuthContext'
 import type { JobCardListResponse, JobCardSummary, JobCardStatus } from '../../types'
 import { StatusBadge } from '../../components/StatusBadge'
+import { MultiSelectDropdown } from '../../components/MultiSelectDropdown'
 import './BillPages.css'
 
 const STATUSES: JobCardStatus[] = ['Open', 'InProgress', 'PendingCustomerApproval', 'PendingQc', 'PendingClosure', 'PendingInvoice', 'Closed', 'Cancelled']
@@ -33,7 +34,7 @@ export function JobCardsListPage() {
   // instead of showing the unfiltered list first.
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
-  const { hasRole } = useStaffAuth()
+  const { hasRole, profile } = useStaffAuth()
   // 2026-10-12 ("on systemadmin and corporateadmin login the job card list shows who created the job card"): head-office logins get a "Created By" column after Created.
   const showCreatedBy = hasRole('CorporateAdmin', 'SystemAdmin')
   const [createdByMap, setCreatedByMap] = useState<Record<string, string>>({})
@@ -41,7 +42,7 @@ export function JobCardsListPage() {
   // Non-null only when a real DMS problem (not "this dealer has no DMS data", which is
   // normal and silent) kept its job cards out of the blended list below.
   const [baplDmsWarning, setBaplDmsWarning] = useState<string | null>(null)
-  const [status, setStatus] = useState<string>(() => searchParams.get('status') ?? '')
+  const [statuses, setStatuses] = useState<string[]>(() => (searchParams.get('status') ? [searchParams.get('status') as string] : []))
   const [stageKey] = useState<string>(() => searchParams.get('stageKey') ?? '')
   const [dashboardFilter] = useState<Record<string, string>>(() => {
     const found: Record<string, string> = {}
@@ -54,13 +55,23 @@ export function JobCardsListPage() {
   const [q, setQ] = useState('')
   // 2026-11-26 (more filters): chassis no, created date range for everyone; Dealer + Designation (Captain / ViceCaptain / Other) + Created By for Corporate Admin / System Admin.
   const [chassisNo, setChassisNo] = useState('')
-  const [dateFrom, setDateFrom] = useState('')
-  const [dateTo, setDateTo] = useState('')
-  const [dealerId, setDealerId] = useState('')
-  const [designation, setDesignation] = useState('')
-  const [createdById, setCreatedById] = useState('')
+  // 2026-11-26: Created from / to start as "this month" (1st .. today, local date). Not applied when the page was opened from a Dashboard KPI / status link, so those lists are not cut to this month.
+  const thisMonth = (() => {
+    const t = new Date()
+    const f = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    return { from: f(new Date(t.getFullYear(), t.getMonth(), 1)), to: f(t) }
+  })()
+  const fromDeepLink = Array.from(searchParams.keys()).length > 0
+  const [dateFrom, setDateFrom] = useState(fromDeepLink ? '' : thisMonth.from)
+  const [dateTo, setDateTo] = useState(fromDeepLink ? '' : thisMonth.to)
+  // 2026-11-26 (multi-select checkbox dropdowns): every list filter holds several ticked values; nothing ticked = no filter. Sent to the API as comma-separated lists.
+  const [dealerIds, setDealerIds] = useState<string[]>([])
+  const [designations, setDesignations] = useState<string[]>([])
+  const [createdByIds, setCreatedByIds] = useState<string[]>([])
+  const [locationCodes, setLocationCodes] = useState<string[]>([])
   const [dealers, setDealers] = useState<{ id: string; name: string }[]>([])
   const [people, setPeople] = useState<{ id: string; name: string; designation: string | null; active?: boolean }[]>([])
+  const [workshops, setWorkshops] = useState<{ locCode: string; locName: string }[]>([])
   const [loading, setLoading] = useState(true)
 
   const clearDashboardFilter = Object.keys(dashboardFilter).length > 0
@@ -70,11 +81,12 @@ export function JobCardsListPage() {
     staffApi
       .get<JobCardListResponse>('/api/jobcards', {
         params: {
-          status: status || undefined, stageKey: stageKey || undefined, q: q || undefined,
+          statuses: statuses.join(',') || undefined, stageKey: stageKey || undefined, q: q || undefined,
           chassisNo: chassisNo.trim() || undefined, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined,
-          dealerId: showCreatedBy ? dealerId || undefined : undefined,
-          createdByDesignation: showCreatedBy ? designation || undefined : undefined,
-          createdById: showCreatedBy ? createdById || undefined : undefined,
+          dealerIds: showCreatedBy ? dealerIds.join(',') || undefined : undefined,
+          createdByDesignations: showCreatedBy ? designations.join(',') || undefined : undefined,
+          createdByIds: showCreatedBy ? createdByIds.join(',') || undefined : undefined,
+          locationCodes: locationCodes.join(',') || undefined,
           ...dashboardFilter,
         },
       })
@@ -82,25 +94,43 @@ export function JobCardsListPage() {
       .finally(() => setLoading(false))
   }
 
-  useEffect(load, [status, stageKey, dateFrom, dateTo, dealerId, designation, createdById])
+  const filterKey = [statuses, dealerIds, designations, createdByIds, locationCodes].map((a) => a.join('|')).join('~')
+  useEffect(load, [filterKey, stageKey, dateFrom, dateTo])
 
-  // Dealer list (head office only) and, once a dealer is picked, that dealer's people for the Designation / Created By filters.
+  // Dealer list (head office only); the picked dealers' people feed the Created By list.
   useEffect(() => {
     if (!showCreatedBy) return
     staffApi.get<{ id: string; name: string }[]>('/api/dealers').then(({ data }) => setDealers(data)).catch(() => setDealers([]))
   }, [showCreatedBy])
+  const dealerKey = dealerIds.join('|')
   useEffect(() => {
-    setCreatedById('')
-    setDesignation('')
-    if (!showCreatedBy || !dealerId) { setPeople([]); return }
-    staffApi
-      .get<{ id: string; name: string; designation: string | null; active?: boolean }[]>('/api/users', { params: { dealerId } })
-      .then(({ data }) => setPeople(data))
-      .catch(() => setPeople([]))
-  }, [dealerId, showCreatedBy])
+    setCreatedByIds([])
+    setLocationCodes([])
+    if (!showCreatedBy || dealerIds.length === 0) { setPeople([]); return }
+    Promise.all(dealerIds.map((id) => staffApi.get<{ id: string; name: string; designation: string | null; active?: boolean }[]>('/api/users', { params: { dealerId: id } }).then((r) => r.data).catch(() => [])))
+      .then((lists) => setPeople(lists.flat()))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dealerKey, showCreatedBy])
+
+  // Service locations: a dealer login sees its own dealer's locations (limited to its Work Area); head office sees them once exactly one dealer is picked.
+  const wsDealerId = showCreatedBy ? (dealerIds.length === 1 ? dealerIds[0] : '') : (profile?.dealerId ?? '')
+  useEffect(() => {
+    if (!wsDealerId) { setWorkshops([]); return }
+    staffApi.get<{ locCode: string; locName: string }[]>('/api/bapl-dms/workshops', { params: { dealerId: wsDealerId } })
+      .then(({ data }) => {
+        const mine = (!showCreatedBy && profile?.workLocationCodes?.length) ? profile.workLocationCodes.map((c) => c.trim().toLowerCase()) : null
+        setWorkshops(mine ? data.filter((w) => mine.includes((w.locCode ?? '').trim().toLowerCase())) : data)
+      })
+      .catch(() => setWorkshops([]))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wsDealerId, showCreatedBy])
+
   const isCaptainOrVice = (d: string | null) => d === 'Captain' || d === 'ViceCaptain'
   const peopleShown = people.filter((p) =>
-    !designation ? true : designation === 'Other' ? !isCaptainOrVice(p.designation) : p.designation === designation)
+    designations.length === 0 ? true
+      : (designations.includes('Other') && !isCaptainOrVice(p.designation)) || (p.designation != null && designations.includes(p.designation)))
+  const hasAnyFilter = statuses.length + dealerIds.length + designations.length + createdByIds.length + locationCodes.length > 0 || !!(q || chassisNo) || dateFrom !== thisMonth.from || dateTo !== thisMonth.to
+  const clearFilters = () => { setStatuses([]); setDealerIds([]); setDesignations([]); setCreatedByIds([]); setLocationCodes([]); setQ(''); setChassisNo(''); setDateFrom(thisMonth.from); setDateTo(thisMonth.to) }
 
   // Item 11: search-as-you-type (debounced) instead of requiring Enter/the Search button -
   // matches the type-ahead pattern used elsewhere in the app (chassis/reg-no lookup, Part/Labour
@@ -136,21 +166,44 @@ export function JobCardsListPage() {
         <Link className="btn btn-primary" to="/jobcards/new">+ New Job Card</Link>
       </div>
 
-      <div className="card" style={{ display: 'flex', gap: 12, alignItems: 'flex-end' }}>
-        <div className="field" style={{ marginBottom: 0, flex: 1 }}>
+      {/* overflow: visible - the card's own CSS clips its content, which cut the checkbox lists off inside the card. */}
+      <div className="card" style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', overflow: 'visible', position: 'relative', zIndex: 5 }}>
+        <div className="field" style={{ marginBottom: 0, flex: '1 1 260px' }}>
           <label>Search</label>
-          <input placeholder="Job card #, customer, reg no..." value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load()} />
+          <input placeholder="Job card #, customer, reg no, chassis no..." value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load()} />
         </div>
-        <div className="field" style={{ marginBottom: 0, width: 220 }}>
-          <label>Status</label>
-          <select value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="">All statuses</option>
-            {STATUSES.map((s) => (
-              <option key={s} value={s}>{s}</option>
-            ))}
-          </select>
+        <div className="field" style={{ marginBottom: 0, width: 200 }}>
+          <label>Chassis No.</label>
+          <input placeholder="Chassis no..." value={chassisNo} onChange={(e) => setChassisNo(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load()} />
         </div>
+        <div className="field" style={{ marginBottom: 0, width: 160 }}>
+          <label>Created from</label>
+          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+        </div>
+        <div className="field" style={{ marginBottom: 0, width: 160 }}>
+          <label>Created to</label>
+          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+        </div>
+        <MultiSelectDropdown label="Status" allLabel="All statuses" options={STATUSES.map((s) => ({ value: s, label: s }))} selected={statuses} onChange={setStatuses} />
+        {showCreatedBy && (
+          <>
+            <MultiSelectDropdown label="Dealer" allLabel="All dealers" width={240} options={dealers.map((d) => ({ value: d.id, label: d.name }))} selected={dealerIds} onChange={setDealerIds} />
+            <MultiSelectDropdown
+              label="Role (created by)" allLabel="All roles" disabled={dealerIds.length === 0}
+              options={[{ value: 'Captain', label: 'Captain' }, { value: 'ViceCaptain', label: 'Vice Captain' }, { value: 'Other', label: 'Other roles' }]}
+              selected={designations} onChange={setDesignations}
+            />
+            <MultiSelectDropdown
+              label="Created by" allLabel={dealerIds.length === 0 ? 'Pick a dealer first' : 'Everyone'} disabled={dealerIds.length === 0} width={220}
+              options={peopleShown.map((p) => ({ value: p.id, label: p.name, hint: p.designation ?? undefined }))} selected={createdByIds} onChange={setCreatedByIds}
+            />
+          </>
+        )}
+        {workshops.length > 0 && (
+          <MultiSelectDropdown label="Service location" allLabel="All locations" width={220} options={workshops.map((w) => ({ value: w.locCode, label: `${w.locName} (${w.locCode})` }))} selected={locationCodes} onChange={setLocationCodes} />
+        )}
         <button className="btn" onClick={load}>Search</button>
+        {hasAnyFilter && <button className="btn" onClick={clearFilters}>Clear filters</button>}
       </div>
 
       {clearDashboardFilter && (

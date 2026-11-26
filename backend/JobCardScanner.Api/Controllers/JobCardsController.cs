@@ -310,8 +310,14 @@ public class JobCardsController : ControllerBase
         [FromQuery] bool? pendingBucket,
         // 2026-11-26 (more filters on /jobcards): chassis no, created date range, and - Corporate Admin / System Admin only - who created the card (a person, or a designation: Captain / ViceCaptain / Other).
         [FromQuery] string? chassisNo, [FromQuery] DateTime? dateFrom, [FromQuery] DateTime? dateTo,
-        [FromQuery] Guid? createdById, [FromQuery] string? createdByDesignation)
+        [FromQuery] Guid? createdById, [FromQuery] string? createdByDesignation,
+        // 2026-11-26 (multi-select checkbox filters): comma-separated lists, e.g. statuses=Open,Closed  dealerIds=guid,guid  createdByDesignations=Captain,ViceCaptain,Other  locationCodes=CUS0260W1,CUS0260W2.
+        // dealerIds / createdByIds / createdByDesignations are honoured for Corporate Admin / System Admin only; statuses and locationCodes for everyone (on top of the caller's own dealer / Work Area scope).
+        [FromQuery] string? statuses = null, [FromQuery] string? dealerIds = null, [FromQuery] string? createdByIds = null,
+        [FromQuery] string? createdByDesignations = null, [FromQuery] string? locationCodes = null)
     {
+        static List<string> Csv(string? s) => (s ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        static List<Guid> CsvGuids(string? s) => Csv(s).Select(x => Guid.TryParse(x, out var g) ? g : Guid.Empty).Where(g => g != Guid.Empty).ToList();
         var query = _db.JobCards.AsNoTracking()
             .Include(j => j.Customer).Include(j => j.Vehicle).Include(j => j.CurrentStage)
             .Include(j => j.ServiceAdvisor).Include(j => j.AssignedTechnician).Include(j => j.Photos)
@@ -346,6 +352,8 @@ public class JobCardsController : ControllerBase
         if (isOrgWideRole)
         {
             if (dealerId.HasValue) query = query.Where(j => j.DealerId == dealerId);
+            var dealerIdList = CsvGuids(dealerIds);
+            if (dealerIdList.Count > 0) query = query.Where(j => dealerIdList.Contains(j.DealerId));
         }
         else
         {
@@ -364,6 +372,10 @@ public class JobCardsController : ControllerBase
         }
         var effectiveDealerId = isOrgWideRole ? dealerId : _currentUser.DealerId;
         if (status.HasValue) query = query.Where(j => j.Status == status);
+        var statusList = Csv(statuses).Select(x => Enum.TryParse<JobCardStatus>(x, true, out var st) ? (JobCardStatus?)st : null).Where(x => x.HasValue).Select(x => x!.Value).ToList();
+        if (statusList.Count > 0) query = query.Where(j => statusList.Contains(j.Status));
+        var locationList = Csv(locationCodes);
+        if (locationList.Count > 0) query = query.Where(j => j.BaplServiceLocationCode != null && locationList.Contains(j.BaplServiceLocationCode));
         if (technicianId.HasValue) query = query.Where(j => j.AssignedTechnicianId == technicianId);
         // Lets the Dealer Dashboard's Quick Links ("Waiting for Parts", "Ready for Pickup") deep-link
         // straight to the filtered list by workflow stage, not just by the coarser Status enum.
@@ -404,6 +416,19 @@ public class JobCardsController : ControllerBase
                     query = query.Where(j => !_db.Users.Any(u => u.Id == j.CreatedById && (u.Designation == "Captain" || u.Designation == "ViceCaptain")));
                 else
                     query = query.Where(j => _db.Users.Any(u => u.Id == j.CreatedById && u.Designation == desig));
+            }
+            var createdByList = CsvGuids(createdByIds);
+            var createdByNullable = createdByList.Select(g => (Guid?)g).ToList();
+            if (createdByNullable.Count > 0) query = query.Where(j => createdByNullable.Contains(j.CreatedById));
+            var desigList = Csv(createdByDesignations);
+            if (desigList.Count > 0)
+            {
+                var includeOther = desigList.Any(x => x.Equals("Other", StringComparison.OrdinalIgnoreCase));
+                var named = desigList.Where(x => !x.Equals("Other", StringComparison.OrdinalIgnoreCase)).ToList();
+                var hasNamed = named.Count > 0;
+                query = query.Where(j =>
+                    (hasNamed && _db.Users.Any(u => u.Id == j.CreatedById && u.Designation != null && named.Contains(u.Designation))) ||
+                    (includeOther && !_db.Users.Any(u => u.Id == j.CreatedById && (u.Designation == "Captain" || u.Designation == "ViceCaptain"))));
             }
         }
 

@@ -204,8 +204,9 @@ public class DealerStageReportController : ControllerBase
     // ------------------------------------------------------------------ one dealer: roles -> people -> job cards
 
     [HttpGet]
-    public async Task<IActionResult> Get([FromQuery] Guid dealerId, [FromQuery] DateOnly? dateFrom, [FromQuery] DateOnly? dateTo, [FromQuery] string? dateBasis)
+    public async Task<IActionResult> Get([FromQuery] Guid dealerId, [FromQuery] DateOnly? dateFrom, [FromQuery] DateOnly? dateTo, [FromQuery] string? dateBasis, [FromQuery] string? locationCodes = null)
     {
+        var locList = LocCsv(locationCodes);
         var dealer = await _db.Dealers.AsNoTracking()
             .Where(d => d.Id == dealerId)
             .Select(d => new { d.Id, d.Name, d.Code })
@@ -217,9 +218,13 @@ public class DealerStageReportController : ControllerBase
             .Select(u => new { u.Id, u.Name, u.Role, u.Designation, u.Active })
             .ToListAsync();
         var userById = users.ToDictionary(u => u.Id);
+        var locNames = await LocationNamesAsync(dealerId);
 
         var byClosed = IsClosedBasis(dateBasis);
-        var jobs = await ApplyDates(_db.JobCards.AsNoTracking().Where(j => j.DealerId == dealerId), dateFrom, dateTo, byClosed)
+        var jobsBase = _db.JobCards.AsNoTracking().Where(j => j.DealerId == dealerId);
+        // 2026-11-26 (Service Location filter): only job cards opened at the ticked locations (counts, roles, people and the job-card list all follow it).
+        if (locList.Count > 0) jobsBase = jobsBase.Where(j => j.BaplServiceLocationCode != null && locList.Contains(j.BaplServiceLocationCode));
+        var jobs = await ApplyDates(jobsBase, dateFrom, dateTo, byClosed)
             .OrderByDescending(j => j.CreatedAt)
             .Select(j => new
             {
@@ -233,6 +238,8 @@ public class DealerStageReportController : ControllerBase
                 CreatedById = (Guid?)j.CreatedById,
                 RegNo = j.Vehicle != null ? j.Vehicle.RegNo : null,
                 ChassisNo = j.Vehicle != null ? j.Vehicle.Vin : null,   // 2026-10-07: Chassis No column in the job card list / Excel / PDF
+                LocName = j.BaplServiceLocation,                          // 2026-11-26: Service Location column
+                LocCode = j.BaplServiceLocationCode,
                 CustomerName = j.Customer != null ? j.Customer.Name : null,
             })
             .ToListAsync();
@@ -304,7 +311,8 @@ public class DealerStageReportController : ControllerBase
                 role = u.Role.ToString();
             }
             return new JobRow(j.Id, j.JobCardNumber, j.CreatedAt, j.Status.ToString(), j.StageLabel,
-                JobCardStageBuckets.Classify(j.Status, j.StageKey), j.ClosedAt, j.CreatedById, createdBy, role, j.RegNo, j.ChassisNo, j.CustomerName);
+                JobCardStageBuckets.Classify(j.Status, j.StageKey), j.ClosedAt, j.CreatedById, createdBy, role, j.RegNo, j.ChassisNo, j.CustomerName,
+                ShowLocation(null, j.LocName, j.LocCode, locNames));
         }).ToList();
 
         return Ok(new
@@ -334,12 +342,18 @@ public class DealerStageReportController : ControllerBase
     /// `truncated` says the list was cut). Each row carries its item lines so the page can expand it in place.
     /// </summary>
     [HttpGet("repair-bills")]
-    public async Task<IActionResult> RepairBillsForDealer([FromQuery] Guid dealerId, [FromQuery] DateOnly? dateFrom, [FromQuery] DateOnly? dateTo)
+    public async Task<IActionResult> RepairBillsForDealer([FromQuery] Guid dealerId, [FromQuery] DateOnly? dateFrom, [FromQuery] DateOnly? dateTo, [FromQuery] string? locationCodes = null)
     {
+        var locList = LocCsv(locationCodes);
+        var locNames = await LocationNamesAsync(dealerId);
+        var locOrNames = LocFilterValues(locList, locNames);
         var dealer = await _db.Dealers.AsNoTracking().Where(d => d.Id == dealerId).Select(d => new { d.Id, d.Name, d.Code }).FirstOrDefaultAsync();
         if (dealer is null) return NotFound(new { message = "Dealer not found." });
 
         var q = _db.RepairBillDocs.AsNoTracking().Where(r => r.DealerId == dealerId && !r.IsDeleted);
+        if (locList.Count > 0)
+            q = q.Where(r => (r.Location != null && locOrNames.Contains(r.Location))
+                          || (r.JobCard != null && r.JobCard.BaplServiceLocationCode != null && locList.Contains(r.JobCard.BaplServiceLocationCode)));
         if (dateFrom is not null) { var f = dateFrom.Value; q = q.Where(r => r.BillDate >= f); }
         if (dateTo is not null) { var t = dateTo.Value; q = q.Where(r => r.BillDate <= t); }
         var total = await q.CountAsync();
@@ -349,7 +363,8 @@ public class DealerStageReportController : ControllerBase
             .Take(MaxDocRows).ToListAsync();
 
         var rows = bills.Select(b => new DocRow(
-            b.Id, b.BillNumber, b.BillDate, b.Status.ToString(), b.PartyName, b.RegNo, b.ChassisNo, b.Location, b.BillType,
+            b.Id, b.BillNumber, b.BillDate, b.Status.ToString(), b.PartyName, b.RegNo, b.ChassisNo,
+            ShowLocation(b.Location, b.JobCard?.BaplServiceLocation, b.JobCard?.BaplServiceLocationCode, locNames), b.BillType,
             b.JobCard?.JobCardNumber, b.Items.Count, b.TotalAmount, b.CreatedBy?.Name,
             b.Items.Select(i => new DocItemRow(i.ItemCode, i.ItemDescription, i.ItemType.ToString(), (decimal)i.Qty, i.Rate, i.TotalAmount)).ToList())).ToList();
 
@@ -357,12 +372,18 @@ public class DealerStageReportController : ControllerBase
     }
 
     [HttpGet("material-transfers")]
-    public async Task<IActionResult> MaterialTransfersForDealer([FromQuery] Guid dealerId, [FromQuery] DateOnly? dateFrom, [FromQuery] DateOnly? dateTo)
+    public async Task<IActionResult> MaterialTransfersForDealer([FromQuery] Guid dealerId, [FromQuery] DateOnly? dateFrom, [FromQuery] DateOnly? dateTo, [FromQuery] string? locationCodes = null)
     {
+        var locList = LocCsv(locationCodes);
+        var locNames = await LocationNamesAsync(dealerId);
+        var locOrNames = LocFilterValues(locList, locNames);
         var dealer = await _db.Dealers.AsNoTracking().Where(d => d.Id == dealerId).Select(d => new { d.Id, d.Name, d.Code }).FirstOrDefaultAsync();
         if (dealer is null) return NotFound(new { message = "Dealer not found." });
 
         var q = _db.MaterialTransferDocs.AsNoTracking().Where(m => m.DealerId == dealerId);
+        if (locList.Count > 0)
+            q = q.Where(m => (m.Location != null && locOrNames.Contains(m.Location))
+                          || (m.JobCard != null && m.JobCard.BaplServiceLocationCode != null && locList.Contains(m.JobCard.BaplServiceLocationCode)));
         if (dateFrom is not null) { var f = dateFrom.Value; q = q.Where(m => m.TransferDate >= f); }
         if (dateTo is not null) { var t = dateTo.Value; q = q.Where(m => m.TransferDate <= t); }
         var total = await q.CountAsync();
@@ -372,7 +393,8 @@ public class DealerStageReportController : ControllerBase
             .Take(MaxDocRows).ToListAsync();
 
         var rows = docs.Select(m => new DocRow(
-            m.Id, m.TransferNumber, m.TransferDate, m.Status.ToString(), m.PartyName, null, null, m.Location, m.TransferType.ToString(),
+            m.Id, m.TransferNumber, m.TransferDate, m.Status.ToString(), m.PartyName, null, null,
+            ShowLocation(m.Location, m.JobCard?.BaplServiceLocation, m.JobCard?.BaplServiceLocationCode, locNames), m.TransferType.ToString(),
             m.JobCard?.JobCardNumber, m.Items.Count, m.TotalAmount, null,
             m.Items.Select(i => new DocItemRow(i.ItemCode, i.ItemDescription, i.ItemType.ToString(), (decimal)i.Qty, i.Rate, i.Amount)).ToList())).ToList();
 
@@ -380,6 +402,43 @@ public class DealerStageReportController : ControllerBase
     }
 
     // ------------------------------------------------------------------ helpers / DTOs
+
+    private static List<string> LocCsv(string? s) =>
+        (s ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+    /// <summary>Location code -> name for one dealer (dbo.DealerLocations, the ERP-synced list; inactive ones too so old documents still resolve).</summary>
+    private async Task<Dictionary<string, string>> LocationNamesAsync(Guid dealerId)
+    {
+        var rows = await _db.DealerLocations.AsNoTracking().Where(l => l.DealerId == dealerId)
+            .Select(l => new { l.LocationCode, l.LocationName }).ToListAsync();
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var r in rows)
+            if (!string.IsNullOrWhiteSpace(r.LocationCode)) map[r.LocationCode.Trim()] = string.IsNullOrWhiteSpace(r.LocationName) ? r.LocationCode : r.LocationName!.Trim();
+        return map;
+    }
+
+    /// <summary>A document's Location text may hold the code or the name, so a location filter matches both.</summary>
+    private static List<string> LocFilterValues(List<string> codes, Dictionary<string, string> names)
+    {
+        var all = new List<string>(codes);
+        foreach (var c in codes) if (names.TryGetValue(c, out var n)) all.Add(n);
+        return all.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>
+    /// 2026-11-26 ("fix location"): what the Location column shows. A saved value that is a location CODE is shown as "Name (CODE)"; a name is kept as is.
+    /// When the document has no location of its own (it was often left blank) the linked job card's service location is used instead; "-" only if neither exists.
+    /// </summary>
+    private static string? ShowLocation(string? own, string? jcName, string? jcCode, Dictionary<string, string> names)
+    {
+        string? Pretty(string? v)
+        {
+            if (string.IsNullOrWhiteSpace(v)) return null;
+            v = v.Trim();
+            return names.TryGetValue(v, out var n) && !n.Equals(v, StringComparison.OrdinalIgnoreCase) ? $"{n} ({v})" : v;
+        }
+        return Pretty(own) ?? Pretty(jcName) ?? Pretty(jcCode);
+    }
 
     private static object ToCounts(Counter c, int materialTransfers = 0, int repairBills = 0) => new
     {
@@ -408,5 +467,5 @@ public class DealerStageReportController : ControllerBase
     private sealed record RoleRow(string Role, int Users, int Created, int Open, int InProgress, int ReadyForDelivery, int Invoiced, int Closed, int Other, int NotClosed, List<PersonRow> People);
     private sealed record DocItemRow(string? Code, string? Description, string? ItemType, decimal Qty, decimal Rate, decimal Amount);
     private sealed record DocRow(Guid Id, string Number, DateOnly Date, string Status, string? Party, string? RegNo, string? ChassisNo, string? Location, string? Type, string? JobNo, int ItemCount, decimal TotalAmount, string? PreparedBy, List<DocItemRow> Items);
-    private sealed record JobRow(Guid Id, string JobCardNumber, DateTime CreatedAt, string Status, string? Stage, string Bucket, DateTime? ClosedAt, Guid? CreatedById, string CreatedBy, string Role, string? RegNo, string? ChassisNo, string? CustomerName);
+    private sealed record JobRow(Guid Id, string JobCardNumber, DateTime CreatedAt, string Status, string? Stage, string Bucket, DateTime? ClosedAt, Guid? CreatedById, string CreatedBy, string Role, string? RegNo, string? ChassisNo, string? CustomerName, string? Location);
 }

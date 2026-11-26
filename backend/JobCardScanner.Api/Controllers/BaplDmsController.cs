@@ -373,8 +373,43 @@ public class BaplDmsController : ControllerBase
         try
         {
             var local = await WorkshopLocationStore.GetAsync(_db, dealerId, q, HttpContext.RequestAborted);
-            if (local.Count > 0)
-                return Ok(local.Select(r => new { locCode = r.LocCode, locName = r.LocName, dealerCode = r.DealerCode, dealerName = r.DealerName }));
+
+            // 2026-11-26 ("why 3 location after having all location shown in jc"): the Employees Work Area list reads dbo.DealerLocations (hourly ERP sync, has W1-W4) but this list read only
+            // the older dbo.WorkshopLocations (W1-W3), so the job card dropdown missed CUS0260W4. Both are now merged by location code (the ERP-synced name wins) so every page agrees.
+            var merged = new Dictionary<string, (string LocCode, string LocName, string? DealerCode, string? DealerName)>(StringComparer.OrdinalIgnoreCase);
+            foreach (var r in local)
+                merged[r.LocCode.Trim()] = (r.LocCode, r.LocName, r.DealerCode, r.DealerName);
+            try
+            {
+                var dl = _db.DealerLocations.AsNoTracking().Where(l => l.IsActive);
+                if (dealerId.HasValue) dl = dl.Where(l => l.DealerId == dealerId);
+                if (!string.IsNullOrWhiteSpace(q))
+                {
+                    var qq = q.Trim();
+                    dl = dl.Where(l => l.LocationCode.Contains(qq) || (l.LocationName != null && l.LocationName.Contains(qq)));
+                }
+                var synced = await dl.ToListAsync(HttpContext.RequestAborted);
+                var dealerNames = await _db.Dealers.AsNoTracking().Select(d => new { d.Id, d.Name }).ToDictionaryAsync(d => d.Id, d => d.Name, HttpContext.RequestAborted);
+                foreach (var l in synced)
+                {
+                    string? dn = null;
+                    if (l.DealerId.HasValue) dealerNames.TryGetValue(l.DealerId.Value, out dn);
+                    merged[l.LocationCode.Trim()] = (l.LocationCode, string.IsNullOrWhiteSpace(l.LocationName) ? l.LocationCode : l.LocationName!, l.DealerCode, dn);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "DealerLocations could not be merged into the workshop list - using WorkshopLocations only.");
+            }
+            if (merged.Count > 0)
+            {
+                static int Wn(string c) { var m = System.Text.RegularExpressions.Regex.Match(c ?? "", @"W(\d+)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase); return m.Success && int.TryParse(m.Groups[1].Value, out var n) ? n : int.MaxValue; }
+                return Ok(merged.Values
+                    .OrderBy(r => r.DealerName, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(r => Wn(r.LocCode))
+                    .ThenBy(r => r.LocCode, StringComparer.OrdinalIgnoreCase)
+                    .Select(r => new { locCode = r.LocCode, locName = r.LocName, dealerCode = r.DealerCode, dealerName = r.DealerName }));
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

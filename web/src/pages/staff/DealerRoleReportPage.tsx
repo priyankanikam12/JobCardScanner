@@ -4,6 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { staffApi } from '../../api/client'
 import { isReportDealer } from '../../lib/reportDealers'
+import { MultiSelectDropdown } from '../../components/MultiSelectDropdown'
 import {
   STAGE_COLUMNS, exportDealerRoleReportExcel, exportDealerRoleReportPdf, exportDealerSummaryExcel, exportDealerSummaryPdf,
   fmtDateOnly, fmtDateTime, periodLabel,
@@ -130,6 +131,17 @@ export function DealerRoleReportPage() {
   const [dealersLoaded, setDealersLoaded] = useState(false)
   const [dealersError, setDealersError] = useState<string | null>(null)
   const [dealerId, setDealerId] = useState('') // '' = all dealers
+  // 2026-11-26 (Service Location filter): ticked location codes of the picked dealer; nothing ticked = every location.
+  const [locationCodes, setLocationCodes] = useState<string[]>([])
+  const [workshops, setWorkshops] = useState<{ locCode: string; locName: string }[]>([])
+  const locKey = locationCodes.join('|')
+  useEffect(() => {
+    setLocationCodes([])
+    if (!dealerId) { setWorkshops([]); return }
+    staffApi.get<{ locCode: string; locName: string }[]>('/api/bapl-dms/workshops', { params: { dealerId } })
+      .then(({ data }) => setWorkshops(Array.isArray(data) ? data : []))
+      .catch(() => setWorkshops([]))
+  }, [dealerId])
   const [status, setStatus] = useState<SummaryKey>(urlStatus && SUMMARY_KEYS.includes(urlStatus) ? (urlStatus as SummaryKey) : 'created')
   // From the dashboard cards the dates arrive in the URL (today..today); otherwise this month -> today.
   const [dateFrom, setDateFrom] = useState(params.get('from') ?? startOfMonthIso())
@@ -203,7 +215,7 @@ export function DealerRoleReportPage() {
     setDocOpen(null)
     staffApi
       .get<DealerDocList>(`/api/dashboard/dealer-stage-report/${status === 'repairBills' ? 'repair-bills' : 'material-transfers'}`, {
-        params: { dealerId, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined },
+        params: { dealerId, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined, locationCodes: locationCodes.join(',') || undefined },
       })
       .then((res) => setDocs(res.data))
       .catch((err: { response?: { data?: { message?: string } } }) => {
@@ -211,7 +223,8 @@ export function DealerRoleReportPage() {
         setDocsError(err?.response?.data?.message ?? 'Could not load the documents for this dealer.')
       })
       .finally(() => setDocsLoading(false))
-  }, [dealerId, status, dateFrom, dateTo])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dealerId, status, dateFrom, dateTo, locKey])
 
   // ---- one dealer's report ----
   useEffect(() => {
@@ -222,7 +235,7 @@ export function DealerRoleReportPage() {
     setDrill(null)
     staffApi
       .get<DealerStageReport>('/api/dashboard/dealer-stage-report', {
-        params: { dealerId, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined, dateBasis: dateBasis === 'closed' ? 'closed' : undefined },
+        params: { dealerId, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined, dateBasis: dateBasis === 'closed' ? 'closed' : undefined, locationCodes: locationCodes.join(',') || undefined },
       })
       .then((res) => {
         setReport(res.data)
@@ -240,7 +253,7 @@ export function DealerRoleReportPage() {
       })
       .finally(() => setLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dealerId, dateFrom, dateTo, dateBasis])
+  }, [dealerId, dateFrom, dateTo, dateBasis, locKey])
 
   const toggle = (role: string) =>
     setExpanded((prev) => {
@@ -312,7 +325,8 @@ export function DealerRoleReportPage() {
           : 'Job cards across the dealers below for the dates you choose. Click a tile to see it dealer by dealer, then a dealer to see its roles, people and job cards.'}
       </p>
 
-      <div className="card">
+      {/* overflow: visible so the Service location checkbox list is not clipped by the card */}
+      <div className="card" style={{ overflow: 'visible', position: 'relative', zIndex: 5 }}>
         {/* .form-row is an equal-width grid that squeezed the Dealer select into one narrow column -
            plain flexbox instead, so the Dealer field gets the room it needs and everything wraps. */}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-end' }}>
@@ -323,6 +337,13 @@ export function DealerRoleReportPage() {
               {dealers.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
             </select>
           </div>
+          {dealerId && workshops.length > 0 && (
+            <MultiSelectDropdown
+              label="Service location" allLabel="All locations" width={240}
+              options={workshops.map((w) => ({ value: w.locCode, label: `${w.locName} (${w.locCode})` }))}
+              selected={locationCodes} onChange={setLocationCodes}
+            />
+          )}
           <div className="field" style={{ flex: '0 0 auto', marginBottom: 0 }}>
             <label>{dateBasis === 'closed' ? 'Closed from' : 'Created from'}</label>
             <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
@@ -658,7 +679,7 @@ export function DealerRoleReportPage() {
                 <table>
                   <thead>
                     <tr>
-                      <th>Sr</th><th>Job Card No</th><th>Created (IST)</th><th>Stage</th><th>Status</th><th>Created By</th><th>Role</th><th>Chassis No</th><th>Reg No</th><th>Customer</th>
+                      <th>Sr</th><th>Job Card No</th><th>Created (IST)</th><th>Stage</th><th>Status</th><th>Created By</th><th>Role</th><th>Chassis No</th><th>Reg No</th><th>Customer</th><th>Service Location</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -674,10 +695,11 @@ export function DealerRoleReportPage() {
                         <td>{j.chassisNo ?? '-'}</td>
                         <td>{j.regNo ?? '-'}</td>
                         <td>{j.customerName ?? '-'}</td>
+                        <td>{j.location ?? '-'}</td>
                       </tr>
                     ))}
                     {drillJobs.length === 0 && (
-                      <tr><td colSpan={10} className="muted" style={{ textAlign: 'center', padding: 16 }}>No job cards in this selection.</td></tr>
+                      <tr><td colSpan={11} className="muted" style={{ textAlign: 'center', padding: 16 }}>No job cards in this selection.</td></tr>
                     )}
                   </tbody>
                 </table>
