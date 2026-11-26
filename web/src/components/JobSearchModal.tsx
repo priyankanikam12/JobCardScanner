@@ -1,5 +1,5 @@
 // web\src\components\JobSearchModal.tsx
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { staffApi } from '../api/client'
 import type { JobSearchResult } from '../types'
 
@@ -76,6 +76,7 @@ export function JobSearchModal({ onSelect, onClose, onlyWithMaterialTransfer = f
   const [searched, setSearched] = useState(false)
 
   const search = () => {
+    const run = ++latestRun.current
     setLoading(true)
     setError(null)
     staffApi
@@ -92,15 +93,25 @@ export function JobSearchModal({ onSelect, onClose, onlyWithMaterialTransfer = f
           excludeClosed: onlyWithMaterialTransfer ? undefined : true,
         },
       })
-      .then(({ data }) => { setRows(data); setSearched(true) })
-      .catch(() => setError('Could not search job cards.'))
-      .finally(() => setLoading(false))
+      .then(({ data }) => { if (run === latestRun.current) { setRows(data); setSearched(true) } })
+      .catch(() => { if (run === latestRun.current) setError('Could not search job cards.') })
+      .finally(() => { if (run === latestRun.current) setLoading(false) })
   }
   // 2026-09-23 - grid-button mode auto-runs the search on open (Date From/To already default to
   // "this month", same as before) so the grid shows results immediately rather than an empty
   // "Set your filters and click Search" state - matching "click open material transfered job
   // cards history" (i.e. a ready history list, not another empty search form to fill in first).
-  useEffect(() => { if (onlyWithMaterialTransfer) search() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // 2026-11-26 ("auto search in material transfer and repair bill pages"): this modal now searches by itself - once when it opens (every mode, not only the history one) and again 350 ms
+  // after the last change to any filter (dates, Job No, Registration No, Chassis Number), so nobody has to press Search. The Search button and Enter still work. The first search is immediate;
+  // later ones wait for typing to stop, and a slow older answer never overwrites a newer one (latestRun).
+  const latestRun = useRef(0)
+  const firstRun = useRef(true)
+  useEffect(() => {
+    const wait = firstRun.current ? 0 : 350
+    firstRun.current = false
+    const handle = setTimeout(search, wait)
+    return () => clearTimeout(handle)
+  }, [dateFrom, dateTo, jobNo, regNo, chassisNo]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div
