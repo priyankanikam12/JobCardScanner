@@ -307,7 +307,10 @@ public class JobCardsController : ControllerBase
         // computed fields exactly, so a KPI card and this list filter always agree on what counts).
         [FromQuery] bool? excludeClosed, [FromQuery] bool? overdue, [FromQuery] bool? createdToday,
         [FromQuery] bool? deliveredToday, [FromQuery] bool? closedThisMonth, [FromQuery] bool? warrantyOnly,
-        [FromQuery] bool? pendingBucket)
+        [FromQuery] bool? pendingBucket,
+        // 2026-11-26 (more filters on /jobcards): chassis no, created date range, and - Corporate Admin / System Admin only - who created the card (a person, or a designation: Captain / ViceCaptain / Other).
+        [FromQuery] string? chassisNo, [FromQuery] DateTime? dateFrom, [FromQuery] DateTime? dateTo,
+        [FromQuery] Guid? createdById, [FromQuery] string? createdByDesignation)
     {
         var query = _db.JobCards.AsNoTracking()
             .Include(j => j.Customer).Include(j => j.Vehicle).Include(j => j.CurrentStage)
@@ -352,7 +355,8 @@ public class JobCardsController : ControllerBase
         // doc comment): a user assigned to specific DMS workshop locations only sees job cards
         // opened at one of THEIR locations, on top of (not instead of) the dealer scoping above.
         // Empty = unrestricted, so this is a no-op for every user before this feature shipped.
-        var allowedLocations = _currentUser.WorkLocationCodes;
+        // 2026-11-26: Corporate Admin / System Admin always see every dealer, every role and every location - a Work Area never narrows them. Every other role sees only its assigned locations.
+        var allowedLocations = isOrgWideRole ? new List<string>() : _currentUser.WorkLocationCodes.ToList();
         if (allowedLocations.Count > 0)
         {
             var allowedLocationsList = allowedLocations.ToList(); // EF Core translates List<T>.Contains to SQL IN (...) reliably; IReadOnlyList<T> is not guaranteed to
@@ -379,7 +383,28 @@ public class JobCardsController : ControllerBase
                 j.JobCardNumber.Contains(q) ||
                 j.Customer!.Name.Contains(q) ||
                 j.Customer!.Mobile.Contains(q) ||
-                (j.Vehicle!.RegNo != null && j.Vehicle.RegNo.Replace(" ", "").Replace("-", "").Contains(normalizedQ)));
+                (j.Vehicle!.RegNo != null && j.Vehicle.RegNo.Replace(" ", "").Replace("-", "").Contains(normalizedQ)) ||
+                (j.Vehicle!.Vin != null && j.Vehicle.Vin.Contains(q)));   // 2026-11-26: the Search box also matches the chassis no
+        }
+        if (!string.IsNullOrWhiteSpace(chassisNo))
+        {
+            var ch = chassisNo.Trim();
+            query = query.Where(j => j.Vehicle!.Vin != null && j.Vehicle.Vin.Contains(ch));
+        }
+        if (dateFrom.HasValue) { var from = dateFrom.Value.Date; query = query.Where(j => j.CreatedAt >= from); }
+        if (dateTo.HasValue) { var toExclusive = dateTo.Value.Date.AddDays(1); query = query.Where(j => j.CreatedAt < toExclusive); }
+        // Creator filters: org-wide roles only (a dealer login already sees just its own dealer, and the person filter is a head-office tool).
+        if (isOrgWideRole)
+        {
+            if (createdById.HasValue) query = query.Where(j => j.CreatedById == createdById.Value);
+            var desig = (createdByDesignation ?? string.Empty).Trim();
+            if (desig.Length > 0)
+            {
+                if (desig.Equals("Other", StringComparison.OrdinalIgnoreCase))
+                    query = query.Where(j => !_db.Users.Any(u => u.Id == j.CreatedById && (u.Designation == "Captain" || u.Designation == "ViceCaptain")));
+                else
+                    query = query.Where(j => _db.Users.Any(u => u.Id == j.CreatedById && u.Designation == desig));
+            }
         }
 
         // Dashboard KPI-card deep-link filters - each mirrors the exact same WHERE clause
@@ -481,7 +506,7 @@ public class JobCardsController : ControllerBase
 
         query = isOrgWideRole ? query : query.Where(j => j.DealerId == _currentUser.DealerId);
 
-        var allowedLocations = _currentUser.WorkLocationCodes;
+        var allowedLocations = isOrgWideRole ? new List<string>() : _currentUser.WorkLocationCodes.ToList(); // 2026-11-26: org-wide roles are never narrowed by a Work Area
         if (allowedLocations.Count > 0)
         {
             var allowedLocationsList = allowedLocations.ToList();
@@ -545,7 +570,7 @@ public class JobCardsController : ControllerBase
         // 2026-09-17 "Employees" page - same Work Area location scoping as List() above. A job
         // card at a location outside the caller's Work Area 404s, same as one that doesn't exist -
         // not a 403, so this doesn't reveal that a job card exists at a location the caller can't see.
-        var allowedLocationsForGet = _currentUser.WorkLocationCodes;
+        var allowedLocationsForGet = (_currentUser.Role is StaffRole.CorporateAdmin or StaffRole.SystemAdmin) ? new List<string>() : _currentUser.WorkLocationCodes.ToList(); // 2026-11-26: org-wide roles see every location
         if (allowedLocationsForGet.Count > 0 && (jc.BaplServiceLocationCode is null || !allowedLocationsForGet.Contains(jc.BaplServiceLocationCode, StringComparer.OrdinalIgnoreCase)))
             return NotFound();
         // 2026-09-28 ("from dms dont fetch jobcards and dont save jobcards only in our jobcard db

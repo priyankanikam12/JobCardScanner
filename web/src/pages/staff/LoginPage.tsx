@@ -63,7 +63,7 @@ export function LoginPage() {
     setError(null)
     setSubmitting(true)
     try {
-      await dealerLogin(email, password)
+      await dealerLogin(email.trim(), password)
       writeRememberedUsername(rememberMe ? email.trim() : null)
       await refresh()
       // If this account's mustChangePassword flag is set, RequireStaff (guarding /dashboard)
@@ -71,9 +71,21 @@ export function LoginPage() {
       // needed here, just go to the normal destination and let the guard decide.
       navigate('/dashboard', { replace: true })
     } catch (err: unknown) {
+      // 2026-11-26: "Invalid email or password." is shown ONLY when the server said so (HTTP 401). A server error, a gateway timeout or no answer at all used to show the same text, so people with a
+      // correct password believed it was their password. The real status goes to the browser console (F12) for IT.
+      const e = err as { code?: string; message?: string; response?: { status?: number; data?: { message?: string } } }
+      const status = e?.response?.status
+      console.error('[login] POST /api/dealer-auth/login failed:', status ?? '', e?.code ?? '', e?.message ?? '')
+      const serverMessage = e?.response?.data?.message
       const message =
-        (err as { response?: { data?: { message?: string } } })?.response?.data?.message ??
-        'Invalid email or password.'
+        serverMessage ??
+        (status === 401 || status === 400
+          ? 'Invalid email or password.'
+          : status === 429
+            ? 'Too many attempts. Please wait a minute and try again.'
+            : status
+              ? `The server could not complete sign-in (HTTP ${status}). This is not a password problem - please try again in a minute, and tell IT if it continues.`
+              : 'Cannot reach the server. Check your internet connection and try again - this is not a password problem.')
       setError(message)
     } finally {
       setSubmitting(false)

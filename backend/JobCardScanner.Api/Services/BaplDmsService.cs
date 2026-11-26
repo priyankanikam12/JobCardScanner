@@ -437,6 +437,10 @@ public record BaplDmsCustomerLedgerDetail(
 /// in favor of that lookup.</summary>
 public record BaplDmsDealerCredential(string Email, string? UserName, string? Phone, string? DealerCode, bool IsBgEmployeeRole);
 
+/// <summary>2026-11-26: the ERP password check with its REASON. Outcome = Ok | NotFound | NoPasswordHash | BadPassword | NoEmail | Unavailable (the ERP database could not be read: timeout, network, schema).
+/// "Unavailable" must never be shown to the person as "wrong password".</summary>
+public record BaplDmsCredentialCheck(BaplDmsDealerCredential? Credential, string Outcome);
+
 /// <summary>Result of resolving a DMS "Employee"-role AspNetUsers row to its dealer scope, via
 /// BgEmployeeMaster (checked first) or EmployeeMaster (fallback) - mirrors DMS's own
 /// AuthController.ResolveEmployeeLoginInfo (you pasted its real source). Found=false means neither
@@ -696,6 +700,9 @@ public interface IBaplDmsService
     /// Unauthorized response) since a login endpoint should never reveal which one occurred anyway.
     /// </summary>
     Task<BaplDmsDealerCredential?> VerifyDealerCredentialsAsync(string email, string password, CancellationToken ct = default);
+
+    /// <summary>2026-11-26: same check as VerifyDealerCredentialsAsync, but says WHY it failed (see BaplDmsCredentialCheck) and retries once on a transient ERP error. Never throws.</summary>
+    Task<BaplDmsCredentialCheck> VerifyDealerCredentialsDetailedAsync(string email, string password, CancellationToken ct = default);
 
     /// <summary>
     /// For a DMS "Employee"-role login (see BaplDmsDealerCredential.IsBgEmployeeRole) - resolves
@@ -2214,9 +2221,23 @@ public class BaplDmsService : IBaplDmsService
     /// practice, since AspNetUsers enforces both as unique on their own.
     /// </summary>
     public async Task<BaplDmsDealerCredential?> VerifyDealerCredentialsAsync(string emailOrUserName, string password, CancellationToken ct = default)
-    {
-        if (string.IsNullOrWhiteSpace(emailOrUserName) || string.IsNullOrWhiteSpace(password)) return null;
+        => (await VerifyDealerCredentialsDetailedAsync(emailOrUserName, password, ct)).Credential;
 
+    /// <summary>2026-11-26: the check with its reason. An ERP read that fails (timeout, dropped connection, pool exhausted) is tried once more after a short pause; if it still fails the Outcome is
+    /// "Unavailable" - the caller must tell the person the ERP check is unavailable, NOT that the password is wrong. Never throws.</summary>
+    public async Task<BaplDmsCredentialCheck> VerifyDealerCredentialsDetailedAsync(string emailOrUserName, string password, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(emailOrUserName) || string.IsNullOrWhiteSpace(password)) return new BaplDmsCredentialCheck(null, "NotFound");
+
+        var first = await VerifyOnceAsync(emailOrUserName, password, ct);
+        if (first.Outcome != "Unavailable" || ct.IsCancellationRequested) return first;
+
+        try { await Task.Delay(400, ct); } catch (OperationCanceledException) { return first; }
+        return await VerifyOnceAsync(emailOrUserName, password, ct);
+    }
+
+    private async Task<BaplDmsCredentialCheck> VerifyOnceAsync(string emailOrUserName, string password, CancellationToken ct)
+    {
         const string sql = @"
             SELECT TOP 1 Id, Email, UserName, PasswordHash, PhoneNumber, DealerCode
             FROM [dbo].[AspNetUsers]
@@ -2233,7 +2254,7 @@ public class BaplDmsService : IBaplDmsService
                 await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
                 cmd.Parameters.AddWithValue("@id", emailOrUserName.Trim().ToUpperInvariant());
                 await using var rdr = await cmd.ExecuteReaderAsync(ct);
-                if (!await rdr.ReadAsync(ct)) return null;
+                if (!await rdr.ReadAsync(ct)) return new BaplDmsCredentialCheck(null, "NotFound");
 
                 var storedHash = rdr["PasswordHash"] as string;
                 userId = (string)rdr["Id"];
@@ -2242,12 +2263,12 @@ public class BaplDmsService : IBaplDmsService
                 phone = rdr["PhoneNumber"] as string;
                 dealerCode = rdr["DealerCode"] as string;
 
-                if (string.IsNullOrWhiteSpace(storedHash)) return null;
+                if (string.IsNullOrWhiteSpace(storedHash)) return new BaplDmsCredentialCheck(null, "NoPasswordHash");
 
                 var hasher = new PasswordHasher<IdentityUser>();
                 var result = hasher.VerifyHashedPassword(new IdentityUser(), storedHash, password);
                 if (result != PasswordVerificationResult.Success && result != PasswordVerificationResult.SuccessRehashNeeded)
-                    return null;
+                    return new BaplDmsCredentialCheck(null, "BadPassword");
 
                 // Second query, same connection/row, isolated in its own try/catch below - whether
                 // this account carries DMS's own "Employee" role (AspNetUserRoles/AspNetRoles,
@@ -2280,22 +2301,25 @@ public class BaplDmsService : IBaplDmsService
                 var resolvedEmail = !string.IsNullOrWhiteSpace(actualEmail) ? actualEmail
                     : emailOrUserName.Trim().Contains('@') ? emailOrUserName.Trim()
                     : null;
-                if (resolvedEmail is null) return null; // no usable email anywhere - can't provision a JobCardScanner login without one
+                if (resolvedEmail is null) return new BaplDmsCredentialCheck(null, "NoEmail"); // no usable email anywhere - can't provision a JobCardScanner login without one
 
-                return new BaplDmsDealerCredential(
+                return new BaplDmsCredentialCheck(new BaplDmsDealerCredential(
                     resolvedEmail,
                     userName,
                     phone,
                     string.IsNullOrWhiteSpace(dealerCode) ? null : dealerCode.Trim(),
-                    isBgEmployeeRole);
+                    isBgEmployeeRole), "Ok");
             }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return new BaplDmsCredentialCheck(null, "Unavailable");
         }
         catch (Exception ex)
         {
-            // Deliberately swallowed (logged only) - see this method's doc comment on the interface:
-            // a login flow must never crash because DMS's AspNetUsers schema surprised us.
+            // Never thrown past here (a login flow must never crash because DMS's AspNetUsers schema surprised us) - but it is reported as "Unavailable", NOT as a wrong password.
             _logger.LogWarning(ex, "DMS dealer credential check failed/unavailable for {EmailOrUserName}", emailOrUserName);
-            return null;
+            return new BaplDmsCredentialCheck(null, "Unavailable");
         }
     }
 

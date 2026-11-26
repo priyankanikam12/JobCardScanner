@@ -68,10 +68,27 @@ public class DealerAuthController : ControllerBase
     [AllowAnonymous]
     public async Task<IActionResult> Login(DealerLoginRequest req)
     {
-        var user = await _db.Users.FirstOrDefaultAsync(u =>
-            u.Email.ToLower() == req.Email.ToLower() && u.AuthType == UserAuthType.Local);
+        // 2026-11-26 (users with the right password were told "Invalid email or password"): the sign-in name is trimmed (a space or a no-break space from copy/paste or phone autofill never matched), and
+        // every refusal below now logs its REASON (never the password) so IT can see which case it was - see sql/2026-11-26_login_diagnostics.sql for the matching database check.
+        var loginId = (req.Email ?? string.Empty).Trim().Trim(' ', '​', '﻿').Trim();
+        var loginLower = loginId.ToLowerInvariant();
+        var clientIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        if (loginId.Length == 0 || string.IsNullOrEmpty(req.Password))
+            return Unauthorized(new { message = "Invalid email or password." });
 
-        var localOk = user is not null && user.Active && PasswordHasher.Verify(req.Password, user.PasswordHash);
+        var user = await _db.Users.FirstOrDefaultAsync(u =>
+            u.Email.Trim().ToLower() == loginLower && u.AuthType == UserAuthType.Local);
+
+        var localPasswordOk = user is not null && PasswordHasher.Verify(req.Password, user.PasswordHash);
+        var localOk = user is not null && user.Active && localPasswordOk;
+
+        // Right password, but the account is switched off: say so (it used to fall through to the ERP check and end as "Invalid email or password").
+        // Safe to say: the person has just proved they know the password.
+        if (localPasswordOk && user is not null && !user.Active)
+        {
+            _logger.LogWarning("Dealer login refused (LocalUserInactive) for {Login} from {Ip}", loginId, clientIp);
+            return StatusCode(403, new { message = "Your account is deactivated. Contact your Dealer Admin or IT." });
+        }
 
         if (!localOk)
         {
@@ -79,27 +96,41 @@ public class DealerAuthController : ControllerBase
             // Never throws (see VerifyDealerCredentialsAsync's doc comment) - a null here just means
             // "not a valid DMS login either", falling through to the existing Unauthorized
             // response below exactly as before this fallback was added.
-            BaplDmsDealerCredential? baplCred = null;
+            BaplDmsCredentialCheck check;
             try
             {
-                baplCred = await _baplDms.VerifyDealerCredentialsAsync(req.Email, req.Password, HttpContext.RequestAborted);
+                check = await _baplDms.VerifyDealerCredentialsDetailedAsync(loginId, req.Password, HttpContext.RequestAborted);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "DMS credential fallback failed unexpectedly for {Email}", req.Email);
+                _logger.LogWarning(ex, "DMS credential fallback failed unexpectedly for {Login}", loginId);
+                check = new BaplDmsCredentialCheck(null, "Unavailable");
             }
 
+            var baplCred = check.Credential;
             if (baplCred is null)
+            {
+                _logger.LogWarning("Dealer login refused (local: {Local}; ERP: {Erp}) for {Login} from {Ip}",
+                    user is null ? "NoLocalUser" : !user.Active ? "LocalUserInactive" : "LocalPasswordMismatch", check.Outcome, loginId, clientIp);
+
+                // The ERP could not be read at all: this is NOT a wrong password - never tell the person it is (a 5xx is also not counted as a failed attempt by the lockout).
+                if (check.Outcome == "Unavailable")
+                    return StatusCode(503, new { message = "Sign-in could not be checked right now - the ERP login service did not answer. Your password is not the problem. Please try again in a minute." });
+
                 return Unauthorized(new { message = "Invalid email or password." });
+            }
 
             var email = baplCred.Email.Trim().ToLower();
             // Only ever match/reuse an existing LOCAL user for this email - an email that already
             // belongs to an AzureAd-authenticated staff account must never be logged in here just
             // because it happens to also be a valid DMS login; that would let a DMS
             // password grant access to an account meant to be gated by Azure AD instead.
-            var existingNonLocal = await _db.Users.AnyAsync(u => u.Email.ToLower() == email && u.AuthType != UserAuthType.Local);
+            var existingNonLocal = await _db.Users.AnyAsync(u => u.Email.Trim().ToLower() == email && u.AuthType != UserAuthType.Local);
             if (existingNonLocal)
-                return Unauthorized(new { message = "Invalid email or password." });
+            {
+                _logger.LogWarning("Dealer login refused (EmailIsMicrosoftAccount) for {Login} from {Ip}", loginId, clientIp);
+                return Unauthorized(new { message = "This email signs in with Microsoft. Use the Staff (Microsoft) tab." });
+            }
 
             // ---------------- Resolve the role + Dealer/Corporate scope this login gets ----------------
             // Simple case: baplCred.DealerCode straight off AspNetUsers -> a single Dealer, DealerAdmin.
@@ -109,9 +140,13 @@ public class DealerAuthController : ControllerBase
             // arbitrarily pinned to just one of their dealers - see ResolveAssignmentAsync's doc comment.
             var assignment = await ResolveAssignmentAsync(baplCred, HttpContext.RequestAborted);
             if (assignment is null)
-                return Unauthorized(new { message = "Invalid email or password." });
+            {
+                // ERP password is right, but the ERP "Employee" record that gives the dealer scope is missing or inactive.
+                _logger.LogWarning("Dealer login refused (ErpEmployeeNotFoundOrInactive) for {Login} from {Ip}", loginId, clientIp);
+                return StatusCode(403, new { message = "Your ERP password is correct, but your employee record is inactive or missing. Contact IT to activate it." });
+            }
 
-            user = await _db.Users.FirstOrDefaultAsync(u => u.Email.ToLower() == email && u.AuthType == UserAuthType.Local);
+            user = await _db.Users.FirstOrDefaultAsync(u => u.Email.Trim().ToLower() == email && u.AuthType == UserAuthType.Local);
             if (user is null)
             {
                 user = new User

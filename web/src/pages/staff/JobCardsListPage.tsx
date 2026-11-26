@@ -52,6 +52,15 @@ export function JobCardsListPage() {
     return found
   })
   const [q, setQ] = useState('')
+  // 2026-11-26 (more filters): chassis no, created date range for everyone; Dealer + Designation (Captain / ViceCaptain / Other) + Created By for Corporate Admin / System Admin.
+  const [chassisNo, setChassisNo] = useState('')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+  const [dealerId, setDealerId] = useState('')
+  const [designation, setDesignation] = useState('')
+  const [createdById, setCreatedById] = useState('')
+  const [dealers, setDealers] = useState<{ id: string; name: string }[]>([])
+  const [people, setPeople] = useState<{ id: string; name: string; designation: string | null; active?: boolean }[]>([])
   const [loading, setLoading] = useState(true)
 
   const clearDashboardFilter = Object.keys(dashboardFilter).length > 0
@@ -59,12 +68,39 @@ export function JobCardsListPage() {
   const load = () => {
     setLoading(true)
     staffApi
-      .get<JobCardListResponse>('/api/jobcards', { params: { status: status || undefined, stageKey: stageKey || undefined, q: q || undefined, ...dashboardFilter } })
+      .get<JobCardListResponse>('/api/jobcards', {
+        params: {
+          status: status || undefined, stageKey: stageKey || undefined, q: q || undefined,
+          chassisNo: chassisNo.trim() || undefined, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined,
+          dealerId: showCreatedBy ? dealerId || undefined : undefined,
+          createdByDesignation: showCreatedBy ? designation || undefined : undefined,
+          createdById: showCreatedBy ? createdById || undefined : undefined,
+          ...dashboardFilter,
+        },
+      })
       .then((res) => { setJobCards(res.data.items); setBaplDmsWarning(res.data.baplDmsWarning ?? null) })
       .finally(() => setLoading(false))
   }
 
-  useEffect(load, [status, stageKey])
+  useEffect(load, [status, stageKey, dateFrom, dateTo, dealerId, designation, createdById])
+
+  // Dealer list (head office only) and, once a dealer is picked, that dealer's people for the Designation / Created By filters.
+  useEffect(() => {
+    if (!showCreatedBy) return
+    staffApi.get<{ id: string; name: string }[]>('/api/dealers').then(({ data }) => setDealers(data)).catch(() => setDealers([]))
+  }, [showCreatedBy])
+  useEffect(() => {
+    setCreatedById('')
+    setDesignation('')
+    if (!showCreatedBy || !dealerId) { setPeople([]); return }
+    staffApi
+      .get<{ id: string; name: string; designation: string | null; active?: boolean }[]>('/api/users', { params: { dealerId } })
+      .then(({ data }) => setPeople(data))
+      .catch(() => setPeople([]))
+  }, [dealerId, showCreatedBy])
+  const isCaptainOrVice = (d: string | null) => d === 'Captain' || d === 'ViceCaptain'
+  const peopleShown = people.filter((p) =>
+    !designation ? true : designation === 'Other' ? !isCaptainOrVice(p.designation) : p.designation === designation)
 
   // Item 11: search-as-you-type (debounced) instead of requiring Enter/the Search button -
   // matches the type-ahead pattern used elsewhere in the app (chassis/reg-no lookup, Part/Labour
@@ -74,7 +110,7 @@ export function JobCardsListPage() {
     const handle = setTimeout(load, 300)
     return () => clearTimeout(handle)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q])
+  }, [q, chassisNo])
 
   // 2026-10-12: who created each job card on the page - one POST for the page's own (JobCardScanner) job cards, only for CorporateAdmin / SystemAdmin. The DMS-sourced rows have no
   // creator here and show "-".

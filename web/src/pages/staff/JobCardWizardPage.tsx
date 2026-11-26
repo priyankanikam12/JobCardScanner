@@ -815,7 +815,7 @@ export function JobCardWizardPage() {
         // workLocationCodes means unrestricted (e.g. Corporate/System Admin, or a legacy user with
         // no Work Area set) - unchanged, full list.
         const scoped = profile?.workLocationCodes?.length
-          ? data.filter((w) => profile.workLocationCodes.includes(w.locCode))
+          ? data.filter((w) => profile.workLocationCodes.some((c) => c.trim().toLowerCase() === (w.locCode ?? '').trim().toLowerCase()))
           : data
         setWorkshops(scoped)
         if (scoped.length === 0) {
@@ -1758,7 +1758,27 @@ export function JobCardWizardPage() {
                  visible which workshop Supervisor/Technician below are scoped to. */}
               <div className="field">
                 <label>Service Location (workshop)<Req /></label>
-                <input value={baplServiceLocation || (workshopsLoading ? 'Loading…' : effectiveDealerId ? 'Not available' : 'Select a dealer first')} disabled readOnly />
+                {/* 2026-11-26 ("which location have access, that open location shown in Service Location dropdown"): the picker is back. It lists exactly the locations this login may use
+                   (Work Area = profile.workLocationCodes; empty Work Area = every workshop of the dealer - see the filter in the useEffect above). One location: shown selected, nothing else to pick. */}
+                {workshops.length > 0 ? (
+                  <select
+                    value={selectedWorkshopLocCode}
+                    onChange={(e) => {
+                      const w = workshops.find((x) => x.locCode === e.target.value)
+                      setSelectedWorkshopLocCode(w?.locCode ?? '')
+                      setBaplServiceLocation(w?.locName ?? '')
+                    }}
+                  >
+                    {workshops.map((w) => (
+                      <option key={w.locCode} value={w.locCode}>{w.locName} ({w.locCode})</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input value={baplServiceLocation || (workshopsLoading ? 'Loading…' : effectiveDealerId ? 'Not available' : 'Select a dealer first')} disabled readOnly />
+                )}
+                {workshops.length === 1 && (
+                  <p style={{ margin: '4px 0 0', fontSize: 12, opacity: 0.7 }}>Only one location is given to your login (Work Area).</p>
+                )}
                 {/* 2026-10-14: the list comes from the app's own WorkshopLocations table; if it cannot be read, say so and let the user retry instead of silently saving a job card with no location. */}
                 {!baplServiceLocation && !workshopsLoading && !!effectiveDealerId && (
                   <p className="error-text" style={{ margin: '4px 0 0', fontSize: 12 }}>
