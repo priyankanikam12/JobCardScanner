@@ -60,7 +60,19 @@ public class JobCardInvoiceController : ControllerBase
             .Where(r => !r.IsDeleted && r.JobCardId == id && r.Status == RepairBillDocStatus.Billed)
             .OrderByDescending(r => r.CreatedAt)
             .FirstOrDefaultAsync(ct);
-        if (bill is null) return NotFound(new { message = "No Repair Bill has been saved as Invoice for this job card yet." });
+        if (bill is null)
+        {
+            // 2026-11-27 ("invoice download not working after RB and MT"): say exactly what is missing - no Repair Bill at all, or one that is still a Proforma.
+            var latest = await _db.RepairBillDocs.AsNoTracking()
+                .Where(r => !r.IsDeleted && r.JobCardId == id).OrderByDescending(r => r.CreatedAt)
+                .Select(r => new { r.BillNumber, r.Status }).FirstOrDefaultAsync(ct);
+            return NotFound(new
+            {
+                message = latest is null
+                    ? "No Repair Bill has been created for this job card yet. Create the Repair Bill, then use Save as Invoice."
+                    : $"Repair Bill {latest.BillNumber} is still a {latest.Status}. Open it in Repair Bill and click Save as Invoice, then print the invoice.",
+            });
+        }
 
         return Ok(ToRow(bill));
     }

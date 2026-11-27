@@ -56,11 +56,13 @@ type Props = {
   onlyWithMaterialTransfer?: boolean
 }
 
+// 2026-11-27 ("Date From 01-04-2026, Date To till today"): the default range is the start of the current financial year (1 April, FY Apr-Mar) up to today, so open job cards from earlier months
+// of this year (e.g. job no 73, 221) are found. Local dates (not toISOString, which can shift the day).
 const defaultDateRange = () => {
   const today = new Date()
-  const firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1)
-  const fmt = (d: Date) => d.toISOString().slice(0, 10)
-  return { from: fmt(firstOfMonth), to: fmt(today) }
+  const fyStartYear = today.getMonth() >= 3 ? today.getFullYear() : today.getFullYear() - 1
+  const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  return { from: fmt(new Date(fyStartYear, 3, 1)), to: fmt(today) }
 }
 
 export function JobSearchModal({ onSelect, onClose, onlyWithMaterialTransfer = false }: Props) {
@@ -82,8 +84,9 @@ export function JobSearchModal({ onSelect, onClose, onlyWithMaterialTransfer = f
     staffApi
       .get<JobSearchResult[]>('/api/jobcards/search', {
         params: {
-          dateFrom: dateFrom || undefined,
-          dateTo: dateTo || undefined,
+          // Looking a job up by Job No / Reg No / Chassis ignores the date range, so an older job is always found.
+          dateFrom: (jobNo || regNo || chassisNo) ? undefined : dateFrom || undefined,
+          dateTo: (jobNo || regNo || chassisNo) ? undefined : dateTo || undefined,
           jobNo: jobNo || undefined,
           regNo: regNo || undefined,
           chassisNo: chassisNo || undefined,

@@ -1388,7 +1388,11 @@ public class JobCardsController : ControllerBase
         .Include(j => j.Parts).ThenInclude(p => p.Part)
         .Include(j => j.PartSuggestions)
         .Include(j => j.LabourSuggestions)
-        .Include(j => j.Invoice);
+        .Include(j => j.Invoice)
+        // 2026-11-27 ("job card stuck on Loading... for 5 minutes"): this query joins ~14 collections (complaints, inspections, photos, stage history, worklogs, QC items, estimate lines,
+        // parts, suggestions...). As ONE SQL statement the rows multiply (photos x history x worklogs x ...), so a job card with a lot of history took minutes or timed out on RDS.
+        // AsSplitQuery() runs one small query per collection instead - same data, a tiny fraction of the rows.
+        .AsSplitQuery();
 
     private static object Summarize(JobCard j) => new
     {

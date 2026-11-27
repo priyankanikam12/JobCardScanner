@@ -299,12 +299,18 @@ export function DealerRoleReportPage() {
   const selectedDealerName = dealers.find((d) => d.id === dealerId)?.name
 
   const download = (kind: 'excel' | 'pdf') => {
-    if (dealerId) {
-      if (!report) return
-      if (kind === 'excel') exportDealerRoleReportExcel(report); else exportDealerRoleReportPdf(report)
-    } else {
-      if (!summary) return
-      if (kind === 'excel') exportDealerSummaryExcel(summary); else exportDealerSummaryPdf(summary)
+    // 2026-11-27 ("unable to download the JC report"): a failure inside the export used to be silent. It is now shown on screen (and logged) so the real reason is visible.
+    try {
+      if (dealerId) {
+        if (!report) return
+        if (kind === 'excel') exportDealerRoleReportExcel(report); else exportDealerRoleReportPdf(report)
+      } else {
+        if (!summary) return
+        if (kind === 'excel') exportDealerSummaryExcel(summary); else exportDealerSummaryPdf(summary)
+      }
+    } catch (err) {
+      console.error('Dealer role report download failed', err)
+      window.alert(`Could not create the ${kind === 'excel' ? 'Excel' : 'PDF'} file: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 

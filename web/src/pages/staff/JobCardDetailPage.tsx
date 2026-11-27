@@ -391,11 +391,17 @@ function PrintMenu({ jc, setMsg }: { jc: JobCardDetail; setMsg: (m: string | nul
     const win = openLoadingWindow('Loading invoice…', 'Please allow popups to view/print the invoice.')
     if (!win) { setBusy(false); return }
     try {
-      const billed = await fetchBilledBill()
-      if (!billed) {
-        win.close()
-        setMsg('No Repair Bill has been saved as Invoice for this job card yet.')
-        return
+      let billed: RepairBillDoc
+      try {
+        billed = (await staffApi.get<RepairBillDoc>(`/api/jobcards/${jc.id}/billed-bill`)).data
+      } catch (err404) {
+        const r = (err404 as { response?: { status?: number; data?: { message?: string } } })?.response
+        if (r?.status === 404) {
+          win.close()
+          setMsg(r.data?.message ?? 'No Repair Bill has been saved as Invoice for this job card yet.')
+          return
+        }
+        throw err404
       }
       showInWindow(win, buildRepairBillTaxInvoicePrintHtml(billed, taxInvoiceContextFromJobCard(jc)))
     } catch (err: unknown) {
@@ -451,14 +457,26 @@ export function JobCardDetailPage() {
   // EstimatesCard's own UI. See EstimatesCard.
   const [estimatesLocked, setEstimatesLocked] = useState(false)
 
+  // 2026-11-27 ("job card keeps showing Loading..."): a failed or refused load used to leave "Loading..." on screen for ever. The job card now loads on its own (the workflow stages are
+  // fetched separately - a failure there no longer blocks the page), and a failure shows its reason with a Retry button.
+  const [loadError, setLoadError] = useState<string | null>(null)
   const load = async () => {
     if (!id) return
-    const [jcRes, stagesRes] = await Promise.all([
-      staffApi.get<JobCardDetail>(`/api/jobcards/${id}`),
-      staffApi.get<WorkflowStage[]>('/api/workflow-stages'),
-    ])
-    setJc(jcRes.data)
-    setStages(stagesRes.data)
+    setLoadError(null)
+    staffApi.get<WorkflowStage[]>('/api/workflow-stages').then((r) => setStages(r.data)).catch(() => undefined)
+    try {
+      const jcRes = await staffApi.get<JobCardDetail>(`/api/jobcards/${id}`, { timeout: 60_000 })
+      setJc(jcRes.data)
+    } catch (err) {
+      const e = err as { response?: { status?: number; data?: { message?: string } }; code?: string }
+      const status = e?.response?.status
+      setLoadError(
+        status === 404 ? 'This job card was not found, or it is outside your dealer / Work Area locations.'
+        : status === 401 ? 'Your session has expired. Please sign in again.'
+        : e?.code === 'ECONNABORTED' ? 'The job card took too long to load. Please try again.'
+        : `Could not load this job card${status ? ` (HTTP ${status})` : ''}${e?.response?.data?.message ? ` - ${e.response.data.message}` : ''}.`,
+      )
+    }
   }
 
   useEffect(() => { load() }, [id])
@@ -477,6 +495,12 @@ export function JobCardDetailPage() {
     }
   }, [jc])
 
+  if (!jc && loadError) return (
+    <div className="card">
+      <p className="error-text">{loadError}</p>
+      <button className="btn btn-sm" onClick={() => load()}>Retry</button>
+    </div>
+  )
   if (!jc) return <p className="muted">Loading...</p>
 
   // 2026-10-23 ("in Labour Suggestion when i try to add labour its not added"): run() now also RETURNS the error text (null = it worked), so the Part / Labour suggestion cards can show a refused
