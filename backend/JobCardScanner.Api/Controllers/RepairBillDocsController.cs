@@ -671,8 +671,8 @@ public class RepairBillDocsController : ControllerBase
         var bill = await _db.RepairBillDocs.Include(r => r.Items).FirstOrDefaultAsync(r => r.Id == id && r.DealerId == dealerId);
         if (bill is null) return NotFound();
         // 2026-10-10: since a Proforma can now be saved with no lines, an EMPTY bill must not become an Invoice - that would close the job card on a Rs 0 bill with nothing on it.
-        if (status == RepairBillDocStatus.Billed && bill.Items.Count == 0)
-            return BadRequest(new { message = "Add at least one item or labour line before saving this bill as Invoice." });
+        // 2026-11-27 ("no need to add any 1 labour or part, we can direct do repair bill"): the empty-bill block that stood here is REMOVED - a bill with no Part / Labour lines can now be saved as an
+        // Invoice directly (and so closes its job card), same as one with lines. Nothing else about the Invoice step changed.
         bill.Status = status;
 
         // 2026-09-28 (SECTION 147, "when i click Generate Invoice ... we cant close jobcards
